@@ -75,7 +75,7 @@ order_offset = st.number_input(
     "Order Price Offset",
     min_value=-10.0,
     max_value=10.0,
-    value=0.0,
+    value=0.05,
     step=0.01,
     help="Amount to add/subtract from the calculated butterfly price to set your order price."
 )
@@ -96,10 +96,10 @@ def get_underlying_price(symbol):
     print(f"[DEBUG] Headers: {headers}")
     resp = requests.get(url, headers=headers)
     print(f"[DEBUG] Status code: {resp.status_code}")
-    try:
-        print(f"[DEBUG] Response: {resp.json()}")
-    except Exception as e:
-        print(f"[DEBUG] Response decode error: {e}")
+    # try:
+    #     print(f"[DEBUG] Response: {resp.json()}")
+    # except Exception as e:
+    #     print(f"[DEBUG] Response decode error: {e}")
     if verbose:
         st.sidebar.write(f"GET {url}")
         st.sidebar.write(f"Headers: {headers}")
@@ -136,10 +136,10 @@ def get_options_chain(symbol, expiry):
     print(f"[DEBUG] Params: {params}")
     resp = requests.get(url, headers=headers, params=params)
     print(f"[DEBUG] Status code: {resp.status_code}")
-    print(f"[DEBUG] Full response: {resp.text}")
+    #print(f"[DEBUG] Full response: {resp.text}")
     try:
         response_data = resp.json()
-        print(f"[DEBUG] JSON response: {response_data}")
+        #print(f"[DEBUG] JSON response: {response_data}")
         if resp.status_code == 200:
             contracts = response_data.get("option_contracts", [])
             print(f"[DEBUG] Number of contracts: {len(contracts)}")
@@ -157,7 +157,7 @@ else:
     st.error(f"Could not fetch price for {symbol}.")
 
 options_chain = get_options_chain(symbol, expiry)
-print(f"[DEBUG] Options chain: {options_chain}")
+#print(f"[DEBUG] Options chain: {options_chain}")
 if options_chain:
     st.info(f"Fetched {len(options_chain)} option contracts for {symbol} expiring {expiry}.")
 else:
@@ -184,7 +184,7 @@ def get_strike_prices(options_chain):
             strike = float(opt["strike_price"])
             strikes.append(strike)
             strike_to_option[strike] = opt
-    print(f"[DEBUG] Available strikes: {strikes}")
+    #print(f"[DEBUG] Available strikes: {strikes}")
     return sorted(strikes), strike_to_option
 
 butterfly_info = None
@@ -196,13 +196,26 @@ if options_chain and underlying_price:
         atm_index = strikes.index(atm_strike)
         print(f"[DEBUG] ATM strike: {atm_strike}")
         
-        # Find the closest available strikes for lower and upper wings
-        lower_index = max(0, atm_index - 1)
-        upper_index = min(len(strikes) - 1, atm_index + 1)
-        
-        lower_strike = strikes[lower_index]
-        upper_strike = strikes[upper_index]
-        print(f"[DEBUG] Lower strike: {lower_strike}, Upper strike: {upper_strike}")
+        # Find the closest available strikes for lower and upper wings using the selected leg_width
+        lower_strike = None
+        upper_strike = None
+
+        # Find the closest available strike below ATM with the requested width
+        for s in strikes:
+            if s < atm_strike and abs(atm_strike - s - leg_width) < 1e-6:
+                lower_strike = s
+        # Find the closest available strike above ATM with the requested width
+        for s in strikes:
+            if s > atm_strike and abs(s - atm_strike - leg_width) < 1e-6:
+                upper_strike = s
+
+        # Fallback to closest available if exact width not found
+        if lower_strike is None:
+            lower_strike = max([s for s in strikes if s < atm_strike], default=min(strikes))
+        if upper_strike is None:
+            upper_strike = min([s for s in strikes if s > atm_strike], default=max(strikes))
+
+        print(f"[DEBUG] Lower strike: {lower_strike}, Upper strike: {upper_strike}, Leg width: {leg_width}")
 
         if lower_strike != atm_strike and upper_strike != atm_strike:
             atm_option = strike_to_option[atm_strike]
@@ -259,13 +272,13 @@ if options_chain and underlying_price:
             - 2 * np.maximum(x - butterfly_info["atm_strike"], 0)
             + np.maximum(x - butterfly_info["upper_strike"], 0)
             - net_premium
-        )
+        ) * 100  # Multiply by 100 for options contracts
 
         fig, ax = plt.subplots()
         ax.plot(x, payoff, label="Butterfly Payoff")
         ax.axhline(0, color="gray", linestyle="--")
         ax.set_xlabel("Underlying Price at Expiry")
-        ax.set_ylabel("Profit / Loss")
+        ax.set_ylabel("Profit / Loss ($)")
         ax.set_title("Butterfly Payoff Diagram")
         ax.legend()
         st.pyplot(fig)
@@ -273,7 +286,22 @@ else:
     st.info("Butterfly construction and payoff plot will appear here.")
 
 # Place order button
-if st.button("Place Butterfly Order"):
+if "order_confirm" not in st.session_state:
+    st.session_state["order_confirm"] = False
+if "order_result" not in st.session_state:
+    st.session_state["order_result"] = None
+
+@st.dialog("Order Confirmation")
+def confirm_order_dialog(order_price, underlying_price, max_profit, max_loss):
+    st.write(f"**Current Price:** ${underlying_price:.2f}")
+    st.write(f"**Order Price:** ${order_price:.2f}")
+    st.write(f"**Max Profit:** ${max_profit:.2f}")
+    st.write(f"**Max Loss:** ${max_loss:.2f}")
+    if st.button("Confirm Order"):
+        st.session_state["order_confirm"] = True
+        st.rerun()
+
+if st.button("Place Butterfly Order") or st.session_state["order_confirm"]:
     if butterfly_info and all(
         price is not None for price in [
             butterfly_info["lower_price"],
@@ -294,47 +322,44 @@ if st.button("Place Butterfly Order"):
         atm_option = strike_to_option[butterfly_info["atm_strike"]]
         upper_option = strike_to_option[butterfly_info["upper_strike"]]
 
+        # Calculate max profit and max loss
+        max_profit = (leg_width - abs(order_price)) * 100
+        max_loss = abs(order_price) * 100
+
+        # Show confirmation dialog using st.dialog
+        if not st.session_state["order_confirm"]:
+            confirm_order_dialog(order_price, underlying_price, max_profit, max_loss)
+            st.stop()
+
+        # Prepare legs for Alpaca API
         legs = [
             {
                 "symbol": lower_option["symbol"],
-                "qty": 1,
-                "side": "buy_to_open",
-                "type": "option",
-                "option_type": "call",
-                "strike_price": lower_option["strike_price"],
-                "expiration_date": lower_option["expiration_date"],
-                "option_symbol": lower_option["id"]
+                "side": "buy",
+                "ratio_qty": "1"
             },
             {
                 "symbol": atm_option["symbol"],
-                "qty": 2,
-                "side": "sell_to_open",
-                "type": "option",
-                "option_type": "call",
-                "strike_price": atm_option["strike_price"],
-                "expiration_date": atm_option["expiration_date"],
-                "option_symbol": atm_option["id"]
+                "side": "sell",
+                "ratio_qty": "2"
             },
             {
                 "symbol": upper_option["symbol"],
-                "qty": 1,
-                "side": "buy_to_open",
-                "type": "option",
-                "option_type": "call",
-                "strike_price": upper_option["strike_price"],
-                "expiration_date": upper_option["expiration_date"],
-                "option_symbol": upper_option["id"]
+                "side": "buy",
+                "ratio_qty": "1"
             }
         ]
 
         order_payload = {
-            "type": "limit",
-            "price": round(order_price, 2),
+            "order_class": "mleg",
             "time_in_force": "day",
+            "qty": "1",
+            "type": "limit",
+            "limit_price": f"{order_price:.2f}",
             "legs": legs
         }
 
-        order_url = f"{get_base_url(is_paper_trade=True)}/v2/options/orders"
+        order_url = f"{get_base_url(is_paper_trade=True)}/v2/orders"
         api_key, api_secret = get_api_credentials(is_paper_trade=True)
         headers = {
             "APCA-API-KEY-ID": api_key,
@@ -345,10 +370,22 @@ if st.button("Place Butterfly Order"):
         import json
         resp = requests.post(order_url, headers=headers, data=json.dumps(order_payload))
         if resp.status_code in (200, 201):
-            st.success("Butterfly order submitted successfully!")
-            st.json(resp.json())
+            st.session_state["order_result"] = ("success", resp.json())
+            st.session_state["order_confirm"] = False
         else:
-            st.error(f"Order failed: {resp.status_code} {resp.text}")
+            st.session_state["order_result"] = ("error", f"Order failed: {resp.status_code} {resp.text}")
+            st.session_state["order_confirm"] = False
+
+        # Show result as a modal
+        if st.session_state["order_result"]:
+            status, result = st.session_state["order_result"]
+            if status == "success":
+                st.success("Order Submitted Successfully!")
+                st.json(result)
+            else:
+                st.error(f"Order Failed: {result}")
+            if st.button("Close Result"):
+                st.session_state["order_result"] = None
     else:
         st.error("Butterfly construction or pricing incomplete. Cannot place order.")
 
