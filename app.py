@@ -30,9 +30,6 @@ def get_base_url(is_paper_trade=True):
 
 st.set_page_config(page_title="Iron Butterfly Trade", layout="centered")
 
-# Verbose logging option
-verbose = st.sidebar.checkbox("Verbose Logging (-v)", value=False)
-
 st.title("Robust Iron Butterfly Trade")
 
 # Step 1: Trade setup
@@ -107,14 +104,6 @@ def get_underlying_price(symbol):
     #     print(f"[DEBUG] Response: {resp.json()}")
     # except Exception as e:
     #     print(f"[DEBUG] Response decode error: {e}")
-    if verbose:
-        st.sidebar.write(f"GET {url}")
-        st.sidebar.write(f"Headers: {headers}")
-        st.sidebar.write(f"Status code: {resp.status_code}")
-        try:
-            st.sidebar.write(f"Response: {resp.json()}")
-        except Exception as e:
-            st.sidebar.write(f"Response decode error: {e}")
     if resp.status_code == 200:
         data = resp.json()
         quote = data.get("quote", {})
@@ -367,8 +356,15 @@ if options_chain and underlying_price:
             ) * 100  # Multiply by 100 for options contracts
 
         # Calculate break-even points
-        lower_be = butterfly_info["lower_strike"] + net_premium
-        upper_be = butterfly_info["upper_strike"] - net_premium
+        if strategy_type == "IRON Butterfly":
+            # For Iron Butterfly, break-evens are:
+            # Lower BE = ATM strike - (credit received)
+            # Upper BE = ATM strike + (credit received)
+            lower_be = butterfly_info["atm_strike"] - abs(net_premium)
+            upper_be = butterfly_info["atm_strike"] + abs(net_premium)
+        else:
+            lower_be = butterfly_info["lower_strike"] + net_premium
+            upper_be = butterfly_info["upper_strike"] - net_premium
 
         fig, ax = plt.subplots()
         ax.plot(x, payoff, label="Butterfly Payoff")
@@ -406,9 +402,64 @@ def confirm_order_dialog(order_price, underlying_price, max_profit, max_loss, cu
     st.write(f"**Underlying Price:** ${underlying_price:.2f}")
     st.write(f"**Max Profit:** ${max_profit:.2f}")
     st.write(f"**Max Loss:** ${max_loss:.2f}")
+    
     st.write("**Legs to be Traded:**")
+    
+    # Create a table for the legs
+    import pandas as pd
+    import re
+    
+    # Function to parse option symbol
+    def parse_option_symbol(symbol):
+        # Example: SPY250630C00615000
+        # Format: {ticker}{expiry}{type}{strike}
+        match = re.match(r'([A-Z]+)(\d{6})([CP])(\d+)', symbol)
+        if match:
+            ticker, date_str, option_type, strike_str = match.groups()
+            # Format date as YYYY-MM-DD
+            date = f"20{date_str[:2]}-{date_str[2:4]}-{date_str[4:6]}"
+            # Format strike price with decimal
+            strike = float(strike_str) / 1000
+            # Get option type
+            option_type = "Call" if option_type == "C" else "Put"
+            return ticker, date, option_type, strike
+        return symbol, "", "", 0
+    
+    # Prepare data for the table
+    table_data = []
     for leg in legs:
-        st.write(f"{leg['side'].capitalize()} {leg['ratio_qty']} of {leg['symbol']}")
+        ticker, date, option_type, strike = parse_option_symbol(leg['symbol'])
+        
+        # Find the price for this leg
+        price = 0.0
+        if strategy_type == "IRON Butterfly":
+            if option_type == "Put" and abs(strike - butterfly_info["lower_strike"]) < 0.01:
+                price = butterfly_info["lower_price"]
+            elif option_type == "Put" and abs(strike - butterfly_info["atm_strike"]) < 0.01:
+                price = butterfly_info["atm_put_price"]
+            elif option_type == "Call" and abs(strike - butterfly_info["atm_strike"]) < 0.01:
+                price = butterfly_info["atm_call_price"]
+            elif option_type == "Call" and abs(strike - butterfly_info["upper_strike"]) < 0.01:
+                price = butterfly_info["upper_price"]
+        else:
+            if abs(strike - butterfly_info["lower_strike"]) < 0.01:
+                price = butterfly_info["lower_price"]
+            elif abs(strike - butterfly_info["atm_strike"]) < 0.01:
+                price = butterfly_info["atm_price"]
+            elif abs(strike - butterfly_info["upper_strike"]) < 0.01:
+                price = butterfly_info["upper_price"]
+        
+        table_data.append({
+            "Action": leg['side'].capitalize(),
+            "Symbol": ticker,
+            "Date": date,
+            "Type": option_type,
+            "Strike": f"${strike:.2f}",
+            "Price": f"${price:.2f}"
+        })
+    
+    # Display the table
+    st.table(pd.DataFrame(table_data))
         
     if st.button("Confirm Order"):
         st.session_state["order_confirm"] = True
@@ -455,8 +506,14 @@ if st.button("Place Butterfly Order") or st.session_state["order_confirm"]:
         upper_option = strike_to_option[butterfly_info["upper_strike"]]
 
         # Calculate max profit and max loss
-        max_profit = (leg_width - abs(order_price)) * 100
-        max_loss = abs(order_price) * 100
+        if strategy_type == "IRON Butterfly":
+            # For Iron Butterfly (credit spread)
+            max_profit = abs(order_price) * 100  # Credit received is the max profit
+            max_loss = (leg_width - abs(order_price)) * 100  # Width minus credit is max loss
+        else:
+            # For regular butterfly (debit spread)
+            max_profit = (leg_width - abs(order_price)) * 100
+            max_loss = abs(order_price) * 100
 
         # Calculate current options price for the legs combined
         if strategy_type == "IRON Butterfly":
@@ -600,12 +657,3 @@ elif not ALPACA_API_KEY_PAPER or not ALPACA_API_SECRET_PAPER:
     st.error("Alpaca paper API key or secret not found in .env file.")
 else:
     st.success("Alpaca API keys loaded successfully.")
-
-# Testing Plan (Step 1)
-st.sidebar.header("Testing Plan")
-st.sidebar.markdown("""
-- API key loads from .env and is detected.
-- UI fields (expiry, width, offset) render and update.
-- Button is present and triggers placeholder logic.
-- Next: Integrate Alpaca API for price and options chain.
-""")
