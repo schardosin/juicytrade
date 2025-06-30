@@ -230,23 +230,39 @@ if options_chain and underlying_price:
         print(f"[DEBUG] Lower strike: {lower_strike}, Upper strike: {upper_strike}, Leg width: {leg_width}")
 
         if lower_strike != atm_strike and upper_strike != atm_strike:
-            atm_option = strike_to_option[atm_strike]
-            lower_option = strike_to_option[lower_strike]
-            upper_option = strike_to_option[upper_strike]
-            butterfly_info = {
-                "lower_strike": lower_strike,
-                "atm_strike": atm_strike,
-                "upper_strike": upper_strike,
-                "lower_price": option_price(lower_option),
-                "atm_price": option_price(atm_option),
-                "upper_price": option_price(upper_option),
-            }
+            # For IRON Butterfly, get correct prices from puts and calls for display only
+            if strategy_type == "IRON Butterfly":
+                put_lower = next((o for o in options_chain if float(o["strike_price"]) == lower_strike and o["type"] == "put"), None)
+                put_atm = next((o for o in options_chain if float(o["strike_price"]) == atm_strike and o["type"] == "put"), None)
+                call_atm = next((o for o in options_chain if float(o["strike_price"]) == atm_strike and o["type"] == "call"), None)
+                call_upper = next((o for o in options_chain if float(o["strike_price"]) == upper_strike and o["type"] == "call"), None)
+                butterfly_info = {
+                    "lower_strike": lower_strike,
+                    "atm_strike": atm_strike,
+                    "upper_strike": upper_strike,
+                    "lower_price": option_price(put_lower) if put_lower else 0,
+                    "atm_put_price": option_price(put_atm) if put_atm else 0,
+                    "atm_call_price": option_price(call_atm) if call_atm else 0,
+                    "upper_price": option_price(call_upper) if call_upper else 0,
+                }
+            else:
+                atm_option = strike_to_option[atm_strike]
+                lower_option = strike_to_option[lower_strike]
+                upper_option = strike_to_option[upper_strike]
+                butterfly_info = {
+                    "lower_strike": lower_strike,
+                    "atm_strike": atm_strike,
+                    "upper_strike": upper_strike,
+                    "lower_price": option_price(lower_option),
+                    "atm_price": option_price(atm_option),
+                    "upper_price": option_price(upper_option),
+                }
 
             st.subheader("Selected Butterfly Strikes")
             if strategy_type == "IRON Butterfly":
                 st.write(f"Buy 1 Put at {lower_strike} (${butterfly_info['lower_price']:.2f})")
-                st.write(f"Sell 1 Put at {atm_strike} (${butterfly_info['atm_price']:.2f})")
-                st.write(f"Sell 1 Call at {atm_strike} (${butterfly_info['atm_price']:.2f})")
+                st.write(f"Sell 1 Put at {atm_strike} (${butterfly_info['atm_put_price']:.2f})")
+                st.write(f"Sell 1 Call at {atm_strike} (${butterfly_info['atm_call_price']:.2f})")
                 st.write(f"Buy 1 Call at {upper_strike} (${butterfly_info['upper_price']:.2f})")
             elif strategy_type == "CALL Butterfly":
                 st.write(f"Buy 1 Call at {lower_strike} (${butterfly_info['lower_price']:.2f})")
@@ -267,21 +283,40 @@ if options_chain and underlying_price:
     else:
         st.warning("No valid strikes found in options chain.")
     # Plot payoff if butterfly is valid
-    if butterfly_info and all(
-        price is not None for price in [
-            butterfly_info["lower_price"],
-            butterfly_info["atm_price"],
-            butterfly_info["upper_price"]
-        ]
+    if butterfly_info and (
+        (strategy_type == "IRON Butterfly" and all(
+            price is not None for price in [
+                butterfly_info["lower_price"],
+                butterfly_info["atm_put_price"],
+                butterfly_info["atm_call_price"],
+                butterfly_info["upper_price"]
+            ]
+        )) or (
+            strategy_type != "IRON Butterfly" and all(
+                price is not None for price in [
+                    butterfly_info["lower_price"],
+                    butterfly_info["atm_price"],
+                    butterfly_info["upper_price"]
+                ]
+            )
+        )
     ):
         import matplotlib.pyplot as plt
 
-        # Calculate net premium (debit)
-        net_premium = (
-            butterfly_info["lower_price"]
-            - 2 * butterfly_info["atm_price"]
-            + butterfly_info["upper_price"]
-        )
+        # Calculate net premium (debit for regular butterfly, credit for iron butterfly)
+        if strategy_type == "IRON Butterfly":
+            net_premium = (
+                butterfly_info["lower_price"]
+                - butterfly_info["atm_put_price"]
+                - butterfly_info["atm_call_price"]
+                + butterfly_info["upper_price"]
+            )
+        else:
+            net_premium = (
+                butterfly_info["lower_price"]
+                - 2 * butterfly_info["atm_price"]
+                + butterfly_info["upper_price"]
+            )
 
         # Payoff calculation
         # Use integer steps for x, center at atm_strike
@@ -294,12 +329,42 @@ if options_chain and underlying_price:
         if upper_bound - lower_bound > 200:
             step = 5
         x = np.arange(lower_bound, upper_bound + step, step)
-        payoff = (
-            np.maximum(x - butterfly_info["lower_strike"], 0)
-            - 2 * np.maximum(x - butterfly_info["atm_strike"], 0)
-            + np.maximum(x - butterfly_info["upper_strike"], 0)
-            - net_premium
-        ) * 100  # Multiply by 100 for options contracts
+        if strategy_type == "IRON Butterfly":
+            # Iron butterfly payoff calculation
+            # Long put at lower strike, short put at ATM, short call at ATM, long call at upper strike
+            # This is a credit spread, so net_premium should be positive (money received)
+            
+            # For clarity, let's use the absolute value of the width
+            width = abs(atm_strike - lower_strike)
+            
+            # Calculate max profit and max loss
+            max_profit = abs(net_premium) * 100  # Credit received
+            max_loss = (width - abs(net_premium)) * 100  # Width minus credit
+            
+            payoff = np.zeros_like(x)
+            for i, price in enumerate(x):
+                if price <= lower_strike:
+                    # Below lower strike: max loss
+                    payoff[i] = -max_loss
+                elif price < atm_strike:
+                    # Between lower and ATM: linear increase from max loss to max profit
+                    ratio = (price - lower_strike) / width
+                    payoff[i] = -max_loss + ratio * (max_loss + max_profit)
+                elif price <= upper_strike:
+                    # Between ATM and upper: linear decrease from max profit to max loss
+                    ratio = (upper_strike - price) / width
+                    payoff[i] = -max_loss + ratio * (max_loss + max_profit)
+                else:
+                    # Above upper strike: max loss
+                    payoff[i] = -max_loss
+        else:
+            # Regular butterfly payoff
+            payoff = (
+                np.maximum(x - butterfly_info["lower_strike"], 0)
+                - 2 * np.maximum(x - butterfly_info["atm_strike"], 0)
+                + np.maximum(x - butterfly_info["upper_strike"], 0)
+                - net_premium
+            ) * 100  # Multiply by 100 for options contracts
 
         # Calculate break-even points
         lower_be = butterfly_info["lower_strike"] + net_premium
@@ -350,19 +415,38 @@ def confirm_order_dialog(order_price, underlying_price, max_profit, max_loss, cu
         st.rerun()
 
 if st.button("Place Butterfly Order") or st.session_state["order_confirm"]:
-    if butterfly_info and all(
-        price is not None for price in [
-            butterfly_info["lower_price"],
-            butterfly_info["atm_price"],
-            butterfly_info["upper_price"]
-        ]
+    if butterfly_info and (
+        (strategy_type == "IRON Butterfly" and all(
+            price is not None for price in [
+                butterfly_info["lower_price"],
+                butterfly_info["atm_put_price"],
+                butterfly_info["atm_call_price"],
+                butterfly_info["upper_price"]
+            ]
+        )) or (
+            strategy_type != "IRON Butterfly" and all(
+                price is not None for price in [
+                    butterfly_info["lower_price"],
+                    butterfly_info["atm_price"],
+                    butterfly_info["upper_price"]
+                ]
+            )
+        )
     ):
         # Calculate order price with offset
-        net_premium = (
-            butterfly_info["lower_price"]
-            - 2 * butterfly_info["atm_price"]
-            + butterfly_info["upper_price"]
-        )
+        if strategy_type == "IRON Butterfly":
+            net_premium = (
+                butterfly_info["lower_price"]
+                - butterfly_info["atm_put_price"]
+                - butterfly_info["atm_call_price"]
+                + butterfly_info["upper_price"]
+            )
+        else:
+            net_premium = (
+                butterfly_info["lower_price"]
+                - 2 * butterfly_info["atm_price"]
+                + butterfly_info["upper_price"]
+            )
         order_price = net_premium + order_offset
 
         # Find contract IDs for each leg
@@ -375,11 +459,19 @@ if st.button("Place Butterfly Order") or st.session_state["order_confirm"]:
         max_loss = abs(order_price) * 100
 
         # Calculate current options price for the legs combined
-        current_options_price = (
-            butterfly_info["lower_price"]
-            - 2 * butterfly_info["atm_price"]
-            + butterfly_info["upper_price"]
-        )
+        if strategy_type == "IRON Butterfly":
+            current_options_price = (
+                butterfly_info["lower_price"]
+                - butterfly_info["atm_put_price"]
+                - butterfly_info["atm_call_price"]
+                + butterfly_info["upper_price"]
+            )
+        else:
+            current_options_price = (
+                butterfly_info["lower_price"]
+                - 2 * butterfly_info["atm_price"]
+                + butterfly_info["upper_price"]
+            )
 
         # Prepare legs for Alpaca API based on strategy type
         if strategy_type == "IRON Butterfly":
