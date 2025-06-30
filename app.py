@@ -67,6 +67,13 @@ next_market_date = datetime.datetime.strptime(next_market_date_str, "%Y-%m-%d").
 # Expiry date picker (default: next valid market date)
 expiry = st.date_input("Option Expiry Date", value=next_market_date)
 
+# Strategy type dropdown
+strategy_type = st.selectbox(
+    "Butterfly Strategy Type",
+    options=["IRON Butterfly", "CALL Butterfly", "PUT Butterfly"],
+    index=0
+)
+
 # Leg width input (default: 2)
 leg_width = st.number_input("Butterfly Leg Width", min_value=1, max_value=100, value=2, step=1)
 
@@ -116,14 +123,15 @@ def get_underlying_price(symbol):
         return ap if ap != 0 else bp  # Use bid price if ask price is 0
     return None
 
-def get_options_chain(symbol, expiry):
+def get_options_chain(symbol, expiry, strategy_type):
     url = f"{get_base_url(is_paper_trade=True)}/v2/options/contracts"
     api_key, api_secret = get_api_credentials(is_paper_trade=True)
+    option_type = "call" if strategy_type == "CALL Butterfly" else "put" if strategy_type == "PUT Butterfly" else None
     params = {
         "underlying_symbols": symbol,
         "expiration_date": expiry.strftime("%Y-%m-%d"),
         "root_symbol": symbol,
-        "type": "call",
+        "type": option_type,
         "limit": 1000
     }
     headers = {
@@ -136,10 +144,8 @@ def get_options_chain(symbol, expiry):
     print(f"[DEBUG] Params: {params}")
     resp = requests.get(url, headers=headers, params=params)
     print(f"[DEBUG] Status code: {resp.status_code}")
-    #print(f"[DEBUG] Full response: {resp.text}")
     try:
         response_data = resp.json()
-        #print(f"[DEBUG] JSON response: {response_data}")
         if resp.status_code == 200:
             contracts = response_data.get("option_contracts", [])
             print(f"[DEBUG] Number of contracts: {len(contracts)}")
@@ -156,7 +162,7 @@ if underlying_price:
 else:
     st.error(f"Could not fetch price for {symbol}.")
 
-options_chain = get_options_chain(symbol, expiry)
+options_chain = get_options_chain(symbol, expiry, strategy_type)
 #print(f"[DEBUG] Options chain: {options_chain}")
 if options_chain:
     st.info(f"Fetched {len(options_chain)} option contracts for {symbol} expiring {expiry}.")
@@ -175,21 +181,27 @@ def option_price(opt):
     print(f"[DEBUG] Option price for {opt['strike_price']}: {price}")
     return price
 
-def get_strike_prices(options_chain):
-    # Only use call options for iron butterfly (could be extended for puts)
+def get_strike_prices(options_chain, strategy_type):
     strikes = []
     strike_to_option = {}
     for opt in options_chain:
-        if opt["type"] == "call":
+        if strategy_type == "IRON Butterfly":
             strike = float(opt["strike_price"])
             strikes.append(strike)
             strike_to_option[strike] = opt
-    #print(f"[DEBUG] Available strikes: {strikes}")
+        elif strategy_type == "CALL Butterfly" and opt["type"] == "call":
+            strike = float(opt["strike_price"])
+            strikes.append(strike)
+            strike_to_option[strike] = opt
+        elif strategy_type == "PUT Butterfly" and opt["type"] == "put":
+            strike = float(opt["strike_price"])
+            strikes.append(strike)
+            strike_to_option[strike] = opt
     return sorted(strikes), strike_to_option
 
 butterfly_info = None
 if options_chain and underlying_price:
-    strikes, strike_to_option = get_strike_prices(options_chain)
+    strikes, strike_to_option = get_strike_prices(options_chain, strategy_type)
     print(f"[DEBUG] Underlying price: {underlying_price}")
     if len(strikes) >= 3:  # Ensure we have at least 3 strikes to construct a butterfly
         atm_strike = find_closest_strike(strikes, underlying_price)
@@ -231,9 +243,19 @@ if options_chain and underlying_price:
             }
 
             st.subheader("Selected Butterfly Strikes")
-            st.write(f"Buy 1 Call at {lower_strike} (${butterfly_info['lower_price']:.2f})")
-            st.write(f"Sell 2 Calls at {atm_strike} (${butterfly_info['atm_price']:.2f})")
-            st.write(f"Buy 1 Call at {upper_strike} (${butterfly_info['upper_price']:.2f})")
+            if strategy_type == "IRON Butterfly":
+                st.write(f"Buy 1 Put at {lower_strike} (${butterfly_info['lower_price']:.2f})")
+                st.write(f"Sell 1 Put at {atm_strike} (${butterfly_info['atm_price']:.2f})")
+                st.write(f"Sell 1 Call at {atm_strike} (${butterfly_info['atm_price']:.2f})")
+                st.write(f"Buy 1 Call at {upper_strike} (${butterfly_info['upper_price']:.2f})")
+            elif strategy_type == "CALL Butterfly":
+                st.write(f"Buy 1 Call at {lower_strike} (${butterfly_info['lower_price']:.2f})")
+                st.write(f"Sell 2 Calls at {atm_strike} (${butterfly_info['atm_price']:.2f})")
+                st.write(f"Buy 1 Call at {upper_strike} (${butterfly_info['upper_price']:.2f})")
+            elif strategy_type == "PUT Butterfly":
+                st.write(f"Buy  Put at {lower_strike} (${butterfly_info['lower_price']:.2f})")
+                st.write(f"Sell 2 Puts at {atm_strike} (${butterfly_info['atm_price']:.2f})")
+                st.write(f"Buy 1 Put at {upper_strike} (${butterfly_info['upper_price']:.2f})")
 
             st.info(f"Note: The selected strikes may not be exactly {leg_width} apart due to available options.")
             
@@ -304,12 +326,16 @@ if "order_result" not in st.session_state:
     st.session_state["order_result"] = None
 
 @st.dialog("Order Confirmation")
-def confirm_order_dialog(order_price, underlying_price, max_profit, max_loss, current_options_price):
+def confirm_order_dialog(order_price, underlying_price, max_profit, max_loss, current_options_price, legs):
     st.write(f"**Current Options Price (legs combined):** ${current_options_price:.2f}")
     st.write(f"**Order Price:** ${order_price:.2f}")
     st.write(f"**Underlying Price:** ${underlying_price:.2f}")
     st.write(f"**Max Profit:** ${max_profit:.2f}")
     st.write(f"**Max Loss:** ${max_loss:.2f}")
+    st.write("**Legs to be Traded:**")
+    for leg in legs:
+        st.write(f"{leg['side'].capitalize()} {leg['ratio_qty']} of {leg['symbol']}")
+        
     if st.button("Confirm Order"):
         st.session_state["order_confirm"] = True
         st.rerun()
@@ -346,29 +372,86 @@ if st.button("Place Butterfly Order") or st.session_state["order_confirm"]:
             + butterfly_info["upper_price"]
         )
 
+        # Prepare legs for Alpaca API based on strategy type
+        if strategy_type == "IRON Butterfly":
+            # Find correct put/call contracts for each leg
+            put_lower = next((o for o in options_chain if float(o["strike_price"]) == butterfly_info["lower_strike"] and o["type"] == "put"), None)
+            put_atm = next((o for o in options_chain if float(o["strike_price"]) == butterfly_info["atm_strike"] and o["type"] == "put"), None)
+            call_atm = next((o for o in options_chain if float(o["strike_price"]) == butterfly_info["atm_strike"] and o["type"] == "call"), None)
+            call_upper = next((o for o in options_chain if float(o["strike_price"]) == butterfly_info["upper_strike"] and o["type"] == "call"), None)
+            legs = []
+            # Only add legs if all contracts are found and all symbols are unique
+            if put_lower and put_atm and call_atm and call_upper:
+                symbols = [put_lower["symbol"], put_atm["symbol"], call_atm["symbol"], call_upper["symbol"]]
+                if len(set(symbols)) == 4:
+                    legs = [
+                        {
+                            "symbol": put_lower["symbol"],
+                            "side": "buy",
+                            "ratio_qty": "1"
+                        },
+                        {
+                            "symbol": put_atm["symbol"],
+                            "side": "sell",
+                            "ratio_qty": "1"
+                        },
+                        {
+                            "symbol": call_atm["symbol"],
+                            "side": "sell",
+                            "ratio_qty": "1"
+                        },
+                        {
+                            "symbol": call_upper["symbol"],
+                            "side": "buy",
+                            "ratio_qty": "1"
+                        }
+                    ]
+                else:
+                    legs = []
+            else:
+                legs = []
+        elif strategy_type == "CALL Butterfly":
+            legs = [
+                {
+                    "symbol": lower_option["symbol"],
+                    "side": "buy",
+                    "ratio_qty": "1"
+                },
+                {
+                    "symbol": atm_option["symbol"],
+                    "side": "sell",
+                    "ratio_qty": "2"
+                },
+                {
+                    "symbol": upper_option["symbol"],
+                    "side": "buy",
+                    "ratio_qty": "1"
+                }
+            ]
+        elif strategy_type == "PUT Butterfly":
+            legs = [
+                {
+                    "symbol": lower_option["symbol"],
+                    "side": "buy",
+                    "ratio_qty": "1"
+                },
+                {
+                    "symbol": atm_option["symbol"],
+                    "side": "sell",
+                    "ratio_qty": "2"
+                },
+                {
+                    "symbol": upper_option["symbol"],
+                    "side": "buy",
+                    "ratio_qty": "1"
+                }
+            ]
+
         # Show confirmation dialog using st.dialog
         if not st.session_state["order_confirm"]:
-            confirm_order_dialog(order_price, underlying_price, max_profit, max_loss, current_options_price)
+            confirm_order_dialog(order_price, underlying_price, max_profit, max_loss, current_options_price, legs)
             st.stop()
-
-        # Prepare legs for Alpaca API
-        legs = [
-            {
-                "symbol": lower_option["symbol"],
-                "side": "buy",
-                "ratio_qty": "1"
-            },
-            {
-                "symbol": atm_option["symbol"],
-                "side": "sell",
-                "ratio_qty": "2"
-            },
-            {
-                "symbol": upper_option["symbol"],
-                "side": "buy",
-                "ratio_qty": "1"
-            }
-        ]
+        # Do NOT redefine legs here; use the legs already constructed above for the order
 
         order_payload = {
             "order_class": "mleg",
