@@ -274,14 +274,26 @@ if options_chain and underlying_price:
             - net_premium
         ) * 100  # Multiply by 100 for options contracts
 
+        # Calculate break-even points
+        # Lower break-even: lower_strike + net_premium
+        # Upper break-even: upper_strike - net_premium
+        lower_be = butterfly_info["lower_strike"] + net_premium
+        upper_be = butterfly_info["upper_strike"] - net_premium
+
         fig, ax = plt.subplots()
         ax.plot(x, payoff, label="Butterfly Payoff")
         ax.axhline(0, color="gray", linestyle="--")
+        ax.axvline(lower_be, color="red", linestyle=":", label="Lower Break Even")
+        ax.axvline(upper_be, color="blue", linestyle=":", label="Upper Break Even")
         ax.set_xlabel("Underlying Price at Expiry")
         ax.set_ylabel("Profit / Loss ($)")
         ax.set_title("Butterfly Payoff Diagram")
         ax.legend()
         st.pyplot(fig)
+
+        # Show break-even points in the UI
+        st.write(f"**Lower Break Even:** {lower_be:.2f}")
+        st.write(f"**Upper Break Even:** {upper_be:.2f}")
 else:
     st.info("Butterfly construction and payoff plot will appear here.")
 
@@ -292,9 +304,10 @@ if "order_result" not in st.session_state:
     st.session_state["order_result"] = None
 
 @st.dialog("Order Confirmation")
-def confirm_order_dialog(order_price, underlying_price, max_profit, max_loss):
-    st.write(f"**Current Price:** ${underlying_price:.2f}")
+def confirm_order_dialog(order_price, underlying_price, max_profit, max_loss, current_options_price):
+    st.write(f"**Current Options Price (legs combined):** ${current_options_price:.2f}")
     st.write(f"**Order Price:** ${order_price:.2f}")
+    st.write(f"**Underlying Price:** ${underlying_price:.2f}")
     st.write(f"**Max Profit:** ${max_profit:.2f}")
     st.write(f"**Max Loss:** ${max_loss:.2f}")
     if st.button("Confirm Order"):
@@ -326,9 +339,16 @@ if st.button("Place Butterfly Order") or st.session_state["order_confirm"]:
         max_profit = (leg_width - abs(order_price)) * 100
         max_loss = abs(order_price) * 100
 
+        # Calculate current options price for the legs combined
+        current_options_price = (
+            butterfly_info["lower_price"]
+            - 2 * butterfly_info["atm_price"]
+            + butterfly_info["upper_price"]
+        )
+
         # Show confirmation dialog using st.dialog
         if not st.session_state["order_confirm"]:
-            confirm_order_dialog(order_price, underlying_price, max_profit, max_loss)
+            confirm_order_dialog(order_price, underlying_price, max_profit, max_loss, current_options_price)
             st.stop()
 
         # Prepare legs for Alpaca API
