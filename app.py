@@ -284,11 +284,16 @@ if options_chain and underlying_price:
         )
 
         # Payoff calculation
-        x = np.linspace(
-            butterfly_info["lower_strike"] - leg_width,
-            butterfly_info["upper_strike"] + leg_width,
-            200
-        )
+        # Use integer steps for x, center at atm_strike
+        lower_bound = int(butterfly_info["lower_strike"] - leg_width)
+        upper_bound = int(butterfly_info["upper_strike"] + leg_width)
+        center = butterfly_info["atm_strike"]
+        step = 1
+        if upper_bound - lower_bound > 100:
+            step = 2
+        if upper_bound - lower_bound > 200:
+            step = 5
+        x = np.arange(lower_bound, upper_bound + step, step)
         payoff = (
             np.maximum(x - butterfly_info["lower_strike"], 0)
             - 2 * np.maximum(x - butterfly_info["atm_strike"], 0)
@@ -297,8 +302,6 @@ if options_chain and underlying_price:
         ) * 100  # Multiply by 100 for options contracts
 
         # Calculate break-even points
-        # Lower break-even: lower_strike + net_premium
-        # Upper break-even: upper_strike - net_premium
         lower_be = butterfly_info["lower_strike"] + net_premium
         upper_be = butterfly_info["upper_strike"] - net_premium
 
@@ -307,13 +310,19 @@ if options_chain and underlying_price:
         ax.axhline(0, color="gray", linestyle="--")
         ax.axvline(lower_be, color="red", linestyle=":", label="Lower Break Even")
         ax.axvline(upper_be, color="blue", linestyle=":", label="Upper Break Even")
+        # Add vertical line for current price
+        ax.axvline(underlying_price, color="purple", linestyle="--", label=f"Current Price: {underlying_price:.2f}")
+        # Add labels for break even points
+        ax.text(lower_be, ax.get_ylim()[0], f"{lower_be:.2f}", color="red", ha="center", va="bottom", fontsize=9, fontweight="bold", bbox=dict(facecolor='white', edgecolor='red', boxstyle='round,pad=0.2'))
+        ax.text(upper_be, ax.get_ylim()[0], f"{upper_be:.2f}", color="blue", ha="center", va="bottom", fontsize=9, fontweight="bold", bbox=dict(facecolor='white', edgecolor='blue', boxstyle='round,pad=0.2'))
+        ax.text(underlying_price, ax.get_ylim()[1], f"{underlying_price:.2f}", color="purple", ha="center", va="top", fontsize=9, fontweight="bold", bbox=dict(facecolor='white', edgecolor='purple', boxstyle='round,pad=0.2'))
         ax.set_xlabel("Underlying Price at Expiry")
         ax.set_ylabel("Profit / Loss ($)")
         ax.set_title("Butterfly Payoff Diagram")
-        ax.legend()
         st.pyplot(fig)
 
-        # Show break-even points in the UI
+        # Show break-even points and center in the UI
+        st.write(f"**ATM Strike (Center):** {center}")
         st.write(f"**Lower Break Even:** {lower_be:.2f}")
         st.write(f"**Upper Break Even:** {upper_be:.2f}")
 else:
