@@ -1,0 +1,516 @@
+import os
+import asyncio
+import uvicorn
+from fastapi import FastAPI, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import List, Dict, Optional, Set
+from alpaca.data.live import OptionDataStream, StockDataStream
+from alpaca.data.historical import StockHistoricalDataClient
+from alpaca.data.requests import StockLatestQuoteRequest
+from alpaca.trading.client import TradingClient
+from dotenv import load_dotenv
+import logging
+from datetime import datetime, date
+import requests
+
+# Function to fetch initial stock prices
+async def fetch_initial_prices(symbols: List[str]):
+    client = StockHistoricalDataClient(ALPACA_API_KEY_LIVE, ALPACA_API_SECRET_LIVE)
+    request_params = StockLatestQuoteRequest(symbol_or_symbols=symbols)
+    try:
+        latest_quotes = client.get_stock_latest_quote(request_params)
+        for symbol, quote in latest_quotes.items():
+            stock_prices[symbol] = {
+                "ask": quote.ask_price,
+                "bid": quote.bid_price,
+                "timestamp": datetime.now().isoformat()
+            }
+        logger.info(f"Fetched initial prices for {len(symbols)} symbols")
+    except Exception as e:
+        logger.error(f"Error fetching initial prices: {e}")
+
+# --- Basic Configuration ---
+
+# Configure logging to provide timestamps and clear messages
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger("streaming_service")
+logger.setLevel(logging.WARNING)
+
+# Load environment variables from a .env file
+load_dotenv()
+
+# It's critical to use LIVE keys for streaming, especially for the stock data stream.
+ALPACA_API_KEY_LIVE = os.getenv("APCA_API_KEY_ID_LIVE")
+ALPACA_API_SECRET_LIVE = os.getenv("APCA_API_SECRET_KEY_LIVE")
+ALPACA_API_KEY_PAPER = os.getenv("APCA_API_KEY_ID_PAPER")
+ALPACA_API_SECRET_PAPER = os.getenv("APCA_API_SECRET_KEY_PAPER")
+ALPACA_BASE_URL_LIVE = os.getenv("ALPACA_BASE_URL_LIVE")
+ALPACA_BASE_URL_PAPER = os.getenv("ALPACA_BASE_URL_PAPER")
+
+def get_api_credentials(is_paper_trade=True):
+    if is_paper_trade:
+        return ALPACA_API_KEY_PAPER, ALPACA_API_SECRET_PAPER
+    else:
+        return ALPACA_API_KEY_LIVE, ALPACA_API_SECRET_LIVE
+
+def get_base_url(is_paper_trade=True):
+    if is_paper_trade:
+        return ALPACA_BASE_URL_PAPER
+    else:
+        return ALPACA_BASE_URL_LIVE
+
+def get_options_chain(symbol, expiry, strategy_type):
+    url = f"{get_base_url(is_paper_trade=True)}/v2/options/contracts"
+    api_key, api_secret = get_api_credentials(is_paper_trade=True)
+    option_type = "call" if strategy_type == "CALL Butterfly" else "put" if strategy_type == "PUT Butterfly" else None
+    params = {
+        "underlying_symbols": symbol,
+        "expiration_date": expiry,
+        "root_symbol": symbol,
+        "type": option_type,
+        "limit": 1000
+    }
+    headers = {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": api_secret,
+        "accept": "application/json"
+    }
+    resp = requests.get(url, headers=headers, params=params)
+    try:
+        response_data = resp.json()
+        if resp.status_code == 200:
+            contracts = response_data.get("option_contracts", [])
+            return contracts
+    except Exception as e:
+        logger.error(f"Error fetching options chain: {e}")
+    return []
+
+# --- FastAPI Application Setup ---
+
+app = FastAPI(title="Alpaca Streaming Service")
+
+# Add CORS middleware to allow all origins, methods, and headers.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# --- Global State Management ---
+
+# Dictionaries to hold the latest price data
+option_prices: Dict[str, Dict] = {}
+stock_prices: Dict[str, Dict] = {}
+
+# Sets to keep track of currently subscribed symbols
+subscribed_options: Set[str] = set()
+subscribed_stocks: Set[str] = set()
+
+# Global references to the stream clients and the running asyncio task
+option_stream: Optional[OptionDataStream] = None
+stock_stream: Optional[StockDataStream] = None
+stream_task: Optional[asyncio.Task] = None
+
+
+# --- Pydantic Models for API Requests ---
+
+class SymbolRequest(BaseModel):
+    symbols: List[str]
+
+class SymbolResponse(BaseModel):
+    success: bool
+    message: str
+    symbols: List[str]
+
+
+# --- Real-Time Data Handlers ---
+
+async def option_quote_handler(data):
+    """This function is called for every new option quote received."""
+    symbol = data.symbol
+    option_prices[symbol] = {
+        "ask": data.ask_price,
+        "bid": data.bid_price,
+        "timestamp": datetime.now().isoformat()
+    }
+    logger.info(f"OPTION: {symbol} Ask: {data.ask_price} Bid: {data.bid_price}")
+
+async def stock_quote_handler(data):
+    """This function is called for every new stock quote received."""
+    symbol = data.symbol
+    stock_prices[symbol] = {
+        "ask": data.ask_price,
+        "bid": data.bid_price,
+        "timestamp": datetime.now().isoformat()
+    }
+    logger.info(f"STOCK: {symbol} Ask: {data.ask_price} Bid: {data.bid_price}")
+
+
+# --- Streaming Logic and Lifecycle Management ---
+
+async def run_streaming():
+    """
+    Initializes and runs the data streams based on the global subscription sets.
+    This function is designed to be run as a cancellable asyncio task.
+    """
+    global option_stream, stock_stream
+
+    if not ALPACA_API_KEY_LIVE or not ALPACA_API_SECRET_LIVE:
+        logger.error("LIVE API credentials not found. Streaming will not start.")
+        return
+
+    try:
+        tasks_to_run = []
+
+        if subscribed_options:
+            logger.info(f"Initializing OptionDataStream for {len(subscribed_options)} symbols.")
+            option_stream = OptionDataStream(ALPACA_API_KEY_LIVE, ALPACA_API_SECRET_LIVE)
+            for symbol in subscribed_options:
+                option_stream.subscribe_quotes(option_quote_handler, symbol)
+            tasks_to_run.append(option_stream._run_forever())
+
+        if subscribed_stocks:
+            logger.info(f"Initializing StockDataStream for {len(subscribed_stocks)} symbols.")
+            stock_stream = StockDataStream(ALPACA_API_KEY_LIVE, ALPACA_API_SECRET_LIVE)
+            for symbol in subscribed_stocks:
+                stock_stream.subscribe_quotes(stock_quote_handler, symbol)
+            tasks_to_run.append(stock_stream._run_forever())
+
+        if tasks_to_run:
+            logger.info("Starting data stream(s)...")
+            await asyncio.gather(*tasks_to_run)
+        else:
+            logger.info("No symbols are subscribed. Stream not starting.")
+
+    except asyncio.CancelledError:
+        logger.info("Streaming task was successfully cancelled.")
+    except Exception as e:
+        logger.error(f"Error in streaming task: {e}", exc_info=True)
+    finally:
+        logger.info("Streaming task has finished.")
+        option_stream = None
+        stock_stream = None
+
+async def reset_streaming():
+    """
+    Resets the streaming connection by closing existing streams and starting a new one.
+    """
+    global option_stream, stock_stream, stream_task
+    
+    logger.info("Resetting streaming connection")
+    
+    # Close existing streams
+    if option_stream:
+        await option_stream.close()
+    if stock_stream:
+        await stock_stream.close()
+    
+    # Cancel existing streaming task
+    if stream_task and not stream_task.done():
+        stream_task.cancel()
+        try:
+            await stream_task
+        except asyncio.CancelledError:
+            pass
+    
+    # Start new streaming task
+    stream_task = asyncio.create_task(run_streaming())
+    logger.info("Started new streaming background task")
+
+async def start_streaming_background():
+    """
+    Manages the lifecycle of the streaming task.
+    """
+    await reset_streaming()
+
+
+# --- FastAPI Application Lifecycle Events ---
+
+@app.on_event("startup")
+async def startup_event():
+    """Action to take when the application starts."""
+    logger.info("Application started. Fetching initial prices for any pre-configured symbols.")
+    if subscribed_stocks:
+        await fetch_initial_prices(list(subscribed_stocks))
+    logger.info("Waiting for initial subscriptions to start streaming.")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Action to take when the application shuts down."""
+    global stream_task, option_stream, stock_stream
+    logger.info("Application shutting down...")
+    
+    # Gracefully close connections to Alpaca's servers
+    if option_stream:
+        await option_stream.close()
+    if stock_stream:
+        await stock_stream.close()
+        
+    # Cancel the running task
+    if stream_task and not stream_task.done():
+        stream_task.cancel()
+        try:
+            await stream_task
+        except asyncio.CancelledError:
+            logger.info("Streaming task cancelled successfully on shutdown.")
+
+
+# --- API Endpoints ---
+
+from fastapi import Body
+
+class ButterflyOrderRequest(BaseModel):
+    symbol: str
+    expiry: str
+    strategy_type: str
+    legs: list
+    order_price: float
+    order_offset: float
+    qty: int = 1
+    time_in_force: str = "day"
+    order_type: str = "limit"
+
+@app.post("/place_butterfly_order")
+async def place_butterfly_order(order: ButterflyOrderRequest):
+    """
+    Place a butterfly order using Alpaca API.
+    """
+    api_key, api_secret = get_api_credentials(is_paper_trade=True)
+    order_url = f"{get_base_url(is_paper_trade=True)}/v2/orders"
+    headers = {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": api_secret,
+        "Content-Type": "application/json"
+    }
+    import json
+    order_payload = {
+        "order_class": "mleg",
+        "time_in_force": order.time_in_force,
+        "qty": str(order.qty),
+        "type": order.order_type,
+        "limit_price": f"{order.order_price:.2f}",
+        "legs": order.legs
+    }
+    try:
+        resp = requests.post(order_url, headers=headers, data=json.dumps(order_payload))
+        if resp.status_code in (200, 201):
+            return {"success": True, "order": resp.json()}
+        else:
+            return {"success": False, "error": f"Order failed: {resp.status_code} {resp.text}"}
+    except Exception as e:
+        return {"success": False, "error": str(e)}
+
+
+@app.get("/")
+async def root():
+    """Root endpoint to check the status of the service."""
+    return {
+        "service_status": "running",
+        "options_subscribed": list(subscribed_options),
+        "stocks_subscribed": list(subscribed_stocks),
+        "is_streaming_task_active": stream_task is not None and not stream_task.done(),
+        "total_option_prices": len(option_prices),
+        "total_stock_prices": len(stock_prices)
+    }
+
+@app.get("/subscriptions")
+async def get_subscriptions():
+    """Get current subscription status and streaming information."""
+    return {
+        "options": {
+            "subscribed_symbols": list(subscribed_options),
+            "symbols_with_data": list(option_prices.keys()),
+            "count": len(subscribed_options)
+        },
+        "stocks": {
+            "subscribed_symbols": list(subscribed_stocks),
+            "symbols_with_data": list(stock_prices.keys()),
+            "count": len(subscribed_stocks)
+        },
+        "streaming": {
+            "is_active": stream_task is not None and not stream_task.done(),
+            "total_subscriptions": len(subscribed_options) + len(subscribed_stocks)
+        }
+    }
+
+@app.post("/subscribe/options", response_model=SymbolResponse)
+async def subscribe_options(request: SymbolRequest, background_tasks: BackgroundTasks):
+    """Endpoint to set the list of subscribed option symbols."""
+    global subscribed_options
+    
+    new_symbol_set = set(request.symbols)
+    if new_symbol_set == subscribed_options:
+        return {"success": True, "message": "No change in option subscriptions.", "symbols": list(subscribed_options)}
+    
+    old_symbols = subscribed_options - new_symbol_set
+    new_symbols = new_symbol_set - subscribed_options
+    subscribed_options = new_symbol_set
+    
+    # Clear out price data for any symbols that were just removed
+    for symbol in old_symbols:
+        if symbol in option_prices:
+            del option_prices[symbol]
+    
+    logger.info(f"Updated option subscriptions. Added: {new_symbols}, Removed: {old_symbols}")
+    background_tasks.add_task(reset_streaming)
+    
+    return {"success": True, "message": f"Updated option subscriptions. Added: {len(new_symbols)}, Removed: {len(old_symbols)}. Restarting stream.", "symbols": list(subscribed_options)}
+
+@app.post("/subscribe/stocks", response_model=SymbolResponse)
+async def subscribe_stocks(request: SymbolRequest, background_tasks: BackgroundTasks):
+    """Endpoint to set the list of subscribed stock symbols."""
+    global subscribed_stocks
+    
+    new_symbol_set = set(request.symbols)
+    if new_symbol_set == subscribed_stocks:
+        return {"success": True, "message": "No change in stock subscriptions.", "symbols": list(subscribed_stocks)}
+        
+    new_symbols = new_symbol_set - subscribed_stocks
+    removed_symbols = subscribed_stocks - new_symbol_set
+    subscribed_stocks = new_symbol_set
+    
+    # Clear out price data for any symbols that were just removed
+    for symbol in removed_symbols:
+        if symbol in stock_prices:
+            del stock_prices[symbol]
+            
+    # Fetch initial prices for newly added symbols
+    if new_symbols:
+        await fetch_initial_prices(list(new_symbols))
+            
+    logger.info(f"Updated stock subscriptions. Added: {new_symbols}, Removed: {removed_symbols}")
+    background_tasks.add_task(reset_streaming)
+    
+    return {"success": True, "message": f"Updated stock subscriptions. Added: {len(new_symbols)}, Removed: {len(removed_symbols)}. Restarting stream.", "symbols": list(subscribed_stocks)}
+
+@app.get("/prices/options")
+async def get_option_prices(symbols: Optional[str] = None, background_tasks: BackgroundTasks = None):
+    """Retrieve latest prices for options, automatically subscribing to new symbols."""
+    global subscribed_options
+    
+    if symbols:
+        symbol_list = [s.strip() for s in symbols.split(',')]
+        new_symbols = set(symbol_list) - subscribed_options
+        
+        if new_symbols:
+            # Add new symbols to subscription set
+            subscribed_options.update(new_symbols)
+            logger.info(f"Auto-subscribing to new option symbols: {new_symbols}")
+            
+            # Restart streaming to include new symbols
+            if background_tasks:
+                background_tasks.add_task(reset_streaming)
+            else:
+                # If no background_tasks available, create task directly
+                asyncio.create_task(reset_streaming())
+        
+        # Return current prices, including placeholders for newly added symbols
+        result = {}
+        for s in symbol_list:
+            if s in option_prices:
+                result[s] = option_prices[s]
+            else:
+                result[s] = {"message": "subscribed, waiting for data", "timestamp": datetime.now().isoformat()}
+        return result
+    
+    return option_prices
+
+@app.get("/prices/stocks")
+async def get_stock_prices(symbols: Optional[str] = None, background_tasks: BackgroundTasks = None):
+    """Retrieve latest prices for stocks, automatically subscribing to new symbols."""
+    global subscribed_stocks
+    
+    if symbols:
+        symbol_list = [s.strip() for s in symbols.split(',')]
+        new_symbols = set(symbol_list) - subscribed_stocks
+        
+        if new_symbols:
+            # Add new symbols to subscription set
+            subscribed_stocks.update(new_symbols)
+            logger.info(f"Auto-subscribing to new stock symbols: {new_symbols}")
+            
+            # Fetch initial prices for new symbols
+            await fetch_initial_prices(list(new_symbols))
+            
+            # Restart streaming to include new symbols
+            if background_tasks:
+                background_tasks.add_task(reset_streaming)
+            else:
+                # If no background_tasks available, create task directly
+                asyncio.create_task(reset_streaming())
+        
+        # Return current prices, including placeholders for newly added symbols
+        result = {}
+        for s in symbol_list:
+            if s in stock_prices:
+                result[s] = stock_prices[s]
+            else:
+                result[s] = {"message": "subscribed, waiting for data", "timestamp": datetime.now().isoformat()}
+        return result
+    
+    return stock_prices
+
+@app.post("/unsubscribe/options")
+async def unsubscribe_options(request: SymbolRequest, background_tasks: BackgroundTasks):
+    """Remove option symbols from subscriptions."""
+    global subscribed_options
+    
+    symbols_to_remove = set(request.symbols)
+    removed_symbols = symbols_to_remove.intersection(subscribed_options)
+    
+    if not removed_symbols:
+        return {"success": True, "message": "No symbols were subscribed.", "symbols": list(subscribed_options)}
+    
+    subscribed_options -= removed_symbols
+    
+    # Clear price data for removed symbols
+    for symbol in removed_symbols:
+        if symbol in option_prices:
+            del option_prices[symbol]
+    
+    logger.info(f"Removed option subscriptions: {removed_symbols}")
+    background_tasks.add_task(reset_streaming)
+    
+    return {"success": True, "message": f"Removed {len(removed_symbols)} option subscriptions.", "symbols": list(subscribed_options)}
+
+@app.post("/unsubscribe/stocks")
+async def unsubscribe_stocks(request: SymbolRequest, background_tasks: BackgroundTasks):
+    """Remove stock symbols from subscriptions."""
+    global subscribed_stocks
+    
+    symbols_to_remove = set(request.symbols)
+    removed_symbols = symbols_to_remove.intersection(subscribed_stocks)
+    
+    if not removed_symbols:
+        return {"success": True, "message": "No symbols were subscribed.", "symbols": list(subscribed_stocks)}
+    
+    subscribed_stocks -= removed_symbols
+    
+    # Clear price data for removed symbols
+    for symbol in removed_symbols:
+        if symbol in stock_prices:
+            del stock_prices[symbol]
+    
+    logger.info(f"Removed stock subscriptions: {removed_symbols}")
+    background_tasks.add_task(reset_streaming)
+    
+    return {"success": True, "message": f"Removed {len(removed_symbols)} stock subscriptions.", "symbols": list(subscribed_stocks)}
+
+@app.get("/options_chain")
+async def api_get_options_chain(symbol: str, expiry: str, strategy_type: str):
+    """Retrieve options chain for a given symbol, expiry, and strategy type."""
+    return get_options_chain(symbol, expiry, strategy_type)
+
+
+# --- Main Execution Block ---
+
+if __name__ == "__main__":
+    # To run this file:
+    # 1. Save it as, for example, 'main.py'
+    # 2. In your terminal, run: uvicorn main:app --host 0.0.0.0 --port 8008
+    #
+    # Ensure your .env file with API keys is in the same directory.
+    uvicorn.run("main:app", host="0.0.0.0", port=8008, reload=True)
