@@ -1,6 +1,7 @@
 import { createApp } from "vue";
 import PrimeVue from "primevue/config";
 import App from "./App.vue";
+import router from "./router";
 
 // PrimeVue components
 import Button from "primevue/button";
@@ -15,6 +16,7 @@ import Message from "primevue/message";
 import Dialog from "primevue/dialog";
 import ProgressSpinner from "primevue/progressspinner";
 import Divider from "primevue/divider";
+import Menubar from "primevue/menubar";
 
 // PrimeVue styles
 import "primevue/resources/themes/lara-light-blue/theme.css";
@@ -24,6 +26,7 @@ import "primeicons/primeicons.css";
 const app = createApp(App);
 
 app.use(PrimeVue);
+app.use(router);
 
 // Register components globally
 app.component("Button", Button);
@@ -38,5 +41,6 @@ app.component("Message", Message);
 app.component("Dialog", Dialog);
 app.component("ProgressSpinner", ProgressSpinner);
 app.component("Divider", Divider);
+app.component("Menubar", Menubar);
 
 app.mount("#app");

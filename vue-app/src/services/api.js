@@ -89,6 +89,17 @@ export const api = {
       throw error;
     }
   },
+
+  // Get current open positions
+  async getPositions() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/positions`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching positions:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;

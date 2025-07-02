@@ -504,6 +504,83 @@ async def api_get_options_chain(symbol: str, expiry: str, strategy_type: str):
     """Retrieve options chain for a given symbol, expiry, and strategy type."""
     return get_options_chain(symbol, expiry, strategy_type)
 
+@app.get("/positions")
+async def get_open_positions():
+    """
+    Retrieve all current open positions from Alpaca.
+    Returns both stock and option positions with their details.
+    """
+    try:
+        api_key, api_secret = get_api_credentials(is_paper_trade=True)
+        trading_client = TradingClient(api_key, api_secret, paper=True)
+        
+        # Get all open positions
+        positions = trading_client.get_all_positions()
+        
+        position_data = []
+        for position in positions:
+            position_info = {
+                "symbol": position.symbol,
+                "qty": float(position.qty),
+                "side": "long" if float(position.qty) > 0 else "short",
+                "market_value": float(position.market_value) if position.market_value else 0,
+                "cost_basis": float(position.cost_basis) if position.cost_basis else 0,
+                "unrealized_pl": float(position.unrealized_pl) if position.unrealized_pl else 0,
+                "unrealized_plpc": float(position.unrealized_plpc) if position.unrealized_plpc else 0,
+                "current_price": float(position.current_price) if position.current_price else 0,
+                "avg_entry_price": float(position.avg_entry_price) if position.avg_entry_price else 0,
+                "asset_class": position.asset_class.value if position.asset_class else "unknown"
+            }
+            
+            # For options, try to parse additional information from the symbol
+            if position.asset_class and position.asset_class.value == "us_option":
+                # Parse option symbol to extract strike, expiry, type
+                try:
+                    # Option symbols are typically like: SPY250103C00620000
+                    symbol_str = position.symbol
+                    if len(symbol_str) >= 15:
+                        underlying = symbol_str[:3]  # First 3 chars (e.g., SPY)
+                        date_part = symbol_str[3:9]  # Next 6 chars (YYMMDD)
+                        option_type = symbol_str[9]  # C or P
+                        strike_part = symbol_str[10:]  # Strike price (8 digits)
+                        
+                        # Parse expiry date
+                        year = 2000 + int(date_part[:2])
+                        month = int(date_part[2:4])
+                        day = int(date_part[4:6])
+                        expiry_date = f"{year}-{month:02d}-{day:02d}"
+                        
+                        # Parse strike price (divide by 1000 to get actual price)
+                        strike_price = float(strike_part) / 1000
+                        
+                        position_info.update({
+                            "underlying_symbol": underlying,
+                            "option_type": "call" if option_type == "C" else "put",
+                            "strike_price": strike_price,
+                            "expiry_date": expiry_date
+                        })
+                except Exception as e:
+                    logger.warning(f"Could not parse option symbol {position.symbol}: {e}")
+            
+            position_data.append(position_info)
+        
+        return {
+            "success": True,
+            "positions": position_data,
+            "total_positions": len(position_data),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching positions: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "positions": [],
+            "total_positions": 0,
+            "timestamp": datetime.now().isoformat()
+        }
+
 
 # --- Main Execution Block ---
 

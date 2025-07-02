@@ -96,6 +96,133 @@ export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
   return result;
 }
 
+export function generateMultiLegPayoff(positions, underlyingPrice) {
+  console.log("generateMultiLegPayoff called with:", {
+    positionsCount: positions.length,
+    underlyingPrice,
+  });
+
+  if (!positions || positions.length === 0) {
+    return null;
+  }
+
+  // Extract option positions only
+  const optionPositions = positions.filter(
+    (pos) => pos.asset_class === "us_option"
+  );
+
+  if (optionPositions.length === 0) {
+    return null;
+  }
+
+  // Find price range based on strikes
+  const strikes = optionPositions.map((pos) => pos.strike_price);
+  const minStrike = Math.min(...strikes);
+  const maxStrike = Math.max(...strikes);
+  const strikeRange = maxStrike - minStrike;
+
+  // Create price range for chart (extend beyond strikes)
+  const lowerBound = Math.floor(minStrike - strikeRange * 0.2);
+  const upperBound = Math.ceil(maxStrike + strikeRange * 0.2);
+  const step = strikeRange > 50 ? (strikeRange > 100 ? 5 : 2) : 1;
+
+  const prices = [];
+  const payoffs = [];
+
+  // Calculate total cost basis (what we paid/received for the positions)
+  const totalCostBasis = optionPositions.reduce((sum, pos) => {
+    return sum + (pos.cost_basis || 0);
+  }, 0);
+
+  for (let price = lowerBound; price <= upperBound; price += step) {
+    prices.push(price);
+
+    let totalPayoff = 0;
+
+    // Calculate payoff for each position at this price
+    for (const position of optionPositions) {
+      const { strike_price, option_type, qty, avg_entry_price } = position;
+
+      let intrinsicValue = 0;
+      if (option_type === "call") {
+        intrinsicValue = Math.max(price - strike_price, 0);
+      } else if (option_type === "put") {
+        intrinsicValue = Math.max(strike_price - price, 0);
+      }
+
+      // Calculate P&L for this position
+      // For long positions (qty > 0): (intrinsic_value - premium_paid) * qty * 100
+      // For short positions (qty < 0): (premium_received - intrinsic_value) * |qty| * 100
+      const premiumPaid = avg_entry_price || 0;
+      let positionPayoff;
+
+      if (qty > 0) {
+        // Long position
+        positionPayoff = (intrinsicValue - premiumPaid) * qty * 100;
+      } else {
+        // Short position
+        positionPayoff = (premiumPaid - intrinsicValue) * Math.abs(qty) * 100;
+      }
+
+      totalPayoff += positionPayoff;
+    }
+
+    payoffs.push(totalPayoff);
+  }
+
+  // Find break-even points (where payoff crosses zero)
+  const breakEvenPoints = [];
+  for (let i = 1; i < payoffs.length; i++) {
+    if (
+      (payoffs[i - 1] <= 0 && payoffs[i] >= 0) ||
+      (payoffs[i - 1] >= 0 && payoffs[i] <= 0)
+    ) {
+      // Linear interpolation to find more precise break-even
+      const x1 = prices[i - 1];
+      const x2 = prices[i];
+      const y1 = payoffs[i - 1];
+      const y2 = payoffs[i];
+
+      if (y2 !== y1) {
+        const breakEven = x1 - (y1 * (x2 - x1)) / (y2 - y1);
+        breakEvenPoints.push(breakEven);
+      }
+    }
+  }
+
+  // Calculate current unrealized P&L
+  const currentUnrealizedPL = optionPositions.reduce((sum, pos) => {
+    return sum + (pos.unrealized_pl || 0);
+  }, 0);
+
+  // Calculate max profit and max loss
+  const maxProfit = Math.max(...payoffs);
+  const maxLoss = Math.min(...payoffs);
+
+  const result = {
+    prices,
+    payoffs,
+    breakEvenPoints,
+    maxProfit,
+    maxLoss,
+    currentUnrealizedPL,
+    totalCostBasis,
+    positionCount: optionPositions.length,
+  };
+
+  console.log("generateMultiLegPayoff result:", {
+    pricesLength: prices.length,
+    payoffsLength: payoffs.length,
+    breakEvenPoints,
+    maxProfit,
+    maxLoss,
+    currentUnrealizedPL,
+    positionCount: optionPositions.length,
+  });
+
+  return result;
+}
+
 export function createChartConfig(chartData, underlyingPrice) {
   const { prices, payoffs, lowerBreakEven, upperBreakEven } = chartData;
 
@@ -174,6 +301,142 @@ export function createChartConfig(chartData, underlyingPrice) {
             label: function (context) {
               if (context.datasetIndex === 0) {
                 return `P&L: $${context.parsed.y.toFixed(2)}`;
+              }
+              return `${context.dataset.label}: $${context.parsed.y.toFixed(
+                2
+              )}`;
+            },
+          },
+        },
+      },
+      scales: {
+        x: {
+          type: "linear",
+          title: {
+            display: true,
+            text: "Underlying Price at Expiry ($)",
+          },
+          grid: {
+            display: true,
+            color: "rgba(0, 0, 0, 0.1)",
+          },
+        },
+        y: {
+          title: {
+            display: true,
+            text: "Profit / Loss ($)",
+          },
+          grid: {
+            display: true,
+            color: "rgba(0, 0, 0, 0.1)",
+          },
+        },
+      },
+    },
+  };
+}
+
+export function createMultiLegChartConfig(chartData, underlyingPrice) {
+  const {
+    prices,
+    payoffs,
+    breakEvenPoints,
+    maxProfit,
+    maxLoss,
+    positionCount,
+  } = chartData;
+
+  console.log("Creating multi-leg chart config with data:", {
+    pricesLength: prices.length,
+    payoffsLength: payoffs.length,
+    breakEvenPoints,
+    maxProfit,
+    maxLoss,
+    underlyingPrice,
+    positionCount,
+  });
+
+  // Create data points for the chart
+  const chartPoints = prices.map((price, index) => ({
+    x: price,
+    y: payoffs[index],
+  }));
+
+  const zeroLinePoints = prices.map((price) => ({
+    x: price,
+    y: 0,
+  }));
+
+  // Create current price line
+  const currentPricePoints = [
+    { x: underlyingPrice, y: Math.min(...payoffs) - Math.abs(maxLoss) * 0.1 },
+    { x: underlyingPrice, y: Math.max(...payoffs) + Math.abs(maxProfit) * 0.1 },
+  ];
+
+  const datasets = [
+    {
+      label: `Position Payoff (${positionCount} legs)`,
+      data: chartPoints,
+      borderColor: "rgb(255, 99, 132)",
+      backgroundColor: "rgba(255, 99, 132, 0.1)",
+      borderWidth: 3,
+      pointRadius: 2,
+      pointHoverRadius: 6,
+      fill: false,
+      tension: 0,
+    },
+    {
+      label: "Zero Line",
+      data: zeroLinePoints,
+      borderColor: "rgba(128, 128, 128, 0.5)",
+      borderWidth: 1,
+      borderDash: [5, 5],
+      pointRadius: 0,
+      fill: false,
+    },
+    {
+      label: "Current Price",
+      data: currentPricePoints,
+      borderColor: "rgba(54, 162, 235, 0.8)",
+      backgroundColor: "rgba(54, 162, 235, 0.8)",
+      borderWidth: 2,
+      borderDash: [3, 3],
+      pointRadius: 0,
+      fill: false,
+    },
+  ];
+
+  return {
+    type: "line",
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        title: {
+          display: true,
+          text: `Multi-Leg Position Payoff (${positionCount} legs)`,
+          font: {
+            size: 16,
+          },
+        },
+        legend: {
+          display: true,
+          position: "top",
+        },
+        tooltip: {
+          mode: "nearest",
+          intersect: false,
+          callbacks: {
+            title: function (context) {
+              return `Price: $${context[0].parsed.x.toFixed(2)}`;
+            },
+            label: function (context) {
+              if (context.datasetIndex === 0) {
+                return `P&L: $${context.parsed.y.toFixed(2)}`;
+              } else if (context.datasetIndex === 2) {
+                return `Current: $${underlyingPrice.toFixed(2)}`;
               }
               return `${context.dataset.label}: $${context.parsed.y.toFixed(
                 2
