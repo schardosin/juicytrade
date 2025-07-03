@@ -36,7 +36,7 @@ class WebSocketStreamingClient {
 
         this.ws.onmessage = (event) => {
           try {
-            console.log("Raw WebSocket message received:", event.data);
+            //console.log("Raw WebSocket message received:", event.data);
             const message = JSON.parse(event.data);
             this.handleMessage(message);
           } catch (error) {
@@ -83,7 +83,7 @@ class WebSocketStreamingClient {
         symbols: symbols,
       };
 
-      console.log("Sending WebSocket subscription:", message);
+      //console.log("Sending WebSocket subscription:", message);
       this.ws.send(JSON.stringify(message));
     } else {
       console.log(
@@ -113,7 +113,7 @@ class WebSocketStreamingClient {
       const message = {
         type: "get_positions",
       };
-      console.log("Requesting positions via WebSocket:", message);
+      //console.log("Requesting positions via WebSocket:", message);
       this.ws.send(JSON.stringify(message));
     } else {
       console.error("Cannot request positions: WebSocket not connected");
@@ -121,7 +121,7 @@ class WebSocketStreamingClient {
   }
 
   handleMessage(message) {
-    console.log("WebSocket message received:", message);
+    //console.log("WebSocket message received:", message);
 
     switch (message.type) {
       case "price_update":
@@ -136,7 +136,7 @@ class WebSocketStreamingClient {
         break;
 
       case "subscription_confirmed":
-        console.log("Subscription confirmed:", message);
+        // console.log("Subscription confirmed:", message);
         const subCallback = this.callbacks.get("subscription_confirmed");
         if (subCallback) {
           subCallback(message);
@@ -144,7 +144,7 @@ class WebSocketStreamingClient {
         break;
 
       case "positions_update":
-        console.log("Positions update received:", message);
+        //console.log("Positions update received:", message);
         const posCallback = this.callbacks.get("positions_update");
         if (posCallback) {
           posCallback(message.data);

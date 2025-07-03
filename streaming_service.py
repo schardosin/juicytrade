@@ -436,8 +436,22 @@ async def websocket_endpoint(websocket: WebSocket):
             
             if message["type"] == "subscribe":
                 symbols = message.get("symbols", [])
+                new_options = set()
+                new_stocks = set()
+                
                 for symbol in symbols:
                     manager.subscribe_symbol(websocket, symbol)
+                    
+                    # Determine if this is an option or stock symbol
+                    # Option symbols are typically longer and contain specific patterns
+                    if len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:]):
+                        # This looks like an option symbol
+                        if symbol not in subscribed_options:
+                            new_options.add(symbol)
+                    else:
+                        # This looks like a stock symbol
+                        if symbol not in subscribed_stocks:
+                            new_stocks.add(symbol)
                     
                     # Send current price if available
                     if symbol in stock_prices:
@@ -452,12 +466,29 @@ async def websocket_endpoint(websocket: WebSocket):
                             "symbol": symbol,
                             "data": option_prices[symbol]
                         }))
+                
+                # Add new symbols to global subscription sets and restart streaming
+                if new_options or new_stocks:
+                    logger.info(f"WebSocket: Adding new symbols to Alpaca subscriptions - Options: {new_options}, Stocks: {new_stocks}")
+                    
+                    # Update global subscription sets
+                    subscribed_options.update(new_options)
+                    subscribed_stocks.update(new_stocks)
+                    
+                    # Fetch initial prices for new stock symbols
+                    if new_stocks:
+                        await fetch_initial_prices(list(new_stocks))
+                    
+                    # Restart streaming to include new symbols
+                    asyncio.create_task(reset_streaming())
+                    
+                    logger.info(f"WebSocket: Alpaca streaming restarted with new symbols. Total - Options: {len(subscribed_options)}, Stocks: {len(subscribed_stocks)}")
                         
                 # Send confirmation
                 await websocket.send_text(json.dumps({
                     "type": "subscription_confirmed",
                     "symbols": symbols,
-                    "message": f"Subscribed to {len(symbols)} symbols"
+                    "message": f"Subscribed to {len(symbols)} symbols and added {len(new_options)} options + {len(new_stocks)} stocks to Alpaca streaming"
                 }))
             
             elif message["type"] == "get_positions":

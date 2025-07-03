@@ -83,6 +83,15 @@
         <template #title>Active Positions</template>
         <template #content>
           <DataTable :value="positions" class="p-datatable-sm" stripedRows>
+            <Column header="Select" style="width: 60px">
+              <template #body="slotProps">
+                <Checkbox
+                  v-model="selectedPositions"
+                  :value="slotProps.data.symbol"
+                  @change="updateClosePrice"
+                />
+              </template>
+            </Column>
             <Column field="symbol" header="Symbol" :sortable="true">
               <template #body="slotProps">
                 <span class="symbol-cell">{{ slotProps.data.symbol }}</span>
@@ -200,6 +209,53 @@
         </template>
       </Card>
 
+      <!-- Simple Close Order Panel (only show if positions are selected) -->
+      <Card v-if="selectedPositions.length > 0" class="close-order-card">
+        <template #title
+          >Close Selected Positions ({{ selectedPositions.length }})</template
+        >
+        <template #content>
+          <div class="close-order-panel">
+            <div class="close-order-row">
+              <div class="close-price-section">
+                <label for="closePrice" class="close-price-label"
+                  >Close Price:</label
+                >
+                <InputNumber
+                  id="closePrice"
+                  v-model="closeOrderPrice"
+                  :min="0.01"
+                  :max="100"
+                  :step="0.01"
+                  size="small"
+                  class="close-price-input"
+                  showButtons
+                  buttonLayout="horizontal"
+                  :incrementButtonIcon="'pi pi-plus'"
+                  :decrementButtonIcon="'pi pi-minus'"
+                />
+                <span class="mid-price-note">(Mid Price)</span>
+                <span
+                  v-if="closeOrderType"
+                  class="close-order-type"
+                  :class="closeOrderType.toLowerCase()"
+                >
+                  {{ closeOrderType }}
+                </span>
+              </div>
+              <Button
+                label="SEND"
+                severity="danger"
+                size="large"
+                class="close-send-btn"
+                @click="submitCloseOrder"
+                :disabled="closeOrderPrice <= 0"
+              />
+            </div>
+          </div>
+        </template>
+      </Card>
+
       <!-- Options Chain (only show if we have option positions) -->
       <Card
         v-if="hasOptionPositions && optionsChain.length > 0"
@@ -309,11 +365,79 @@
               </div>
             </div>
           </div>
+        </template>
+      </Card>
 
-          <!-- Order Ticket -->
-          <div v-if="selectedOptions.length > 0" class="order-ticket mt-3">
+      <!-- Payoff Chart (only show if we have option positions) -->
+      <Card v-if="hasOptionPositions && chartData" class="chart-card">
+        <template #title>
+          Position Payoff Diagram
+          <span v-if="selectedOptions.length > 0" class="adjustment-indicator">
+            (Including {{ selectedOptions.length }} Selected Adjustment{{
+              selectedOptions.length > 1 ? "s" : ""
+            }})
+          </span>
+        </template>
+        <template #content>
+          <div class="chart-container">
+            <canvas ref="chartCanvas"></canvas>
+          </div>
+          <div class="chart-info mt-3">
+            <div class="info-grid">
+              <div>
+                <strong>Current {{ underlyingSymbol }} Price:</strong>
+                <span v-if="underlyingPrice !== null">
+                  ${{ underlyingPrice.toFixed(2) }}
+                </span>
+                <span v-else>Loading...</span>
+              </div>
+              <div>
+                <strong>Break-Even Points:</strong>
+                <span v-if="chartData.breakEvenPoints.length > 0">
+                  {{
+                    chartData.breakEvenPoints
+                      .map((p) => "$" + p.toFixed(2))
+                      .join(", ")
+                  }}
+                </span>
+                <span v-else>None calculated</span>
+              </div>
+              <div>
+                <strong
+                  >{{ symbol }} Price {{ isLivePrice ? "(Live)" : "" }}:</strong
+                >
+                <span v-if="underlyingPrice !== null">
+                  ${{ underlyingPrice.toFixed(2) }}
+                </span>
+                <span v-else>Loading...</span>
+              </div>
+              <div>
+                <strong>Max Loss:</strong>
+                <span class="loss">${{ chartData.maxLoss.toFixed(2) }}</span>
+              </div>
+              <div>
+                <strong>Current Unrealized P&L:</strong>
+                <span
+                  :class="
+                    chartData.currentUnrealizedPL >= 0 ? 'profit' : 'loss'
+                  "
+                >
+                  ${{ chartData.currentUnrealizedPL.toFixed(2) }}
+                </span>
+              </div>
+            </div>
+          </div>
+        </template>
+      </Card>
+
+      <!-- Order Ticket (only show if options are selected) -->
+      <Card v-if="selectedOptions.length > 0" class="order-ticket-card">
+        <template #title
+          >Order Ticket - {{ underlyingSymbol }} Adjustments</template
+        >
+        <template #content>
+          <div class="order-ticket">
             <div class="order-header">
-              <h5>Order Ticket - {{ underlyingSymbol }} Adjustments</h5>
               <div class="order-controls">
                 <Button
                   label="Clear All"
@@ -475,62 +599,6 @@
           </div>
         </template>
       </Card>
-
-      <!-- Payoff Chart (only show if we have option positions) -->
-      <Card v-if="hasOptionPositions && chartData" class="chart-card">
-        <template #title>
-          Position Payoff Diagram
-          <span v-if="selectedOptions.length > 0" class="adjustment-indicator">
-            (Including {{ selectedOptions.length }} Selected Adjustment{{
-              selectedOptions.length > 1 ? "s" : ""
-            }})
-          </span>
-        </template>
-        <template #content>
-          <div class="chart-container">
-            <canvas ref="chartCanvas"></canvas>
-          </div>
-          <div class="chart-info mt-3">
-            <div class="info-grid">
-              <div>
-                <strong>Current {{ underlyingSymbol }} Price:</strong>
-                ${{ underlyingPrice.toFixed(2) }}
-              </div>
-              <div>
-                <strong>Break-Even Points:</strong>
-                <span v-if="chartData.breakEvenPoints.length > 0">
-                  {{
-                    chartData.breakEvenPoints
-                      .map((p) => "$" + p.toFixed(2))
-                      .join(", ")
-                  }}
-                </span>
-                <span v-else>None calculated</span>
-              </div>
-              <div>
-                <strong>Max Profit:</strong>
-                <span class="profit"
-                  >${{ chartData.maxProfit.toFixed(2) }}</span
-                >
-              </div>
-              <div>
-                <strong>Max Loss:</strong>
-                <span class="loss">${{ chartData.maxLoss.toFixed(2) }}</span>
-              </div>
-              <div>
-                <strong>Current Unrealized P&L:</strong>
-                <span
-                  :class="
-                    chartData.currentUnrealizedPL >= 0 ? 'profit' : 'loss'
-                  "
-                >
-                  ${{ chartData.currentUnrealizedPL.toFixed(2) }}
-                </span>
-              </div>
-            </div>
-          </div>
-        </template>
-      </Card>
     </div>
   </div>
 </template>
@@ -539,6 +607,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { Chart, registerables } from "chart.js";
 import Tag from "primevue/tag";
+import Checkbox from "primevue/checkbox";
 import api from "../services/api";
 import webSocketClient from "../services/webSocketClient";
 import {
@@ -552,13 +621,16 @@ export default {
   name: "TradeManagement",
   components: {
     Tag,
+    Checkbox,
   },
   setup() {
     // Reactive data
     const loading = ref(true);
     const error = ref(null);
     const positions = ref([]);
-    const underlyingPrice = ref(620); // Default SPY price, will be updated
+    const underlyingPrice = ref(null); // NO DEFAULT - wait for real data from Alpaca
+    const isLivePrice = ref(false); // Track if price is live from WebSocket
+    const symbol = ref("SPY"); // Default underlying symbol
     const chartData = ref(null);
     const chartCanvas = ref(null);
     const chart = ref(null);
@@ -572,6 +644,10 @@ export default {
     const orderType = ref("Limit");
     const timeInForce = ref("Day");
     const combinedOrderPrice = ref(0);
+
+    // Position closing functionality
+    const selectedPositions = ref([]);
+    const closeOrderPrice = ref(0);
 
     // Computed properties
     const optionPositions = computed(() => {
@@ -679,7 +755,7 @@ export default {
 
         // Set up position handlers
         webSocketClient.onPositionsUpdate((positionsData) => {
-          console.log("Positions received via WebSocket:", positionsData);
+          //console.log("Positions received via WebSocket:", positionsData);
 
           if (positionsData.success) {
             positions.value = positionsData.positions || [];
@@ -777,11 +853,11 @@ export default {
                 is_synthetic: true,
               };
 
-              console.log(
-                `Added ${selectionType} position for ${
-                  option.symbol
-                } at $${price.toFixed(2)}`
-              );
+              // console.log(
+              //   `Added ${selectionType} position for ${
+              //     option.symbol
+              //   } at $${price.toFixed(2)}`
+              // );
               combinedPositions.push(syntheticPosition);
             }
           });
@@ -795,9 +871,9 @@ export default {
 
         if (payoffData) {
           chartData.value = payoffData;
-          console.log(
-            `Chart updated with ${combinedPositions.length} positions (${selectedOptions.value.length} adjustments)`
-          );
+          // console.log(
+          //   `Chart updated with ${combinedPositions.length} positions (${selectedOptions.value.length} adjustments)`
+          // );
         }
       } catch (err) {
         console.error("Error generating chart:", err);
@@ -826,12 +902,12 @@ export default {
           chartData.value,
           underlyingPrice.value
         );
-        console.log(
-          "Creating Chart.js chart with config:",
-          config,
-          "Canvas:",
-          chartCanvas.value
-        );
+        // console.log(
+        //   "Creating Chart.js chart with config:",
+        //   config,
+        //   "Canvas:",
+        //   chartCanvas.value
+        // );
         if (ctx && config) {
           chart.value = new Chart(chartCanvas.value, config);
         } else {
@@ -858,7 +934,7 @@ export default {
       }
 
       try {
-        console.log("Starting WebSocket streaming for positions...");
+        //console.log("Starting WebSocket streaming for positions...");
         isStreaming.value = true;
 
         // Connect to WebSocket
@@ -879,14 +955,14 @@ export default {
           }
         });
 
-        console.log("Subscribing to symbols:", symbols);
+        //console.log("Subscribing to symbols:", symbols);
 
         // Subscribe to all symbols
         webSocketClient.subscribe(symbols);
 
         // Set up price update handler
         webSocketClient.onPriceUpdate((data) => {
-          console.log("WebSocket price update received:", data);
+          //console.log("WebSocket price update received:", data);
           streamingPrices.value[data.symbol] = data.price;
 
           // Update underlying price if it's the underlying symbol
@@ -900,10 +976,10 @@ export default {
 
         // Set up subscription confirmation handler
         webSocketClient.onSubscriptionConfirmed((message) => {
-          console.log("WebSocket subscription confirmed:", message);
+          //console.log("WebSocket subscription confirmed:", message);
         });
 
-        console.log("WebSocket streaming setup complete");
+        //console.log("WebSocket streaming setup complete");
       } catch (err) {
         console.error("Error starting WebSocket streaming:", err);
         isStreaming.value = false;
@@ -949,14 +1025,14 @@ export default {
           }
         });
 
-        console.log("Auto-subscribing to position symbols:", symbols);
+        //console.log("Auto-subscribing to position symbols:", symbols);
 
         // Subscribe to all symbols
         webSocketClient.subscribe(symbols);
 
         // Set up price update handler
         webSocketClient.onPriceUpdate((data) => {
-          console.log("Real-time price update:", data.symbol, data.price);
+          //console.log("Real-time price update:", data.symbol, data.price);
           streamingPrices.value[data.symbol] = data.price;
 
           // Update underlying price if it's the underlying symbol
@@ -970,7 +1046,7 @@ export default {
 
         // Set up subscription confirmation handler
         webSocketClient.onSubscriptionConfirmed((message) => {
-          console.log("Position symbols subscription confirmed:", message);
+          //console.log("Position symbols subscription confirmed:", message);
         });
 
         console.log("Position streaming setup complete");
@@ -990,21 +1066,36 @@ export default {
           // Update current price
           pos.current_price = newPrice;
 
-          // Recalculate market value
-          pos.market_value =
-            newPrice *
-            Math.abs(pos.qty) *
-            (pos.asset_class === "us_option" ? 100 : 1);
+          // Recalculate market value based on position side
+          const multiplier = pos.asset_class === "us_option" ? 100 : 1;
+
+          if (pos.side === "long") {
+            // Long position: positive market value
+            pos.market_value = newPrice * Math.abs(pos.qty) * multiplier;
+          } else {
+            // Short position: negative market value (you owe this amount)
+            pos.market_value = -newPrice * Math.abs(pos.qty) * multiplier;
+          }
 
           // Recalculate unrealized P&L
-          const costBasis =
-            pos.cost_basis ||
-            pos.avg_entry_price *
-              Math.abs(pos.qty) *
-              (pos.asset_class === "us_option" ? 100 : 1);
+          const costBasis = pos.cost_basis || 0;
+
+          // For P&L calculation:
+          // Long: Current Market Value - Cost Basis
+          // Short: Current Market Value - Cost Basis (where cost basis is negative for short)
           pos.unrealized_pl = pos.market_value - costBasis;
           pos.unrealized_plpc =
-            costBasis !== 0 ? pos.unrealized_pl / Math.abs(costBasis) : 0;
+            Math.abs(costBasis) !== 0
+              ? pos.unrealized_pl / Math.abs(costBasis)
+              : 0;
+
+          console.log(`Updated ${pos.symbol} (${pos.side}):`, {
+            qty: pos.qty,
+            currentPrice: newPrice,
+            marketValue: pos.market_value,
+            costBasis: costBasis,
+            unrealizedPL: pos.unrealized_pl,
+          });
         }
       });
 
@@ -1021,11 +1112,11 @@ export default {
       }
 
       try {
-        console.log(
-          "Fetching options chain for:",
-          underlyingSymbol.value,
-          positionExpiry.value
-        );
+        // console.log(
+        //   "Fetching options chain for:",
+        //   underlyingSymbol.value,
+        //   positionExpiry.value
+        // );
         const chain = await api.getOptionsChain(
           underlyingSymbol.value,
           positionExpiry.value,
@@ -1040,11 +1131,11 @@ export default {
             type: option.type || (option.symbol.includes("C") ? "call" : "put"),
           }));
 
-          console.log(
-            "Options chain loaded:",
-            optionsChain.value.length,
-            "options"
-          );
+          // console.log(
+          //   "Options chain loaded:",
+          //   optionsChain.value.length,
+          //   "options"
+          // );
 
           // Subscribe to options chain symbols for real-time prices
           const chainSymbols = optionsChain.value
@@ -1056,10 +1147,10 @@ export default {
             .map((option) => option.symbol);
 
           if (chainSymbols.length > 0) {
-            console.log(
-              "Subscribing to options chain symbols:",
-              chainSymbols.length
-            );
+            // console.log(
+            //   "Subscribing to options chain symbols:",
+            //   chainSymbols.length
+            // );
             webSocketClient.subscribe(chainSymbols);
           }
         }
@@ -1250,47 +1341,64 @@ export default {
       );
     });
 
-    const reviewAndSendOrder = () => {
+    const reviewAndSendOrder = async () => {
       if (!canSubmitOrder.value) {
         console.warn("Cannot submit order: missing required fields");
         return;
       }
 
-      // Create order object
-      const orderLegs = selectedOptions.value.map((symbol) => {
-        const option = getOptionBySymbol(symbol);
-        const selectionType = selectedOptionsMap.value[symbol];
-        const quantity = getOrderQuantity(symbol);
-        const price = getOrderPrice(symbol);
+      try {
+        // Build order payload similar to TradeSetup
+        const orderLegs = selectedOptions.value.map((symbol) => {
+          const option = getOptionBySymbol(symbol);
+          const selectionType = selectedOptionsMap.value[symbol];
+          const quantity = getOrderQuantity(symbol);
 
-        return {
-          symbol: symbol,
-          side: selectionType,
-          quantity: quantity,
-          price: price,
-          strike: option.strike_price,
-          type: option.type,
-          expiry: option.expiry_date,
+          return {
+            symbol: symbol,
+            side: selectionType === "buy" ? "buy" : "sell",
+            ratio_qty: quantity.toString(),
+          };
+        });
+
+        const orderPayload = {
+          symbol: underlyingSymbol.value,
+          expiry: positionExpiry.value,
+          strategy_type: "Multi-Leg Adjustment",
+          legs: orderLegs,
+          order_price: combinedOrderPrice.value,
+          order_offset: 0, // No offset for adjustments
+          qty: 1,
+          time_in_force: timeInForce.value.toLowerCase(),
+          order_type: orderType.value.toLowerCase(),
         };
-      });
 
-      const order = {
-        legs: orderLegs,
-        orderType: orderType.value,
-        timeInForce: timeInForce.value,
-        netValue: getTotalEstimatedValue(),
-        timestamp: new Date().toISOString(),
-      };
+        console.log("Submitting adjustment order:", orderPayload);
 
-      console.log("Order ready for submission:", order);
+        // Submit the order
+        const result = await api.placeButterflyOrder(orderPayload);
 
-      // Here you would typically send the order to your trading API
-      // For now, we'll just log it
-      alert(
-        `Order prepared with ${orderLegs.length} legs. Net ${
-          getTotalEstimatedValue() >= 0 ? "Credit" : "Debit"
-        }: $${Math.abs(getTotalEstimatedValue()).toFixed(2)}`
-      );
+        if (result.success) {
+          // Show success message
+          alert(
+            `Order submitted successfully! Order ID: ${
+              result.order?.id || "N/A"
+            }`
+          );
+
+          // Clear selections after successful order
+          clearAllSelections();
+
+          // Optionally refresh positions
+          await fetchPositions();
+        } else {
+          // Show error message
+          alert(`Order failed: ${result.error || "Unknown error"}`);
+        }
+      } catch (error) {
+        console.error("Error submitting order:", error);
+        alert(`Order submission failed: ${error.message}`);
+      }
     };
 
     // Helper methods for the new options chain layout
@@ -1334,6 +1442,144 @@ export default {
 
       // Fall back to close price as estimate (real implementation would have bid/ask)
       return parseFloat(option.close_price || 0) * 1.02; // Estimate ask as 102% of close
+    };
+
+    // Position closing methods
+    const closeOrderType = ref("");
+
+    const updateClosePrice = () => {
+      if (selectedPositions.value.length === 0) {
+        closeOrderPrice.value = 0;
+        closeOrderType.value = "";
+        return;
+      }
+
+      // Calculate net proceeds from closing all selected positions
+      let netProceeds = 0;
+      let debugInfo = [];
+
+      selectedPositions.value.forEach((symbol) => {
+        const position = positions.value.find((pos) => pos.symbol === symbol);
+        if (position) {
+          // For closing positions:
+          // - Long position: we sell (receive money) = +price
+          // - Short position: we buy (pay money) = -price
+          const proceeds =
+            position.qty > 0
+              ? position.current_price * Math.abs(position.qty) // Long: sell = receive money (+)
+              : -position.current_price * Math.abs(position.qty); // Short: buy = pay money (-)
+
+          netProceeds += proceeds;
+
+          debugInfo.push({
+            symbol: position.symbol,
+            qty: position.qty,
+            price: position.current_price,
+            action: position.qty > 0 ? "sell" : "buy",
+            proceeds: proceeds,
+          });
+        }
+      });
+
+      // Determine order type
+      closeOrderType.value = netProceeds >= 0 ? "CREDIT" : "DEBIT";
+
+      console.log("Close order calculation:", {
+        positions: debugInfo,
+        netProceeds: netProceeds,
+        orderType: closeOrderType.value,
+        limitPrice: Math.abs(netProceeds),
+      });
+
+      // Set the signed price value
+      // Positive netProceeds = Credit order (we receive money) = negative price for API
+      // Negative netProceeds = Debit order (we pay money) = positive price for API
+      // For API: credit orders need negative values, debit orders need positive values
+      closeOrderPrice.value = parseFloat((-netProceeds).toFixed(2));
+    };
+
+    const submitCloseOrder = async () => {
+      if (selectedPositions.value.length === 0) {
+        alert("Please select positions to close");
+        return;
+      }
+
+      if (closeOrderPrice.value <= 0) {
+        alert("Please enter a valid close price");
+        return;
+      }
+
+      try {
+        // Build close order payload with proper opposite operations
+        const closeLegs = selectedPositions.value.map((symbol) => {
+          const position = positions.value.find((pos) => pos.symbol === symbol);
+
+          // For closing: do the opposite operation
+          // If position qty is -1 (short), we need to buy 1 to close
+          // If position qty is +1 (long), we need to sell 1 to close
+          const closingSide = position.qty < 0 ? "buy" : "sell";
+          const closingQuantity = Math.abs(position.qty);
+
+          return {
+            symbol: symbol,
+            side: closingSide,
+            ratio_qty: closingQuantity.toString(),
+          };
+        });
+
+        const closeOrderPayload = {
+          symbol: underlyingSymbol.value,
+          expiry: positionExpiry.value,
+          strategy_type: "Position Close",
+          legs: closeLegs,
+          order_price: closeOrderPrice.value,
+          order_offset: 0,
+          qty: 1,
+          time_in_force: "day",
+          order_type: "limit",
+        };
+
+        console.log("Submitting close order:", closeOrderPayload);
+        console.log(
+          "Close legs breakdown:",
+          closeLegs.map((leg) => {
+            const pos = positions.value.find((p) => p.symbol === leg.symbol);
+            return {
+              symbol: leg.symbol,
+              currentPosition: pos.qty,
+              closingAction: `${leg.side} ${leg.ratio_qty}`,
+              result: `${pos.qty} + ${leg.side === "buy" ? "+" : "-"}${
+                leg.ratio_qty
+              } = ${
+                pos.qty + (leg.side === "buy" ? +leg.ratio_qty : -leg.ratio_qty)
+              }`,
+            };
+          })
+        );
+
+        // Submit the close order
+        const result = await api.placeButterflyOrder(closeOrderPayload);
+
+        if (result.success) {
+          alert(
+            `Close order submitted successfully! Order ID: ${
+              result.order?.id || "N/A"
+            }`
+          );
+
+          // Clear selections after successful order
+          selectedPositions.value = [];
+          closeOrderPrice.value = 0;
+
+          // Refresh positions
+          await fetchPositions();
+        } else {
+          alert(`Close order failed: ${result.error || "Unknown error"}`);
+        }
+      } catch (error) {
+        console.error("Error submitting close order:", error);
+        alert(`Close order submission failed: ${error.message}`);
+      }
     };
 
     // Lifecycle hooks
@@ -1399,6 +1645,8 @@ export default {
       error,
       positions,
       underlyingPrice,
+      isLivePrice,
+      symbol,
       chartData,
       chartCanvas,
       optionsChain,
@@ -1449,6 +1697,13 @@ export default {
       canSubmitOrder,
       reviewAndSendOrder,
       combinedOrderPrice,
+
+      // Position closing methods
+      selectedPositions,
+      closeOrderPrice,
+      closeOrderType,
+      updateClosePrice,
+      submitCloseOrder,
     };
   },
 };
@@ -2139,5 +2394,121 @@ export default {
   .order-table-container {
     font-size: 0.8rem;
   }
+}
+
+/* Close Order Panel Styles */
+.close-order-card {
+  background: #2c2c2c;
+  border: 1px solid #444;
+}
+
+.close-order-panel {
+  padding: 15px;
+}
+
+.close-order-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.close-price-section {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 1;
+}
+
+.close-price-label {
+  color: #fff;
+  font-weight: 600;
+  min-width: 100px;
+}
+
+.close-price-input {
+  width: 100px !important;
+  min-width: 100px !important;
+  max-width: 100px !important;
+}
+
+.close-price-input :deep(.p-inputnumber) {
+  width: 100px !important;
+  min-width: 100px !important;
+  max-width: 100px !important;
+}
+
+.close-price-input :deep(.p-inputnumber-input) {
+  width: 70px !important;
+  background: #555 !important;
+  border: 1px solid #666 !important;
+  color: #fff !important;
+  text-align: center !important;
+  padding: 6px 4px !important;
+  font-size: 0.9rem !important;
+  font-weight: 600 !important;
+}
+
+.close-price-input :deep(.p-inputnumber-button-up),
+.close-price-input :deep(.p-inputnumber-button-down) {
+  background: #666 !important;
+  border: 1px solid #777 !important;
+  color: #fff !important;
+  width: 15px !important;
+  height: 20px !important;
+}
+
+.close-price-input :deep(.p-inputnumber-button-up):hover,
+.close-price-input :deep(.p-inputnumber-button-down):hover {
+  background: #777 !important;
+}
+
+.mid-price-note {
+  color: #ccc;
+  font-size: 0.8rem;
+  font-style: italic;
+}
+
+.close-send-btn {
+  background: #dc3545 !important;
+  border: none !important;
+  color: #fff !important;
+  font-weight: 700 !important;
+  font-size: 1rem !important;
+  padding: 10px 30px !important;
+  border-radius: 6px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.close-send-btn:hover:not(:disabled) {
+  background: #c82333 !important;
+}
+
+.close-send-btn:disabled {
+  background: #666 !important;
+  color: #999 !important;
+}
+
+.close-order-type {
+  font-weight: 700;
+  font-size: 0.85rem;
+  padding: 3px 10px;
+  border-radius: 4px;
+  text-align: center;
+  min-width: 60px;
+  margin-left: 5px;
+}
+
+.close-order-type.credit {
+  color: #4caf50;
+  background: rgba(76, 175, 80, 0.15);
+  border: 1px solid #4caf50;
+}
+
+.close-order-type.debit {
+  color: #f44336;
+  background: rgba(244, 67, 54, 0.15);
+  border: 1px solid #f44336;
 }
 </style>

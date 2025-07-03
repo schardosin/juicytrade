@@ -86,6 +86,7 @@
                 ${{ slotProps.data.strike.toFixed(2) }}
               </template>
             </Column>
+            <Column field="expiration" header="Expiration"></Column>
             <Column field="price" header="Price">
               <template #body="slotProps">
                 ${{ slotProps.data.price.toFixed(4) }}
@@ -324,6 +325,7 @@ export default {
     const chartCanvas = ref(null);
     const chart = ref(null);
     const manualOrderPrice = ref(null); // For user-editable order price
+    const streamingPrices = ref({}); // Store real-time prices like Trade Management
 
     // Options for dropdowns
     const strategyOptions = [
@@ -391,30 +393,36 @@ export default {
     const legsTableData = computed(() => {
       if (!butterflyInfo.value) return [];
 
+      const expirationDate = formatDate(expiry.value);
+
       if (strategyType.value === "IRON Butterfly") {
         return [
           {
             action: "Buy",
             type: "Put",
             strike: butterflyInfo.value.lower_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.lower_price,
           },
           {
             action: "Sell",
             type: "Put",
             strike: butterflyInfo.value.atm_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.atm_put_price || 0,
           },
           {
             action: "Sell",
             type: "Call",
             strike: butterflyInfo.value.atm_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.atm_call_price || 0,
           },
           {
             action: "Buy",
             type: "Call",
             strike: butterflyInfo.value.upper_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.upper_price,
           },
         ];
@@ -424,18 +432,21 @@ export default {
             action: "Buy",
             type: "Call",
             strike: butterflyInfo.value.lower_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.lower_price,
           },
           {
             action: "Sell",
             type: "Call",
             strike: butterflyInfo.value.atm_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.atm_price || 0,
           },
           {
             action: "Buy",
             type: "Call",
             strike: butterflyInfo.value.upper_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.upper_price,
           },
         ];
@@ -445,18 +456,21 @@ export default {
             action: "Buy",
             type: "Put",
             strike: butterflyInfo.value.lower_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.lower_price,
           },
           {
             action: "Sell",
             type: "Put",
             strike: butterflyInfo.value.atm_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.atm_price || 0,
           },
           {
             action: "Buy",
             type: "Put",
             strike: butterflyInfo.value.upper_strike,
+            expiration: expirationDate,
             price: butterflyInfo.value.upper_price,
           },
         ];
@@ -514,83 +528,86 @@ export default {
           }
         });
 
-        // Set a default price while waiting for WebSocket data
-        underlyingPrice.value = 620; // Default SPY price
+        // NO DEFAULT PRICE - wait for real data from Alpaca
+        underlyingPrice.value = null;
         isLivePrice.value = false;
         console.log(
-          "Set default underlying price, waiting for WebSocket updates"
+          "Waiting for real underlying price from Alpaca via WebSocket"
         );
       } catch (error) {
         console.error(
           "Error setting up WebSocket for underlying price:",
           error
         );
-        // Set a fallback price
-        underlyingPrice.value = 620; // Default SPY price
+        // NO FALLBACK PRICE - only use real data
+        underlyingPrice.value = null;
         isLivePrice.value = false;
-        console.warn("Using fallback price due to WebSocket error");
+        console.warn("WebSocket error - waiting for real price data");
       }
     };
 
     const fetchOptionsChain = async () => {
       if (!symbol.value || !expiry.value) return;
+
+      // Clear existing data when fetching new expiry
+      optionsChain.value = [];
+      butterflyInfo.value = null;
+      chartData.value = null;
+
       try {
         const expiryStr = expiry.value.toISOString().split("T")[0];
+        console.log(
+          `Fetching options chain for ${symbol.value} expiring ${expiryStr}`
+        );
+
         const chain = await api.getOptionsChain(
           symbol.value,
           expiryStr,
           strategyType.value
         );
-        optionsChain.value = chain || [];
 
-        if (optionsChain.value.length > 0) {
-          await calculateButterflyInfo();
+        // Validate that we received actual options data
+        if (chain && Array.isArray(chain) && chain.length > 0) {
+          // Check if options have valid prices (not all zeros or nulls)
+          const validOptions = chain.filter((option) => {
+            const price = parseFloat(option.close_price || 0);
+            return price > 0 && !isNaN(price);
+          });
+
+          if (validOptions.length >= 3) {
+            optionsChain.value = validOptions;
+            console.log(
+              `Valid options chain loaded: ${validOptions.length} options with real prices`
+            );
+            await calculateButterflyInfo();
+          } else {
+            console.warn(
+              `Insufficient valid options for ${expiryStr}: only ${validOptions.length} options with valid prices`
+            );
+            optionsChain.value = [];
+            butterflyInfo.value = null;
+            chartData.value = null;
+          }
+        } else {
+          console.warn(
+            `No options chain data available for ${expiryStr} - likely a non-trading day or invalid expiry`
+          );
+          optionsChain.value = [];
+          butterflyInfo.value = null;
+          chartData.value = null;
         }
       } catch (error) {
         console.error("Error fetching options chain:", error);
-        // Use mock data for testing when backend is unavailable
-        optionsChain.value = generateMockOptionsChain();
-        console.warn("Using mock options chain for testing");
-        if (optionsChain.value.length > 0) {
-          await calculateButterflyInfo();
-        }
+        // Clear all data on error
+        optionsChain.value = [];
+        butterflyInfo.value = null;
+        chartData.value = null;
+        console.warn(
+          `Options chain fetch failed for ${
+            expiry.value.toISOString().split("T")[0]
+          } - may be a holiday or invalid trading date`
+        );
       }
-    };
-
-    const generateMockOptionsChain = () => {
-      const basePrice = underlyingPrice.value || 450;
-      const mockChain = [];
-
-      // Generate strikes around the current price
-      for (let i = -10; i <= 10; i++) {
-        const strike = Math.round((basePrice + i * 2) / 5) * 5; // Round to nearest $5
-
-        // Add PUT options
-        mockChain.push({
-          symbol: `SPY${expiry.value.toISOString().slice(2, 4)}${expiry.value
-            .toISOString()
-            .slice(5, 7)}${expiry.value.toISOString().slice(8, 10)}P${strike
-            .toString()
-            .padStart(8, "0")}`,
-          strike_price: strike.toString(),
-          type: "put",
-          close_price: Math.max(0.1, Math.random() * 10).toFixed(2),
-        });
-
-        // Add CALL options
-        mockChain.push({
-          symbol: `SPY${expiry.value.toISOString().slice(2, 4)}${expiry.value
-            .toISOString()
-            .slice(5, 7)}${expiry.value.toISOString().slice(8, 10)}C${strike
-            .toString()
-            .padStart(8, "0")}`,
-          strike_price: strike.toString(),
-          type: "call",
-          close_price: Math.max(0.1, Math.random() * 10).toFixed(2),
-        });
-      }
-
-      return mockChain;
     };
 
     const calculateButterflyInfo = async () => {
@@ -850,22 +867,47 @@ export default {
 
         // Set up price update handler
         webSocketClient.onPriceUpdate((data) => {
-          console.log("Real-time price update:", data.symbol, data.price);
+          //console.log("Real-time price update:", data.symbol, data.price);
+
+          // Store streaming price like Trade Management does
+          streamingPrices.value[data.symbol] = data.price;
 
           // Update underlying price if it's the underlying symbol
           if (data.symbol === symbol.value) {
+            const oldPrice = underlyingPrice.value;
             underlyingPrice.value = data.price;
             isLivePrice.value = true;
-            throttledChartUpdate();
+
+            // Check if price change is significant enough to recalculate strikes
+            if (butterflyInfo.value && oldPrice !== null) {
+              const priceChange = Math.abs(data.price - oldPrice);
+              const currentATM = butterflyInfo.value.atm_strike;
+              const distanceFromATM = Math.abs(data.price - currentATM);
+
+              // Recalculate strikes if price moved significantly or is far from current ATM
+              // Make it more sensitive to ensure it updates when needed
+              if (priceChange > 1 || distanceFromATM > 2) {
+                console.log(
+                  `Significant price change detected: ${oldPrice} -> ${data.price}, recalculating butterfly strikes`
+                );
+                recalculateButterflyStrikes();
+              } else {
+                // Just update the current price line for small changes
+                updateCurrentPriceLine();
+              }
+            } else {
+              // First price update or no butterfly info yet
+              updateCurrentPriceLine();
+            }
           } else {
-            // Update option price
-            updateOptionPrice(data.symbol, data.data);
+            // Update option prices with streaming data
+            updateButterflyPrices();
           }
         });
 
         // Set up subscription confirmation handler
         webSocketClient.onSubscriptionConfirmed((message) => {
-          console.log("WebSocket subscription confirmed:", message);
+          //console.log("WebSocket subscription confirmed:", message);
         });
 
         console.log("WebSocket streaming setup complete");
@@ -917,6 +959,138 @@ export default {
           isUpdatingChart = false;
         }
       }, 200); // Increased from 100ms to 200ms for more stability
+    };
+
+    // Function to update butterfly prices with streaming data (like Trade Management)
+    const updateButterflyPrices = () => {
+      if (!butterflyInfo.value) return;
+
+      console.log("Updating butterfly prices with streaming data");
+      let priceChanged = false;
+
+      // Update prices for each leg using streaming data
+      if (strategyType.value === "IRON Butterfly") {
+        // Lower Put
+        const putLowerSymbol = findOption(
+          butterflyInfo.value.lower_strike,
+          "put"
+        )?.symbol;
+        if (putLowerSymbol && streamingPrices.value[putLowerSymbol]) {
+          const newPrice = streamingPrices.value[putLowerSymbol];
+          if (Math.abs(butterflyInfo.value.lower_price - newPrice) > 0.001) {
+            console.log(
+              `Updating lower put price: ${butterflyInfo.value.lower_price} -> ${newPrice}`
+            );
+            butterflyInfo.value.lower_price = newPrice;
+            priceChanged = true;
+          }
+        }
+
+        // ATM Put
+        const putAtmSymbol = findOption(
+          butterflyInfo.value.atm_strike,
+          "put"
+        )?.symbol;
+        if (putAtmSymbol && streamingPrices.value[putAtmSymbol]) {
+          const newPrice = streamingPrices.value[putAtmSymbol];
+          if (Math.abs(butterflyInfo.value.atm_put_price - newPrice) > 0.001) {
+            console.log(
+              `Updating ATM put price: ${butterflyInfo.value.atm_put_price} -> ${newPrice}`
+            );
+            butterflyInfo.value.atm_put_price = newPrice;
+            priceChanged = true;
+          }
+        }
+
+        // ATM Call
+        const callAtmSymbol = findOption(
+          butterflyInfo.value.atm_strike,
+          "call"
+        )?.symbol;
+        if (callAtmSymbol && streamingPrices.value[callAtmSymbol]) {
+          const newPrice = streamingPrices.value[callAtmSymbol];
+          if (Math.abs(butterflyInfo.value.atm_call_price - newPrice) > 0.001) {
+            console.log(
+              `Updating ATM call price: ${butterflyInfo.value.atm_call_price} -> ${newPrice}`
+            );
+            butterflyInfo.value.atm_call_price = newPrice;
+            priceChanged = true;
+          }
+        }
+
+        // Upper Call
+        const callUpperSymbol = findOption(
+          butterflyInfo.value.upper_strike,
+          "call"
+        )?.symbol;
+        if (callUpperSymbol && streamingPrices.value[callUpperSymbol]) {
+          const newPrice = streamingPrices.value[callUpperSymbol];
+          if (Math.abs(butterflyInfo.value.upper_price - newPrice) > 0.001) {
+            console.log(
+              `Updating upper call price: ${butterflyInfo.value.upper_price} -> ${newPrice}`
+            );
+            butterflyInfo.value.upper_price = newPrice;
+            priceChanged = true;
+          }
+        }
+      } else {
+        // CALL or PUT Butterfly
+        const type = strategyType.value === "CALL Butterfly" ? "call" : "put";
+
+        // Lower Strike
+        const lowerSymbol = findOption(
+          butterflyInfo.value.lower_strike,
+          type
+        )?.symbol;
+        if (lowerSymbol && streamingPrices.value[lowerSymbol]) {
+          const newPrice = streamingPrices.value[lowerSymbol];
+          if (Math.abs(butterflyInfo.value.lower_price - newPrice) > 0.001) {
+            console.log(
+              `Updating lower ${type} price: ${butterflyInfo.value.lower_price} -> ${newPrice}`
+            );
+            butterflyInfo.value.lower_price = newPrice;
+            priceChanged = true;
+          }
+        }
+
+        // ATM Strike
+        const atmSymbol = findOption(
+          butterflyInfo.value.atm_strike,
+          type
+        )?.symbol;
+        if (atmSymbol && streamingPrices.value[atmSymbol]) {
+          const newPrice = streamingPrices.value[atmSymbol];
+          if (Math.abs(butterflyInfo.value.atm_price - newPrice) > 0.001) {
+            console.log(
+              `Updating ATM ${type} price: ${butterflyInfo.value.atm_price} -> ${newPrice}`
+            );
+            butterflyInfo.value.atm_price = newPrice;
+            priceChanged = true;
+          }
+        }
+
+        // Upper Strike
+        const upperSymbol = findOption(
+          butterflyInfo.value.upper_strike,
+          type
+        )?.symbol;
+        if (upperSymbol && streamingPrices.value[upperSymbol]) {
+          const newPrice = streamingPrices.value[upperSymbol];
+          if (Math.abs(butterflyInfo.value.upper_price - newPrice) > 0.001) {
+            console.log(
+              `Updating upper ${type} price: ${butterflyInfo.value.upper_price} -> ${newPrice}`
+            );
+            butterflyInfo.value.upper_price = newPrice;
+            priceChanged = true;
+          }
+        }
+      }
+
+      // Update chart if any prices changed
+      if (priceChanged) {
+        console.log("Butterfly prices updated, regenerating chart");
+        throttledChartUpdate();
+      }
     };
 
     const updateOptionPrice = (symbol, priceData) => {
@@ -1009,6 +1183,179 @@ export default {
       }
     };
 
+    // Function to recalculate butterfly strikes based on new underlying price
+    const recalculateButterflyStrikes = async () => {
+      console.log(
+        "Recalculating butterfly strikes with new underlying price:",
+        underlyingPrice.value
+      );
+
+      if (!optionsChain.value.length || underlyingPrice.value === null) {
+        console.log(
+          "Cannot recalculate strikes: missing options chain or underlying price"
+        );
+        return;
+      }
+
+      try {
+        // First, refresh the options chain to get updated prices
+        console.log("Refreshing options chain for updated prices...");
+        try {
+          const expiryStr = expiry.value.toISOString().split("T")[0];
+          const freshChain = await api.getOptionsChain(
+            symbol.value,
+            expiryStr,
+            strategyType.value
+          );
+          if (freshChain && freshChain.length > 0) {
+            optionsChain.value = freshChain;
+            console.log(
+              "Options chain refreshed with",
+              freshChain.length,
+              "options"
+            );
+          }
+        } catch (chainError) {
+          console.warn(
+            "Could not refresh options chain, using existing data:",
+            chainError
+          );
+        }
+
+        // Recalculate strikes based on new underlying price
+        const strikes = getStrikePrices();
+        if (strikes.length < 3) {
+          console.log("Not enough strikes available for recalculation");
+          return;
+        }
+
+        const newAtmStrike = findClosestStrike(strikes, underlyingPrice.value);
+        const newLowerStrike = findLowerStrike(strikes, newAtmStrike);
+        const newUpperStrike = findUpperStrike(strikes, newAtmStrike);
+
+        console.log("New strike selection:", {
+          oldATM: butterflyInfo.value.atm_strike,
+          newATM: newAtmStrike,
+          newLower: newLowerStrike,
+          newUpper: newUpperStrike,
+        });
+
+        // Update butterfly info with new strikes and fresh prices
+        if (strategyType.value === "IRON Butterfly") {
+          const putLower = findOption(newLowerStrike, "put");
+          const putAtm = findOption(newAtmStrike, "put");
+          const callAtm = findOption(newAtmStrike, "call");
+          const callUpper = findOption(newUpperStrike, "call");
+
+          butterflyInfo.value = {
+            lower_strike: newLowerStrike,
+            atm_strike: newAtmStrike,
+            upper_strike: newUpperStrike,
+            lower_price: parseFloat(putLower?.close_price || 0),
+            atm_put_price: parseFloat(putAtm?.close_price || 0),
+            atm_call_price: parseFloat(callAtm?.close_price || 0),
+            upper_price: parseFloat(callUpper?.close_price || 0),
+          };
+        } else {
+          const lowerOption = findOption(
+            newLowerStrike,
+            strategyType.value === "CALL Butterfly" ? "call" : "put"
+          );
+          const atmOption = findOption(
+            newAtmStrike,
+            strategyType.value === "CALL Butterfly" ? "call" : "put"
+          );
+          const upperOption = findOption(
+            newUpperStrike,
+            strategyType.value === "CALL Butterfly" ? "call" : "put"
+          );
+
+          butterflyInfo.value = {
+            lower_strike: newLowerStrike,
+            atm_strike: newAtmStrike,
+            upper_strike: newUpperStrike,
+            lower_price: parseFloat(lowerOption?.close_price || 0),
+            atm_price: parseFloat(atmOption?.close_price || 0),
+            upper_price: parseFloat(upperOption?.close_price || 0),
+          };
+        }
+
+        // Regenerate chart data with new strikes
+        chartData.value = generateButterflyPayoff(
+          butterflyInfo.value,
+          strategyType.value,
+          legWidth.value
+        );
+
+        // Update chart with new data
+        await updateChart();
+
+        // Update WebSocket subscriptions for new option symbols
+        const newOptionSymbols = getOptionSymbolsForLegs(
+          newLowerStrike,
+          newAtmStrike,
+          newUpperStrike
+        );
+
+        console.log(
+          "Updating WebSocket subscriptions for new strikes:",
+          newOptionSymbols
+        );
+        webSocketClient.subscribe([symbol.value, ...newOptionSymbols]);
+
+        console.log(
+          "Butterfly strikes recalculated successfully with fresh prices"
+        );
+      } catch (error) {
+        console.error("Error recalculating butterfly strikes:", error);
+      }
+    };
+
+    // Function to update just the current price line without recalculating payoff
+    const updateCurrentPriceLine = async () => {
+      console.log(
+        "updateCurrentPriceLine called with price:",
+        underlyingPrice.value
+      );
+
+      if (!chart.value || !chartData.value || underlyingPrice.value === null) {
+        console.log(
+          "Early return from updateCurrentPriceLine - missing required data"
+        );
+        return;
+      }
+
+      try {
+        const { payoffs } = chartData.value;
+
+        // Create updated current price line with new underlying price
+        const maxPayoff = Math.max(...payoffs);
+        const minPayoff = Math.min(...payoffs);
+        const currentPricePoints = [
+          {
+            x: underlyingPrice.value,
+            y: minPayoff - Math.abs(minPayoff) * 0.1,
+          },
+          {
+            x: underlyingPrice.value,
+            y: maxPayoff + Math.abs(maxPayoff) * 0.1,
+          },
+        ];
+
+        // Update only the current price line dataset (index 2)
+        chart.value.data.datasets[2].data = currentPricePoints;
+
+        // Update the chart
+        chart.value.update("none"); // 'none' disables animation for faster updates
+        console.log(
+          "Current price line updated successfully to:",
+          underlyingPrice.value
+        );
+      } catch (error) {
+        console.error("Error updating current price line:", error);
+      }
+    };
+
     const updateChart = async () => {
       console.log("updateChart called with:", {
         hasCanvas: !!chartCanvas.value,
@@ -1047,7 +1394,10 @@ export default {
           console.log("New chart created successfully");
         } else {
           // Update existing chart data
-          console.log("Updating existing chart data");
+          console.log(
+            "Updating existing chart data with new underlying price:",
+            underlyingPrice.value
+          );
           const { prices, payoffs } = chartData.value;
 
           // Create new data points
@@ -1061,13 +1411,31 @@ export default {
             y: 0,
           }));
 
+          // Create updated current price line with new underlying price
+          const maxPayoff = Math.max(...payoffs);
+          const minPayoff = Math.min(...payoffs);
+          const currentPricePoints = [
+            {
+              x: underlyingPrice.value,
+              y: minPayoff - Math.abs(minPayoff) * 0.1,
+            },
+            {
+              x: underlyingPrice.value,
+              y: maxPayoff + Math.abs(maxPayoff) * 0.1,
+            },
+          ];
+
           // Update the datasets
           chart.value.data.datasets[0].data = chartPoints;
           chart.value.data.datasets[1].data = zeroLinePoints;
+          chart.value.data.datasets[2].data = currentPricePoints; // Update current price line
 
           // Update the chart
           chart.value.update("none"); // 'none' disables animation for faster updates
-          console.log("Chart data updated successfully");
+          console.log(
+            "Chart data updated successfully with new current price:",
+            underlyingPrice.value
+          );
         }
       } catch (error) {
         console.error("Error updating chart:", error);

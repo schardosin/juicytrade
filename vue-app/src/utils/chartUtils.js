@@ -97,10 +97,10 @@ export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
 }
 
 export function generateMultiLegPayoff(positions, underlyingPrice) {
-  console.log("generateMultiLegPayoff called with:", {
-    positionsCount: positions.length,
-    underlyingPrice,
-  });
+  // console.log("generateMultiLegPayoff called with:", {
+  //   positionsCount: positions.length,
+  //   underlyingPrice,
+  // });
 
   if (!positions || positions.length === 0) {
     return null;
@@ -210,15 +210,15 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
     positionCount: optionPositions.length,
   };
 
-  console.log("generateMultiLegPayoff result:", {
-    pricesLength: prices.length,
-    payoffsLength: payoffs.length,
-    breakEvenPoints,
-    maxProfit,
-    maxLoss,
-    currentUnrealizedPL,
-    positionCount: optionPositions.length,
-  });
+  // console.log("generateMultiLegPayoff result:", {
+  //   pricesLength: prices.length,
+  //   payoffsLength: payoffs.length,
+  //   breakEvenPoints,
+  //   maxProfit,
+  //   maxLoss,
+  //   currentUnrealizedPL,
+  //   positionCount: optionPositions.length,
+  // });
 
   return result;
 }
@@ -247,6 +247,14 @@ export function createChartConfig(chartData, underlyingPrice) {
     y: 0,
   }));
 
+  // Create current price line (same as in Trade Management)
+  const maxPayoff = Math.max(...payoffs);
+  const minPayoff = Math.min(...payoffs);
+  const currentPricePoints = [
+    { x: underlyingPrice, y: minPayoff - Math.abs(minPayoff) * 0.1 },
+    { x: underlyingPrice, y: maxPayoff + Math.abs(maxPayoff) * 0.1 },
+  ];
+
   console.log("Chart points:", chartPoints.slice(0, 3));
 
   return {
@@ -270,6 +278,16 @@ export function createChartConfig(chartData, underlyingPrice) {
           borderColor: "rgba(128, 128, 128, 0.5)",
           borderWidth: 1,
           borderDash: [5, 5],
+          pointRadius: 0,
+          fill: false,
+        },
+        {
+          label: "Current Price",
+          data: currentPricePoints,
+          borderColor: "rgba(54, 162, 235, 0.8)",
+          backgroundColor: "rgba(54, 162, 235, 0.8)",
+          borderWidth: 2,
+          borderDash: [3, 3],
           pointRadius: 0,
           fill: false,
         },
@@ -301,6 +319,8 @@ export function createChartConfig(chartData, underlyingPrice) {
             label: function (context) {
               if (context.datasetIndex === 0) {
                 return `P&L: $${context.parsed.y.toFixed(2)}`;
+              } else if (context.datasetIndex === 2) {
+                return `Current: $${underlyingPrice.toFixed(2)}`;
               }
               return `${context.dataset.label}: $${context.parsed.y.toFixed(
                 2
@@ -346,15 +366,15 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
     positionCount,
   } = chartData;
 
-  console.log("Creating multi-leg chart config with data:", {
-    pricesLength: prices.length,
-    payoffsLength: payoffs.length,
-    breakEvenPoints,
-    maxProfit,
-    maxLoss,
-    underlyingPrice,
-    positionCount,
-  });
+  // console.log("Creating multi-leg chart config with data:", {
+  //   pricesLength: prices.length,
+  //   payoffsLength: payoffs.length,
+  //   breakEvenPoints,
+  //   maxProfit,
+  //   maxLoss,
+  //   underlyingPrice,
+  //   positionCount,
+  // });
 
   // Create data points for the chart
   const chartPoints = prices.map((price, index) => ({
