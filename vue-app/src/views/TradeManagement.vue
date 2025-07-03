@@ -329,7 +329,14 @@
 
       <!-- Payoff Chart (only show if we have option positions) -->
       <Card v-if="hasOptionPositions && chartData" class="chart-card">
-        <template #title>Position Payoff Diagram</template>
+        <template #title>
+          Position Payoff Diagram
+          <span v-if="selectedOptions.length > 0" class="adjustment-indicator">
+            (Including {{ selectedOptions.length }} Selected Adjustment{{
+              selectedOptions.length > 1 ? "s" : ""
+            }})
+          </span>
+        </template>
         <template #content>
           <div class="chart-container">
             <canvas ref="chartCanvas"></canvas>
@@ -573,14 +580,70 @@ export default {
       }
 
       try {
-        // Generate payoff data for all positions
+        // Start with current positions
+        let combinedPositions = [...positions.value];
+
+        // Add selected options as new positions
+        if (selectedOptions.value.length > 0) {
+          selectedOptions.value.forEach((symbol) => {
+            const selectionType = selectedOptionsMap.value[symbol];
+            const option = optionsChain.value.find(
+              (opt) => opt.symbol === symbol
+            );
+
+            if (option && selectionType) {
+              // Create a synthetic position for the selected option
+              const price =
+                selectionType === "buy"
+                  ? getOptionAsk(option)
+                  : getOptionBid(option);
+
+              // For buy: qty = +1 (long position)
+              // For sell: qty = -1 (short position)
+              const quantity = selectionType === "buy" ? 1 : -1;
+
+              // Calculate cost basis correctly
+              const costBasis = price * Math.abs(quantity) * 100;
+
+              const syntheticPosition = {
+                symbol: option.symbol,
+                asset_class: "us_option",
+                side: selectionType === "buy" ? "long" : "short",
+                qty: quantity, // +1 for buy, -1 for sell
+                strike_price: option.strike_price,
+                option_type: option.type,
+                expiry_date: positionExpiry.value,
+                current_price: price,
+                market_value: price * Math.abs(quantity) * 100,
+                avg_entry_price: price, // Key field for chart calculation
+                cost_basis: costBasis,
+                unrealized_pl: 0,
+                unrealized_plpc: 0,
+                underlying_symbol: underlyingSymbol.value,
+                is_synthetic: true,
+              };
+
+              console.log(
+                `Added ${selectionType} position for ${
+                  option.symbol
+                } at $${price.toFixed(2)}`
+              );
+              combinedPositions.push(syntheticPosition);
+            }
+          });
+        }
+
+        // Generate payoff data for combined positions (current + selected)
         const payoffData = generateMultiLegPayoff(
-          positions.value,
+          combinedPositions,
           underlyingPrice.value
         );
 
         if (payoffData) {
           chartData.value = payoffData;
+          console.log(
+            `Chart updated with ${combinedPositions.length} positions (${selectedOptions.value.length} adjustments)`
+          );
         }
       } catch (err) {
         console.error("Error generating chart:", err);
@@ -982,6 +1045,17 @@ export default {
       }
     });
 
+    // Watch for selected options changes to update chart
+    watch(
+      [selectedOptions, selectedOptionsMap],
+      () => {
+        if (hasOptionPositions.value) {
+          generateChart();
+        }
+      },
+      { deep: true }
+    );
+
     // Watch for positions to load options chain
     watch(
       [hasOptionPositions, positionExpiry],
@@ -1360,6 +1434,13 @@ export default {
 
 .selected-option:hover {
   background: #0056b3;
+}
+
+.adjustment-indicator {
+  color: #007bff;
+  font-weight: normal;
+  font-size: 0.9em;
+  margin-left: 8px;
 }
 
 @media (max-width: 768px) {
