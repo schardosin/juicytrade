@@ -293,7 +293,7 @@ import {
 } from "vue";
 import { Chart, registerables } from "chart.js";
 import api from "../services/api";
-import streamingClient from "../services/streamingClient";
+import webSocketClient from "../services/webSocketClient";
 import {
   generateButterflyPayoff,
   createChartConfig,
@@ -466,7 +466,14 @@ export default {
     // Methods
     const checkServiceStatus = async () => {
       try {
-        serviceStatus.value = await streamingClient.checkServiceStatus();
+        // Get WebSocket connection status
+        const status = webSocketClient.getConnectionStatus();
+        serviceStatus.value = {
+          service_status: "running",
+          websocket_connected: status.isConnected,
+          subscribed_symbols: status.subscribedSymbols,
+          reconnect_attempts: status.reconnectAttempts,
+        };
       } catch (error) {
         console.error("Error checking service status:", error);
         serviceStatus.value = null;
@@ -476,10 +483,10 @@ export default {
     const restartStreamingService = async () => {
       restartingService.value = true;
       try {
-        const success = await streamingClient.restartStreaming();
-        if (success) {
-          await checkServiceStatus();
-        }
+        // Disconnect and reconnect WebSocket
+        webSocketClient.disconnect();
+        await webSocketClient.connect();
+        await checkServiceStatus();
       } catch (error) {
         console.error("Error restarting service:", error);
       } finally {
@@ -489,28 +496,39 @@ export default {
 
     const fetchUnderlyingPrice = async () => {
       if (!symbol.value) return;
+
+      // Use WebSocket to get live price instead of HTTP
+      console.log("Setting up WebSocket for underlying price:", symbol.value);
+
       try {
-        const price = await api.getUnderlyingPrice(symbol.value);
-        console.log("API returned price:", price, "type:", typeof price);
-        if (price !== null && !isNaN(price) && price > 0) {
-          underlyingPrice.value = price;
-          isLivePrice.value = false;
-          console.log("Set underlying price to:", price);
-        } else {
-          // Set a fallback price for testing when backend is unavailable
-          underlyingPrice.value = 450; // Mock SPY price
-          isLivePrice.value = false;
-          console.warn(
-            "Using fallback price for testing, API returned:",
-            price
-          );
-        }
-      } catch (error) {
-        console.error("Error fetching underlying price:", error);
-        // Set a fallback price for testing when backend is unavailable
-        underlyingPrice.value = 450; // Mock SPY price
+        // Connect to WebSocket and subscribe to underlying symbol
+        await webSocketClient.connect();
+        webSocketClient.subscribe([symbol.value]);
+
+        // Set up price update handler for underlying
+        webSocketClient.onPriceUpdate((data) => {
+          if (data.symbol === symbol.value) {
+            underlyingPrice.value = data.price;
+            isLivePrice.value = true;
+            console.log("WebSocket underlying price update:", data.price);
+          }
+        });
+
+        // Set a default price while waiting for WebSocket data
+        underlyingPrice.value = 620; // Default SPY price
         isLivePrice.value = false;
-        console.warn("Using fallback price due to API error");
+        console.log(
+          "Set default underlying price, waiting for WebSocket updates"
+        );
+      } catch (error) {
+        console.error(
+          "Error setting up WebSocket for underlying price:",
+          error
+        );
+        // Set a fallback price
+        underlyingPrice.value = 620; // Default SPY price
+        isLivePrice.value = false;
+        console.warn("Using fallback price due to WebSocket error");
       }
     };
 
@@ -653,71 +671,8 @@ export default {
         };
       }
 
-      // CRITICAL: Start streaming FIRST, then fetch prices
+      // Start streaming - prices will be updated via WebSocket
       await startStreaming();
-
-      // Now fetch option prices after subscription
-      const optionSymbols = getOptionSymbolsForLegs(
-        lowerStrike,
-        atmStrike,
-        upperStrike
-      );
-
-      // Wait a moment for subscription to take effect
-      await new Promise((resolve) => setTimeout(resolve, 1000));
-
-      const optionPrices = await api.fetchOptionPrices(optionSymbols);
-      console.log("Option prices after subscription:", optionPrices);
-
-      // Update butterfly info with fetched prices
-      if (strategyType.value === "IRON Butterfly") {
-        const putLower = findOption(lowerStrike, "put");
-        const putAtm = findOption(atmStrike, "put");
-        const callAtm = findOption(atmStrike, "call");
-        const callUpper = findOption(upperStrike, "call");
-
-        butterflyInfo.value = {
-          ...butterflyInfo.value,
-          lower_price:
-            getOptionPrice(putLower, optionPrices) ||
-            butterflyInfo.value.lower_price,
-          atm_put_price:
-            getOptionPrice(putAtm, optionPrices) ||
-            butterflyInfo.value.atm_put_price,
-          atm_call_price:
-            getOptionPrice(callAtm, optionPrices) ||
-            butterflyInfo.value.atm_call_price,
-          upper_price:
-            getOptionPrice(callUpper, optionPrices) ||
-            butterflyInfo.value.upper_price,
-        };
-      } else {
-        const lowerOption = findOption(
-          lowerStrike,
-          strategyType.value === "CALL Butterfly" ? "call" : "put"
-        );
-        const atmOption = findOption(
-          atmStrike,
-          strategyType.value === "CALL Butterfly" ? "call" : "put"
-        );
-        const upperOption = findOption(
-          upperStrike,
-          strategyType.value === "CALL Butterfly" ? "call" : "put"
-        );
-
-        butterflyInfo.value = {
-          ...butterflyInfo.value,
-          lower_price:
-            getOptionPrice(lowerOption, optionPrices) ||
-            butterflyInfo.value.lower_price,
-          atm_price:
-            getOptionPrice(atmOption, optionPrices) ||
-            butterflyInfo.value.atm_price,
-          upper_price:
-            getOptionPrice(upperOption, optionPrices) ||
-            butterflyInfo.value.upper_price,
-        };
-      }
 
       // Generate chart data
       chartData.value = generateButterflyPayoff(
@@ -864,52 +819,59 @@ export default {
     };
 
     const startStreaming = async () => {
-      console.log("Starting streaming subscriptions...");
+      console.log("Starting WebSocket streaming subscriptions...");
 
-      // Subscribe to underlying stock
-      console.log(`Subscribing to stock: ${symbol.value}`);
-      const stockSuccess = streamingClient.subscribeStock(
-        symbol.value,
-        (sym, priceData) => {
-          if (priceData.ask !== null && priceData.bid !== null) {
-            underlyingPrice.value = (priceData.ask + priceData.bid) / 2;
-          } else if (priceData.ask !== null) {
-            underlyingPrice.value = priceData.ask;
-          } else if (priceData.bid !== null) {
-            underlyingPrice.value = priceData.bid;
+      try {
+        // Connect to WebSocket
+        await webSocketClient.connect();
+
+        // Collect all symbols to subscribe to
+        const symbols = [];
+
+        // Add underlying symbol
+        if (symbol.value) {
+          symbols.push(symbol.value);
+        }
+
+        // Add option symbols
+        if (butterflyInfo.value) {
+          const optionSymbols = getOptionSymbolsForLegs(
+            butterflyInfo.value.lower_strike,
+            butterflyInfo.value.atm_strike,
+            butterflyInfo.value.upper_strike
+          );
+          symbols.push(...optionSymbols);
+        }
+
+        console.log("Subscribing to symbols via WebSocket:", symbols);
+
+        // Subscribe to all symbols
+        webSocketClient.subscribe(symbols);
+
+        // Set up price update handler
+        webSocketClient.onPriceUpdate((data) => {
+          console.log("Real-time price update:", data.symbol, data.price);
+
+          // Update underlying price if it's the underlying symbol
+          if (data.symbol === symbol.value) {
+            underlyingPrice.value = data.price;
+            isLivePrice.value = true;
+            throttledChartUpdate();
+          } else {
+            // Update option price
+            updateOptionPrice(data.symbol, data.data);
           }
-          isLivePrice.value = true;
-          updateChart();
-        }
-      );
+        });
 
-      console.log(`Stock subscription result: ${stockSuccess}`);
+        // Set up subscription confirmation handler
+        webSocketClient.onSubscriptionConfirmed((message) => {
+          console.log("WebSocket subscription confirmed:", message);
+        });
 
-      // Subscribe to option symbols
-      if (butterflyInfo.value) {
-        const symbols = getOptionSymbolsForLegs(
-          butterflyInfo.value.lower_strike,
-          butterflyInfo.value.atm_strike,
-          butterflyInfo.value.upper_strike
-        );
-
-        console.log(`Subscribing to option symbols:`, symbols);
-
-        for (const optionSymbol of symbols) {
-          console.log(`Subscribing to option: ${optionSymbol}`);
-          const optionSuccess = streamingClient.subscribeOption(
-            optionSymbol,
-            (sym, priceData) => {
-              updateOptionPrice(sym, priceData);
-            }
-          );
-          console.log(
-            `Option subscription result for ${optionSymbol}: ${optionSuccess}`
-          );
-        }
+        console.log("WebSocket streaming setup complete");
+      } catch (error) {
+        console.error("Error starting WebSocket streaming:", error);
       }
-
-      console.log("Streaming subscriptions completed");
     };
 
     // Throttle chart updates to improve performance and prevent crashes
@@ -1335,7 +1297,7 @@ export default {
     });
 
     onUnmounted(() => {
-      streamingClient.stopPolling();
+      webSocketClient.disconnect();
       if (chart.value) {
         chart.value.destroy();
       }

@@ -257,7 +257,7 @@ import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
 import { Chart, registerables } from "chart.js";
 import Tag from "primevue/tag";
 import api from "../services/api";
-import streamingClient from "../services/streamingClient";
+import webSocketClient from "../services/webSocketClient";
 import {
   generateMultiLegPayoff,
   createMultiLegChartConfig,
@@ -318,23 +318,43 @@ export default {
       error.value = null;
 
       try {
-        const response = await api.getPositions();
+        // Connect to WebSocket first
+        await webSocketClient.connect();
 
-        if (response.success) {
-          positions.value = response.positions || [];
+        // Set up position handlers
+        webSocketClient.onPositionsUpdate((positionsData) => {
+          console.log("Positions received via WebSocket:", positionsData);
 
-          // If we have option positions, fetch underlying price and generate chart
-          if (hasOptionPositions.value) {
-            await fetchUnderlyingPrice();
-            generateChart();
+          if (positionsData.success) {
+            positions.value = positionsData.positions || [];
+
+            // If we have option positions, generate chart with default price
+            // Real price will come from WebSocket
+            if (hasOptionPositions.value) {
+              generateChart();
+            }
+
+            loading.value = false;
+
+            // Automatically start streaming for all position symbols
+            startStreamingForPositions();
+          } else {
+            error.value = positionsData.error || "Failed to fetch positions";
+            loading.value = false;
           }
-        } else {
-          error.value = response.error || "Failed to fetch positions";
-        }
+        });
+
+        webSocketClient.onPositionsError((errorMsg) => {
+          console.error("Positions error via WebSocket:", errorMsg);
+          error.value = errorMsg || "Failed to fetch positions";
+          loading.value = false;
+        });
+
+        // Request positions via WebSocket
+        webSocketClient.requestPositions();
       } catch (err) {
         console.error("Error fetching positions:", err);
         error.value = err.message || "Failed to fetch positions";
-      } finally {
         loading.value = false;
       }
     };
@@ -426,49 +446,54 @@ export default {
       }
 
       try {
-        console.log("Starting streaming for positions...");
+        console.log("Starting WebSocket streaming for positions...");
         isStreaming.value = true;
 
-        // Subscribe to underlying symbol (stock)
+        // Connect to WebSocket
+        await webSocketClient.connect();
+
+        // Collect all symbols to subscribe to
+        const symbols = [];
+
+        // Add underlying symbol
         if (underlyingSymbol.value) {
-          console.log("Subscribing to underlying:", underlyingSymbol.value);
-          streamingClient.subscribeStock(
-            underlyingSymbol.value,
-            (symbol, priceData) => {
-              console.log("Stock price update received:", symbol, priceData);
-              const price = priceData.ask || priceData.bid || priceData.last;
-              if (price) {
-                streamingPrices.value[symbol] = price;
-                underlyingPrice.value = price;
-                updatePositionPrices();
-              }
-            }
-          );
+          symbols.push(underlyingSymbol.value);
         }
 
-        // Subscribe to option symbols
-        const optionSymbols = positions.value
-          .filter((pos) => pos.asset_class === "us_option")
-          .map((pos) => pos.symbol);
-
-        optionSymbols.forEach((symbol) => {
-          console.log("Subscribing to option:", symbol);
-          streamingClient.subscribeOption(symbol, (symbolName, priceData) => {
-            console.log("Option price update received:", symbolName, priceData);
-            const price = priceData.ask || priceData.bid || priceData.last;
-            if (price) {
-              streamingPrices.value[symbolName] = price;
-              updatePositionPrices();
-            }
-          });
+        // Add all position symbols
+        positions.value.forEach((pos) => {
+          if (pos.symbol) {
+            symbols.push(pos.symbol);
+          }
         });
 
-        console.log("Streaming subscriptions set up for:", {
-          underlying: underlyingSymbol.value,
-          options: optionSymbols,
+        console.log("Subscribing to symbols:", symbols);
+
+        // Subscribe to all symbols
+        webSocketClient.subscribe(symbols);
+
+        // Set up price update handler
+        webSocketClient.onPriceUpdate((data) => {
+          console.log("WebSocket price update received:", data);
+          streamingPrices.value[data.symbol] = data.price;
+
+          // Update underlying price if it's the underlying symbol
+          if (data.symbol === underlyingSymbol.value) {
+            underlyingPrice.value = data.price;
+          }
+
+          // Update position prices and recalculate P&L
+          updatePositionPrices();
         });
+
+        // Set up subscription confirmation handler
+        webSocketClient.onSubscriptionConfirmed((message) => {
+          console.log("WebSocket subscription confirmed:", message);
+        });
+
+        console.log("WebSocket streaming setup complete");
       } catch (err) {
-        console.error("Error starting streaming:", err);
+        console.error("Error starting WebSocket streaming:", err);
         isStreaming.value = false;
       }
     };
@@ -479,25 +504,67 @@ export default {
       }
 
       try {
-        console.log("Stopping streaming...");
-
-        // Unsubscribe from underlying
-        if (underlyingSymbol.value) {
-          streamingClient.unsubscribeStock(underlyingSymbol.value);
-        }
-
-        // Unsubscribe from options
-        positions.value
-          .filter((pos) => pos.asset_class === "us_option")
-          .forEach((pos) => {
-            streamingClient.unsubscribeOption(pos.symbol);
-          });
-
-        streamingClient.stopPolling();
+        console.log("Stopping WebSocket streaming...");
+        webSocketClient.disconnect();
         isStreaming.value = false;
         streamingPrices.value = {};
       } catch (err) {
-        console.error("Error stopping streaming:", err);
+        console.error("Error stopping WebSocket streaming:", err);
+      }
+    };
+
+    const startStreamingForPositions = async () => {
+      if (isStreaming.value || !positions.value.length) {
+        return;
+      }
+
+      try {
+        console.log("Starting streaming for loaded positions...");
+        isStreaming.value = true;
+
+        // Collect all symbols from positions
+        const symbols = [];
+
+        // Add underlying symbol
+        if (underlyingSymbol.value) {
+          symbols.push(underlyingSymbol.value);
+        }
+
+        // Add all position symbols
+        positions.value.forEach((pos) => {
+          if (pos.symbol) {
+            symbols.push(pos.symbol);
+          }
+        });
+
+        console.log("Auto-subscribing to position symbols:", symbols);
+
+        // Subscribe to all symbols
+        webSocketClient.subscribe(symbols);
+
+        // Set up price update handler
+        webSocketClient.onPriceUpdate((data) => {
+          console.log("Real-time price update:", data.symbol, data.price);
+          streamingPrices.value[data.symbol] = data.price;
+
+          // Update underlying price if it's the underlying symbol
+          if (data.symbol === underlyingSymbol.value) {
+            underlyingPrice.value = data.price;
+          }
+
+          // Update position prices and recalculate P&L
+          updatePositionPrices();
+        });
+
+        // Set up subscription confirmation handler
+        webSocketClient.onSubscriptionConfirmed((message) => {
+          console.log("Position symbols subscription confirmed:", message);
+        });
+
+        console.log("Position streaming setup complete");
+      } catch (err) {
+        console.error("Error starting position streaming:", err);
+        isStreaming.value = false;
       }
     };
 

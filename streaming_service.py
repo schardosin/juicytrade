@@ -1,7 +1,7 @@
 import os
 import asyncio
 import uvicorn
-from fastapi import FastAPI, BackgroundTasks
+from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Dict, Optional, Set
@@ -13,6 +13,7 @@ from dotenv import load_dotenv
 import logging
 from datetime import datetime, date
 import requests
+import json
 
 # Function to fetch initial stock prices
 async def fetch_initial_prices(symbols: List[str]):
@@ -35,7 +36,7 @@ async def fetch_initial_prices(symbols: List[str]):
 # Configure logging to provide timestamps and clear messages
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger("streaming_service")
-logger.setLevel(logging.WARNING)
+logger.setLevel(logging.INFO)
 
 # Load environment variables from a .env file
 load_dotenv()
@@ -99,6 +100,116 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# --- WebSocket Connection Manager ---
+
+class ConnectionManager:
+    def __init__(self):
+        self.active_connections: Dict[WebSocket, Set[str]] = {}
+        self.symbol_subscribers: Dict[str, Set[WebSocket]] = {}
+    
+    async def connect(self, websocket: WebSocket):
+        await websocket.accept()
+        self.active_connections[websocket] = set()
+        logger.info(f"WebSocket client connected. Total connections: {len(self.active_connections)}")
+    
+    def disconnect(self, websocket: WebSocket):
+        # Remove from all symbol subscriptions
+        if websocket in self.active_connections:
+            subscribed_symbols = self.active_connections[websocket]
+            for symbol in subscribed_symbols:
+                if symbol in self.symbol_subscribers:
+                    self.symbol_subscribers[symbol].discard(websocket)
+                    if len(self.symbol_subscribers[symbol]) == 0:
+                        del self.symbol_subscribers[symbol]
+            del self.active_connections[websocket]
+        logger.info(f"WebSocket client disconnected. Total connections: {len(self.active_connections)}")
+    
+    def subscribe_symbol(self, websocket: WebSocket, symbol: str):
+        if websocket in self.active_connections:
+            self.active_connections[websocket].add(symbol)
+            if symbol not in self.symbol_subscribers:
+                self.symbol_subscribers[symbol] = set()
+            self.symbol_subscribers[symbol].add(websocket)
+            logger.info(f"Client subscribed to {symbol}. Total subscribers for {symbol}: {len(self.symbol_subscribers[symbol])}")
+    
+    async def broadcast_price_update(self, symbol: str, price_data: dict):
+        if symbol in self.symbol_subscribers:
+            message = {
+                "type": "price_update",
+                "symbol": symbol,
+                "data": price_data
+            }
+            disconnected = []
+            for websocket in self.symbol_subscribers[symbol]:
+                try:
+                    await websocket.send_text(json.dumps(message))
+                except Exception as e:
+                    logger.warning(f"Failed to send message to WebSocket client: {e}")
+                    disconnected.append(websocket)
+            
+            # Clean up disconnected clients
+            for ws in disconnected:
+                self.disconnect(ws)
+    
+    def get_stats(self):
+        return {
+            "total_connections": len(self.active_connections),
+            "total_subscriptions": sum(len(subs) for subs in self.active_connections.values()),
+            "symbols_with_subscribers": list(self.symbol_subscribers.keys())
+        }
+
+# Global connection manager instance
+manager = ConnectionManager()
+
+# --- Auto-subscription Helper Functions ---
+
+async def auto_subscribe_position_symbols(positions):
+    """
+    Automatically subscribe to streaming for symbols found in positions.
+    """
+    global subscribed_options, subscribed_stocks
+    
+    symbols_to_add_options = set()
+    symbols_to_add_stocks = set()
+    
+    for position in positions:
+        symbol = position.get("symbol")
+        asset_class = position.get("asset_class")
+        underlying_symbol = position.get("underlying_symbol")
+        
+        if not symbol:
+            continue
+            
+        if asset_class == "us_option":
+            symbols_to_add_options.add(symbol)
+            # Also add underlying symbol for stock streaming
+            if underlying_symbol:
+                symbols_to_add_stocks.add(underlying_symbol)
+        else:
+            symbols_to_add_stocks.add(symbol)
+    
+    # Check if we need to add new symbols
+    new_options = symbols_to_add_options - subscribed_options
+    new_stocks = symbols_to_add_stocks - subscribed_stocks
+    
+    if new_options or new_stocks:
+        logger.info(f"Auto-subscribing to position symbols - Options: {new_options}, Stocks: {new_stocks}")
+        
+        # Update subscription sets
+        subscribed_options.update(new_options)
+        subscribed_stocks.update(new_stocks)
+        
+        # Fetch initial prices for new stock symbols
+        if new_stocks:
+            await fetch_initial_prices(list(new_stocks))
+        
+        # Restart streaming to include new symbols
+        await reset_streaming()
+        
+        logger.info(f"Auto-subscription complete. Total subscriptions - Options: {len(subscribed_options)}, Stocks: {len(subscribed_stocks)}")
+    else:
+        logger.info("No new symbols to auto-subscribe from positions")
+
 # --- Global State Management ---
 
 # Dictionaries to hold the latest price data
@@ -131,21 +242,31 @@ class SymbolResponse(BaseModel):
 async def option_quote_handler(data):
     """This function is called for every new option quote received."""
     symbol = data.symbol
-    option_prices[symbol] = {
+    price_data = {
         "ask": data.ask_price,
         "bid": data.bid_price,
         "timestamp": datetime.now().isoformat()
     }
+    option_prices[symbol] = price_data
+    
+    # Broadcast to WebSocket clients
+    await manager.broadcast_price_update(symbol, price_data)
+    
     logger.info(f"OPTION: {symbol} Ask: {data.ask_price} Bid: {data.bid_price}")
 
 async def stock_quote_handler(data):
     """This function is called for every new stock quote received."""
     symbol = data.symbol
-    stock_prices[symbol] = {
+    price_data = {
         "ask": data.ask_price,
         "bid": data.bid_price,
         "timestamp": datetime.now().isoformat()
     }
+    stock_prices[symbol] = price_data
+    
+    # Broadcast to WebSocket clients
+    await manager.broadcast_price_update(symbol, price_data)
+    
     logger.info(f"STOCK: {symbol} Ask: {data.ask_price} Bid: {data.bid_price}")
 
 
@@ -304,16 +425,87 @@ async def place_butterfly_order(order: ButterflyOrderRequest):
         return {"success": False, "error": str(e)}
 
 
+@app.websocket("/ws")
+async def websocket_endpoint(websocket: WebSocket):
+    """WebSocket endpoint for real-time price streaming."""
+    await manager.connect(websocket)
+    try:
+        while True:
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            if message["type"] == "subscribe":
+                symbols = message.get("symbols", [])
+                for symbol in symbols:
+                    manager.subscribe_symbol(websocket, symbol)
+                    
+                    # Send current price if available
+                    if symbol in stock_prices:
+                        await websocket.send_text(json.dumps({
+                            "type": "price_update",
+                            "symbol": symbol,
+                            "data": stock_prices[symbol]
+                        }))
+                    elif symbol in option_prices:
+                        await websocket.send_text(json.dumps({
+                            "type": "price_update", 
+                            "symbol": symbol,
+                            "data": option_prices[symbol]
+                        }))
+                        
+                # Send confirmation
+                await websocket.send_text(json.dumps({
+                    "type": "subscription_confirmed",
+                    "symbols": symbols,
+                    "message": f"Subscribed to {len(symbols)} symbols"
+                }))
+            
+            elif message["type"] == "get_positions":
+                # Send current positions via WebSocket
+                try:
+                    logger.info("WebSocket: Received get_positions request")
+                    # Call the positions function directly (it's not async)
+                    positions_response = get_open_positions()
+                    logger.info(f"WebSocket: Got positions response with {positions_response.get('total_positions', 0)} positions")
+                    
+                    # Auto-subscribe to streaming for position symbols
+                    if positions_response.get("success") and positions_response.get("positions"):
+                        await auto_subscribe_position_symbols(positions_response["positions"])
+                    
+                    response_message = {
+                        "type": "positions_update",
+                        "data": positions_response
+                    }
+                    logger.info("WebSocket: Sending positions response")
+                    await websocket.send_text(json.dumps(response_message))
+                    logger.info("WebSocket: Positions response sent successfully")
+                except Exception as e:
+                    logger.error(f"Error getting positions via WebSocket: {e}", exc_info=True)
+                    await websocket.send_text(json.dumps({
+                        "type": "positions_error",
+                        "error": str(e)
+                    }))
+                        
+    except WebSocketDisconnect:
+        manager.disconnect(websocket)
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+        manager.disconnect(websocket)
+
 @app.get("/")
 async def root():
     """Root endpoint to check the status of the service."""
+    websocket_stats = manager.get_stats()
     return {
         "service_status": "running",
         "options_subscribed": list(subscribed_options),
         "stocks_subscribed": list(subscribed_stocks),
         "is_streaming_task_active": stream_task is not None and not stream_task.done(),
         "total_option_prices": len(option_prices),
-        "total_stock_prices": len(stock_prices)
+        "total_stock_prices": len(stock_prices),
+        "websocket_connections": websocket_stats["total_connections"],
+        "websocket_subscriptions": websocket_stats["total_subscriptions"],
+        "symbols_with_websocket_subscribers": websocket_stats["symbols_with_subscribers"]
     }
 
 @app.get("/subscriptions")
@@ -505,7 +697,7 @@ async def api_get_options_chain(symbol: str, expiry: str, strategy_type: str):
     return get_options_chain(symbol, expiry, strategy_type)
 
 @app.get("/positions")
-async def get_open_positions():
+def get_open_positions():
     """
     Retrieve all current open positions from Alpaca.
     Returns both stock and option positions with their details.
@@ -586,8 +778,8 @@ async def get_open_positions():
 
 if __name__ == "__main__":
     # To run this file:
-    # 1. Save it as, for example, 'main.py'
-    # 2. In your terminal, run: uvicorn main:app --host 0.0.0.0 --port 8008
+    # 1. Save it as, for example, 'streaming_service.py'
+    # 2. In your terminal, run: python streaming_service.py
     #
     # Ensure your .env file with API keys is in the same directory.
-    uvicorn.run("main:app", host="0.0.0.0", port=8008, reload=True)
+    uvicorn.run("streaming_service:app", host="0.0.0.0", port=8008, reload=True)
