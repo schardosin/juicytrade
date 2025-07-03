@@ -53,14 +53,10 @@
               :minFractionDigits="2"
               :maxFractionDigits="2"
             />
-            <small
-              >Amount to add/subtract from the calculated butterfly price to set
-              your order price.</small
-            >
           </div>
 
           <div class="field">
-            <label for="symbol">Underlying Symbol</label>
+            <label for="symbol">Symbol</label>
             <InputText
               id="symbol"
               v-model="symbol"
@@ -78,18 +74,46 @@
       <Card class="legs-card">
         <template #title>Selected Butterfly Strikes (Live)</template>
         <template #content>
-          <DataTable :value="legsTableData" class="p-datatable-sm">
-            <Column field="action" header="Action"></Column>
-            <Column field="type" header="Type"></Column>
-            <Column field="strike" header="Strike">
+          <DataTable :value="legsTableData" class="p-datatable-sm" stripedRows>
+            <Column field="action" header="Action" :sortable="true">
               <template #body="slotProps">
-                ${{ slotProps.data.strike.toFixed(2) }}
+                <Tag
+                  :value="slotProps.data.action || 'N/A'"
+                  :severity="
+                    slotProps.data.action === 'Buy' ? 'success' : 'danger'
+                  "
+                />
               </template>
             </Column>
-            <Column field="expiration" header="Expiration"></Column>
-            <Column field="price" header="Price">
+            <Column field="type" header="Type" :sortable="true">
               <template #body="slotProps">
-                ${{ slotProps.data.price.toFixed(4) }}
+                <Tag
+                  :value="slotProps.data.type || 'N/A'"
+                  :severity="
+                    slotProps.data.type === 'Call' ? 'success' : 'info'
+                  "
+                />
+              </template>
+            </Column>
+            <Column field="strike" header="Strike" :sortable="true">
+              <template #body="slotProps">
+                <span class="strike-cell">
+                  ${{ slotProps.data.strike.toFixed(2) }}
+                </span>
+              </template>
+            </Column>
+            <Column field="expiration" header="Expiration" :sortable="true">
+              <template #body="slotProps">
+                <span class="expiry-cell">
+                  {{ slotProps.data.expiration }}
+                </span>
+              </template>
+            </Column>
+            <Column field="price" header="Price" :sortable="true">
+              <template #body="slotProps">
+                <span class="price-cell">
+                  ${{ slotProps.data.price.toFixed(4) }}
+                </span>
               </template>
             </Column>
           </DataTable>
@@ -293,6 +317,7 @@ import {
   nextTick,
 } from "vue";
 import { Chart, registerables } from "chart.js";
+import Tag from "primevue/tag";
 import api from "../services/api";
 import webSocketClient from "../services/webSocketClient";
 import {
@@ -304,6 +329,9 @@ Chart.register(...registerables);
 
 export default {
   name: "TradeSetup",
+  components: {
+    Tag,
+  },
   setup() {
     // Reactive data
     const serviceStatus = ref(null);
@@ -511,9 +539,6 @@ export default {
     const fetchUnderlyingPrice = async () => {
       if (!symbol.value) return;
 
-      // Use WebSocket to get live price instead of HTTP
-      console.log("Setting up WebSocket for underlying price:", symbol.value);
-
       try {
         // Connect to WebSocket and subscribe to underlying symbol
         await webSocketClient.connect();
@@ -524,16 +549,12 @@ export default {
           if (data.symbol === symbol.value) {
             underlyingPrice.value = data.price;
             isLivePrice.value = true;
-            console.log("WebSocket underlying price update:", data.price);
           }
         });
 
         // NO DEFAULT PRICE - wait for real data from Alpaca
         underlyingPrice.value = null;
         isLivePrice.value = false;
-        console.log(
-          "Waiting for real underlying price from Alpaca via WebSocket"
-        );
       } catch (error) {
         console.error(
           "Error setting up WebSocket for underlying price:",
@@ -556,9 +577,6 @@ export default {
 
       try {
         const expiryStr = expiry.value.toISOString().split("T")[0];
-        console.log(
-          `Fetching options chain for ${symbol.value} expiring ${expiryStr}`
-        );
 
         const chain = await api.getOptionsChain(
           symbol.value,
@@ -576,9 +594,6 @@ export default {
 
           if (validOptions.length >= 3) {
             optionsChain.value = validOptions;
-            console.log(
-              `Valid options chain loaded: ${validOptions.length} options with real prices`
-            );
             await calculateButterflyInfo();
           } else {
             console.warn(
@@ -611,12 +626,6 @@ export default {
     };
 
     const calculateButterflyInfo = async () => {
-      console.log("calculateButterflyInfo called with:", {
-        optionsChainLength: optionsChain.value.length,
-        underlyingPrice: underlyingPrice.value,
-        isNaN: isNaN(underlyingPrice.value),
-      });
-
       if (
         optionsChain.value.length === 0 ||
         underlyingPrice.value === null ||
@@ -627,9 +636,7 @@ export default {
       }
 
       const strikes = getStrikePrices();
-      console.log("Available strikes:", strikes);
       if (strikes.length < 3) {
-        console.log("Early return: not enough strikes", strikes.length);
         return;
       }
 
@@ -637,14 +644,7 @@ export default {
       const lowerStrike = findLowerStrike(strikes, atmStrike);
       const upperStrike = findUpperStrike(strikes, atmStrike);
 
-      console.log("Strike selection:", {
-        atmStrike,
-        lowerStrike,
-        upperStrike,
-      });
-
       if (lowerStrike === atmStrike || upperStrike === atmStrike) {
-        console.log("Early return: invalid strike selection");
         return;
       }
 
@@ -742,9 +742,6 @@ export default {
             ? curr
             : prev
         );
-        console.log(
-          `Selected lower strike: ${result} (target was ${targetLowerStrike}, legWidth: ${legWidth.value})`
-        );
         return result;
       }
 
@@ -752,7 +749,6 @@ export default {
       const notAtm = strikes.filter((s) => s !== atmStrike);
       if (notAtm.length > 0) {
         const result = Math.min(...notAtm);
-        console.log("Fallback lower strike (not ATM):", result);
         return result;
       }
 
@@ -773,9 +769,7 @@ export default {
             ? curr
             : prev
         );
-        console.log(
-          `Selected upper strike: ${result} (target was ${targetUpperStrike}, legWidth: ${legWidth.value})`
-        );
+
         return result;
       }
 
@@ -836,8 +830,6 @@ export default {
     };
 
     const startStreaming = async () => {
-      console.log("Starting WebSocket streaming subscriptions...");
-
       try {
         // Connect to WebSocket
         await webSocketClient.connect();
@@ -859,8 +851,6 @@ export default {
           );
           symbols.push(...optionSymbols);
         }
-
-        console.log("Subscribing to symbols via WebSocket:", symbols);
 
         // Subscribe to all symbols
         webSocketClient.subscribe(symbols);
@@ -909,8 +899,6 @@ export default {
         webSocketClient.onSubscriptionConfirmed((message) => {
           //console.log("WebSocket subscription confirmed:", message);
         });
-
-        console.log("WebSocket streaming setup complete");
       } catch (error) {
         console.error("Error starting WebSocket streaming:", error);
       }
@@ -965,7 +953,6 @@ export default {
     const updateButterflyPrices = () => {
       if (!butterflyInfo.value) return;
 
-      console.log("Updating butterfly prices with streaming data");
       let priceChanged = false;
 
       // Update prices for each leg using streaming data
@@ -978,9 +965,6 @@ export default {
         if (putLowerSymbol && streamingPrices.value[putLowerSymbol]) {
           const newPrice = streamingPrices.value[putLowerSymbol];
           if (Math.abs(butterflyInfo.value.lower_price - newPrice) > 0.001) {
-            console.log(
-              `Updating lower put price: ${butterflyInfo.value.lower_price} -> ${newPrice}`
-            );
             butterflyInfo.value.lower_price = newPrice;
             priceChanged = true;
           }
@@ -994,9 +978,6 @@ export default {
         if (putAtmSymbol && streamingPrices.value[putAtmSymbol]) {
           const newPrice = streamingPrices.value[putAtmSymbol];
           if (Math.abs(butterflyInfo.value.atm_put_price - newPrice) > 0.001) {
-            console.log(
-              `Updating ATM put price: ${butterflyInfo.value.atm_put_price} -> ${newPrice}`
-            );
             butterflyInfo.value.atm_put_price = newPrice;
             priceChanged = true;
           }
@@ -1010,9 +991,6 @@ export default {
         if (callAtmSymbol && streamingPrices.value[callAtmSymbol]) {
           const newPrice = streamingPrices.value[callAtmSymbol];
           if (Math.abs(butterflyInfo.value.atm_call_price - newPrice) > 0.001) {
-            console.log(
-              `Updating ATM call price: ${butterflyInfo.value.atm_call_price} -> ${newPrice}`
-            );
             butterflyInfo.value.atm_call_price = newPrice;
             priceChanged = true;
           }
@@ -1026,9 +1004,6 @@ export default {
         if (callUpperSymbol && streamingPrices.value[callUpperSymbol]) {
           const newPrice = streamingPrices.value[callUpperSymbol];
           if (Math.abs(butterflyInfo.value.upper_price - newPrice) > 0.001) {
-            console.log(
-              `Updating upper call price: ${butterflyInfo.value.upper_price} -> ${newPrice}`
-            );
             butterflyInfo.value.upper_price = newPrice;
             priceChanged = true;
           }
@@ -1045,9 +1020,6 @@ export default {
         if (lowerSymbol && streamingPrices.value[lowerSymbol]) {
           const newPrice = streamingPrices.value[lowerSymbol];
           if (Math.abs(butterflyInfo.value.lower_price - newPrice) > 0.001) {
-            console.log(
-              `Updating lower ${type} price: ${butterflyInfo.value.lower_price} -> ${newPrice}`
-            );
             butterflyInfo.value.lower_price = newPrice;
             priceChanged = true;
           }
@@ -1061,9 +1033,6 @@ export default {
         if (atmSymbol && streamingPrices.value[atmSymbol]) {
           const newPrice = streamingPrices.value[atmSymbol];
           if (Math.abs(butterflyInfo.value.atm_price - newPrice) > 0.001) {
-            console.log(
-              `Updating ATM ${type} price: ${butterflyInfo.value.atm_price} -> ${newPrice}`
-            );
             butterflyInfo.value.atm_price = newPrice;
             priceChanged = true;
           }
@@ -1077,9 +1046,6 @@ export default {
         if (upperSymbol && streamingPrices.value[upperSymbol]) {
           const newPrice = streamingPrices.value[upperSymbol];
           if (Math.abs(butterflyInfo.value.upper_price - newPrice) > 0.001) {
-            console.log(
-              `Updating upper ${type} price: ${butterflyInfo.value.upper_price} -> ${newPrice}`
-            );
             butterflyInfo.value.upper_price = newPrice;
             priceChanged = true;
           }
@@ -1088,7 +1054,6 @@ export default {
 
       // Update chart if any prices changed
       if (priceChanged) {
-        console.log("Butterfly prices updated, regenerating chart");
         throttledChartUpdate();
       }
     };
@@ -1313,15 +1278,7 @@ export default {
 
     // Function to update just the current price line without recalculating payoff
     const updateCurrentPriceLine = async () => {
-      console.log(
-        "updateCurrentPriceLine called with price:",
-        underlyingPrice.value
-      );
-
       if (!chart.value || !chartData.value || underlyingPrice.value === null) {
-        console.log(
-          "Early return from updateCurrentPriceLine - missing required data"
-        );
         return;
       }
 
@@ -1357,19 +1314,11 @@ export default {
     };
 
     const updateChart = async () => {
-      console.log("updateChart called with:", {
-        hasCanvas: !!chartCanvas.value,
-        hasChartData: !!chartData.value,
-        underlyingPrice: underlyingPrice.value,
-        chartExists: !!chart.value,
-      });
-
       if (
         !chartCanvas.value ||
         !chartData.value ||
         underlyingPrice.value === null
       ) {
-        console.log("Early return from updateChart - missing required data");
         return;
       }
 
@@ -1379,7 +1328,6 @@ export default {
       try {
         // If chart doesn't exist, create it
         if (!chart.value) {
-          console.log("Creating new chart");
           const ctx = chartCanvas.value.getContext("2d");
           if (!ctx) {
             console.error("Canvas context not available");
@@ -1391,13 +1339,8 @@ export default {
             underlyingPrice.value
           );
           chart.value = new Chart(chartCanvas.value, config);
-          console.log("New chart created successfully");
         } else {
           // Update existing chart data
-          console.log(
-            "Updating existing chart data with new underlying price:",
-            underlyingPrice.value
-          );
           const { prices, payoffs } = chartData.value;
 
           // Create new data points
@@ -1442,7 +1385,6 @@ export default {
         console.error("Error stack:", error.stack);
 
         // If update fails, try recreating the chart
-        console.log("Attempting to recreate chart due to error");
         try {
           if (chart.value) {
             chart.value.destroy();
@@ -1456,7 +1398,6 @@ export default {
               underlyingPrice.value
             );
             chart.value = new Chart(chartCanvas.value, config);
-            console.log("Chart recreated successfully after error");
           }
         } catch (recreateError) {
           console.error("Failed to recreate chart:", recreateError);
@@ -1641,8 +1582,6 @@ export default {
 
     // Lifecycle hooks
     onMounted(async () => {
-      console.log("TradeSetup mounted, starting initialization...");
-
       // Set default expiry to next market date
       try {
         const nextMarketDate = await api.getNextMarketDate();
@@ -1653,15 +1592,8 @@ export default {
       }
 
       // Initial data fetch
-      console.log("Fetching initial data...");
       await fetchUnderlyingPrice();
-      console.log("Underlying price after fetch:", underlyingPrice.value);
       await fetchOptionsChain();
-      console.log(
-        "Options chain length after fetch:",
-        optionsChain.value.length
-      );
-
       // Check service status after WebSocket connection is established
       await checkServiceStatus();
     });
@@ -1817,5 +1749,54 @@ export default {
 
 .mt-3 {
   margin-top: 1rem;
+}
+
+/* DataTable Styling to match Trade Management */
+.strike-cell {
+  font-family: monospace;
+  font-weight: 600;
+}
+
+.expiry-cell {
+  font-family: monospace;
+  font-size: 0.9rem;
+}
+
+.price-cell {
+  font-family: monospace;
+  font-weight: 600;
+  color: #2c3e50;
+}
+
+/* Tag styling consistency */
+:deep(.p-tag) {
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+/* DataTable row styling */
+:deep(.p-datatable .p-datatable-tbody > tr) {
+  transition: background-color 0.2s ease;
+}
+
+:deep(.p-datatable .p-datatable-tbody > tr:hover) {
+  background-color: #f8f9fa;
+}
+
+/* Header styling */
+:deep(.p-datatable .p-datatable-thead > tr > th) {
+  background-color: #f8f9fa;
+  color: #495057;
+  font-weight: 600;
+  border-bottom: 2px solid #dee2e6;
+}
+
+/* Sortable column styling */
+:deep(.p-datatable .p-datatable-thead > tr > th.p-sortable-column:hover) {
+  background-color: #e9ecef;
+}
+
+:deep(.p-datatable .p-datatable-thead > tr > th .p-sortable-column-icon) {
+  color: #6c757d;
 }
 </style>

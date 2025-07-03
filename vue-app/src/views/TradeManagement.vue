@@ -813,8 +813,22 @@ export default {
         // Start with current positions
         let combinedPositions = [...positions.value];
 
-        // Add selected options as new positions
+        // Add selected options as new positions using ADJUSTED ORDER PRICES
         if (selectedOptions.value.length > 0) {
+          // Calculate price adjustment factor based on limit price vs natural price
+          const naturalPrice = Math.abs(getTotalEstimatedValue()) / 100;
+          const limitPrice = combinedOrderPrice.value || naturalPrice;
+          const priceAdjustmentFactor =
+            naturalPrice > 0 ? limitPrice / naturalPrice : 1;
+
+          console.log(
+            `Chart: Price adjustment factor: ${priceAdjustmentFactor.toFixed(
+              4
+            )} (Limit: $${limitPrice.toFixed(
+              2
+            )}, Natural: $${naturalPrice.toFixed(2)})`
+          );
+
           selectedOptions.value.forEach((symbol) => {
             const selectionType = selectedOptionsMap.value[symbol];
             const option = optionsChain.value.find(
@@ -822,30 +836,32 @@ export default {
             );
 
             if (option && selectionType) {
-              // Create a synthetic position for the selected option
-              const price =
-                selectionType === "buy"
-                  ? getOptionAsk(option)
-                  : getOptionBid(option);
+              // Get base order price and apply adjustment factor
+              const baseOrderPrice = getOrderPrice(symbol);
+              const adjustedOrderPrice = baseOrderPrice * priceAdjustmentFactor;
+              const quantity = getOrderQuantity(symbol);
 
-              // For buy: qty = +1 (long position)
-              // For sell: qty = -1 (short position)
-              const quantity = selectionType === "buy" ? 1 : -1;
+              // For buy: qty = +quantity (long position)
+              // For sell: qty = -quantity (short position)
+              const positionQuantity =
+                selectionType === "buy" ? quantity : -quantity;
 
-              // Calculate cost basis correctly
-              const costBasis = price * Math.abs(quantity) * 100;
+              // Calculate cost basis using the adjusted order price
+              const costBasis =
+                adjustedOrderPrice * Math.abs(positionQuantity) * 100;
 
               const syntheticPosition = {
                 symbol: option.symbol,
                 asset_class: "us_option",
                 side: selectionType === "buy" ? "long" : "short",
-                qty: quantity, // +1 for buy, -1 for sell
+                qty: positionQuantity,
                 strike_price: option.strike_price,
                 option_type: option.type,
                 expiry_date: positionExpiry.value,
-                current_price: price,
-                market_value: price * Math.abs(quantity) * 100,
-                avg_entry_price: price, // Key field for chart calculation
+                current_price: adjustedOrderPrice, // Use adjusted order price
+                market_value:
+                  adjustedOrderPrice * Math.abs(positionQuantity) * 100,
+                avg_entry_price: adjustedOrderPrice, // Key field for chart calculation - use adjusted price
                 cost_basis: costBasis,
                 unrealized_pl: 0,
                 unrealized_plpc: 0,
@@ -853,11 +869,15 @@ export default {
                 is_synthetic: true,
               };
 
-              // console.log(
-              //   `Added ${selectionType} position for ${
-              //     option.symbol
-              //   } at $${price.toFixed(2)}`
-              // );
+              console.log(
+                `Chart: Added ${selectionType} ${quantity} contracts of ${
+                  option.symbol
+                } at ADJUSTED PRICE $${adjustedOrderPrice.toFixed(
+                  2
+                )} (base: $${baseOrderPrice.toFixed(
+                  2
+                )}, factor: ${priceAdjustmentFactor.toFixed(4)})`
+              );
               combinedPositions.push(syntheticPosition);
             }
           });
@@ -1609,18 +1629,24 @@ export default {
 
     // Watch for selected options changes to update chart and combined price
     watch(
-      [selectedOptions, selectedOptionsMap, orderQuantities],
+      [selectedOptions, selectedOptionsMap, orderQuantities, orderPrices],
       () => {
         if (hasOptionPositions.value) {
           generateChart();
         }
-        // Update combined order price with calculated cost
-        const totalCost = Math.abs(getTotalEstimatedValue()) / 100; // Convert from cents to dollars
-        combinedOrderPrice.value =
-          totalCost > 0 ? parseFloat(totalCost.toFixed(2)) : 0;
+        // Always recalculate limit price when legs change (but not when limit price itself changes)
+        const totalCost = getTotalEstimatedValue() / 100; // Convert from cents to dollars, keep sign
+        combinedOrderPrice.value = parseFloat(Math.abs(totalCost).toFixed(2));
       },
       { deep: true }
     );
+
+    // Separate watcher for combinedOrderPrice changes (for chart updates only)
+    watch(combinedOrderPrice, () => {
+      if (hasOptionPositions.value) {
+        generateChart();
+      }
+    });
 
     // Watch for positions to load options chain
     watch(

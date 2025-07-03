@@ -1,10 +1,4 @@
 export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
-  console.log("generateButterflyPayoff called with:", {
-    butterflyInfo,
-    strategyType,
-    legWidth,
-  });
-
   const { lower_strike, atm_strike, upper_strike } = butterflyInfo;
 
   // Calculate net premium
@@ -21,8 +15,6 @@ export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
       2 * butterflyInfo.atm_price +
       butterflyInfo.upper_price;
   }
-
-  console.log("Calculated net premium:", netPremium);
 
   // Generate price range
   const lowerBound = Math.floor(lower_strike - legWidth);
@@ -82,16 +74,6 @@ export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
     upperBreakEven,
     netPremium,
   };
-
-  console.log("generateButterflyPayoff result:", {
-    pricesLength: prices.length,
-    payoffsLength: payoffs.length,
-    samplePrices: prices.slice(0, 5),
-    samplePayoffs: payoffs.slice(0, 5),
-    lowerBreakEven,
-    upperBreakEven,
-    netPremium,
-  });
 
   return result;
 }
@@ -226,16 +208,6 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
 export function createChartConfig(chartData, underlyingPrice) {
   const { prices, payoffs, lowerBreakEven, upperBreakEven } = chartData;
 
-  console.log("Creating chart config with data:", {
-    pricesLength: prices.length,
-    payoffsLength: payoffs.length,
-    firstFewPrices: prices.slice(0, 5),
-    firstFewPayoffs: payoffs.slice(0, 5),
-    lowerBreakEven,
-    upperBreakEven,
-    underlyingPrice,
-  });
-
   // Create data points for the chart
   const chartPoints = prices.map((price, index) => ({
     x: price,
@@ -254,8 +226,6 @@ export function createChartConfig(chartData, underlyingPrice) {
     { x: underlyingPrice, y: minPayoff - Math.abs(minPayoff) * 0.1 },
     { x: underlyingPrice, y: maxPayoff + Math.abs(maxPayoff) * 0.1 },
   ];
-
-  console.log("Chart points:", chartPoints.slice(0, 3));
 
   return {
     type: "line",
