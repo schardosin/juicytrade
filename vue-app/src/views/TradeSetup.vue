@@ -1274,7 +1274,6 @@ export default {
     // Lifecycle hooks
     onMounted(async () => {
       console.log("TradeSetup mounted, starting initialization...");
-      await checkServiceStatus();
 
       // Set default expiry to next market date
       try {
@@ -1294,6 +1293,9 @@ export default {
         "Options chain length after fetch:",
         optionsChain.value.length
       );
+
+      // Check service status after WebSocket connection is established
+      await checkServiceStatus();
     });
 
     onUnmounted(() => {
