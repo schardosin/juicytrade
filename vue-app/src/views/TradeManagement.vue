@@ -310,18 +310,167 @@
             </div>
           </div>
 
-          <!-- Selected Options Summary -->
-          <div v-if="selectedOptions.length > 0" class="selected-summary mt-3">
-            <h5>Selected Options ({{ selectedOptions.length }}/4):</h5>
-            <div class="selected-list">
-              <span
-                v-for="symbol in selectedOptions"
-                :key="symbol"
-                class="selected-option"
-                @click="removeSelection(symbol)"
-              >
-                {{ symbol }} ✕
-              </span>
+          <!-- Order Ticket -->
+          <div v-if="selectedOptions.length > 0" class="order-ticket mt-3">
+            <div class="order-header">
+              <h5>Order Ticket - {{ underlyingSymbol }} Adjustments</h5>
+              <div class="order-controls">
+                <Button
+                  label="Clear All"
+                  severity="secondary"
+                  size="small"
+                  @click="clearAllSelections"
+                  class="clear-btn"
+                />
+              </div>
+            </div>
+
+            <div class="order-table-container">
+              <table class="order-table">
+                <thead>
+                  <tr>
+                    <th>Qty</th>
+                    <th>Exp</th>
+                    <th>Strike</th>
+                    <th>Type</th>
+                    <th>Side</th>
+                    <th>Price</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr
+                    v-for="symbol in selectedOptions"
+                    :key="symbol"
+                    :class="getOrderRowClass(symbol)"
+                  >
+                    <td class="qty-cell">
+                      <InputNumber
+                        :model-value="getOrderQuantity(symbol)"
+                        :min="1"
+                        :max="10"
+                        size="small"
+                        class="qty-input"
+                        @update:model-value="
+                          updateOrderQuantity(symbol, $event)
+                        "
+                      />
+                    </td>
+                    <td class="exp-cell">
+                      {{ formatExpiry(getOptionBySymbol(symbol)?.expiry_date) }}
+                    </td>
+                    <td class="strike-cell">
+                      ${{ getOptionBySymbol(symbol)?.strike_price?.toFixed(0) }}
+                    </td>
+                    <td class="type-cell">
+                      <Tag
+                        :value="getOptionBySymbol(symbol)?.type?.toUpperCase()"
+                        :severity="
+                          getOptionBySymbol(symbol)?.type === 'call'
+                            ? 'success'
+                            : 'info'
+                        "
+                        class="type-tag"
+                      />
+                    </td>
+                    <td class="side-cell">
+                      <Tag
+                        :value="getSelectionType(symbol)?.toUpperCase()"
+                        :severity="
+                          getSelectionType(symbol) === 'buy'
+                            ? 'success'
+                            : 'danger'
+                        "
+                        class="side-tag"
+                      />
+                    </td>
+                    <td class="price-cell">
+                      <span class="price-label">
+                        ${{ getOrderPrice(symbol).toFixed(2) }}
+                      </span>
+                    </td>
+                    <td class="actions-cell">
+                      <Button
+                        icon="pi pi-times"
+                        severity="danger"
+                        size="small"
+                        text
+                        @click="removeSelection(symbol)"
+                        class="remove-btn"
+                      />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div class="order-summary">
+              <div class="summary-row">
+                <div class="summary-label">Net Credit/Debit:</div>
+                <div class="summary-value" :class="getTotalEstimateClass()">
+                  ${{ getTotalEstimatedValue().toFixed(2) }}
+                </div>
+              </div>
+              <div class="summary-row">
+                <div class="summary-label">Limit Price:</div>
+                <div class="summary-value">
+                  <div class="limit-price-container">
+                    <InputNumber
+                      v-model="combinedOrderPrice"
+                      :min="0.01"
+                      :max="100"
+                      :step="0.01"
+                      size="small"
+                      class="compact-price-input"
+                      showButtons
+                      buttonLayout="horizontal"
+                      :incrementButtonIcon="'pi pi-plus'"
+                      :decrementButtonIcon="'pi pi-minus'"
+                    />
+                    <span
+                      class="price-type-compact"
+                      :class="getTotalEstimateClass()"
+                    >
+                      {{ getTotalEstimatedValue() >= 0 ? "Credit" : "Debit" }}
+                    </span>
+                  </div>
+                </div>
+              </div>
+              <div class="summary-row">
+                <div class="summary-label">Order Type:</div>
+                <div class="summary-value">
+                  <Dropdown
+                    v-model="orderType"
+                    :options="orderTypeOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    class="order-type-dropdown"
+                  />
+                </div>
+              </div>
+              <div class="summary-row">
+                <div class="summary-label">Time in Force:</div>
+                <div class="summary-value">
+                  <Dropdown
+                    v-model="timeInForce"
+                    :options="timeInForceOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    class="tif-dropdown"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div class="order-actions">
+              <Button
+                label="REVIEW & SEND"
+                severity="warning"
+                size="large"
+                class="review-send-btn"
+                @click="reviewAndSendOrder"
+                :disabled="!canSubmitOrder"
+              />
             </div>
           </div>
         </template>
@@ -418,6 +567,11 @@ export default {
     const optionsChain = ref([]);
     const selectedOptions = ref([]);
     const selectedOptionsMap = ref({}); // Track selection type: { symbol: 'buy'|'sell' }
+    const orderQuantities = ref({}); // Track quantities for each selected option
+    const orderPrices = ref({}); // Track custom prices for each selected option
+    const orderType = ref("Limit");
+    const timeInForce = ref("Day");
+    const combinedOrderPrice = ref(0);
 
     // Computed properties
     const optionPositions = computed(() => {
@@ -977,6 +1131,168 @@ export default {
       return selectedOptionsMap.value[symbol] || null;
     };
 
+    // Order ticket methods
+    const clearAllSelections = () => {
+      selectedOptions.value = [];
+      selectedOptionsMap.value = {};
+      orderQuantities.value = {};
+      orderPrices.value = {};
+    };
+
+    const getOrderQuantity = (symbol) => {
+      return orderQuantities.value[symbol] || 1;
+    };
+
+    const updateOrderQuantity = (symbol, value) => {
+      orderQuantities.value[symbol] = value || 1;
+    };
+
+    const getOrderPrice = (symbol) => {
+      if (orderPrices.value[symbol]) {
+        return orderPrices.value[symbol];
+      }
+      // Default to current bid/ask price
+      const option = optionsChain.value.find((opt) => opt.symbol === symbol);
+      const selectionType = selectedOptionsMap.value[symbol];
+      if (option && selectionType) {
+        return selectionType === "buy"
+          ? getOptionAsk(option)
+          : getOptionBid(option);
+      }
+      return 0;
+    };
+
+    const updateOrderPrice = (symbol, value) => {
+      orderPrices.value[symbol] = value || 0;
+    };
+
+    const getOptionBySymbol = (symbol) => {
+      return optionsChain.value.find((opt) => opt.symbol === symbol);
+    };
+
+    const formatExpiry = (dateString) => {
+      if (!dateString) return "";
+      const date = new Date(dateString);
+      return date.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+      });
+    };
+
+    const getOrderRowClass = (symbol) => {
+      const selectionType = selectedOptionsMap.value[symbol];
+      return {
+        "buy-row": selectionType === "buy",
+        "sell-row": selectionType === "sell",
+      };
+    };
+
+    const getEstimateClass = (symbol) => {
+      const selectionType = selectedOptionsMap.value[symbol];
+      const price = getOrderPrice(symbol);
+      const quantity = getOrderQuantity(symbol);
+      const value =
+        selectionType === "buy"
+          ? -price * quantity * 100
+          : price * quantity * 100;
+
+      return {
+        credit: value > 0,
+        debit: value < 0,
+      };
+    };
+
+    const getEstimatedValue = (symbol) => {
+      const selectionType = selectedOptionsMap.value[symbol];
+      const price = getOrderPrice(symbol);
+      const quantity = getOrderQuantity(symbol);
+
+      // For buy: negative value (debit)
+      // For sell: positive value (credit)
+      return selectionType === "buy"
+        ? -price * quantity * 100
+        : price * quantity * 100;
+    };
+
+    const getTotalEstimateClass = () => {
+      const total = getTotalEstimatedValue();
+      return {
+        credit: total > 0,
+        debit: total < 0,
+      };
+    };
+
+    const getTotalEstimatedValue = () => {
+      return selectedOptions.value.reduce((total, symbol) => {
+        return total + getEstimatedValue(symbol);
+      }, 0);
+    };
+
+    // Order type and time in force options
+    const orderTypeOptions = [
+      { label: "Market", value: "Market" },
+      { label: "Limit", value: "Limit" },
+    ];
+
+    const timeInForceOptions = [
+      { label: "Day", value: "Day" },
+      { label: "GTC", value: "GTC" },
+      { label: "IOC", value: "IOC" },
+      { label: "FOK", value: "FOK" },
+    ];
+
+    const canSubmitOrder = computed(() => {
+      return (
+        selectedOptions.value.length > 0 &&
+        selectedOptions.value.every(
+          (symbol) => getOrderQuantity(symbol) > 0 && getOrderPrice(symbol) > 0
+        )
+      );
+    });
+
+    const reviewAndSendOrder = () => {
+      if (!canSubmitOrder.value) {
+        console.warn("Cannot submit order: missing required fields");
+        return;
+      }
+
+      // Create order object
+      const orderLegs = selectedOptions.value.map((symbol) => {
+        const option = getOptionBySymbol(symbol);
+        const selectionType = selectedOptionsMap.value[symbol];
+        const quantity = getOrderQuantity(symbol);
+        const price = getOrderPrice(symbol);
+
+        return {
+          symbol: symbol,
+          side: selectionType,
+          quantity: quantity,
+          price: price,
+          strike: option.strike_price,
+          type: option.type,
+          expiry: option.expiry_date,
+        };
+      });
+
+      const order = {
+        legs: orderLegs,
+        orderType: orderType.value,
+        timeInForce: timeInForce.value,
+        netValue: getTotalEstimatedValue(),
+        timestamp: new Date().toISOString(),
+      };
+
+      console.log("Order ready for submission:", order);
+
+      // Here you would typically send the order to your trading API
+      // For now, we'll just log it
+      alert(
+        `Order prepared with ${orderLegs.length} legs. Net ${
+          getTotalEstimatedValue() >= 0 ? "Credit" : "Debit"
+        }: $${Math.abs(getTotalEstimatedValue()).toFixed(2)}`
+      );
+    };
+
     // Helper methods for the new options chain layout
     const getCallOption = (strike) => {
       return callOptions.value.find(
@@ -1045,13 +1361,17 @@ export default {
       }
     });
 
-    // Watch for selected options changes to update chart
+    // Watch for selected options changes to update chart and combined price
     watch(
-      [selectedOptions, selectedOptionsMap],
+      [selectedOptions, selectedOptionsMap, orderQuantities],
       () => {
         if (hasOptionPositions.value) {
           generateChart();
         }
+        // Update combined order price with calculated cost
+        const totalCost = Math.abs(getTotalEstimatedValue()) / 100; // Convert from cents to dollars
+        combinedOrderPrice.value =
+          totalCost > 0 ? parseFloat(totalCost.toFixed(2)) : 0;
       },
       { deep: true }
     );
@@ -1108,6 +1428,27 @@ export default {
       getPutOption,
       getOptionBid,
       getOptionAsk,
+
+      // Order ticket methods
+      clearAllSelections,
+      getOrderQuantity,
+      updateOrderQuantity,
+      getOrderPrice,
+      updateOrderPrice,
+      getOptionBySymbol,
+      formatExpiry,
+      getOrderRowClass,
+      getEstimateClass,
+      getEstimatedValue,
+      getTotalEstimateClass,
+      getTotalEstimatedValue,
+      orderType,
+      timeInForce,
+      orderTypeOptions,
+      timeInForceOptions,
+      canSubmitOrder,
+      reviewAndSendOrder,
+      combinedOrderPrice,
     };
   },
 };
@@ -1443,6 +1784,338 @@ export default {
   margin-left: 8px;
 }
 
+/* Order Ticket Styles */
+.order-ticket {
+  background: #2c2c2c;
+  color: #ffffff;
+  border-radius: 8px;
+  padding: 20px;
+  margin-top: 20px;
+}
+
+.order-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+  border-bottom: 1px solid #444;
+  padding-bottom: 15px;
+}
+
+.order-header h5 {
+  color: #ffffff;
+  margin: 0;
+  font-size: 1.1rem;
+}
+
+.clear-btn {
+  background: #6c757d !important;
+  border: none !important;
+}
+
+.order-table-container {
+  overflow-x: auto;
+  margin-bottom: 20px;
+}
+
+.order-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #333;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.order-table th {
+  background: #444;
+  color: #ccc;
+  padding: 12px 8px;
+  text-align: center;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border-bottom: 1px solid #555;
+}
+
+.order-table td {
+  padding: 10px 8px;
+  text-align: center;
+  border-bottom: 1px solid #444;
+  vertical-align: middle;
+}
+
+.order-table tr.buy-row {
+  background: rgba(76, 175, 80, 0.1);
+}
+
+.order-table tr.sell-row {
+  background: rgba(244, 67, 54, 0.1);
+}
+
+.qty-cell :deep(.p-inputnumber) {
+  width: 40px !important;
+  min-width: 40px !important;
+  max-width: 40px !important;
+}
+
+.qty-cell :deep(.p-inputnumber-input) {
+  width: 40px !important;
+  min-width: 40px !important;
+  max-width: 40px !important;
+  background: #555 !important;
+  border: 1px solid #666 !important;
+  color: #fff !important;
+  text-align: center !important;
+  padding: 2px 4px !important;
+  font-size: 0.8rem !important;
+}
+
+.qty-cell :deep(.p-inputnumber-button-group) {
+  display: none !important;
+}
+
+.price-input {
+  width: 60px !important;
+  background: #555 !important;
+  border: 1px solid #666 !important;
+  color: #fff !important;
+}
+
+.qty-input input,
+.price-input input {
+  background: #555 !important;
+  color: #fff !important;
+  text-align: center;
+}
+
+.type-tag,
+.side-tag {
+  font-size: 0.75rem;
+}
+
+.exp-cell,
+.strike-cell {
+  font-family: monospace;
+  font-size: 0.9rem;
+}
+
+.credit-cell .credit {
+  color: #4caf50;
+  font-weight: 600;
+}
+
+.credit-cell .debit {
+  color: #f44336;
+  font-weight: 600;
+}
+
+.remove-btn {
+  color: #f44336 !important;
+}
+
+.order-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 15px;
+  margin-bottom: 20px;
+  padding: 15px;
+  background: #3a3a3a;
+  border-radius: 6px;
+}
+
+.summary-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.summary-label {
+  color: #ccc;
+  font-size: 0.9rem;
+}
+
+.summary-value {
+  color: #fff;
+  font-weight: 600;
+}
+
+.summary-value.credit {
+  color: #4caf50;
+}
+
+.summary-value.debit {
+  color: #f44336;
+}
+
+.order-type-dropdown,
+.tif-dropdown {
+  min-width: 120px;
+}
+
+.order-actions {
+  text-align: center;
+}
+
+.review-send-btn {
+  background: #ff9800 !important;
+  border: none !important;
+  color: #000 !important;
+  font-weight: 700 !important;
+  font-size: 1rem !important;
+  padding: 12px 40px !important;
+  border-radius: 6px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.review-send-btn:hover:not(:disabled) {
+  background: #f57c00 !important;
+}
+
+.review-send-btn:disabled {
+  background: #666 !important;
+  color: #999 !important;
+}
+
+/* Combined Price Section */
+.combined-price-section {
+  background: #3a3a3a;
+  border-radius: 6px;
+  padding: 15px;
+  margin-bottom: 20px;
+  border: 1px solid #555;
+}
+
+.price-row {
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  justify-content: space-between;
+}
+
+.price-label {
+  color: #ccc;
+  font-size: 0.95rem;
+  font-weight: 600;
+  min-width: 140px;
+}
+
+.price-input-container {
+  flex: 1;
+  max-width: 150px;
+}
+
+.combined-price-input {
+  width: 100% !important;
+  background: #555 !important;
+  border: 1px solid #666 !important;
+  color: #fff !important;
+}
+
+.combined-price-input input {
+  background: #555 !important;
+  color: #fff !important;
+  text-align: center;
+  font-weight: 600;
+}
+
+.price-type {
+  font-weight: 700;
+  font-size: 0.9rem;
+  padding: 4px 12px;
+  border-radius: 4px;
+  min-width: 60px;
+  text-align: center;
+}
+
+.price-type.credit {
+  color: #4caf50;
+  background: rgba(76, 175, 80, 0.1);
+  border: 1px solid #4caf50;
+}
+
+.price-type.debit {
+  color: #f44336;
+  background: rgba(244, 67, 54, 0.1);
+  border: 1px solid #f44336;
+}
+
+.price-cell .price-label {
+  color: #ccc;
+  font-family: monospace;
+  font-size: 0.9rem;
+  font-weight: 600;
+}
+
+/* Compact Limit Price Input */
+.limit-price-container {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compact-price-input {
+  width: 80px !important;
+  min-width: 80px !important;
+  max-width: 80px !important;
+}
+
+.compact-price-input :deep(.p-inputnumber) {
+  width: 80px !important;
+  min-width: 80px !important;
+  max-width: 80px !important;
+}
+
+.compact-price-input :deep(.p-inputnumber-input) {
+  width: 50px !important;
+  background: #555 !important;
+  border: 1px solid #666 !important;
+  color: #fff !important;
+  text-align: center !important;
+  padding: 4px 2px !important;
+  font-size: 0.85rem !important;
+  font-weight: 600 !important;
+}
+
+.compact-price-input :deep(.p-inputnumber-button-up),
+.compact-price-input :deep(.p-inputnumber-button-down) {
+  background: #666 !important;
+  border: 1px solid #777 !important;
+  color: #fff !important;
+  width: 15px !important;
+  height: 15px !important;
+}
+
+.compact-price-input :deep(.p-inputnumber-button-up):hover,
+.compact-price-input :deep(.p-inputnumber-button-down):hover {
+  background: #777 !important;
+}
+
+.compact-price-input :deep(.p-inputnumber-button-up .p-button-icon),
+.compact-price-input :deep(.p-inputnumber-button-down .p-button-icon) {
+  font-size: 0.6rem !important;
+}
+
+.price-type-compact {
+  font-weight: 600;
+  font-size: 0.8rem;
+  padding: 2px 8px;
+  border-radius: 3px;
+  min-width: 50px;
+  text-align: center;
+}
+
+.price-type-compact.credit {
+  color: #4caf50;
+  background: rgba(76, 175, 80, 0.1);
+  border: 1px solid #4caf50;
+}
+
+.price-type-compact.debit {
+  color: #f44336;
+  background: rgba(244, 67, 54, 0.1);
+  border: 1px solid #f44336;
+}
+
 @media (max-width: 768px) {
   .options-chain-container {
     grid-template-columns: 1fr;
@@ -1457,6 +2130,14 @@ export default {
 
   .option-row .symbol {
     font-size: 0.8em;
+  }
+
+  .order-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .order-table-container {
+    font-size: 0.8rem;
   }
 }
 </style>
