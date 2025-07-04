@@ -80,7 +80,19 @@
 
       <!-- Positions Table -->
       <Card class="positions-table-card">
-        <template #title>Active Positions</template>
+        <template #title>
+          <div class="positions-header">
+            <span>Active Positions</span>
+            <Button
+              v-if="selectedPositions.length > 0"
+              :label="`Close Selected (${selectedPositions.length})`"
+              severity="danger"
+              size="small"
+              @click="submitCloseOrder"
+              class="close-positions-btn"
+            />
+          </div>
+        </template>
         <template #content>
           <DataTable :value="positions" class="p-datatable-sm" stripedRows>
             <Column header="Select" style="width: 60px">
@@ -206,53 +218,6 @@
               </template>
             </Column>
           </DataTable>
-        </template>
-      </Card>
-
-      <!-- Simple Close Order Panel (only show if positions are selected) -->
-      <Card v-if="selectedPositions.length > 0" class="close-order-card">
-        <template #title
-          >Close Selected Positions ({{ selectedPositions.length }})</template
-        >
-        <template #content>
-          <div class="close-order-panel">
-            <div class="close-order-row">
-              <div class="close-price-section">
-                <label for="closePrice" class="close-price-label"
-                  >Close Price:</label
-                >
-                <InputNumber
-                  id="closePrice"
-                  v-model="closeOrderPrice"
-                  :min="0.01"
-                  :max="100"
-                  :step="0.01"
-                  size="small"
-                  class="close-price-input"
-                  showButtons
-                  buttonLayout="horizontal"
-                  :incrementButtonIcon="'pi pi-plus'"
-                  :decrementButtonIcon="'pi pi-minus'"
-                />
-                <span class="mid-price-note">(Mid Price)</span>
-                <span
-                  v-if="closeOrderType"
-                  class="close-order-type"
-                  :class="closeOrderType.toLowerCase()"
-                >
-                  {{ closeOrderType }}
-                </span>
-              </div>
-              <Button
-                label="SEND"
-                severity="danger"
-                size="large"
-                class="close-send-btn"
-                @click="submitCloseOrder"
-                :disabled="closeOrderPrice <= 0"
-              />
-            </div>
-          </div>
         </template>
       </Card>
 
@@ -600,6 +565,25 @@
         </template>
       </Card>
     </div>
+
+    <!-- Centralized Order Confirmation Dialog -->
+    <OrderConfirmationDialog
+      :visible="showOrderConfirmation"
+      :orderData="orderData"
+      :loading="isPlacingOrder"
+      @hide="handleOrderCancellation"
+      @confirm="handleOrderConfirmation"
+      @cancel="handleOrderCancellation"
+    />
+
+    <!-- Centralized Order Result Dialog -->
+    <OrderResultDialog
+      :visible="showOrderResult"
+      :orderResult="orderResult"
+      @hide="handleOrderResultClose"
+      @close="handleOrderResultClose"
+      @viewPositions="handleOrderResultClose"
+    />
   </div>
 </template>
 
@@ -614,6 +598,9 @@ import {
   generateMultiLegPayoff,
   createMultiLegChartConfig,
 } from "../utils/chartUtils";
+import { useOrderManagement } from "../composables/useOrderManagement";
+import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
+import OrderResultDialog from "../components/OrderResultDialog.vue";
 
 Chart.register(...registerables);
 
@@ -622,8 +609,24 @@ export default {
   components: {
     Tag,
     Checkbox,
+    OrderConfirmationDialog,
+    OrderResultDialog,
   },
   setup() {
+    // Use centralized order management
+    const {
+      showOrderConfirmation,
+      showOrderResult,
+      orderData,
+      orderResult,
+      isPlacingOrder,
+      initializeOrder,
+      handleOrderConfirmation,
+      handleOrderCancellation,
+      handleOrderResultClose,
+      buildMultiLegOrderData,
+      buildCloseOrderData,
+    } = useOrderManagement();
     // Reactive data
     const loading = ref(true);
     const error = ref(null);
@@ -1361,64 +1364,31 @@ export default {
       );
     });
 
-    const reviewAndSendOrder = async () => {
+    const reviewAndSendOrder = () => {
       if (!canSubmitOrder.value) {
         console.warn("Cannot submit order: missing required fields");
         return;
       }
 
-      try {
-        // Build order payload similar to TradeSetup
-        const orderLegs = selectedOptions.value.map((symbol) => {
-          const option = getOptionBySymbol(symbol);
-          const selectionType = selectedOptionsMap.value[symbol];
-          const quantity = getOrderQuantity(symbol);
+      // Build order data using the centralized composable
+      const orderDataToSubmit = buildMultiLegOrderData({
+        symbol: underlyingSymbol.value,
+        expiry: positionExpiry.value,
+        selectedOptions: selectedOptions.value,
+        selectedOptionsMap: selectedOptionsMap.value,
+        orderQuantities: orderQuantities.value,
+        orderPrices: orderPrices.value,
+        optionsChain: optionsChain.value,
+        combinedOrderPrice: combinedOrderPrice.value,
+        orderType: orderType.value,
+        timeInForce: timeInForce.value,
+        // Rich data for dialog display
+        underlyingPrice: underlyingPrice.value,
+        positions: positions.value,
+      });
 
-          return {
-            symbol: symbol,
-            side: selectionType === "buy" ? "buy" : "sell",
-            ratio_qty: quantity.toString(),
-          };
-        });
-
-        const orderPayload = {
-          symbol: underlyingSymbol.value,
-          expiry: positionExpiry.value,
-          strategy_type: "Multi-Leg Adjustment",
-          legs: orderLegs,
-          order_price: combinedOrderPrice.value,
-          order_offset: 0, // No offset for adjustments
-          qty: 1,
-          time_in_force: timeInForce.value.toLowerCase(),
-          order_type: orderType.value.toLowerCase(),
-        };
-
-        console.log("Submitting adjustment order:", orderPayload);
-
-        // Submit the order
-        const result = await api.placeButterflyOrder(orderPayload);
-
-        if (result.success) {
-          // Show success message
-          alert(
-            `Order submitted successfully! Order ID: ${
-              result.order?.id || "N/A"
-            }`
-          );
-
-          // Clear selections after successful order
-          clearAllSelections();
-
-          // Optionally refresh positions
-          await fetchPositions();
-        } else {
-          // Show error message
-          alert(`Order failed: ${result.error || "Unknown error"}`);
-        }
-      } catch (error) {
-        console.error("Error submitting order:", error);
-        alert(`Order submission failed: ${error.message}`);
-      }
+      // Initialize the centralized order flow
+      initializeOrder(orderDataToSubmit);
     };
 
     // Helper methods for the new options chain layout
@@ -1518,88 +1488,33 @@ export default {
       closeOrderPrice.value = parseFloat((-netProceeds).toFixed(2));
     };
 
-    const submitCloseOrder = async () => {
+    const submitCloseOrder = () => {
       if (selectedPositions.value.length === 0) {
-        alert("Please select positions to close");
+        console.warn("Please select positions to close");
         return;
       }
 
-      if (closeOrderPrice.value <= 0) {
-        alert("Please enter a valid close price");
-        return;
-      }
+      // Calculate a default close price based on current market values
+      updateClosePrice();
 
-      try {
-        // Build close order payload with proper opposite operations
-        const closeLegs = selectedPositions.value.map((symbol) => {
-          const position = positions.value.find((pos) => pos.symbol === symbol);
+      // Use the calculated close price or default to 1.0 if calculation fails
+      const defaultClosePrice = closeOrderPrice.value || 1.0;
 
-          // For closing: do the opposite operation
-          // If position qty is -1 (short), we need to buy 1 to close
-          // If position qty is +1 (long), we need to sell 1 to close
-          const closingSide = position.qty < 0 ? "buy" : "sell";
-          const closingQuantity = Math.abs(position.qty);
+      // Build order data using the centralized composable
+      const orderDataToSubmit = buildCloseOrderData({
+        symbol: underlyingSymbol.value,
+        expiry: positionExpiry.value,
+        selectedPositions: selectedPositions.value,
+        positions: positions.value,
+        closeOrderPrice: defaultClosePrice,
+        orderType: "limit",
+        timeInForce: "day",
+        // Rich data for dialog display
+        underlyingPrice: underlyingPrice.value,
+      });
 
-          return {
-            symbol: symbol,
-            side: closingSide,
-            ratio_qty: closingQuantity.toString(),
-          };
-        });
-
-        const closeOrderPayload = {
-          symbol: underlyingSymbol.value,
-          expiry: positionExpiry.value,
-          strategy_type: "Position Close",
-          legs: closeLegs,
-          order_price: closeOrderPrice.value,
-          order_offset: 0,
-          qty: 1,
-          time_in_force: "day",
-          order_type: "limit",
-        };
-
-        console.log("Submitting close order:", closeOrderPayload);
-        console.log(
-          "Close legs breakdown:",
-          closeLegs.map((leg) => {
-            const pos = positions.value.find((p) => p.symbol === leg.symbol);
-            return {
-              symbol: leg.symbol,
-              currentPosition: pos.qty,
-              closingAction: `${leg.side} ${leg.ratio_qty}`,
-              result: `${pos.qty} + ${leg.side === "buy" ? "+" : "-"}${
-                leg.ratio_qty
-              } = ${
-                pos.qty + (leg.side === "buy" ? +leg.ratio_qty : -leg.ratio_qty)
-              }`,
-            };
-          })
-        );
-
-        // Submit the close order
-        const result = await api.placeButterflyOrder(closeOrderPayload);
-
-        if (result.success) {
-          alert(
-            `Close order submitted successfully! Order ID: ${
-              result.order?.id || "N/A"
-            }`
-          );
-
-          // Clear selections after successful order
-          selectedPositions.value = [];
-          closeOrderPrice.value = 0;
-
-          // Refresh positions
-          await fetchPositions();
-        } else {
-          alert(`Close order failed: ${result.error || "Unknown error"}`);
-        }
-      } catch (error) {
-        console.error("Error submitting close order:", error);
-        alert(`Close order submission failed: ${error.message}`);
-      }
+      // Initialize the centralized order flow
+      initializeOrder(orderDataToSubmit);
     };
 
     // Lifecycle hooks
@@ -1730,6 +1645,16 @@ export default {
       closeOrderType,
       updateClosePrice,
       submitCloseOrder,
+
+      // Centralized order management
+      showOrderConfirmation,
+      showOrderResult,
+      orderData,
+      orderResult,
+      isPlacingOrder,
+      handleOrderConfirmation,
+      handleOrderCancellation,
+      handleOrderResultClose,
     };
   },
 };
@@ -2536,5 +2461,27 @@ export default {
   color: #f44336;
   background: rgba(244, 67, 54, 0.15);
   border: 1px solid #f44336;
+}
+
+/* Positions Header Styles */
+.positions-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.close-positions-btn {
+  background: #dc3545 !important;
+  border: none !important;
+  color: #fff !important;
+  font-weight: 600 !important;
+  padding: 6px 12px !important;
+  border-radius: 4px !important;
+  font-size: 0.875rem !important;
+}
+
+.close-positions-btn:hover:not(:disabled) {
+  background: #c82333 !important;
 }
 </style>

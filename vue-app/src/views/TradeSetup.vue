@@ -164,129 +164,33 @@
       <template #content>
         <Button
           label="Place Butterfly Order"
-          @click="showOrderConfirmation = true"
+          @click="handlePlaceOrder"
           :disabled="!canPlaceOrder"
-          :loading="placingOrder"
+          :loading="isPlacingOrder"
           severity="success"
           size="large"
         />
       </template>
     </Card>
 
-    <!-- Order Confirmation Dialog -->
-    <Dialog
-      v-model:visible="showOrderConfirmation"
-      modal
-      header="Order Confirmation"
-      :style="{ width: '50rem' }"
-      @show="initializeOrderPrice"
-    >
-      <div v-if="orderDetails" class="order-confirmation">
-        <div class="order-summary">
-          <div class="summary-item">
-            <strong>Current Options Price (legs combined):</strong> ${{
-              orderDetails.currentOptionsPrice.toFixed(2)
-            }}
-          </div>
-          <div class="summary-item">
-            <strong>Calculated Order Price:</strong> ${{
-              orderDetails.calculatedOrderPrice.toFixed(2)
-            }}
-          </div>
-          <div class="summary-item">
-            <strong>Underlying Price:</strong> ${{ underlyingPrice.toFixed(2) }}
-          </div>
-        </div>
+    <!-- Centralized Order Confirmation Dialog -->
+    <OrderConfirmationDialog
+      :visible="showOrderConfirmation"
+      :orderData="orderData"
+      :loading="isPlacingOrder"
+      @hide="handleOrderCancellation"
+      @confirm="handleOrderConfirmation"
+      @cancel="handleOrderCancellation"
+    />
 
-        <!-- Editable Order Price -->
-        <div class="order-price-section">
-          <h4>Order Price</h4>
-          <div class="field">
-            <label for="manualOrderPrice">Your Order Price:</label>
-            <InputNumber
-              id="manualOrderPrice"
-              v-model="manualOrderPrice"
-              :min="-10"
-              :max="10"
-              :step="0.01"
-              :minFractionDigits="2"
-              :maxFractionDigits="2"
-              showButtons
-              @input="updateOrderCalculations"
-            />
-            <small
-              >Adjust the order price as needed before placing the order.</small
-            >
-          </div>
-        </div>
-
-        <!-- Updated calculations based on manual price -->
-        <div class="order-summary">
-          <div class="summary-item">
-            <strong>Max Profit:</strong> ${{
-              orderDetails.maxProfit.toFixed(2)
-            }}
-          </div>
-          <div class="summary-item">
-            <strong>Max Loss:</strong> ${{ orderDetails.maxLoss.toFixed(2) }}
-          </div>
-        </div>
-
-        <h4>Legs to be Traded:</h4>
-        <DataTable :value="orderDetails.legs" class="p-datatable-sm">
-          <Column field="action" header="Action"></Column>
-          <Column field="symbol" header="Symbol"></Column>
-          <Column field="date" header="Date"></Column>
-          <Column field="type" header="Type"></Column>
-          <Column field="strike" header="Strike"></Column>
-          <Column field="price" header="Price"></Column>
-        </DataTable>
-      </div>
-
-      <template #footer>
-        <Button
-          label="Cancel"
-          @click="showOrderConfirmation = false"
-          severity="secondary"
-        />
-        <Button
-          label="Confirm Order"
-          @click="confirmOrder"
-          :loading="placingOrder"
-          severity="success"
-        />
-      </template>
-    </Dialog>
-
-    <!-- Order Result Dialog -->
-    <Dialog
-      v-model:visible="showOrderResult"
-      modal
-      :header="orderResult?.success ? 'Order Success' : 'Order Failed'"
-      :style="{ width: '40rem' }"
-    >
-      <div v-if="orderResult?.success">
-        <Message severity="success" :closable="false">
-          Order Submitted Successfully!
-        </Message>
-        <pre class="order-result-json">{{
-          JSON.stringify(orderResult.order, null, 2)
-        }}</pre>
-      </div>
-      <div v-else>
-        <Message severity="error" :closable="false">
-          Order Failed: {{ orderResult?.error }}
-        </Message>
-      </div>
-
-      <template #footer>
-        <Button
-          label="Close"
-          @click="showOrderResult = false"
-          severity="secondary"
-        />
-      </template>
-    </Dialog>
+    <!-- Centralized Order Result Dialog -->
+    <OrderResultDialog
+      :visible="showOrderResult"
+      :orderResult="orderResult"
+      @hide="handleOrderResultClose"
+      @close="handleOrderResultClose"
+      @viewPositions="handleOrderResultClose"
+    />
 
     <!-- Service Status Footer -->
     <Divider />
@@ -324,6 +228,9 @@ import {
   generateButterflyPayoff,
   createChartConfig,
 } from "../utils/chartUtils";
+import { useOrderManagement } from "../composables/useOrderManagement";
+import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
+import OrderResultDialog from "../components/OrderResultDialog.vue";
 
 Chart.register(...registerables);
 
@@ -331,8 +238,23 @@ export default {
   name: "TradeSetup",
   components: {
     Tag,
+    OrderConfirmationDialog,
+    OrderResultDialog,
   },
   setup() {
+    // Use centralized order management
+    const {
+      showOrderConfirmation,
+      showOrderResult,
+      orderData,
+      orderResult,
+      isPlacingOrder,
+      initializeOrder,
+      handleOrderConfirmation,
+      handleOrderCancellation,
+      handleOrderResultClose,
+      buildButterflyOrderData,
+    } = useOrderManagement();
     // Reactive data
     const serviceStatus = ref(null);
     const restartingService = ref(false);
@@ -346,10 +268,6 @@ export default {
     const optionsChain = ref([]);
     const butterflyInfo = ref(null);
     const chartData = ref(null);
-    const showOrderConfirmation = ref(false);
-    const showOrderResult = ref(false);
-    const placingOrder = ref(false);
-    const orderResult = ref(null);
     const chartCanvas = ref(null);
     const chart = ref(null);
     const manualOrderPrice = ref(null); // For user-editable order price
@@ -1567,6 +1485,27 @@ export default {
       console.log("Manual order price updated to:", manualOrderPrice.value);
     };
 
+    const handlePlaceOrder = () => {
+      if (!butterflyInfo.value || !orderDetails.value) return;
+
+      // Build order data using the centralized composable
+      const orderDataToSubmit = buildButterflyOrderData({
+        symbol: symbol.value,
+        expiry: expiry.value,
+        strategyType: strategyType.value,
+        butterflyInfo: butterflyInfo.value,
+        orderPrice: orderDetails.value.orderPrice,
+        orderOffset: orderOffset.value,
+        underlyingPrice: underlyingPrice.value,
+        currentOptionsPrice: orderDetails.value.currentOptionsPrice,
+        calculatedOrderPrice: orderDetails.value.calculatedOrderPrice,
+        optionsChain: optionsChain.value, // Pass the actual options chain
+      });
+
+      // Initialize the centralized order flow
+      initializeOrder(orderDataToSubmit);
+    };
+
     const formatDate = (date) => {
       if (!date) return "";
       return date.toISOString().split("T")[0];
@@ -1619,12 +1558,18 @@ export default {
       optionsChain,
       butterflyInfo,
       chartData,
-      showOrderConfirmation,
-      showOrderResult,
-      placingOrder,
-      orderResult,
       chartCanvas,
       manualOrderPrice,
+
+      // Centralized order management
+      showOrderConfirmation,
+      showOrderResult,
+      orderData,
+      orderResult,
+      isPlacingOrder,
+      handleOrderConfirmation,
+      handleOrderCancellation,
+      handleOrderResultClose,
 
       // Options
       strategyOptions,
@@ -1639,7 +1584,7 @@ export default {
       restartStreamingService,
       fetchUnderlyingPrice,
       fetchOptionsChain,
-      confirmOrder,
+      handlePlaceOrder,
       formatDate,
       initializeOrderPrice,
       updateOrderCalculations,
