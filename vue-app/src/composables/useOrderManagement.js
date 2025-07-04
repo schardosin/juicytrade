@@ -281,7 +281,9 @@ export function useOrderManagement() {
       const price = orderPrices[optionSymbol] || 0;
 
       // Calculate contribution to current options price
-      const marketValue = selectionType === "buy" ? price : -price;
+      // For buy: we pay money (negative contribution to net credit)
+      // For sell: we receive money (positive contribution to net credit)
+      const marketValue = selectionType === "buy" ? -price : price;
       currentOptionsPrice += marketValue * quantity;
       totalContracts += quantity;
 
@@ -351,7 +353,7 @@ export function useOrderManagement() {
     } = params;
 
     // Calculate current market values for positions being closed
-    let currentPositionsValue = 0;
+    let currentOptionsPrice = 0;
     let totalContracts = 0;
     let currentPositionPL = 0;
 
@@ -366,8 +368,14 @@ export function useOrderManagement() {
       // Calculate current market value and P&L for this position
       const marketValue = position.market_value || 0;
       const unrealizedPL = position.unrealized_pl || 0;
+      const currentPrice = position.current_price || 0;
 
-      currentPositionsValue += Math.abs(marketValue);
+      // Calculate net credit/debit for closing this position
+      // For closing: if we're buying to close (was short), we pay money (negative)
+      // If we're selling to close (was long), we receive money (positive)
+      const netValue = closingSide === "buy" ? -currentPrice : currentPrice;
+      currentOptionsPrice += netValue * closingQuantity;
+
       currentPositionPL += unrealizedPL;
       totalContracts += closingQuantity;
 
@@ -379,7 +387,7 @@ export function useOrderManagement() {
         strike: position.strike_price
           ? `$${position.strike_price.toFixed(2)}`
           : "-",
-        price: position.current_price,
+        price: currentPrice,
         displaySymbol: symbol,
         date: formatExpiry(expiry),
         quantity: closingQuantity,
@@ -406,7 +414,7 @@ export function useOrderManagement() {
       timeInForce,
       // Rich data for dialog display
       underlyingPrice,
-      currentOptionsPrice: currentPositionsValue,
+      currentOptionsPrice: Math.abs(currentOptionsPrice),
       calculatedOrderPrice: Math.abs(closeOrderPrice),
       currentPositionPL,
       estimatedProceeds,

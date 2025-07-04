@@ -11,90 +11,123 @@
     <div v-if="orderData" class="order-confirmation">
       <!-- Order Summary -->
       <div class="order-summary">
-        <div class="summary-item">
-          <strong>Strategy:</strong> {{ orderData.strategyType }}
-        </div>
-        <div class="summary-item">
-          <strong>Symbol:</strong> {{ orderData.symbol }}
-        </div>
-        <div class="summary-item">
-          <strong>Expiry:</strong> {{ formatExpiry(orderData.expiry) }}
-        </div>
-        <div
-          v-if="orderData.currentOptionsPrice !== undefined"
-          class="summary-item"
-        >
-          <strong>Current Options Price (legs combined):</strong>
-          ${{ orderData.currentOptionsPrice.toFixed(2) }}
-        </div>
-        <div
-          v-if="orderData.calculatedOrderPrice !== undefined"
-          class="summary-item"
-        >
-          <strong>Calculated Order Price:</strong>
-          ${{ orderData.calculatedOrderPrice.toFixed(2) }}
-        </div>
-        <div v-if="orderData.underlyingPrice" class="summary-item">
-          <strong>Underlying Price:</strong>
-          ${{ orderData.underlyingPrice.toFixed(2) }}
+        <!-- Basic Information - Two Column Layout -->
+        <div class="summary-grid">
+          <div class="summary-item">
+            <strong>Strategy:</strong> {{ orderData.strategyType }}
+          </div>
+          <div class="summary-item">
+            <strong>Symbol:</strong> {{ orderData.symbol }}
+          </div>
+          <div class="summary-item">
+            <strong>Expiry:</strong> {{ formatExpiry(orderData.expiry) }}
+          </div>
+          <div v-if="orderData.underlyingPrice" class="summary-item">
+            <strong>Underlying Price:</strong>
+            ${{ orderData.underlyingPrice.toFixed(2) }}
+          </div>
+          <div
+            v-if="orderData.currentOptionsPrice !== undefined"
+            class="summary-item"
+          >
+            <strong>Options Price:</strong>
+            ${{ orderData.currentOptionsPrice.toFixed(2) }}
+          </div>
+          <div
+            v-if="orderData.calculatedOrderPrice !== undefined"
+            class="summary-item"
+          >
+            <strong>Calculated Order Price:</strong>
+            ${{ orderData.calculatedOrderPrice.toFixed(2) }}
+          </div>
         </div>
 
         <!-- Trade Management specific information -->
         <div
-          v-if="orderData.currentPositionPL !== undefined"
-          class="summary-item"
+          v-if="
+            orderData.currentPositionPL !== undefined ||
+            orderData.adjustmentCost !== undefined ||
+            orderData.isClosingOrder
+          "
+          class="summary-section"
         >
-          <strong>Current Position P&L:</strong>
-          <span :class="orderData.currentPositionPL >= 0 ? 'profit' : 'loss'">
-            ${{ orderData.currentPositionPL.toFixed(2) }}
-          </span>
-        </div>
-        <div v-if="orderData.adjustmentCost !== undefined" class="summary-item">
-          <strong>Adjustment Cost:</strong>
-          <span
-            :class="orderData.adjustmentType === 'Credit' ? 'profit' : 'loss'"
-          >
-            ${{ Math.abs(orderData.adjustmentCost).toFixed(2) }}
-            {{ orderData.adjustmentType }}
-          </span>
-        </div>
-        <div v-if="orderData.estimatedNewPL !== undefined" class="summary-item">
-          <strong>Estimated New P&L:</strong>
-          <span :class="orderData.estimatedNewPL >= 0 ? 'profit' : 'loss'">
-            ${{ orderData.estimatedNewPL.toFixed(2) }}
-          </span>
-        </div>
-        <div v-if="orderData.totalContracts !== undefined" class="summary-item">
-          <strong>Total Contracts:</strong> {{ orderData.totalContracts }}
-        </div>
-        <div v-if="orderData.positionCount !== undefined" class="summary-item">
-          <strong>Positions Affected:</strong> {{ orderData.positionCount }}
-        </div>
+          <div class="summary-grid">
+            <div
+              v-if="orderData.currentPositionPL !== undefined"
+              class="summary-item"
+            >
+              <strong>Current Position P&L:</strong>
+              <span
+                :class="orderData.currentPositionPL >= 0 ? 'profit' : 'loss'"
+              >
+                ${{ orderData.currentPositionPL.toFixed(2) }}
+              </span>
+            </div>
+            <div
+              v-if="orderData.adjustmentCost !== undefined"
+              class="summary-item"
+            >
+              <strong>Adjustment Cost:</strong>
+              <span
+                :class="
+                  orderData.adjustmentType === 'Credit' ? 'profit' : 'loss'
+                "
+              >
+                ${{ Math.abs(orderData.adjustmentCost).toFixed(2) }}
+                {{ orderData.adjustmentType }}
+              </span>
+            </div>
+            <div
+              v-if="orderData.estimatedNewPL !== undefined"
+              class="summary-item"
+            >
+              <strong>Estimated New P&L:</strong>
+              <span :class="orderData.estimatedNewPL >= 0 ? 'profit' : 'loss'">
+                ${{ orderData.estimatedNewPL.toFixed(2) }}
+              </span>
+            </div>
+            <div
+              v-if="orderData.totalContracts !== undefined"
+              class="summary-item"
+            >
+              <strong>Total Contracts:</strong> {{ orderData.totalContracts }}
+            </div>
+            <div
+              v-if="orderData.positionCount !== undefined"
+              class="summary-item"
+            >
+              <strong>Positions Affected:</strong> {{ orderData.positionCount }}
+            </div>
 
-        <!-- Position Close specific information -->
-        <div
-          v-if="
-            orderData.isClosingOrder &&
-            orderData.estimatedProceeds !== undefined
-          "
-          class="summary-item"
-        >
-          <strong>Estimated Proceeds:</strong>
-          <span :class="orderData.closeType === 'Credit' ? 'profit' : 'loss'">
-            ${{ orderData.estimatedProceeds.toFixed(2) }}
-            {{ orderData.closeType }}
-          </span>
-        </div>
-        <div
-          v-if="
-            orderData.isClosingOrder && orderData.totalPLImpact !== undefined
-          "
-          class="summary-item"
-        >
-          <strong>Total P&L Impact:</strong>
-          <span :class="orderData.totalPLImpact >= 0 ? 'profit' : 'loss'">
-            ${{ orderData.totalPLImpact.toFixed(2) }}
-          </span>
+            <!-- Position Close specific information -->
+            <div
+              v-if="
+                orderData.isClosingOrder &&
+                orderData.estimatedProceeds !== undefined
+              "
+              class="summary-item"
+            >
+              <strong>Estimated Proceeds:</strong>
+              <span
+                :class="orderData.closeType === 'Credit' ? 'profit' : 'loss'"
+              >
+                ${{ orderData.estimatedProceeds.toFixed(2) }}
+                {{ orderData.closeType }}
+              </span>
+            </div>
+            <div
+              v-if="
+                orderData.isClosingOrder &&
+                orderData.totalPLImpact !== undefined
+              "
+              class="summary-item"
+            >
+              <strong>Total P&L Impact:</strong>
+              <span :class="orderData.totalPLImpact >= 0 ? 'profit' : 'loss'">
+                ${{ orderData.totalPLImpact.toFixed(2) }}
+              </span>
+            </div>
+          </div>
         </div>
       </div>
 
@@ -114,9 +147,12 @@
             showButtons
             @input="updateCalculations"
           />
-          <small
-            >Adjust the order price as needed before placing the order.</small
-          >
+          <div v-if="calculatedSummary" class="net-type-info">
+            <strong>Net Type:</strong>
+            <span :class="calculatedSummary.netCredit ? 'credit' : 'debit'">
+              {{ calculatedSummary.netCredit ? "Credit" : "Debit" }}
+            </span>
+          </div>
         </div>
       </div>
 
@@ -129,12 +165,6 @@
         </div>
         <div class="summary-item">
           <strong>Max Loss:</strong> ${{ calculatedSummary.maxLoss.toFixed(2) }}
-        </div>
-        <div class="summary-item">
-          <strong>Net Type:</strong>
-          <span :class="calculatedSummary.netCredit ? 'credit' : 'debit'">
-            {{ calculatedSummary.netCredit ? "Credit" : "Debit" }}
-          </span>
         </div>
       </div>
 
@@ -352,11 +382,32 @@ export default {
   margin-bottom: 20px;
 }
 
+.summary-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+  margin-bottom: 15px;
+}
+
+.summary-section {
+  margin-top: 15px;
+  padding-top: 15px;
+  border-top: 1px solid #dee2e6;
+}
+
 .summary-item {
-  margin-bottom: 10px;
-  padding: 8px;
+  padding: 8px 12px;
   background: #f8f9fa;
   border-radius: 4px;
+  font-size: 0.9rem;
+}
+
+/* Responsive design for smaller screens */
+@media (max-width: 768px) {
+  .summary-grid {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
 }
 
 .order-price-section {
@@ -386,6 +437,15 @@ export default {
   margin-top: 5px;
   color: #6c757d;
   font-size: 0.875rem;
+}
+
+.net-type-info {
+  margin-top: 8px;
+  padding: 6px 10px;
+  background: #fff;
+  border-radius: 4px;
+  border: 1px solid #e9ecef;
+  font-size: 0.9rem;
 }
 
 .validation-errors {
