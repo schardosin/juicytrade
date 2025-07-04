@@ -251,10 +251,7 @@
               <div
                 v-for="strike in strikeList"
                 :key="strike"
-                :class="[
-                  'option-strike-row',
-                  { 'position-strike': isPositionStrike(strike) },
-                ]"
+                class="option-strike-row"
               >
                 <!-- Call Side -->
                 <div
@@ -268,6 +265,7 @@
                       'selected-buy':
                         getSelectionType(getCallOption(strike).symbol) ===
                         'buy',
+                      'position-call': hasCallPosition(strike),
                     },
                   ]"
                 >
@@ -305,6 +303,7 @@
                         'sell',
                       'selected-buy':
                         getSelectionType(getPutOption(strike).symbol) === 'buy',
+                      'position-put': hasPutPosition(strike),
                     },
                   ]"
                 >
@@ -1188,6 +1187,24 @@ export default {
       );
     };
 
+    // Check if there's a call position at this strike
+    const hasCallPosition = (strike) => {
+      return optionPositions.value.some(
+        (pos) =>
+          Math.abs(pos.strike_price - strike) < 0.01 &&
+          pos.option_type === "call"
+      );
+    };
+
+    // Check if there's a put position at this strike
+    const hasPutPosition = (strike) => {
+      return optionPositions.value.some(
+        (pos) =>
+          Math.abs(pos.strike_price - strike) < 0.01 &&
+          pos.option_type === "put"
+      );
+    };
+
     const getOptionDisplayPrice = (option) => {
       // Try to get real-time price first
       if (streamingPrices.value[option.symbol]) {
@@ -1608,6 +1625,8 @@ export default {
       fetchPositions,
       formatDate,
       isPositionStrike,
+      hasCallPosition,
+      hasPutPosition,
       getOptionDisplayPrice,
       toggleOptionSelection,
       removeSelection,
@@ -1859,6 +1878,24 @@ export default {
 
 .option-strike-row.position-strike {
   background-color: #fff3cd;
+}
+
+.call-side.position-call {
+  background-color: #fff3cd !important;
+  border-left: 3px solid #ffc107;
+}
+
+.put-side.position-put {
+  background-color: #fff3cd !important;
+  border-left: 3px solid #ffc107;
+}
+
+.call-side.position-call:hover {
+  background-color: #fff3cd !important;
+}
+
+.put-side.position-put:hover {
+  background-color: #fff3cd !important;
 }
 
 .call-side {
