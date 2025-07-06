@@ -78,6 +78,153 @@ export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
   return result;
 }
 
+// Convert butterfly info to multi-leg position format for unified chart component
+export function convertButterflyToPositions(
+  butterflyInfo,
+  strategyType,
+  symbol,
+  expiry
+) {
+  if (!butterflyInfo) return [];
+
+  const positions = [];
+  const expiryDate = expiry.toISOString().split("T")[0];
+
+  if (strategyType === "IRON Butterfly") {
+    // Buy Put (Lower Strike)
+    positions.push({
+      symbol: `${symbol}_PUT_${butterflyInfo.lower_strike}_${expiryDate}`,
+      asset_class: "us_option",
+      side: "long",
+      qty: 1,
+      strike_price: butterflyInfo.lower_strike,
+      option_type: "put",
+      expiry_date: expiryDate,
+      current_price: butterflyInfo.lower_price,
+      avg_entry_price: butterflyInfo.lower_price,
+      cost_basis: butterflyInfo.lower_price * 100,
+      market_value: butterflyInfo.lower_price * 100,
+      unrealized_pl: 0,
+      unrealized_plpc: 0,
+      underlying_symbol: symbol,
+    });
+
+    // Sell Put (ATM Strike)
+    positions.push({
+      symbol: `${symbol}_PUT_${butterflyInfo.atm_strike}_${expiryDate}`,
+      asset_class: "us_option",
+      side: "short",
+      qty: -1,
+      strike_price: butterflyInfo.atm_strike,
+      option_type: "put",
+      expiry_date: expiryDate,
+      current_price: butterflyInfo.atm_put_price,
+      avg_entry_price: butterflyInfo.atm_put_price,
+      cost_basis: -butterflyInfo.atm_put_price * 100,
+      market_value: -butterflyInfo.atm_put_price * 100,
+      unrealized_pl: 0,
+      unrealized_plpc: 0,
+      underlying_symbol: symbol,
+    });
+
+    // Sell Call (ATM Strike)
+    positions.push({
+      symbol: `${symbol}_CALL_${butterflyInfo.atm_strike}_${expiryDate}`,
+      asset_class: "us_option",
+      side: "short",
+      qty: -1,
+      strike_price: butterflyInfo.atm_strike,
+      option_type: "call",
+      expiry_date: expiryDate,
+      current_price: butterflyInfo.atm_call_price,
+      avg_entry_price: butterflyInfo.atm_call_price,
+      cost_basis: -butterflyInfo.atm_call_price * 100,
+      market_value: -butterflyInfo.atm_call_price * 100,
+      unrealized_pl: 0,
+      unrealized_plpc: 0,
+      underlying_symbol: symbol,
+    });
+
+    // Buy Call (Upper Strike)
+    positions.push({
+      symbol: `${symbol}_CALL_${butterflyInfo.upper_strike}_${expiryDate}`,
+      asset_class: "us_option",
+      side: "long",
+      qty: 1,
+      strike_price: butterflyInfo.upper_strike,
+      option_type: "call",
+      expiry_date: expiryDate,
+      current_price: butterflyInfo.upper_price,
+      avg_entry_price: butterflyInfo.upper_price,
+      cost_basis: butterflyInfo.upper_price * 100,
+      market_value: butterflyInfo.upper_price * 100,
+      unrealized_pl: 0,
+      unrealized_plpc: 0,
+      underlying_symbol: symbol,
+    });
+  } else {
+    // CALL or PUT Butterfly
+    const optionType = strategyType === "CALL Butterfly" ? "call" : "put";
+    const typeUpper = optionType.toUpperCase();
+
+    // Buy Lower Strike
+    positions.push({
+      symbol: `${symbol}_${typeUpper}_${butterflyInfo.lower_strike}_${expiryDate}`,
+      asset_class: "us_option",
+      side: "long",
+      qty: 1,
+      strike_price: butterflyInfo.lower_strike,
+      option_type: optionType,
+      expiry_date: expiryDate,
+      current_price: butterflyInfo.lower_price,
+      avg_entry_price: butterflyInfo.lower_price,
+      cost_basis: butterflyInfo.lower_price * 100,
+      market_value: butterflyInfo.lower_price * 100,
+      unrealized_pl: 0,
+      unrealized_plpc: 0,
+      underlying_symbol: symbol,
+    });
+
+    // Sell ATM Strike (2 contracts)
+    positions.push({
+      symbol: `${symbol}_${typeUpper}_${butterflyInfo.atm_strike}_${expiryDate}`,
+      asset_class: "us_option",
+      side: "short",
+      qty: -2,
+      strike_price: butterflyInfo.atm_strike,
+      option_type: optionType,
+      expiry_date: expiryDate,
+      current_price: butterflyInfo.atm_price,
+      avg_entry_price: butterflyInfo.atm_price,
+      cost_basis: -butterflyInfo.atm_price * 200, // 2 contracts
+      market_value: -butterflyInfo.atm_price * 200,
+      unrealized_pl: 0,
+      unrealized_plpc: 0,
+      underlying_symbol: symbol,
+    });
+
+    // Buy Upper Strike
+    positions.push({
+      symbol: `${symbol}_${typeUpper}_${butterflyInfo.upper_strike}_${expiryDate}`,
+      asset_class: "us_option",
+      side: "long",
+      qty: 1,
+      strike_price: butterflyInfo.upper_strike,
+      option_type: optionType,
+      expiry_date: expiryDate,
+      current_price: butterflyInfo.upper_price,
+      avg_entry_price: butterflyInfo.upper_price,
+      cost_basis: butterflyInfo.upper_price * 100,
+      market_value: butterflyInfo.upper_price * 100,
+      unrealized_pl: 0,
+      unrealized_plpc: 0,
+      underlying_symbol: symbol,
+    });
+  }
+
+  return positions;
+}
+
 export function generateMultiLegPayoff(positions, underlyingPrice) {
   // console.log("generateMultiLegPayoff called with:", {
   //   positionsCount: positions.length,

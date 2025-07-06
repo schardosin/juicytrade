@@ -121,39 +121,16 @@
       </Card>
 
       <!-- Payoff Chart -->
-      <Card class="chart-card">
-        <template #title>Butterfly Payoff Diagram</template>
-        <template #content>
-          <div class="chart-container">
-            <canvas ref="chartCanvas"></canvas>
-          </div>
-          <div class="chart-info mt-3">
-            <div class="info-grid">
-              <div>
-                <strong
-                  >{{ symbol }} Price {{ isLivePrice ? "(Live)" : "" }}:</strong
-                >
-                ${{ underlyingPrice.toFixed(2) }}
-              </div>
-              <div>
-                <strong>ATM Strike (Center):</strong> ${{
-                  butterflyInfo.atm_strike.toFixed(2)
-                }}
-              </div>
-              <div>
-                <strong>Lower Break Even:</strong> ${{
-                  chartData?.lowerBreakEven.toFixed(2)
-                }}
-              </div>
-              <div>
-                <strong>Upper Break Even:</strong> ${{
-                  chartData?.upperBreakEven.toFixed(2)
-                }}
-              </div>
-            </div>
-          </div>
-        </template>
-      </Card>
+      <PayoffChart
+        v-if="multiLegChartData"
+        :chartData="multiLegChartData"
+        :underlyingPrice="underlyingPrice"
+        title="Butterfly Payoff Diagram"
+        :showInfo="true"
+        height="400px"
+        :symbol="symbol"
+        :isLivePrice="isLivePrice"
+      />
     </div>
 
     <Divider />
@@ -227,10 +204,13 @@ import webSocketClient from "../services/webSocketClient";
 import {
   generateButterflyPayoff,
   createChartConfig,
+  convertButterflyToPositions,
+  generateMultiLegPayoff,
 } from "../utils/chartUtils";
 import { useOrderManagement } from "../composables/useOrderManagement";
 import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
 import OrderResultDialog from "../components/OrderResultDialog.vue";
+import PayoffChart from "../components/PayoffChart.vue";
 
 Chart.register(...registerables);
 
@@ -240,6 +220,7 @@ export default {
     Tag,
     OrderConfirmationDialog,
     OrderResultDialog,
+    PayoffChart,
   },
   setup() {
     // Use centralized order management
@@ -420,6 +401,34 @@ export default {
             price: butterflyInfo.value.upper_price,
           },
         ];
+      }
+    });
+
+    // Convert butterfly data to multi-leg format for unified chart component
+    const multiLegChartData = computed(() => {
+      if (!butterflyInfo.value || underlyingPrice.value === null) {
+        return null;
+      }
+
+      try {
+        // Convert butterfly info to position format
+        const positions = convertButterflyToPositions(
+          butterflyInfo.value,
+          strategyType.value,
+          symbol.value,
+          expiry.value
+        );
+
+        // Generate multi-leg payoff data
+        const payoffData = generateMultiLegPayoff(
+          positions,
+          underlyingPrice.value
+        );
+
+        return payoffData;
+      } catch (error) {
+        console.error("Error generating multi-leg chart data:", error);
+        return null;
       }
     });
 
@@ -1585,6 +1594,7 @@ export default {
       canPlaceOrder,
       orderDetails,
       legsTableData,
+      multiLegChartData,
 
       // Methods
       checkServiceStatus,

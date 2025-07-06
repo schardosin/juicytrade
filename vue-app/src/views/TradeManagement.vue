@@ -50,24 +50,23 @@
       <!-- Left Column (2/3 width) - Chart and Options Chain -->
       <div class="left-column">
         <!-- Payoff Chart (top) -->
-        <Card v-if="hasOptionPositions && chartData" class="chart-card">
-          <template #title>
-            Position Payoff Diagram
-            <span
-              v-if="selectedOptions.length > 0"
-              class="adjustment-indicator"
-            >
-              (Including {{ selectedOptions.length }} Selected Adjustment{{
-                selectedOptions.length > 1 ? "s" : ""
-              }})
-            </span>
-          </template>
-          <template #content>
-            <div class="chart-container">
-              <canvas ref="chartCanvas"></canvas>
-            </div>
-          </template>
-        </Card>
+        <PayoffChart
+          v-if="hasOptionPositions && chartData"
+          :chartData="chartData"
+          :underlyingPrice="underlyingPrice"
+          title="Position Payoff Diagram"
+          :showInfo="false"
+          height="350px"
+          :adjustmentIndicator="
+            selectedOptions.length > 0
+              ? `(Including ${selectedOptions.length} Selected Adjustment${
+                  selectedOptions.length > 1 ? 's' : ''
+                })`
+              : ''
+          "
+          :symbol="underlyingSymbol"
+          :isLivePrice="isLivePrice"
+        />
 
         <!-- Options Chain (bottom) -->
         <Card
@@ -590,6 +589,7 @@ import {
 import { useOrderManagement } from "../composables/useOrderManagement";
 import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
 import OrderResultDialog from "../components/OrderResultDialog.vue";
+import PayoffChart from "../components/PayoffChart.vue";
 
 Chart.register(...registerables);
 
@@ -600,6 +600,7 @@ export default {
     Checkbox,
     OrderConfirmationDialog,
     OrderResultDialog,
+    PayoffChart,
   },
   setup() {
     // Use centralized order management
@@ -624,8 +625,6 @@ export default {
     const isLivePrice = ref(false); // Track if price is live from WebSocket
     const symbol = ref("SPY"); // Default underlying symbol
     const chartData = ref(null);
-    const chartCanvas = ref(null);
-    const chart = ref(null);
     const streamingPrices = ref({});
     const isStreaming = ref(false);
     const optionsChain = ref([]);
@@ -889,47 +888,6 @@ export default {
         }
       } catch (err) {
         console.error("Error generating chart:", err);
-      }
-    };
-
-    const updateChart = async () => {
-      if (!chartCanvas.value || !chartData.value) {
-        console.warn("Chart not rendered: missing canvas or chartData", {
-          hasCanvas: !!chartCanvas.value,
-          hasChartData: !!chartData.value,
-        });
-        return;
-      }
-
-      try {
-        // Destroy existing chart
-        if (chart.value) {
-          chart.value.destroy();
-          chart.value = null;
-        }
-
-        // Create new chart
-        const ctx = chartCanvas.value.getContext("2d");
-        const config = createMultiLegChartConfig(
-          chartData.value,
-          underlyingPrice.value
-        );
-        // console.log(
-        //   "Creating Chart.js chart with config:",
-        //   config,
-        //   "Canvas:",
-        //   chartCanvas.value
-        // );
-        if (ctx && config) {
-          chart.value = new Chart(chartCanvas.value, config);
-        } else {
-          console.error("Chart.js not created: missing ctx or config", {
-            ctx,
-            config,
-          });
-        }
-      } catch (err) {
-        console.error("Error updating chart:", err);
       }
     };
 
@@ -1549,14 +1507,6 @@ export default {
       }
     });
 
-    // Watch for both chartData and chartCanvas to be ready, then update chart
-    watch([chartData, chartCanvas], async ([newChartData, newChartCanvas]) => {
-      if (newChartData && newChartCanvas) {
-        await nextTick();
-        updateChart();
-      }
-    });
-
     // Watch for underlying price changes to update chart
     watch(underlyingPrice, () => {
       if (hasOptionPositions.value && chartData.value) {
@@ -1596,9 +1546,6 @@ export default {
     );
 
     onUnmounted(async () => {
-      if (chart.value) {
-        chart.value.destroy();
-      }
       await stopStreaming();
     });
 
@@ -1611,7 +1558,6 @@ export default {
       isLivePrice,
       symbol,
       chartData,
-      chartCanvas,
       optionsChain,
       selectedOptions,
 
