@@ -336,16 +336,6 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
     positionCount,
   } = chartData;
 
-  // console.log("Creating multi-leg chart config with data:", {
-  //   pricesLength: prices.length,
-  //   payoffsLength: payoffs.length,
-  //   breakEvenPoints,
-  //   maxProfit,
-  //   maxLoss,
-  //   underlyingPrice,
-  //   positionCount,
-  // });
-
   // Create data points for the chart
   const chartPoints = prices.map((price, index) => ({
     x: price,
@@ -365,24 +355,65 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
 
   const datasets = [
     {
-      label: `Position Payoff (${positionCount} legs)`,
-      data: chartPoints,
-      borderColor: "rgb(255, 99, 132)",
-      backgroundColor: "rgba(255, 99, 132, 0.1)",
-      borderWidth: 3,
-      pointRadius: 2,
-      pointHoverRadius: 6,
-      fill: false,
-      tension: 0,
-    },
-    {
       label: "Zero Line",
       data: zeroLinePoints,
-      borderColor: "rgba(128, 128, 128, 0.5)",
+      borderColor: "rgba(128, 128, 128, 0.6)",
       borderWidth: 1,
       borderDash: [5, 5],
       pointRadius: 0,
       fill: false,
+      order: 2,
+    },
+    {
+      label: `Position Payoff (${positionCount} legs)`,
+      data: chartPoints,
+      borderColor: "rgb(33, 37, 41)",
+      backgroundColor: function (context) {
+        const chart = context.chart;
+        const { ctx, chartArea } = chart;
+
+        if (!chartArea) {
+          return null;
+        }
+
+        // Create gradient that changes color at zero line
+        const gradient = ctx.createLinearGradient(
+          0,
+          chartArea.bottom,
+          0,
+          chartArea.top
+        );
+
+        // Find the zero line position
+        const yScale = chart.scales.y;
+        const zeroPixel = yScale.getPixelForValue(0);
+        const topPixel = chartArea.top;
+        const bottomPixel = chartArea.bottom;
+
+        // Calculate relative positions for gradient stops
+        const zeroPosition =
+          (bottomPixel - zeroPixel) / (bottomPixel - topPixel);
+
+        // Add gradient stops
+        gradient.addColorStop(0, "rgba(244, 67, 54, 0.3)"); // Red at bottom (loss)
+        gradient.addColorStop(
+          Math.max(0, Math.min(1, zeroPosition)),
+          "rgba(244, 67, 54, 0.1)"
+        ); // Fade to transparent at zero
+        gradient.addColorStop(
+          Math.max(0, Math.min(1, zeroPosition)),
+          "rgba(76, 175, 80, 0.1)"
+        ); // Fade from transparent at zero
+        gradient.addColorStop(1, "rgba(76, 175, 80, 0.3)"); // Green at top (profit)
+
+        return gradient;
+      },
+      borderWidth: 2,
+      pointRadius: 1,
+      pointHoverRadius: 4,
+      fill: "origin", // Fill to zero line
+      tension: 0,
+      order: 1,
     },
     {
       label: "Current Price",
@@ -393,6 +424,7 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
       borderDash: [3, 3],
       pointRadius: 0,
       fill: false,
+      order: 1,
     },
   ];
 
@@ -403,6 +435,10 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
       responsive: true,
       maintainAspectRatio: false,
       animation: false,
+      interaction: {
+        intersect: false,
+        mode: "index",
+      },
       plugins: {
         title: {
           display: true,
@@ -414,18 +450,30 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
         legend: {
           display: true,
           position: "top",
+          labels: {
+            filter: function (item, chart) {
+              // Hide the area fill datasets from legend, only show main payoff line
+              return !item.text.includes("Area");
+            },
+          },
         },
         tooltip: {
           mode: "nearest",
           intersect: false,
+          filter: function (tooltipItem) {
+            // Only show tooltip for main payoff line and current price
+            return (
+              tooltipItem.datasetIndex === 2 || tooltipItem.datasetIndex === 4
+            );
+          },
           callbacks: {
             title: function (context) {
               return `Price: $${context[0].parsed.x.toFixed(2)}`;
             },
             label: function (context) {
-              if (context.datasetIndex === 0) {
+              if (context.datasetIndex === 2) {
                 return `P&L: $${context.parsed.y.toFixed(2)}`;
-              } else if (context.datasetIndex === 2) {
+              } else if (context.datasetIndex === 4) {
                 return `Current: $${underlyingPrice.toFixed(2)}`;
               }
               return `${context.dataset.label}: $${context.parsed.y.toFixed(
