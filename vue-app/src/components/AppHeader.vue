@@ -52,7 +52,7 @@ export default {
 
 <style scoped>
 .app-header {
-  margin-bottom: 2rem;
+  margin-bottom: 0;
   box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
 }
 
