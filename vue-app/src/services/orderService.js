@@ -184,8 +184,8 @@ class OrderService {
       totalPremium,
       maxProfit,
       maxLoss,
-      netCredit: totalPremium > 0,
-      netDebit: totalPremium < 0,
+      netCredit: orderPrice > 0,
+      netDebit: orderPrice < 0,
     };
   }
 }

@@ -2554,8 +2554,6 @@ export default {
 /* Compact Order Ticket Styles */
 .compact-order-ticket-card {
   flex: 0 0 auto;
-  max-height: 300px;
-  overflow-y: auto;
 }
 
 .order-ticket-header {

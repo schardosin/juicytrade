@@ -1503,7 +1503,7 @@ export default {
         expiry: expiry.value,
         strategyType: strategyType.value,
         butterflyInfo: butterflyInfo.value,
-        orderPrice: orderDetails.value.orderPrice,
+        orderPrice: Math.abs(orderDetails.value.orderPrice),
         orderOffset: orderOffset.value,
         underlyingPrice: underlyingPrice.value,
         currentOptionsPrice: orderDetails.value.currentOptionsPrice,

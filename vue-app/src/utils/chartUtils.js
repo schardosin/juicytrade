@@ -427,7 +427,7 @@ export function createChartConfig(chartData, underlyingPrice) {
           position: "top",
         },
         tooltip: {
-          mode: "nearest",
+          mode: "x",
           intersect: false,
           callbacks: {
             title: function (context) {
@@ -474,33 +474,58 @@ export function createChartConfig(chartData, underlyingPrice) {
 }
 
 export function createMultiLegChartConfig(chartData, underlyingPrice) {
-  const {
-    prices,
-    payoffs,
-    breakEvenPoints,
-    maxProfit,
-    maxLoss,
-    positionCount,
-  } = chartData;
+  const { prices, payoffs, maxProfit, maxLoss, positionCount } = chartData;
 
-  // Create data points for the chart
+  // Data preparation code remains the same
   const chartPoints = prices.map((price, index) => ({
     x: price,
     y: payoffs[index],
   }));
-
-  const zeroLinePoints = prices.map((price) => ({
-    x: price,
-    y: 0,
-  }));
-
-  // Create current price line
+  const zeroLinePoints = prices.map((price) => ({ x: price, y: 0 }));
   const currentPricePoints = [
     { x: underlyingPrice, y: Math.min(...payoffs) - Math.abs(maxLoss) * 0.1 },
     { x: underlyingPrice, y: Math.max(...payoffs) + Math.abs(maxProfit) * 0.1 },
   ];
-
   const datasets = [
+    {
+      label: `Position Payoff (${positionCount} legs)`,
+      data: chartPoints,
+      borderColor: "rgb(33, 37, 41)",
+      borderWidth: 2,
+      pointRadius: 0, // Hide default points
+      fill: "origin",
+      tension: 0,
+      order: 1,
+      // background color logic from your code...
+      backgroundColor: function (context) {
+        const chart = context.chart;
+        const { ctx, chartArea } = chart;
+        if (!chartArea) return null;
+        const gradient = ctx.createLinearGradient(
+          0,
+          chartArea.bottom,
+          0,
+          chartArea.top
+        );
+        const yScale = chart.scales.y;
+        const zeroPixel = yScale.getPixelForValue(0);
+        const topPixel = chartArea.top;
+        const bottomPixel = chartArea.bottom;
+        const zeroPosition =
+          (bottomPixel - zeroPixel) / (bottomPixel - topPixel);
+        gradient.addColorStop(0, "rgba(244, 67, 54, 0.3)");
+        gradient.addColorStop(
+          Math.max(0, Math.min(1, zeroPosition)),
+          "rgba(244, 67, 54, 0.1)"
+        );
+        gradient.addColorStop(
+          Math.max(0, Math.min(1, zeroPosition)),
+          "rgba(76, 175, 80, 0.1)"
+        );
+        gradient.addColorStop(1, "rgba(76, 175, 80, 0.3)");
+        return gradient;
+      },
+    },
     {
       label: "Zero Line",
       data: zeroLinePoints,
@@ -512,72 +537,115 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
       order: 2,
     },
     {
-      label: `Position Payoff (${positionCount} legs)`,
-      data: chartPoints,
-      borderColor: "rgb(33, 37, 41)",
-      backgroundColor: function (context) {
-        const chart = context.chart;
-        const { ctx, chartArea } = chart;
-
-        if (!chartArea) {
-          return null;
-        }
-
-        // Create gradient that changes color at zero line
-        const gradient = ctx.createLinearGradient(
-          0,
-          chartArea.bottom,
-          0,
-          chartArea.top
-        );
-
-        // Find the zero line position
-        const yScale = chart.scales.y;
-        const zeroPixel = yScale.getPixelForValue(0);
-        const topPixel = chartArea.top;
-        const bottomPixel = chartArea.bottom;
-
-        // Calculate relative positions for gradient stops
-        const zeroPosition =
-          (bottomPixel - zeroPixel) / (bottomPixel - topPixel);
-
-        // Add gradient stops
-        gradient.addColorStop(0, "rgba(244, 67, 54, 0.3)"); // Red at bottom (loss)
-        gradient.addColorStop(
-          Math.max(0, Math.min(1, zeroPosition)),
-          "rgba(244, 67, 54, 0.1)"
-        ); // Fade to transparent at zero
-        gradient.addColorStop(
-          Math.max(0, Math.min(1, zeroPosition)),
-          "rgba(76, 175, 80, 0.1)"
-        ); // Fade from transparent at zero
-        gradient.addColorStop(1, "rgba(76, 175, 80, 0.3)"); // Green at top (profit)
-
-        return gradient;
-      },
-      borderWidth: 2,
-      pointRadius: 1,
-      pointHoverRadius: 4,
-      fill: "origin", // Fill to zero line
-      tension: 0,
-      order: 1,
-    },
-    {
       label: "Current Price",
       data: currentPricePoints,
       borderColor: "rgba(54, 162, 235, 0.8)",
-      backgroundColor: "rgba(54, 162, 235, 0.8)",
       borderWidth: 2,
       borderDash: [3, 3],
       pointRadius: 0,
       fill: false,
-      order: 1,
+      order: 3,
     },
   ];
+
+  // --- NEW ADVANCED PLUGIN ---
+  const customCrosshairPlugin = {
+    id: "customCrosshair",
+
+    afterEvent: (chart, args) => {
+      const { event } = args;
+      if (event.type === "mousemove") {
+        chart.crosshair = args.inChartArea ? { x: event.x, y: event.y } : null;
+        chart.draw();
+      } else if (event.type === "mouseout") {
+        chart.crosshair = null;
+        chart.draw();
+      }
+    },
+
+    afterDraw: (chart, args, options) => {
+      const { crosshair } = chart;
+      if (!crosshair) return;
+
+      const {
+        ctx,
+        chartArea: { top, bottom, left, right },
+        scales,
+      } = chart;
+
+      // 1. Draw Vertical Line
+      ctx.save();
+      ctx.beginPath();
+      ctx.moveTo(crosshair.x, top);
+      ctx.lineTo(crosshair.x, bottom);
+      ctx.lineWidth = 1;
+      ctx.strokeStyle = "#555";
+      ctx.setLineDash([6, 6]);
+      ctx.stroke();
+
+      // 2. Perform Interpolation to find P&L
+      const xVal = scales.x.getValueForPixel(crosshair.x);
+      let i = options.prices.findIndex((p) => p >= xVal);
+      if (i === -1) i = options.prices.length - 1;
+      if (i === 0) i = 1;
+
+      const x1 = options.prices[i - 1],
+        x2 = options.prices[i];
+      const y1 = options.payoffs[i - 1],
+        y2 = options.payoffs[i];
+      const t = x2 !== x1 ? (xVal - x1) / (x2 - x1) : 0;
+      const yVal = y1 + t * (y2 - y1);
+      const yPixel = scales.y.getPixelForValue(yVal);
+
+      // 3. Draw Intersection Circle on the P&L line
+      if (yPixel >= top && yPixel <= bottom) {
+        ctx.beginPath();
+        ctx.fillStyle = "rgb(33, 37, 41)"; // Match line color
+        ctx.arc(crosshair.x, yPixel, 5, 0, 2 * Math.PI);
+        ctx.fill();
+      }
+
+      // 4. Draw the Text Box with Price and P&L
+      const priceText = `$${xVal.toFixed(2)}`;
+      const plText = `P&L: $${yVal.toFixed(2)}`;
+      ctx.font = "bold 12px sans-serif";
+      const priceWidth = ctx.measureText(priceText).width;
+      const plWidth = ctx.measureText(plText).width;
+      const boxWidth = Math.max(priceWidth, plWidth) + 16;
+      const boxHeight = 40;
+
+      // Position box smartly to avoid edges
+      let boxX =
+        crosshair.x > chart.width / 2
+          ? crosshair.x - boxWidth - 10
+          : crosshair.x + 10;
+      let boxY = crosshair.y - boxHeight / 2;
+      if (boxY < top) boxY = top;
+      if (boxY + boxHeight > bottom) boxY = bottom - boxHeight;
+
+      // Draw box
+      ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
+      ctx.strokeStyle = "#ccc";
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(boxX, boxY, boxWidth, boxHeight, 5);
+      ctx.fill();
+      ctx.stroke();
+
+      // Draw text
+      ctx.fillStyle = "#333";
+      ctx.textAlign = "left";
+      ctx.fillText(priceText, boxX + 8, boxY + 16);
+      ctx.fillText(plText, boxX + 8, boxY + 32);
+
+      ctx.restore();
+    },
+  };
 
   return {
     type: "line",
     data: { datasets },
+    plugins: [customCrosshairPlugin], // Use the new plugin
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -587,82 +655,35 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
         mode: "index",
       },
       plugins: {
+        // We pass the data to our plugin via this options block
+        customCrosshair: {
+          prices: prices,
+          payoffs: payoffs,
+        },
+        // IMPORTANT: Disable the default tooltip
+        tooltip: {
+          enabled: false,
+        },
+        // Your other plugins are fine
         title: {
           display: true,
           text: `Multi-Leg Position Payoff (${positionCount} legs)`,
-          font: {
-            size: 16,
-          },
+          font: { size: 16 },
         },
         legend: {
           display: true,
           position: "top",
-          labels: {
-            filter: function (item, chart) {
-              // Hide the area fill datasets from legend, only show main payoff line
-              return !item.text.includes("Area");
-            },
-          },
-        },
-        tooltip: {
-          mode: "nearest",
-          intersect: false,
-          callbacks: {
-            // Header shows the underlying price under cursor
-            title: (ctx) => `Price: $${ctx[0].parsed.x.toFixed(2)}`,
-            // Label shows interpolated P/L or current price
-            label: (ctx) => {
-              // Current-price guideline
-              if (ctx.dataset.label === "Current Price") {
-                return `Current: $${underlyingPrice.toFixed(2)}`;
-              }
-
-              // Interpolate P/L for main payoff line
-              if (ctx.dataset.label.startsWith("Position Payoff")) {
-                const xVal = ctx.parsed.x;
-
-                // find first index where price >= xVal
-                let i = prices.findIndex((p) => p >= xVal);
-                if (i === -1) i = prices.length - 1;
-                if (i === 0) i = 1; // ensure we have i-1
-
-                const x1 = prices[i - 1];
-                const x2 = prices[i];
-                const y1 = payoffs[i - 1];
-                const y2 = payoffs[i];
-                const t = x2 !== x1 ? (xVal - x1) / (x2 - x1) : 0;
-                const yInterp = y1 + t * (y2 - y1);
-
-                return `P&L: $${yInterp.toFixed(2)}`;
-              }
-
-              // Fallback (zero line etc.)
-              return `${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`;
-            },
-          },
         },
       },
       scales: {
         x: {
           type: "linear",
-          title: {
-            display: true,
-            text: "Underlying Price at Expiry ($)",
-          },
-          grid: {
-            display: true,
-            color: "rgba(0, 0, 0, 0.1)",
-          },
+          title: { display: true, text: "Underlying Price at Expiry ($)" },
+          grid: { display: true, color: "rgba(0, 0, 0, 0.1)" },
         },
         y: {
-          title: {
-            display: true,
-            text: "Profit / Loss ($)",
-          },
-          grid: {
-            display: true,
-            color: "rgba(0, 0, 0, 0.1)",
-          },
+          title: { display: true, text: "Profit / Loss ($)" },
+          grid: { display: true, color: "rgba(0, 0, 0, 0.1)" },
         },
       },
     },
