@@ -548,7 +548,6 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
     },
   ];
 
-  // --- NEW ADVANCED PLUGIN ---
   const customCrosshairPlugin = {
     id: "customCrosshair",
 
@@ -645,7 +644,7 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
   return {
     type: "line",
     data: { datasets },
-    plugins: [customCrosshairPlugin], // Use the new plugin
+    plugins: [customCrosshairPlugin],
     options: {
       responsive: true,
       maintainAspectRatio: false,
@@ -664,7 +663,6 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
         tooltip: {
           enabled: false,
         },
-        // Your other plugins are fine
         title: {
           display: true,
           text: `Multi-Leg Position Payoff (${positionCount} legs)`,
