@@ -46,513 +46,500 @@
     </Card>
 
     <!-- Active Positions - New Layout -->
-    <div v-else class="main-layout">
-      <!-- Left Column (2/3 width) - Chart and Options Chain -->
-      <div class="left-column">
-        <!-- Payoff Chart (top) -->
-        <PayoffChart
-          v-if="hasOptionPositions && chartData"
-          :chartData="chartData"
-          :underlyingPrice="underlyingPrice"
-          title="Position Payoff Diagram"
-          :showInfo="false"
-          height="350px"
-          :adjustmentIndicator="
-            selectedOptions.length > 0
-              ? `(Including ${selectedOptions.length} Selected Adjustment${
-                  selectedOptions.length > 1 ? 's' : ''
-                })`
-              : ''
-          "
-          :symbol="underlyingSymbol"
-          :isLivePrice="isLivePrice"
-        />
+    <div v-else class="main-container">
+      <div class="main-layout">
+        <!-- Left Column (2/3 width) - Chart and Options Chain -->
+        <div class="left-column">
+          <!-- Payoff Chart (top) -->
+          <PayoffChart
+            v-if="hasOptionPositions && chartData"
+            :chartData="chartData"
+            :underlyingPrice="underlyingPrice"
+            title="Position Payoff Diagram"
+            :showInfo="false"
+            height="350px"
+            :adjustmentIndicator="
+              selectedOptions.length > 0
+                ? `(Including ${selectedOptions.length} Selected Adjustment${
+                    selectedOptions.length > 1 ? 's' : ''
+                  })`
+                : ''
+            "
+            :symbol="underlyingSymbol"
+            :isLivePrice="isLivePrice"
+          />
 
-        <!-- Options Chain (bottom) -->
-        <Card
-          v-if="hasOptionPositions && optionsChain.length > 0"
-          class="options-chain-card"
-        >
-          <template #title
-            >Options Chain - {{ positionExpiry }} (Select up to 4)</template
+          <!-- Options Chain (bottom) -->
+          <Card
+            v-if="hasOptionPositions && optionsChain.length > 0"
+            class="options-chain-card"
           >
-          <template #content>
-            <div class="options-chain-container">
-              <!-- Header Row -->
-              <div class="options-header">
-                <div class="calls-header">
-                  <div class="symbol-header">Symbol</div>
-                  <div class="bid-header">Bid</div>
-                  <div class="ask-header">Ask</div>
+            <template #title
+              >Options Chain - {{ positionExpiry }} (Select up to 4)</template
+            >
+            <template #content>
+              <div class="options-chain-container">
+                <!-- Header Row -->
+                <div class="options-header">
+                  <div class="calls-header">
+                    <div class="symbol-header">Symbol</div>
+                    <div class="bid-header">Bid</div>
+                    <div class="ask-header">Ask</div>
+                  </div>
+                  <div class="strike-header">Strike</div>
+                  <div class="puts-header">
+                    <div class="bid-header">Bid</div>
+                    <div class="ask-header">Ask</div>
+                    <div class="symbol-header">Symbol</div>
+                  </div>
                 </div>
-                <div class="strike-header">Strike</div>
-                <div class="puts-header">
-                  <div class="bid-header">Bid</div>
-                  <div class="ask-header">Ask</div>
-                  <div class="symbol-header">Symbol</div>
-                </div>
-              </div>
 
-              <!-- Options Rows -->
-              <div class="options-list">
-                <div
-                  v-for="strike in strikeList"
-                  :key="strike"
-                  class="option-strike-row"
-                >
-                  <!-- Call Side -->
+                <!-- Options Rows -->
+                <div class="options-list">
                   <div
-                    v-if="getCallOption(strike)"
-                    :class="[
-                      'call-side',
-                      {
-                        'selected-sell':
-                          getSelectionType(getCallOption(strike).symbol) ===
-                          'sell',
-                        'selected-buy':
-                          getSelectionType(getCallOption(strike).symbol) ===
-                          'buy',
-                        'position-call-long':
-                          getCallPositionType(strike) === 'long',
-                        'position-call-short':
-                          getCallPositionType(strike) === 'short',
-                      },
-                    ]"
+                    v-for="strike in strikeList"
+                    :key="strike"
+                    class="option-strike-row"
                   >
-                    <div class="symbol">{{ getCallOption(strike).symbol }}</div>
+                    <!-- Call Side -->
                     <div
-                      class="bid"
-                      @click="selectOption(getCallOption(strike), 'sell')"
+                      v-if="getCallOption(strike)"
+                      :class="[
+                        'call-side',
+                        {
+                          'selected-sell':
+                            getSelectionType(getCallOption(strike).symbol) ===
+                            'sell',
+                          'selected-buy':
+                            getSelectionType(getCallOption(strike).symbol) ===
+                            'buy',
+                          'position-call-long':
+                            getCallPositionType(strike) === 'long',
+                          'position-call-short':
+                            getCallPositionType(strike) === 'short',
+                        },
+                      ]"
                     >
-                      ${{ getOptionBid(getCallOption(strike)).toFixed(2) }}
+                      <div class="symbol">
+                        {{ getCallOption(strike).symbol }}
+                      </div>
+                      <div
+                        class="bid"
+                        @click="selectOption(getCallOption(strike), 'sell')"
+                      >
+                        ${{ getOptionBid(getCallOption(strike)).toFixed(2) }}
+                      </div>
+                      <div
+                        class="ask"
+                        @click="selectOption(getCallOption(strike), 'buy')"
+                      >
+                        ${{ getOptionAsk(getCallOption(strike)).toFixed(2) }}
+                      </div>
                     </div>
-                    <div
-                      class="ask"
-                      @click="selectOption(getCallOption(strike), 'buy')"
-                    >
-                      ${{ getOptionAsk(getCallOption(strike)).toFixed(2) }}
+                    <div v-else class="call-side empty">
+                      <div class="symbol">-</div>
+                      <div class="bid">-</div>
+                      <div class="ask">-</div>
                     </div>
-                  </div>
-                  <div v-else class="call-side empty">
-                    <div class="symbol">-</div>
-                    <div class="bid">-</div>
-                    <div class="ask">-</div>
-                  </div>
 
-                  <!-- Strike Price (Center) -->
-                  <div class="strike-center">${{ strike.toFixed(0) }}</div>
+                    <!-- Strike Price (Center) -->
+                    <div class="strike-center">${{ strike.toFixed(0) }}</div>
 
-                  <!-- Put Side -->
-                  <div
-                    v-if="getPutOption(strike)"
-                    :class="[
-                      'put-side',
-                      {
-                        'selected-sell':
-                          getSelectionType(getPutOption(strike).symbol) ===
-                          'sell',
-                        'selected-buy':
-                          getSelectionType(getPutOption(strike).symbol) ===
-                          'buy',
-                        'position-put-long':
-                          getPutPositionType(strike) === 'long',
-                        'position-put-short':
-                          getPutPositionType(strike) === 'short',
-                      },
-                    ]"
-                  >
+                    <!-- Put Side -->
                     <div
-                      class="bid"
-                      @click="selectOption(getPutOption(strike), 'sell')"
+                      v-if="getPutOption(strike)"
+                      :class="[
+                        'put-side',
+                        {
+                          'selected-sell':
+                            getSelectionType(getPutOption(strike).symbol) ===
+                            'sell',
+                          'selected-buy':
+                            getSelectionType(getPutOption(strike).symbol) ===
+                            'buy',
+                          'position-put-long':
+                            getPutPositionType(strike) === 'long',
+                          'position-put-short':
+                            getPutPositionType(strike) === 'short',
+                        },
+                      ]"
                     >
-                      ${{ getOptionBid(getPutOption(strike)).toFixed(2) }}
+                      <div
+                        class="bid"
+                        @click="selectOption(getPutOption(strike), 'sell')"
+                      >
+                        ${{ getOptionBid(getPutOption(strike)).toFixed(2) }}
+                      </div>
+                      <div
+                        class="ask"
+                        @click="selectOption(getPutOption(strike), 'buy')"
+                      >
+                        ${{ getOptionAsk(getPutOption(strike)).toFixed(2) }}
+                      </div>
+                      <div class="symbol">
+                        {{ getPutOption(strike).symbol }}
+                      </div>
                     </div>
-                    <div
-                      class="ask"
-                      @click="selectOption(getPutOption(strike), 'buy')"
-                    >
-                      ${{ getOptionAsk(getPutOption(strike)).toFixed(2) }}
+                    <div v-else class="put-side empty">
+                      <div class="bid">-</div>
+                      <div class="ask">-</div>
+                      <div class="symbol">-</div>
                     </div>
-                    <div class="symbol">{{ getPutOption(strike).symbol }}</div>
-                  </div>
-                  <div v-else class="put-side empty">
-                    <div class="bid">-</div>
-                    <div class="ask">-</div>
-                    <div class="symbol">-</div>
                   </div>
                 </div>
               </div>
-            </div>
-          </template>
-        </Card>
-      </div>
+            </template>
+          </Card>
+        </div>
 
-      <!-- Right Column (1/3 width) - Position Summary and Active Positions -->
-      <div class="right-column">
-        <!-- Position Summary (top) -->
-        <Card class="summary-card">
-          <template #title>Position Summary</template>
-          <template #content>
-            <div class="summary-grid">
-              <div class="summary-item">
-                <strong>Positions:</strong> {{ positions.length }}
-              </div>
-              <div class="summary-item">
-                <strong>{{ underlyingSymbol }} Price:</strong>
-                <span v-if="underlyingPrice !== null">
-                  ${{ underlyingPrice.toFixed(2) }}
-                  <span v-if="isLivePrice" class="live-indicator">(Live)</span>
-                </span>
-                <span v-else>Loading...</span>
-              </div>
-              <div class="summary-item">
-                <strong>Current P&L:</strong>
-                <span :class="totalUnrealizedPL >= 0 ? 'profit' : 'loss'">
-                  ${{ totalUnrealizedPL.toFixed(2) }}
-                </span>
-              </div>
-              <div class="summary-item">
-                <strong>Total Market Value:</strong> ${{
-                  totalMarketValue.toFixed(2)
-                }}
-              </div>
-              <div v-if="chartData" class="summary-item">
-                <strong>BE Price:</strong>
-                <span v-if="chartData.breakEvenPoints.length > 0">
-                  {{
-                    chartData.breakEvenPoints
-                      .map((p) => "$" + p.toFixed(2))
-                      .join(", ")
+        <!-- Right Column (1/3 width) - Position Summary, Order Ticket, and Active Positions -->
+        <div class="right-column">
+          <!-- Position Summary (top) -->
+          <Card class="summary-card">
+            <template #title>Position Summary</template>
+            <template #content>
+              <div class="summary-grid">
+                <div class="summary-item">
+                  <strong>Positions:</strong> {{ positions.length }}
+                </div>
+                <div class="summary-item">
+                  <strong>{{ underlyingSymbol }} Price:</strong>
+                  <span v-if="underlyingPrice !== null">
+                    ${{ underlyingPrice.toFixed(2) }}
+                    <span v-if="isLivePrice" class="live-indicator"
+                      >(Live)</span
+                    >
+                  </span>
+                  <span v-else>Loading...</span>
+                </div>
+                <div class="summary-item">
+                  <strong>Current P&L:</strong>
+                  <span :class="totalUnrealizedPL >= 0 ? 'profit' : 'loss'">
+                    ${{ totalUnrealizedPL.toFixed(2) }}
+                  </span>
+                </div>
+                <div class="summary-item">
+                  <strong>Total Market Value:</strong> ${{
+                    totalMarketValue.toFixed(2)
                   }}
-                </span>
-                <span v-else>None calculated</span>
+                </div>
+                <div v-if="chartData" class="summary-item">
+                  <strong>BE Price:</strong>
+                  <span v-if="chartData.breakEvenPoints.length > 0">
+                    {{
+                      chartData.breakEvenPoints
+                        .map((p) => "$" + p.toFixed(2))
+                        .join(", ")
+                    }}
+                  </span>
+                  <span v-else>None calculated</span>
+                </div>
+                <div v-if="chartData" class="summary-item">
+                  <strong>Max Loss:</strong>
+                  <span class="loss">${{ chartData.maxLoss.toFixed(2) }}</span>
+                </div>
               </div>
-              <div v-if="chartData" class="summary-item">
-                <strong>Max Loss:</strong>
-                <span class="loss">${{ chartData.maxLoss.toFixed(2) }}</span>
-              </div>
-            </div>
-          </template>
-        </Card>
+            </template>
+          </Card>
 
-        <!-- Active Positions Table (bottom) -->
-        <Card class="positions-table-card">
-          <template #title>
-            <div class="positions-header">
-              <span>Active Positions</span>
-              <Button
-                v-if="selectedPositions.length > 0"
-                :label="`Close Selected (${selectedPositions.length})`"
-                severity="danger"
-                size="small"
-                @click="submitCloseOrder"
-                class="close-positions-btn"
-              />
-            </div>
-          </template>
-          <template #content>
-            <DataTable :value="positions" class="p-datatable-sm" stripedRows>
-              <Column header="Select" style="width: 60px">
-                <template #body="slotProps">
-                  <Checkbox
-                    v-model="selectedPositions"
-                    :value="slotProps.data.symbol"
-                    @change="updateClosePrice"
-                  />
-                </template>
-              </Column>
-              <Column field="symbol" header="Symbol" :sortable="true">
-                <template #body="slotProps">
-                  <span class="symbol-cell">{{ slotProps.data.symbol }}</span>
-                </template>
-              </Column>
-              <Column field="asset_class" header="Type" :sortable="true">
-                <template #body="slotProps">
-                  <Tag
-                    :value="
-                      slotProps.data.asset_class === 'us_option'
-                        ? 'Option'
-                        : 'Stock'
-                    "
-                    :severity="
-                      slotProps.data.asset_class === 'us_option'
-                        ? 'info'
-                        : 'success'
-                    "
-                  />
-                </template>
-              </Column>
-              <Column field="side" header="Side" :sortable="true">
-                <template #body="slotProps">
-                  <Tag
-                    :value="slotProps.data.side"
-                    :severity="
-                      slotProps.data.side === 'long' ? 'success' : 'danger'
-                    "
-                  />
-                </template>
-              </Column>
-              <Column field="qty" header="Quantity" :sortable="true">
-                <template #body="slotProps">
-                  {{ slotProps.data.qty }}
-                </template>
-              </Column>
-              <Column
-                v-if="hasOptionPositions"
-                field="strike_price"
-                header="Strike"
-                :sortable="true"
-              >
-                <template #body="slotProps">
-                  <span v-if="slotProps.data.strike_price">
-                    ${{ slotProps.data.strike_price.toFixed(2) }}
-                  </span>
-                  <span v-else>-</span>
-                </template>
-              </Column>
-              <Column
-                v-if="hasOptionPositions"
-                field="option_type"
-                header="Type"
-                :sortable="true"
-              >
-                <template #body="slotProps">
-                  <span v-if="slotProps.data.option_type">
-                    {{ slotProps.data.option_type.toUpperCase() }}
-                  </span>
-                  <span v-else>-</span>
-                </template>
-              </Column>
-              <Column
-                v-if="hasOptionPositions"
-                field="expiry_date"
-                header="Expiry"
-                :sortable="true"
-              >
-                <template #body="slotProps">
-                  <span v-if="slotProps.data.expiry_date">
-                    {{ formatDate(slotProps.data.expiry_date) }}
-                  </span>
-                  <span v-else>-</span>
-                </template>
-              </Column>
-              <Column
-                field="current_price"
-                header="Current Price"
-                :sortable="true"
-              >
-                <template #body="slotProps">
-                  ${{ slotProps.data.current_price.toFixed(2) }}
-                </template>
-              </Column>
-              <Column
-                field="market_value"
-                header="Market Value"
-                :sortable="true"
-              >
-                <template #body="slotProps">
-                  ${{ slotProps.data.market_value.toFixed(2) }}
-                </template>
-              </Column>
-              <Column
-                field="unrealized_pl"
-                header="Unrealized P&L"
-                :sortable="true"
-              >
-                <template #body="slotProps">
-                  <span
-                    :class="
-                      slotProps.data.unrealized_pl >= 0 ? 'profit' : 'loss'
-                    "
+          <!-- Compact Order Ticket (middle - only show if options are selected) -->
+          <Card
+            v-if="selectedOptions.length > 0"
+            class="compact-order-ticket-card"
+          >
+            <template #title>
+              <div class="order-ticket-header">
+                <span>Order Ticket ({{ selectedOptions.length }}/4)</span>
+                <Button
+                  icon="pi pi-times"
+                  severity="secondary"
+                  size="small"
+                  text
+                  @click="clearAllSelections"
+                  class="clear-all-btn"
+                />
+              </div>
+            </template>
+            <template #content>
+              <div class="compact-order-ticket">
+                <!-- Selected Options List -->
+                <div class="selected-options-list">
+                  <div
+                    v-for="symbol in selectedOptions"
+                    :key="symbol"
+                    class="selected-option-row"
+                    :class="getOrderRowClass(symbol)"
                   >
-                    ${{ slotProps.data.unrealized_pl.toFixed(2) }}
-                  </span>
-                </template>
-              </Column>
-              <Column field="unrealized_plpc" header="P&L %" :sortable="true">
-                <template #body="slotProps">
-                  <span
-                    :class="
-                      slotProps.data.unrealized_plpc >= 0 ? 'profit' : 'loss'
-                    "
-                  >
-                    {{ (slotProps.data.unrealized_plpc * 100).toFixed(2) }}%
-                  </span>
-                </template>
-              </Column>
-            </DataTable>
-          </template>
-        </Card>
+                    <div class="option-info">
+                      <div class="option-details">
+                        <span class="strike"
+                          >${{
+                            getOptionBySymbol(symbol)?.strike_price?.toFixed(0)
+                          }}</span
+                        >
+                        <Tag
+                          :value="
+                            getOptionBySymbol(symbol)?.type?.toUpperCase()
+                          "
+                          :severity="
+                            getOptionBySymbol(symbol)?.type === 'call'
+                              ? 'success'
+                              : 'info'
+                          "
+                          size="small"
+                        />
+                        <Tag
+                          :value="getSelectionType(symbol)?.toUpperCase()"
+                          :severity="
+                            getSelectionType(symbol) === 'buy'
+                              ? 'success'
+                              : 'danger'
+                          "
+                          size="small"
+                        />
+                        <span class="option-price">
+                          ${{ getOrderPrice(symbol).toFixed(2) }}
+                        </span>
+                      </div>
+                    </div>
+                    <div class="option-controls">
+                      <InputNumber
+                        :model-value="getOrderQuantity(symbol)"
+                        :min="1"
+                        :max="10"
+                        size="small"
+                        class="compact-qty-input"
+                        @update:model-value="
+                          updateOrderQuantity(symbol, $event)
+                        "
+                      />
+                      <Button
+                        icon="pi pi-times"
+                        severity="danger"
+                        size="small"
+                        text
+                        @click="removeSelection(symbol)"
+                        class="remove-option-btn"
+                      />
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Order Summary -->
+                <div class="compact-order-summary">
+                  <div class="summary-line">
+                    <span class="label">Net:</span>
+                    <span class="value" :class="getTotalEstimateClass()">
+                      ${{ getTotalEstimatedValue().toFixed(2) }}
+                    </span>
+                  </div>
+                  <div class="summary-line">
+                    <span class="label">Limit:</span>
+                    <div class="limit-input-group">
+                      <InputNumber
+                        v-model="combinedOrderPrice"
+                        :min="0.01"
+                        :max="100"
+                        :step="0.01"
+                        size="small"
+                        class="compact-limit-input"
+                        showButtons
+                        buttonLayout="horizontal"
+                      />
+                      <span
+                        class="order-type-badge"
+                        :class="getTotalEstimateClass()"
+                      >
+                        {{ getTotalEstimatedValue() >= 0 ? "CR" : "DB" }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Order Controls -->
+                <div class="compact-order-controls">
+                  <div class="control-row">
+                    <Dropdown
+                      v-model="orderType"
+                      :options="orderTypeOptions"
+                      optionLabel="label"
+                      optionValue="value"
+                      class="compact-dropdown"
+                      size="small"
+                    />
+                    <Dropdown
+                      v-model="timeInForce"
+                      :options="timeInForceOptions"
+                      optionLabel="label"
+                      optionValue="value"
+                      class="compact-dropdown"
+                      size="small"
+                    />
+                  </div>
+                  <Button
+                    label="REVIEW & SEND"
+                    severity="warning"
+                    size="small"
+                    class="compact-review-btn"
+                    @click="reviewAndSendOrder"
+                    :disabled="!canSubmitOrder"
+                  />
+                </div>
+              </div>
+            </template>
+          </Card>
+
+          <!-- Active Positions Table (bottom) -->
+          <Card class="positions-table-card">
+            <template #title>
+              <div class="positions-header">
+                <span>Active Positions</span>
+                <Button
+                  v-if="selectedPositions.length > 0"
+                  :label="`Close Selected (${selectedPositions.length})`"
+                  severity="danger"
+                  size="small"
+                  @click="submitCloseOrder"
+                  class="close-positions-btn"
+                />
+              </div>
+            </template>
+            <template #content>
+              <DataTable :value="positions" class="p-datatable-sm" stripedRows>
+                <Column header="Select" style="width: 60px">
+                  <template #body="slotProps">
+                    <Checkbox
+                      v-model="selectedPositions"
+                      :value="slotProps.data.symbol"
+                      @change="updateClosePrice"
+                    />
+                  </template>
+                </Column>
+                <Column field="symbol" header="Symbol" :sortable="true">
+                  <template #body="slotProps">
+                    <span class="symbol-cell">{{ slotProps.data.symbol }}</span>
+                  </template>
+                </Column>
+                <Column field="asset_class" header="Type" :sortable="true">
+                  <template #body="slotProps">
+                    <Tag
+                      :value="
+                        slotProps.data.asset_class === 'us_option'
+                          ? 'Option'
+                          : 'Stock'
+                      "
+                      :severity="
+                        slotProps.data.asset_class === 'us_option'
+                          ? 'info'
+                          : 'success'
+                      "
+                    />
+                  </template>
+                </Column>
+                <Column field="side" header="Side" :sortable="true">
+                  <template #body="slotProps">
+                    <Tag
+                      :value="slotProps.data.side"
+                      :severity="
+                        slotProps.data.side === 'long' ? 'success' : 'danger'
+                      "
+                    />
+                  </template>
+                </Column>
+                <Column field="qty" header="Quantity" :sortable="true">
+                  <template #body="slotProps">
+                    {{ slotProps.data.qty }}
+                  </template>
+                </Column>
+                <Column
+                  v-if="hasOptionPositions"
+                  field="strike_price"
+                  header="Strike"
+                  :sortable="true"
+                >
+                  <template #body="slotProps">
+                    <span v-if="slotProps.data.strike_price">
+                      ${{ slotProps.data.strike_price.toFixed(2) }}
+                    </span>
+                    <span v-else>-</span>
+                  </template>
+                </Column>
+                <Column
+                  v-if="hasOptionPositions"
+                  field="option_type"
+                  header="Type"
+                  :sortable="true"
+                >
+                  <template #body="slotProps">
+                    <span v-if="slotProps.data.option_type">
+                      {{ slotProps.data.option_type.toUpperCase() }}
+                    </span>
+                    <span v-else>-</span>
+                  </template>
+                </Column>
+                <Column
+                  v-if="hasOptionPositions"
+                  field="expiry_date"
+                  header="Expiry"
+                  :sortable="true"
+                >
+                  <template #body="slotProps">
+                    <span v-if="slotProps.data.expiry_date">
+                      {{ formatDate(slotProps.data.expiry_date) }}
+                    </span>
+                    <span v-else>-</span>
+                  </template>
+                </Column>
+                <Column
+                  field="current_price"
+                  header="Current Price"
+                  :sortable="true"
+                >
+                  <template #body="slotProps">
+                    ${{ slotProps.data.current_price.toFixed(2) }}
+                  </template>
+                </Column>
+                <Column
+                  field="market_value"
+                  header="Market Value"
+                  :sortable="true"
+                >
+                  <template #body="slotProps">
+                    ${{ slotProps.data.market_value.toFixed(2) }}
+                  </template>
+                </Column>
+                <Column
+                  field="unrealized_pl"
+                  header="Unrealized P&L"
+                  :sortable="true"
+                >
+                  <template #body="slotProps">
+                    <span
+                      :class="
+                        slotProps.data.unrealized_pl >= 0 ? 'profit' : 'loss'
+                      "
+                    >
+                      ${{ slotProps.data.unrealized_pl.toFixed(2) }}
+                    </span>
+                  </template>
+                </Column>
+                <Column field="unrealized_plpc" header="P&L %" :sortable="true">
+                  <template #body="slotProps">
+                    <span
+                      :class="
+                        slotProps.data.unrealized_plpc >= 0 ? 'profit' : 'loss'
+                      "
+                    >
+                      {{ (slotProps.data.unrealized_plpc * 100).toFixed(2) }}%
+                    </span>
+                  </template>
+                </Column>
+              </DataTable>
+            </template>
+          </Card>
+        </div>
       </div>
     </div>
-
-    <!-- Order Ticket (only show if options are selected) -->
-    <Card v-if="selectedOptions.length > 0" class="order-ticket-card">
-      <template #title
-        >Order Ticket - {{ underlyingSymbol }} Adjustments</template
-      >
-      <template #content>
-        <div class="order-ticket">
-          <div class="order-header">
-            <div class="order-controls">
-              <Button
-                label="Clear All"
-                severity="secondary"
-                size="small"
-                @click="clearAllSelections"
-                class="clear-btn"
-              />
-            </div>
-          </div>
-
-          <div class="order-table-container">
-            <table class="order-table">
-              <thead>
-                <tr>
-                  <th>Qty</th>
-                  <th>Exp</th>
-                  <th>Strike</th>
-                  <th>Type</th>
-                  <th>Side</th>
-                  <th>Price</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr
-                  v-for="symbol in selectedOptions"
-                  :key="symbol"
-                  :class="getOrderRowClass(symbol)"
-                >
-                  <td class="qty-cell">
-                    <InputNumber
-                      :model-value="getOrderQuantity(symbol)"
-                      :min="1"
-                      :max="10"
-                      size="small"
-                      class="qty-input"
-                      @update:model-value="updateOrderQuantity(symbol, $event)"
-                    />
-                  </td>
-                  <td class="exp-cell">
-                    {{ formatExpiry(getOptionBySymbol(symbol)?.expiry_date) }}
-                  </td>
-                  <td class="strike-cell">
-                    ${{ getOptionBySymbol(symbol)?.strike_price?.toFixed(0) }}
-                  </td>
-                  <td class="type-cell">
-                    <Tag
-                      :value="getOptionBySymbol(symbol)?.type?.toUpperCase()"
-                      :severity="
-                        getOptionBySymbol(symbol)?.type === 'call'
-                          ? 'success'
-                          : 'info'
-                      "
-                      class="type-tag"
-                    />
-                  </td>
-                  <td class="side-cell">
-                    <Tag
-                      :value="getSelectionType(symbol)?.toUpperCase()"
-                      :severity="
-                        getSelectionType(symbol) === 'buy'
-                          ? 'success'
-                          : 'danger'
-                      "
-                      class="side-tag"
-                    />
-                  </td>
-                  <td class="price-cell">
-                    <span class="price-label">
-                      ${{ getOrderPrice(symbol).toFixed(2) }}
-                    </span>
-                  </td>
-                  <td class="actions-cell">
-                    <Button
-                      icon="pi pi-times"
-                      severity="danger"
-                      size="small"
-                      text
-                      @click="removeSelection(symbol)"
-                      class="remove-btn"
-                    />
-                  </td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-
-          <div class="order-summary">
-            <div class="summary-row">
-              <div class="summary-label">Net Credit/Debit:</div>
-              <div class="summary-value" :class="getTotalEstimateClass()">
-                ${{ getTotalEstimatedValue().toFixed(2) }}
-              </div>
-            </div>
-            <div class="summary-row">
-              <div class="summary-label">Limit Price:</div>
-              <div class="summary-value">
-                <div class="limit-price-container">
-                  <InputNumber
-                    v-model="combinedOrderPrice"
-                    :min="0.01"
-                    :max="100"
-                    :step="0.01"
-                    size="small"
-                    class="compact-price-input"
-                    showButtons
-                    buttonLayout="horizontal"
-                    :incrementButtonIcon="'pi pi-plus'"
-                    :decrementButtonIcon="'pi pi-minus'"
-                  />
-                  <span
-                    class="price-type-compact"
-                    :class="getTotalEstimateClass()"
-                  >
-                    {{ getTotalEstimatedValue() >= 0 ? "Credit" : "Debit" }}
-                  </span>
-                </div>
-              </div>
-            </div>
-            <div class="summary-row">
-              <div class="summary-label">Order Type:</div>
-              <div class="summary-value">
-                <Dropdown
-                  v-model="orderType"
-                  :options="orderTypeOptions"
-                  optionLabel="label"
-                  optionValue="value"
-                  class="order-type-dropdown"
-                />
-              </div>
-            </div>
-            <div class="summary-row">
-              <div class="summary-label">Time in Force:</div>
-              <div class="summary-value">
-                <Dropdown
-                  v-model="timeInForce"
-                  :options="timeInForceOptions"
-                  optionLabel="label"
-                  optionValue="value"
-                  class="tif-dropdown"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div class="order-actions">
-            <Button
-              label="REVIEW & SEND"
-              severity="warning"
-              size="large"
-              class="review-send-btn"
-              @click="reviewAndSendOrder"
-              :disabled="!canSubmitOrder"
-            />
-          </div>
-        </div>
-      </template>
-    </Card>
 
     <!-- Centralized Order Confirmation Dialog -->
     <OrderConfirmationDialog
@@ -1643,11 +1630,26 @@ export default {
 }
 
 /* New Layout Structure */
+.main-container {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: calc(100vh - 4px);
+  gap: 10px;
+}
+
 .main-layout {
   display: flex;
   width: 100%;
-  height: calc(100vh - 4px); /* Only account for minimal container padding */
+  flex: 1;
   gap: 10px;
+  min-height: 0;
+}
+
+/* Order ticket positioning */
+.order-ticket-card {
+  flex: 0 0 auto;
+  margin-top: 10px;
 }
 
 .left-column {
@@ -2547,5 +2549,257 @@ export default {
 
 .close-positions-btn:hover:not(:disabled) {
   background: #c82333 !important;
+}
+
+/* Compact Order Ticket Styles */
+.compact-order-ticket-card {
+  flex: 0 0 auto;
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.order-ticket-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.clear-all-btn {
+  color: #6c757d !important;
+}
+
+.compact-order-ticket {
+  padding: 0;
+}
+
+.selected-options-list {
+  margin-bottom: 15px;
+}
+
+.selected-option-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  border-radius: 6px;
+  border: 1px solid #e9ecef;
+  background: #f8f9fa;
+}
+
+.selected-option-row.buy-row {
+  background: rgba(76, 175, 80, 0.1);
+  border-color: rgba(76, 175, 80, 0.3);
+}
+
+.selected-option-row.sell-row {
+  background: rgba(244, 67, 54, 0.1);
+  border-color: rgba(244, 67, 54, 0.3);
+}
+
+.option-info {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+}
+
+.option-details {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.option-details .strike {
+  font-family: monospace;
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: #2c3e50;
+}
+
+.option-price {
+  font-family: monospace;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: #6c757d;
+}
+
+.option-controls {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.compact-qty-input {
+  width: 50px !important;
+  min-width: 50px !important;
+  max-width: 50px !important;
+}
+
+.compact-qty-input :deep(.p-inputnumber) {
+  width: 50px !important;
+  min-width: 50px !important;
+  max-width: 50px !important;
+}
+
+.compact-qty-input :deep(.p-inputnumber-input) {
+  width: 50px !important;
+  min-width: 50px !important;
+  max-width: 50px !important;
+  text-align: center !important;
+  padding: 4px 2px !important;
+  font-size: 0.8rem !important;
+}
+
+.compact-qty-input :deep(.p-inputnumber-button-group) {
+  display: none !important;
+}
+
+.remove-option-btn {
+  color: #dc3545 !important;
+  padding: 2px !important;
+}
+
+.compact-order-summary {
+  background: #f8f9fa;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 15px;
+}
+
+.summary-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.summary-line:last-child {
+  margin-bottom: 0;
+}
+
+.summary-line .label {
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: #495057;
+}
+
+.summary-line .value {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.summary-line .value.credit {
+  color: #28a745;
+}
+
+.summary-line .value.debit {
+  color: #dc3545;
+}
+
+.limit-input-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.compact-limit-input {
+  width: 70px !important;
+  min-width: 70px !important;
+  max-width: 70px !important;
+}
+
+.compact-limit-input :deep(.p-inputnumber) {
+  width: 70px !important;
+  min-width: 70px !important;
+  max-width: 70px !important;
+}
+
+.compact-limit-input :deep(.p-inputnumber-input) {
+  width: 45px !important;
+  text-align: center !important;
+  padding: 4px 2px !important;
+  font-size: 0.8rem !important;
+  font-weight: 600 !important;
+}
+
+.compact-limit-input :deep(.p-inputnumber-button-up),
+.compact-limit-input :deep(.p-inputnumber-button-down) {
+  width: 12px !important;
+  height: 12px !important;
+}
+
+.compact-limit-input :deep(.p-inputnumber-button-up .p-button-icon),
+.compact-limit-input :deep(.p-inputnumber-button-down .p-button-icon) {
+  font-size: 0.5rem !important;
+}
+
+.order-type-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  text-align: center;
+  min-width: 25px;
+}
+
+.order-type-badge.credit {
+  color: #28a745;
+  background: rgba(40, 167, 69, 0.1);
+  border: 1px solid #28a745;
+}
+
+.order-type-badge.debit {
+  color: #dc3545;
+  background: rgba(220, 53, 69, 0.1);
+  border: 1px solid #dc3545;
+}
+
+.compact-order-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.control-row {
+  display: flex;
+  gap: 8px;
+}
+
+.compact-dropdown {
+  flex: 1;
+  min-width: 0;
+}
+
+.compact-dropdown :deep(.p-dropdown) {
+  font-size: 0.8rem !important;
+}
+
+.compact-dropdown :deep(.p-dropdown-label) {
+  padding: 4px 8px !important;
+  font-size: 0.8rem !important;
+}
+
+.compact-review-btn {
+  background: #ff9800 !important;
+  border: none !important;
+  color: #000 !important;
+  font-weight: 700 !important;
+  font-size: 0.85rem !important;
+  padding: 8px 16px !important;
+  border-radius: 4px !important;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  width: 100%;
+}
+
+.compact-review-btn:hover:not(:disabled) {
+  background: #f57c00 !important;
+}
+
+.compact-review-btn:disabled {
+  background: #6c757d !important;
+  color: #adb5bd !important;
 }
 </style>

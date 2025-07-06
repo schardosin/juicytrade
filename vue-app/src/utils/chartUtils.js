@@ -607,25 +607,37 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
         tooltip: {
           mode: "nearest",
           intersect: false,
-          filter: function (tooltipItem) {
-            // Only show tooltip for main payoff line and current price
-            return (
-              tooltipItem.datasetIndex === 2 || tooltipItem.datasetIndex === 4
-            );
-          },
           callbacks: {
-            title: function (context) {
-              return `Price: $${context[0].parsed.x.toFixed(2)}`;
-            },
-            label: function (context) {
-              if (context.datasetIndex === 2) {
-                return `P&L: $${context.parsed.y.toFixed(2)}`;
-              } else if (context.datasetIndex === 4) {
+            // Header shows the underlying price under cursor
+            title: (ctx) => `Price: $${ctx[0].parsed.x.toFixed(2)}`,
+            // Label shows interpolated P/L or current price
+            label: (ctx) => {
+              // Current-price guideline
+              if (ctx.dataset.label === "Current Price") {
                 return `Current: $${underlyingPrice.toFixed(2)}`;
               }
-              return `${context.dataset.label}: $${context.parsed.y.toFixed(
-                2
-              )}`;
+
+              // Interpolate P/L for main payoff line
+              if (ctx.dataset.label.startsWith("Position Payoff")) {
+                const xVal = ctx.parsed.x;
+
+                // find first index where price >= xVal
+                let i = prices.findIndex((p) => p >= xVal);
+                if (i === -1) i = prices.length - 1;
+                if (i === 0) i = 1; // ensure we have i-1
+
+                const x1 = prices[i - 1];
+                const x2 = prices[i];
+                const y1 = payoffs[i - 1];
+                const y2 = payoffs[i];
+                const t = x2 !== x1 ? (xVal - x1) / (x2 - x1) : 0;
+                const yInterp = y1 + t * (y2 - y1);
+
+                return `P&L: $${yInterp.toFixed(2)}`;
+              }
+
+              // Fallback (zero line etc.)
+              return `${ctx.dataset.label}: $${ctx.parsed.y.toFixed(2)}`;
             },
           },
         },
