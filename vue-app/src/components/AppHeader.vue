@@ -59,7 +59,6 @@ export default {
 .custom-menubar {
   border-radius: 0;
   border: none;
-  border-bottom: 1px solid #e9ecef;
 }
 
 .app-logo {
@@ -67,14 +66,9 @@ export default {
   align-items: center;
   font-weight: 600;
   font-size: 1.2rem;
-  color: #2c3e50;
 }
 
 .app-title {
-  background: linear-gradient(45deg, #007bff, #6610f2);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
   font-weight: 700;
 }
 
@@ -90,21 +84,15 @@ export default {
 }
 
 :deep(.p-menuitem-link:hover) {
-  background-color: #f8f9fa;
-  color: #007bff;
+  transition: all 0.2s ease;
 }
 
 :deep(.active-menu-item .p-menuitem-link) {
-  background-color: transparent;
-  color: #007bff;
-  border-bottom: 2px solid #007bff;
-  font-weight: 600;
+  border-bottom: 2px solid;
 }
 
 :deep(.active-menu-item .p-menuitem-link:hover) {
-  background-color: #f8f9fa;
-  color: #007bff;
-  border-bottom: 2px solid #007bff;
+  border-bottom: 2px solid;
 }
 
 :deep(.p-menuitem-icon) {

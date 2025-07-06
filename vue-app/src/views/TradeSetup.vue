@@ -1524,8 +1524,15 @@ export default {
       // Set default expiry to next market date
       try {
         const nextMarketDate = await api.getNextMarketDate();
-        expiry.value = new Date(nextMarketDate);
-        console.log("Set expiry date to:", nextMarketDate);
+        // Parse the date string properly to avoid timezone issues
+        const [year, month, day] = nextMarketDate.split("-").map(Number);
+        expiry.value = new Date(year, month - 1, day); // month is 0-indexed
+        console.log(
+          "Set expiry date to:",
+          nextMarketDate,
+          "-> Date object:",
+          expiry.value
+        );
       } catch (error) {
         console.error("Error fetching next market date:", error);
       }

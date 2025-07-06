@@ -727,6 +727,52 @@ async def api_get_options_chain(symbol: str, expiry: str, strategy_type: str):
     """Retrieve options chain for a given symbol, expiry, and strategy type."""
     return get_options_chain(symbol, expiry, strategy_type)
 
+@app.get("/next_market_date")
+def get_next_market_date():
+    """
+    Get the next market trading date from Alpaca calendar.
+    """
+    try:
+        url = f"{get_base_url(is_paper_trade=False)}/v2/calendar"
+        params = {
+            "start": date.today().strftime("%Y-%m-%d"),
+            "end": (date.today().replace(year=date.today().year + 1)).strftime("%Y-%m-%d")
+        }
+        api_key, api_secret = get_api_credentials(is_paper_trade=False)
+        headers = {
+            "APCA-API-KEY-ID": api_key,
+            "APCA-API-SECRET-KEY": api_secret,
+        }
+        resp = requests.get(url, headers=headers, params=params)
+        
+        if resp.status_code == 200:
+            data = resp.json()
+            for day in data:
+                if day.get("date"):
+                    market_date = day["date"]
+                    if market_date >= date.today().strftime("%Y-%m-%d"):
+                        return {
+                            "success": True,
+                            "next_market_date": market_date,
+                            "timestamp": datetime.now().isoformat()
+                        }
+        
+        # Fallback to today's date if no future market date found
+        return {
+            "success": True,
+            "next_market_date": date.today().strftime("%Y-%m-%d"),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching next market date: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "next_market_date": date.today().strftime("%Y-%m-%d"),
+            "timestamp": datetime.now().isoformat()
+        }
+
 @app.get("/positions")
 def get_open_positions():
     """

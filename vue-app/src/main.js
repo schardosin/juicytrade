@@ -19,7 +19,7 @@ import Divider from "primevue/divider";
 import Menubar from "primevue/menubar";
 
 // PrimeVue styles
-import "primevue/resources/themes/lara-light-blue/theme.css";
+import "primevue/resources/themes/aura-light-purple/theme.css";
 import "primevue/resources/primevue.min.css";
 import "primeicons/primeicons.css";
 

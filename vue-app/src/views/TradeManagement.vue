@@ -265,7 +265,10 @@
                       'selected-buy':
                         getSelectionType(getCallOption(strike).symbol) ===
                         'buy',
-                      'position-call': hasCallPosition(strike),
+                      'position-call-long':
+                        getCallPositionType(strike) === 'long',
+                      'position-call-short':
+                        getCallPositionType(strike) === 'short',
                     },
                   ]"
                 >
@@ -303,7 +306,10 @@
                         'sell',
                       'selected-buy':
                         getSelectionType(getPutOption(strike).symbol) === 'buy',
-                      'position-put': hasPutPosition(strike),
+                      'position-put-long':
+                        getPutPositionType(strike) === 'long',
+                      'position-put-short':
+                        getPutPositionType(strike) === 'short',
                     },
                   ]"
                 >
@@ -1187,22 +1193,37 @@ export default {
       );
     };
 
-    // Check if there's a call position at this strike
-    const hasCallPosition = (strike) => {
-      return optionPositions.value.some(
+    // Check if there's a call position at this strike and return position type
+    const getCallPositionType = (strike) => {
+      const position = optionPositions.value.find(
         (pos) =>
           Math.abs(pos.strike_price - strike) < 0.01 &&
           pos.option_type === "call"
       );
+      if (!position) return null;
+      // Long position (qty > 0) = bought call, Short position (qty < 0) = sold call
+      return position.qty > 0 ? "long" : "short";
     };
 
-    // Check if there's a put position at this strike
-    const hasPutPosition = (strike) => {
-      return optionPositions.value.some(
+    // Check if there's a put position at this strike and return position type
+    const getPutPositionType = (strike) => {
+      const position = optionPositions.value.find(
         (pos) =>
           Math.abs(pos.strike_price - strike) < 0.01 &&
           pos.option_type === "put"
       );
+      if (!position) return null;
+      // Long position (qty > 0) = bought put, Short position (qty < 0) = sold put
+      return position.qty > 0 ? "long" : "short";
+    };
+
+    // Legacy functions for backward compatibility
+    const hasCallPosition = (strike) => {
+      return getCallPositionType(strike) !== null;
+    };
+
+    const hasPutPosition = (strike) => {
+      return getPutPositionType(strike) !== null;
     };
 
     const getOptionDisplayPrice = (option) => {
@@ -1627,6 +1648,8 @@ export default {
       isPositionStrike,
       hasCallPosition,
       hasPutPosition,
+      getCallPositionType,
+      getPutPositionType,
       getOptionDisplayPrice,
       toggleOptionSelection,
       removeSelection,
@@ -1880,22 +1903,27 @@ export default {
   background-color: #fff3cd;
 }
 
-.call-side.position-call {
-  background-color: #fff3cd !important;
-  border-left: 3px solid #ffc107;
+/* Position highlighting - different colors for long vs short */
+.call-side.position-call-long,
+.put-side.position-put-long {
+  background-color: #e3f2fd !important;
+  border-left: 3px solid #2196f3;
 }
 
-.put-side.position-put {
-  background-color: #fff3cd !important;
-  border-left: 3px solid #ffc107;
+.call-side.position-call-short,
+.put-side.position-put-short {
+  background-color: #fff3e0 !important;
+  border-left: 3px solid #ff9800;
 }
 
-.call-side.position-call:hover {
-  background-color: #fff3cd !important;
+.call-side.position-call-long:hover,
+.put-side.position-put-long:hover {
+  background-color: #e3f2fd !important;
 }
 
-.put-side.position-put:hover {
-  background-color: #fff3cd !important;
+.call-side.position-call-short:hover,
+.put-side.position-put-short:hover {
+  background-color: #fff3e0 !important;
 }
 
 .call-side {
@@ -1925,14 +1953,14 @@ export default {
 
 .call-side.selected-sell,
 .put-side.selected-sell {
-  background-color: #ffebee;
-  border-left: 4px solid #f44336;
+  background-color: #ffebee !important;
+  border-left: 4px solid #f44336 !important;
 }
 
 .call-side.selected-buy,
 .put-side.selected-buy {
-  background-color: #e8f5e8;
-  border-left: 4px solid #4caf50;
+  background-color: #e8f5e8 !important;
+  border-left: 4px solid #4caf50 !important;
 }
 
 .call-side.empty,
