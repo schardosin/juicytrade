@@ -139,7 +139,7 @@
           <InputNumber
             id="orderPrice"
             v-model="editableOrderPrice"
-            :min="0"
+            :min="-10"
             :max="10"
             :step="0.01"
             :minFractionDigits="2"
@@ -328,13 +328,10 @@ export default {
     const handleConfirm = () => {
       if (!canConfirm.value) return;
 
-      const isCredit = calculatedSummary.value.netCredit;
-
+      // Send exactly what's in the input box without any modifications
       const finalOrderData = {
         ...props.orderData,
-        orderPrice: isCredit
-          ? -editableOrderPrice.value
-          : editableOrderPrice.value,
+        orderPrice: editableOrderPrice.value,
       };
 
       emit("confirm", finalOrderData);

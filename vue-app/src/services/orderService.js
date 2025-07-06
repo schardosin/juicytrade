@@ -180,12 +180,13 @@ class OrderService {
       maxLoss = Math.abs(orderPrice) * 100;
     }
 
+    // Use unified credit/debit logic: Negative = Credit, Positive = Debit
     return {
       totalPremium,
       maxProfit,
       maxLoss,
-      netCredit: orderPrice > 0,
-      netDebit: orderPrice < 0,
+      netCredit: orderPrice < 0, // Negative price = Credit (we receive money)
+      netDebit: orderPrice >= 0, // Positive price = Debit (we pay money)
     };
   }
 }

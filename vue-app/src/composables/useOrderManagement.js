@@ -317,14 +317,14 @@ export function useOrderManagement() {
       expiry,
       strategyType: "Multi-Leg Adjustment",
       legs,
-      orderPrice: combinedOrderPrice,
+      orderPrice: combinedOrderPrice, // Use the user's limit price from the order ticket
       orderOffset: 0,
       orderType,
       timeInForce,
       // Rich data for dialog display
       underlyingPrice,
       currentOptionsPrice: Math.abs(currentOptionsPrice),
-      calculatedOrderPrice: combinedOrderPrice,
+      calculatedOrderPrice: combinedOrderPrice, // Use the user's limit price for dialog
       currentPositionPL,
       estimatedNewPL,
       adjustmentCost,
@@ -396,7 +396,7 @@ export function useOrderManagement() {
 
     // Calculate estimated proceeds from closing
     const estimatedProceeds = Math.abs(closeOrderPrice) * 100; // Convert to dollars
-    const closeType = closeOrderPrice >= 0 ? "Credit" : "Debit";
+    const closeType = closeOrderPrice < 0 ? "Credit" : "Debit"; // Negative = Credit, Positive = Debit
 
     // Calculate total P&L impact (current P&L + proceeds from closing)
     const totalPLImpact =
@@ -408,14 +408,14 @@ export function useOrderManagement() {
       expiry,
       strategyType: "Position Close",
       legs,
-      orderPrice: Math.abs(closeOrderPrice),
+      orderPrice: closeOrderPrice, // Pass the price as-is (positive or negative)
       orderOffset: 0,
       orderType,
       timeInForce,
       // Rich data for dialog display
       underlyingPrice,
       currentOptionsPrice: Math.abs(currentOptionsPrice),
-      calculatedOrderPrice: Math.abs(closeOrderPrice),
+      calculatedOrderPrice: closeOrderPrice, // Pass as-is for dialog
       currentPositionPL,
       estimatedProceeds,
       totalPLImpact,

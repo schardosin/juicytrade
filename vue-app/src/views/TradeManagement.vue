@@ -338,7 +338,7 @@
                     <div class="limit-input-group">
                       <InputNumber
                         v-model="combinedOrderPrice"
-                        :min="0.01"
+                        :min="-100"
                         :max="100"
                         :step="0.01"
                         size="small"
@@ -795,7 +795,7 @@ export default {
         if (selectedOptions.value.length > 0) {
           // Calculate price adjustment factor based on limit price vs natural price
           const naturalPrice = Math.abs(getTotalEstimatedValue()) / 100;
-          const limitPrice = combinedOrderPrice.value || naturalPrice;
+          const limitPrice = Math.abs(combinedOrderPrice.value) || naturalPrice;
           const priceAdjustmentFactor =
             naturalPrice > 0 ? limitPrice / naturalPrice : 1;
 
@@ -1508,9 +1508,20 @@ export default {
         if (hasOptionPositions.value) {
           generateChart();
         }
-        // Always recalculate limit price when legs change (but not when limit price itself changes)
+        // Only auto-calculate limit price when legs change, preserve manual edits
         const totalCost = getTotalEstimatedValue() / 100; // Convert from cents to dollars, keep sign
-        combinedOrderPrice.value = parseFloat(Math.abs(totalCost).toFixed(2));
+        // For limit price: positive net = credit = negative limit price
+        // For limit price: negative net = debit = positive limit price
+        const newPrice = parseFloat((-totalCost).toFixed(2)); // Invert the sign for limit price
+
+        // Only update if the price has actually changed or if it's the initial calculation
+        if (
+          combinedOrderPrice.value === 0 ||
+          Math.abs(Math.abs(combinedOrderPrice.value) - Math.abs(newPrice)) >
+            0.01
+        ) {
+          combinedOrderPrice.value = newPrice; // Use inverted sign for limit price display
+        }
       },
       { deep: true }
     );
