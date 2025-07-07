@@ -136,6 +136,20 @@ class WebSocketStreamingClient {
     }
   }
 
+  requestOrders(statusFilter = "open", dateFilter = "today") {
+    if (this.isConnected && this.ws) {
+      const message = {
+        type: "get_orders",
+        filter: statusFilter,
+        date_filter: dateFilter,
+      };
+      console.log("Requesting orders via WebSocket:", message);
+      this.ws.send(JSON.stringify(message));
+    } else {
+      console.error("Cannot request orders: WebSocket not connected");
+    }
+  }
+
   handleMessage(message) {
     //console.log("WebSocket message received:", message);
 
@@ -188,6 +202,22 @@ class WebSocketStreamingClient {
         const ordersErrorCallback = this.callbacks.get("open_orders_error");
         if (ordersErrorCallback) {
           ordersErrorCallback(message.error);
+        }
+        break;
+
+      case "orders_update":
+        console.log("Orders update received:", message);
+        const allOrdersCallback = this.callbacks.get("open_orders_update");
+        if (allOrdersCallback) {
+          allOrdersCallback(message.data);
+        }
+        break;
+
+      case "orders_error":
+        console.error("Orders error received:", message);
+        const allOrdersErrorCallback = this.callbacks.get("open_orders_error");
+        if (allOrdersErrorCallback) {
+          allOrdersErrorCallback(message.error);
         }
         break;
 

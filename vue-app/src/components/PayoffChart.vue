@@ -135,7 +135,6 @@ export default {
 
         if (ctx && config) {
           chart.value = new Chart(chartCanvas.value, config);
-          console.log("PayoffChart: Chart created successfully");
         } else {
           console.error(
             "PayoffChart: Chart.js not created - missing ctx or config",

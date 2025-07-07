@@ -538,11 +538,29 @@
             </template>
           </Card>
 
-          <!-- Open Orders Table -->
-          <Card v-if="openOrders.length > 0" class="open-orders-table-card">
+          <!-- Orders Table -->
+          <Card class="orders-table-card">
             <template #title>
               <div class="orders-header">
-                <span>Open Orders ({{ openOrders.length }})</span>
+                <span>{{ getOrdersTitle() }}</span>
+                <div class="orders-filter">
+                  <Dropdown
+                    v-model="orderDateFilter"
+                    :options="orderDateFilterOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    @change="onOrderFilterChange"
+                    class="order-filter-dropdown"
+                  />
+                  <Dropdown
+                    v-model="orderStatusFilter"
+                    :options="orderFilterOptions"
+                    optionLabel="label"
+                    optionValue="value"
+                    @change="onOrderFilterChange"
+                    class="order-filter-dropdown"
+                  />
+                </div>
               </div>
             </template>
             <template #content>
@@ -720,6 +738,24 @@ export default {
     // Position closing functionality
     const selectedPositions = ref([]);
     const closeOrderPrice = ref(0);
+
+    // Order filtering functionality
+    const orderStatusFilter = ref("open");
+    const orderFilterOptions = [
+      { label: "Open Orders", value: "open" },
+      { label: "Filled Orders", value: "filled" },
+      { label: "Canceled Orders", value: "canceled" },
+      { label: "All Orders", value: "all" },
+    ];
+
+    const orderDateFilter = ref("today");
+    const orderDateFilterOptions = [
+      { label: "Today", value: "today" },
+      { label: "Yesterday", value: "yesterday" },
+      { label: "Last 7 Days", value: "week" },
+      { label: "Last 30 Days", value: "month" },
+      { label: "All Time", value: "all" },
+    ];
 
     // Computed properties
     const optionPositions = computed(() => {
@@ -1043,20 +1079,29 @@ export default {
         //console.log("Subscribing to symbols:", symbols);
 
         // Subscribe to all symbols
+        console.log("Auto-subscribing to position symbols:", symbols);
         webSocketClient.subscribe(symbols);
 
         // Set up price update handler
         webSocketClient.onPriceUpdate((data) => {
-          //console.log("WebSocket price update received:", data);
-          streamingPrices.value[data.symbol] = data.price;
+          console.log("WebSocket price update received:", data);
+          // Backend sends: {type: "price_update", symbol: "SPY", data: {ask: X, bid: Y, timestamp: Z}}
+          // We need to store the data object (which contains bid/ask) not data.price
+          streamingPrices.value[data.symbol] = data.data;
 
           // Update underlying price if it's the underlying symbol
           if (data.symbol === underlyingSymbol.value) {
-            underlyingPrice.value = data.price;
+            // For underlying stocks, use the mid price (average of bid/ask)
+            const priceData = data.data;
+            if (priceData && priceData.ask && priceData.bid) {
+              underlyingPrice.value = (priceData.ask + priceData.bid) / 2;
+              isLivePrice.value = true;
+            }
           }
 
           // Update position prices and recalculate P&L
           updatePositionPrices();
+          updateOptionsChainPrices();
         });
 
         // Set up subscription confirmation handler
@@ -1117,12 +1162,18 @@ export default {
 
         // Set up price update handler
         webSocketClient.onPriceUpdate((data) => {
-          //console.log("Real-time price update:", data.symbol, data.price);
-          streamingPrices.value[data.symbol] = data.price;
+          // Backend sends: {type: "price_update", symbol: "SPY", data: {ask: X, bid: Y, timestamp: Z}}
+          // We need to store the data object (which contains bid/ask) not data.price
+          streamingPrices.value[data.symbol] = data.data;
 
           // Update underlying price if it's the underlying symbol
           if (data.symbol === underlyingSymbol.value) {
-            underlyingPrice.value = data.price;
+            // For underlying stocks, use the mid price (average of bid/ask)
+            const priceData = data.data;
+            if (priceData && priceData.ask && priceData.bid) {
+              underlyingPrice.value = (priceData.ask + priceData.bid) / 2;
+              isLivePrice.value = true;
+            }
           }
 
           // Update position prices and recalculate P&L
@@ -1145,8 +1196,20 @@ export default {
       // Update position prices with streaming data
       positions.value.forEach((pos) => {
         if (streamingPrices.value[pos.symbol]) {
-          const newPrice = streamingPrices.value[pos.symbol];
-          const oldPrice = pos.current_price;
+          const priceData = streamingPrices.value[pos.symbol];
+          let newPrice;
+
+          // Handle different price data structures
+          if (typeof priceData === "object" && priceData.bid && priceData.ask) {
+            // For options and stocks with bid/ask data, use mid price
+            newPrice = (priceData.bid + priceData.ask) / 2;
+          } else if (typeof priceData === "number") {
+            // For simple price data
+            newPrice = priceData;
+          } else {
+            // Skip if we can't determine the price
+            return;
+          }
 
           // Update current price
           pos.current_price = newPrice;
@@ -1173,14 +1236,6 @@ export default {
             Math.abs(costBasis) !== 0
               ? pos.unrealized_pl / Math.abs(costBasis)
               : 0;
-
-          console.log(`Updated ${pos.symbol} (${pos.side}):`, {
-            qty: pos.qty,
-            currentPrice: newPrice,
-            marketValue: pos.market_value,
-            costBasis: costBasis,
-            unrealizedPL: pos.unrealized_pl,
-          });
         }
       });
 
@@ -1188,6 +1243,23 @@ export default {
       if (hasOptionPositions.value) {
         generateChart();
       }
+    };
+
+    const updateOptionsChainPrices = () => {
+      const newOptionsChain = optionsChain.value.map((option) => {
+        const livePriceData = streamingPrices.value[option.symbol];
+        if (livePriceData && typeof livePriceData === "object") {
+          return {
+            ...option,
+            bid:
+              livePriceData.bid !== undefined ? livePriceData.bid : option.bid,
+            ask:
+              livePriceData.ask !== undefined ? livePriceData.ask : option.ask,
+          };
+        }
+        return option;
+      });
+      optionsChain.value = newOptionsChain;
     };
 
     // Options chain methods
@@ -1232,10 +1304,11 @@ export default {
             .map((option) => option.symbol);
 
           if (chainSymbols.length > 0) {
-            // console.log(
-            //   "Subscribing to options chain symbols:",
-            //   chainSymbols.length
-            // );
+            console.log(
+              "Subscribing to options chain symbols:",
+              chainSymbols.length,
+              chainSymbols
+            );
             webSocketClient.subscribe(chainSymbols);
           }
         }
@@ -1612,6 +1685,37 @@ export default {
       initializeOrder(orderDataToSubmit);
     };
 
+    // Order filtering methods
+    const getOrdersTitle = () => {
+      const count = openOrders.value.length;
+      switch (orderStatusFilter.value) {
+        case "open":
+          return `Open Orders (${count})`;
+        case "filled":
+          return `Filled Orders (${count})`;
+        case "canceled":
+          return `Canceled Orders (${count})`;
+        case "all":
+          return `All Orders (${count})`;
+        default:
+          return `Orders (${count})`;
+      }
+    };
+
+    const onOrderFilterChange = () => {
+      console.log(
+        "Order filter changed to:",
+        orderStatusFilter.value,
+        "date:",
+        orderDateFilter.value
+      );
+      // Request orders with both status and date filters
+      webSocketClient.requestOrders(
+        orderStatusFilter.value,
+        orderDateFilter.value
+      );
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       // Set up open orders handler ONCE during component initialization
@@ -1766,6 +1870,14 @@ export default {
       handleOrderConfirmation,
       handleOrderCancellation,
       handleOrderResultClose,
+
+      // Order filtering
+      orderStatusFilter,
+      orderFilterOptions,
+      orderDateFilter,
+      orderDateFilterOptions,
+      getOrdersTitle,
+      onOrderFilterChange,
     };
   },
 };

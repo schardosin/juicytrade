@@ -724,7 +724,7 @@ async def websocket_endpoint(websocket: WebSocket):
                     }))
             
             elif message["type"] == "get_open_orders":
-                # Send current open orders via WebSocket
+                # Send current open orders via WebSocket (backward compatibility)
                 try:
                     logger.info("WebSocket: Received get_open_orders request")
                     # Call the orders function directly (it's not async)
@@ -742,6 +742,32 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.error(f"Error getting open orders via WebSocket: {e}", exc_info=True)
                     await websocket.send_text(json.dumps({
                         "type": "open_orders_error",
+                        "error": str(e)
+                    }))
+            
+            elif message["type"] == "get_orders":
+                # Send orders with filtering via WebSocket
+                try:
+                    status_filter = message.get("filter", "open")
+                    date_filter = message.get("date_filter", "today")
+                    logger.info(f"WebSocket: Received get_orders request with filter: {status_filter}, date: {date_filter}")
+                    # Call the orders function directly (it's not async)
+                    orders_response = get_orders(status_filter, date_filter)
+                    logger.info(f"WebSocket: Got orders response with {orders_response.get('total_orders', 0)} orders")
+                    
+                    response_message = {
+                        "type": "orders_update",
+                        "data": orders_response,
+                        "filter": status_filter,
+                        "date_filter": date_filter
+                    }
+                    logger.info("WebSocket: Sending orders response")
+                    await websocket.send_text(json.dumps(response_message))
+                    logger.info("WebSocket: Orders response sent successfully")
+                except Exception as e:
+                    logger.error(f"Error getting orders via WebSocket: {e}", exc_info=True)
+                    await websocket.send_text(json.dumps({
+                        "type": "orders_error",
                         "error": str(e)
                     }))
                         
@@ -1085,23 +1111,106 @@ async def sync_open_orders_from_api():
 @app.get("/open_orders")
 def get_open_orders():
     """
-    Retrieve current open orders directly from Alpaca API (always fresh data).
+    Retrieve current open orders directly from Alpaca API (backward compatibility).
+    """
+    return get_orders("open")
+
+@app.get("/orders")
+def get_orders(status_filter: str = "open", date_filter: str = "today"):
+    """
+    Retrieve orders from Alpaca API with status and date filtering.
+    
+    Args:
+        status_filter: "open", "filled", "canceled", or "all"
+        date_filter: "today", "yesterday", "week", "month", "all"
     """
     try:
         api_key, api_secret = get_api_credentials(is_paper_trade=True)
         trading_client = TradingClient(api_key, api_secret, paper=True)
         
-        # Get orders with various open statuses (not just "open")
-        orders = trading_client.get_orders()  # Get all recent orders
-        logger.info(f"API Request: Fetched {len(orders)} total orders from Alpaca")
+        # Get all recent orders with expanded parameters
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import OrderStatus
         
-        # Filter for orders that are still open (not filled, canceled, etc.)
-        open_statuses = ["new", "accepted", "pending_new", "partially_filled", "held"]
-        open_orders_list = [order for order in orders if order.status.value.lower() in open_statuses]
-        logger.info(f"API Request: Found {len(open_orders_list)} orders with open statuses")
+        # Create request to get more comprehensive order history
+        from datetime import datetime, timedelta
+        
+        # Convert date filter to actual date for Alpaca API
+        def get_date_from_filter(date_filter: str):
+            today = datetime.now().date()
+            if date_filter == "today":
+                return today
+            elif date_filter == "yesterday":
+                return today - timedelta(days=1)
+            elif date_filter == "week":
+                return today - timedelta(days=7)
+            elif date_filter == "month":
+                return today - timedelta(days=30)
+            elif date_filter == "all":
+                return None  # No date filter
+            else:
+                return today  # Default to today
+        
+        # Get the start date based on filter
+        start_date = get_date_from_filter(date_filter)
+        
+        # Map our filter to Alpaca's status parameter
+        if status_filter == "open":
+            alpaca_status = "open"
+        elif status_filter == "filled":
+            alpaca_status = "closed"  # Filled orders are in "closed" status
+        elif status_filter == "canceled":
+            alpaca_status = "closed"  # Canceled orders are also in "closed" status
+        elif status_filter == "all":
+            alpaca_status = "all"
+        else:
+            alpaca_status = "open"  # Default to open
+        
+        try:
+            # Use the correct status parameter for Alpaca API
+            request_params = {
+                "status": alpaca_status,  # Use Alpaca's status values
+                "limit": 1000,           # Higher limit to get more orders
+                "nested": True           # Include nested order details
+            }
+            
+            # Add date filter if specified
+            if start_date:
+                request_params["after"] = start_date
+            
+            request = GetOrdersRequest(**request_params)
+            
+            orders = trading_client.get_orders(filter=request)
+            logger.info(f"Fetched {len(orders)} orders with status='{alpaca_status}' for filter '{status_filter}'")
+            
+        except Exception as e:
+            logger.warning(f"GetOrdersRequest failed: {e}, trying simple get_orders()")
+            # Fallback to simple get_orders() call
+            orders = trading_client.get_orders()
+            logger.info(f"Fetched {len(orders)} orders with simple get_orders()")
+        logger.info(f"API Request: Fetched {len(orders)} total orders from Alpaca for filter: {status_filter}")
+        
+        # Apply status filtering
+        if status_filter == "open":
+            filter_statuses = ["new", "accepted", "pending_new", "partially_filled", "held"]
+            filtered_orders = [order for order in orders if order.status.value.lower() in filter_statuses]
+        elif status_filter == "filled":
+            filter_statuses = ["filled"]
+            filtered_orders = [order for order in orders if order.status.value.lower() in filter_statuses]
+        elif status_filter == "canceled":
+            filter_statuses = ["canceled", "cancelled", "expired", "rejected"]
+            filtered_orders = [order for order in orders if order.status.value.lower() in filter_statuses]
+        elif status_filter == "all":
+            filtered_orders = orders
+        else:
+            # Default to open orders for unknown filters
+            filter_statuses = ["new", "accepted", "pending_new", "partially_filled", "held"]
+            filtered_orders = [order for order in orders if order.status.value.lower() in filter_statuses]
+        
+        logger.info(f"API Request: Found {len(filtered_orders)} orders matching filter '{status_filter}'")
         
         order_data = []
-        for order in open_orders_list:
+        for order in filtered_orders:
             try:
                 # Safe attribute access with null checking
                 order_type_str = "Unknown"
