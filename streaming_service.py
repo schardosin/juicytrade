@@ -258,8 +258,6 @@ async def option_quote_handler(data):
     # Broadcast to WebSocket clients
     await manager.broadcast_price_update(symbol, price_data)
     
-    logger.info(f"OPTION: {symbol} Ask: {data.ask_price} Bid: {data.bid_price}")
-
 async def stock_quote_handler(data):
     """This function is called for every new stock quote received."""
     symbol = data.symbol
@@ -273,8 +271,6 @@ async def stock_quote_handler(data):
     # Broadcast to WebSocket clients
     await manager.broadcast_price_update(symbol, price_data)
     
-    logger.info(f"STOCK: {symbol} Ask: {data.ask_price} Bid: {data.bid_price}")
-
 # --- Trading Stream Handlers ---
 
 async def trade_update_handler(data):
@@ -367,28 +363,31 @@ async def trade_update_handler(data):
 
 async def broadcast_open_orders():
     """Broadcast current open orders to all connected WebSocket clients."""
-    message = {
-        "type": "open_orders_update",
-        "data": {
-            "success": True,
-            "orders": list(open_orders.values()),
-            "total_orders": len(open_orders),
-            "timestamp": datetime.now().isoformat()
+    # Get fresh data from API instead of using potentially stale cache
+    try:
+        fresh_orders_response = get_open_orders()
+        message = {
+            "type": "open_orders_update",
+            "data": fresh_orders_response
         }
-    }
-    
-    # Send to all connected clients
-    disconnected = []
-    for websocket in manager.active_connections:
-        try:
-            await websocket.send_text(json.dumps(message))
-        except Exception as e:
-            logger.warning(f"Failed to send open orders update to WebSocket client: {e}")
-            disconnected.append(websocket)
-    
-    # Clean up disconnected clients
-    for ws in disconnected:
-        manager.disconnect(ws)
+        
+        logger.info(f"Broadcasting fresh open orders: {fresh_orders_response.get('total_orders', 0)} orders")
+        
+        # Send to all connected clients
+        disconnected = []
+        for websocket in manager.active_connections:
+            try:
+                await websocket.send_text(json.dumps(message))
+            except Exception as e:
+                logger.warning(f"Failed to send open orders update to WebSocket client: {e}")
+                disconnected.append(websocket)
+        
+        # Clean up disconnected clients
+        for ws in disconnected:
+            manager.disconnect(ws)
+            
+    except Exception as e:
+        logger.error(f"Error broadcasting open orders: {e}")
 
 
 # --- Streaming Logic and Lifecycle Management ---
@@ -1103,51 +1102,80 @@ def get_open_orders():
         
         order_data = []
         for order in open_orders_list:
-            order_info = {
-                "id": str(order.id),
-                "asset": order.symbol,
-                "order_type": f"{order.order_type.value.title()} @ {order.limit_price or '-'}",
-                "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
-                "qty": float(order.qty),
-                "filled_qty": float(order.filled_qty) if order.filled_qty else 0.0,
-                "avg_fill_price": float(order.filled_avg_price) if order.filled_avg_price else None,
-                "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
-                "source": "access_key",
-                "submitted_at": order.submitted_at.isoformat() if order.submitted_at else datetime.now().isoformat(),
-                "filled_at": order.filled_at.isoformat() if order.filled_at else None,
-                "timestamp": datetime.now().isoformat()
-            }
-            
-            # Handle multi-leg orders
-            if hasattr(order, 'legs') and order.legs:
-                # This is a multi-leg order, create a parent entry
-                order_info["asset"] = f"{len(order.legs)}-Leg Order"
-                order_info["side"] = "-"
+            try:
+                # Safe attribute access with null checking
+                order_type_str = "Unknown"
+                if order.order_type:
+                    if hasattr(order.order_type, 'value'):
+                        order_type_str = order.order_type.value.title()
+                    else:
+                        order_type_str = str(order.order_type).title()
                 
-                # Add the parent order
-                order_data.append(order_info)
+                side_str = "Unknown"
+                if order.side:
+                    if hasattr(order.side, 'value'):
+                        side_str = order.side.value
+                    else:
+                        side_str = str(order.side)
                 
-                # Add individual legs
-                for i, leg in enumerate(order.legs):
-                    leg_info = {
-                        "id": f"{order.id}_leg_{i}",
-                        "parent_id": str(order.id),
-                        "asset": leg.symbol,
-                        "order_type": f"{order.order_type.value.title()} @ -",
-                        "side": leg.side.value if hasattr(leg.side, 'value') else str(leg.side),
-                        "qty": float(leg.qty),
-                        "filled_qty": 0.0,  # Individual leg fill info may not be available
-                        "avg_fill_price": None,
-                        "status": order_info["status"],
-                        "source": "access_key",
-                        "submitted_at": order_info["submitted_at"],
-                        "filled_at": order_info["filled_at"],
-                        "timestamp": datetime.now().isoformat()
-                    }
-                    order_data.append(leg_info)
-            else:
-                # Single-leg order
-                order_data.append(order_info)
+                status_str = "Unknown"
+                if order.status:
+                    if hasattr(order.status, 'value'):
+                        status_str = order.status.value
+                    else:
+                        status_str = str(order.status)
+                
+                order_info = {
+                    "id": str(order.id) if order.id else "unknown",
+                    "asset": order.symbol if order.symbol else "Unknown",
+                    "order_type": f"{order_type_str} @ {order.limit_price or '-'}",
+                    "side": side_str,
+                    "qty": float(order.qty) if order.qty else 0.0,
+                    "filled_qty": float(order.filled_qty) if order.filled_qty else 0.0,
+                    "avg_fill_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+                    "status": status_str,
+                    "source": "access_key",
+                    "submitted_at": order.submitted_at.isoformat() if order.submitted_at else datetime.now().isoformat(),
+                    "filled_at": order.filled_at.isoformat() if order.filled_at else None,
+                    "timestamp": datetime.now().isoformat()
+                }
+                
+                logger.info(f"Processing order: ID={order.id}, Symbol={order.symbol}, Status={status_str}, Side={side_str}")
+                
+                # Handle multi-leg orders
+                if hasattr(order, 'legs') and order.legs:
+                    # This is a multi-leg order, create a parent entry
+                    order_info["asset"] = f"{len(order.legs)}-Leg Order"
+                    order_info["side"] = "-"
+                    
+                    # Add the parent order
+                    order_data.append(order_info)
+                    
+                    # Add individual legs
+                    for i, leg in enumerate(order.legs):
+                        leg_info = {
+                            "id": f"{order.id}_leg_{i}",
+                            "parent_id": str(order.id),
+                            "asset": leg.symbol,
+                            "order_type": f"{order_type_str} @ -",
+                            "side": leg.side.value if hasattr(leg.side, 'value') else str(leg.side),
+                            "qty": float(leg.qty),
+                            "filled_qty": 0.0,  # Individual leg fill info may not be available
+                            "avg_fill_price": None,
+                            "status": order_info["status"],
+                            "source": "access_key",
+                            "submitted_at": order_info["submitted_at"],
+                            "filled_at": order_info["filled_at"],
+                            "timestamp": datetime.now().isoformat()
+                        }
+                        order_data.append(leg_info)
+                else:
+                    # Single-leg order
+                    order_data.append(order_info)
+                    
+            except Exception as e:
+                logger.error(f"Error processing order {order.id}: {e}")
+                continue
         
         return {
             "success": True,

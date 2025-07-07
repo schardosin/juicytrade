@@ -854,19 +854,6 @@ export default {
           loading.value = false;
         });
 
-        // Set up open orders handler
-        webSocketClient.onOpenOrdersUpdate((ordersData) => {
-          console.log("Open orders received via WebSocket:", ordersData);
-          if (ordersData.success) {
-            openOrders.value = ordersData.orders || [];
-            console.log(
-              "Open orders set to:",
-              openOrders.value.length,
-              "orders"
-            );
-          }
-        });
-
         // Request positions via WebSocket
         webSocketClient.requestPositions();
 
@@ -1627,6 +1614,16 @@ export default {
 
     // Lifecycle hooks
     onMounted(async () => {
+      // Set up open orders handler ONCE during component initialization
+      webSocketClient.onOpenOrdersUpdate((ordersData) => {
+        console.log("Open orders received via WebSocket:", ordersData);
+        if (ordersData.success) {
+          // Always assign a new array reference to trigger reactivity
+          openOrders.value = [...(ordersData.orders || [])];
+          console.log("Open orders set to:", openOrders.value.length, "orders");
+        }
+      });
+
       await fetchPositions();
 
       // Start streaming after positions are loaded
@@ -1777,11 +1774,12 @@ export default {
 <style scoped>
 .trade-management-container {
   width: 100vw;
-  height: 100vh;
+  min-height: 100vh;
   margin: 0;
   padding: 2px;
   box-sizing: border-box;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 /* New Layout Structure */
@@ -1789,8 +1787,8 @@ export default {
   display: flex;
   flex-direction: column;
   width: 100%;
-  height: calc(100vh - 4px);
-  gap: 10px;
+  min-height: calc(100vh - 4px);
+  gap: 10;
 }
 
 .main-layout {
@@ -1799,6 +1797,7 @@ export default {
   flex: 1;
   gap: 10px;
   min-height: 0;
+  align-items: flex-start;
 }
 
 /* Order ticket positioning */
@@ -1808,19 +1807,22 @@ export default {
 }
 
 .left-column {
-  flex: 2;
+  flex: 2 1 0%;
   display: flex;
   flex-direction: column;
   gap: 5px;
   overflow: hidden;
+  min-width: 0;
 }
 
 .right-column {
-  flex: 1;
+  flex: 1 1 0%;
   display: flex;
   flex-direction: column;
   gap: 5px;
-  overflow: hidden;
+  /* Allow right column to expand naturally */
+  overflow: visible;
+  min-width: 0;
 }
 
 /* Adjust card heights for fixed layout */
@@ -1854,8 +1856,8 @@ export default {
 }
 
 .positions-table-card :deep(.p-datatable-wrapper) {
-  max-height: 400px;
-  overflow-y: auto;
+  /* Remove max-height to allow full expansion */
+  overflow-y: visible;
 }
 
 .header {
