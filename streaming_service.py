@@ -9,6 +9,7 @@ from alpaca.data.live import OptionDataStream, StockDataStream
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
 from alpaca.trading.client import TradingClient
+from alpaca.trading.stream import TradingStream
 from dotenv import load_dotenv
 import logging
 from datetime import datetime, date
@@ -216,6 +217,9 @@ async def auto_subscribe_position_symbols(positions):
 option_prices: Dict[str, Dict] = {}
 stock_prices: Dict[str, Dict] = {}
 
+# Dictionary to hold open orders data
+open_orders: Dict[str, Dict] = {}
+
 # Sets to keep track of currently subscribed symbols
 subscribed_options: Set[str] = set()
 subscribed_stocks: Set[str] = set()
@@ -223,7 +227,9 @@ subscribed_stocks: Set[str] = set()
 # Global references to the stream clients and the running asyncio task
 option_stream: Optional[OptionDataStream] = None
 stock_stream: Optional[StockDataStream] = None
+trading_stream: Optional[TradingStream] = None
 stream_task: Optional[asyncio.Task] = None
+trading_stream_task: Optional[asyncio.Task] = None
 
 
 # --- Pydantic Models for API Requests ---
@@ -268,6 +274,121 @@ async def stock_quote_handler(data):
     await manager.broadcast_price_update(symbol, price_data)
     
     logger.info(f"STOCK: {symbol} Ask: {data.ask_price} Bid: {data.bid_price}")
+
+# --- Trading Stream Handlers ---
+
+async def trade_update_handler(data):
+    """Handle trade updates from Alpaca TradingStream."""
+    try:
+        order_id = data.order.id
+        order_status = data.order.status.value
+        
+        # Get symbol - for multi-leg orders, symbol might be None, so get from legs
+        symbol = data.order.symbol
+        if not symbol and hasattr(data.order, 'legs') and data.order.legs:
+            symbol = f"Multi-leg ({len(data.order.legs)} legs)"
+        
+        # Add detailed logging to debug what events we're receiving
+        logger.info(f"TRADE UPDATE RECEIVED: Order ID: {order_id}, Status: {order_status}, Symbol: {symbol}")
+        logger.info(f"TRADE UPDATE DETAILS: Event: {data.event}, Timestamp: {data.timestamp}")
+        logger.info(f"TRADE UPDATE RAW DATA: Has legs: {hasattr(data.order, 'legs')}, Legs count: {len(data.order.legs) if hasattr(data.order, 'legs') and data.order.legs else 0}")
+        
+        # Create order data structure
+        order_data = {
+            "id": order_id,
+            "asset": data.order.symbol,
+            "order_type": f"{data.order.order_type.value.title()} @ {data.order.limit_price or '-'}",
+            "side": data.order.side.value if hasattr(data.order.side, 'value') else str(data.order.side),
+            "qty": float(data.order.qty),
+            "filled_qty": float(data.order.filled_qty) if data.order.filled_qty else 0.0,
+            "avg_fill_price": float(data.order.filled_avg_price) if data.order.filled_avg_price else None,
+            "status": order_status,
+            "source": "access_key",  # Default source
+            "submitted_at": data.order.submitted_at.isoformat() if data.order.submitted_at else datetime.now().isoformat(),
+            "filled_at": data.order.filled_at.isoformat() if data.order.filled_at else None,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        # Convert order_id to string for consistent key usage
+        order_id_str = str(order_id)
+        order_data["id"] = order_id_str
+        
+        # Handle multi-leg orders
+        if hasattr(data.order, 'legs') and data.order.legs:
+            # This is a multi-leg order, create a parent entry
+            order_data["asset"] = f"{len(data.order.legs)}-Leg Order"
+            order_data["side"] = "-"
+            
+            # Store the parent order
+            open_orders[order_id_str] = order_data
+            
+            # Store individual legs
+            for i, leg in enumerate(data.order.legs):
+                leg_id = f"{order_id}_leg_{i}"
+                leg_data = {
+                    "id": leg_id,
+                    "parent_id": order_id_str,
+                    "asset": leg.symbol,
+                    "order_type": f"{data.order.order_type.value.title()} @ -",
+                    "side": leg.side.value if hasattr(leg.side, 'value') else str(leg.side),
+                    "qty": float(leg.qty),
+                    "filled_qty": 0.0,  # Individual leg fill info may not be available
+                    "avg_fill_price": None,
+                    "status": order_status,
+                    "source": "access_key",
+                    "submitted_at": order_data["submitted_at"],
+                    "filled_at": order_data["filled_at"],
+                    "timestamp": datetime.now().isoformat()
+                }
+                open_orders[leg_id] = leg_data
+        else:
+            # Single-leg order
+            open_orders[order_id_str] = order_data
+        
+        # Remove filled or cancelled orders from open_orders
+        if order_status in ['filled', 'canceled', 'expired', 'rejected']:
+            # Remove the order and any legs
+            orders_to_remove = [order_id_str]
+            for oid in list(open_orders.keys()):
+                if oid.startswith(f"{order_id}_leg_"):
+                    orders_to_remove.append(oid)
+            
+            for oid in orders_to_remove:
+                if oid in open_orders:
+                    del open_orders[oid]
+        
+        # Broadcast updated open orders to all WebSocket clients
+        await broadcast_open_orders()
+        
+        logger.info(f"ORDER UPDATE: {order_id} - {data.order.symbol} - {order_status}")
+        
+    except Exception as e:
+        logger.error(f"Error processing trade update: {e}", exc_info=True)
+
+async def broadcast_open_orders():
+    """Broadcast current open orders to all connected WebSocket clients."""
+    message = {
+        "type": "open_orders_update",
+        "data": {
+            "success": True,
+            "orders": list(open_orders.values()),
+            "total_orders": len(open_orders),
+            "timestamp": datetime.now().isoformat()
+        }
+    }
+    
+    # Send to all connected clients
+    disconnected = []
+    for websocket in manager.active_connections:
+        try:
+            await websocket.send_text(json.dumps(message))
+        except Exception as e:
+            logger.warning(f"Failed to send open orders update to WebSocket client: {e}")
+            disconnected.append(websocket)
+    
+    # Clean up disconnected clients
+    for ws in disconnected:
+        manager.disconnect(ws)
 
 
 # --- Streaming Logic and Lifecycle Management ---
@@ -347,6 +468,76 @@ async def start_streaming_background():
     """
     await reset_streaming()
 
+# --- Trading Stream Management ---
+
+async def run_trading_stream():
+    """
+    Initializes and runs the TradingStream for order updates.
+    """
+    global trading_stream
+    
+    if not ALPACA_API_KEY_PAPER or not ALPACA_API_SECRET_PAPER:
+        logger.error("PAPER API credentials not found. Trading stream will not start.")
+        return
+    
+    try:
+        logger.info("Initializing TradingStream for order updates...")
+        trading_stream = TradingStream(ALPACA_API_KEY_PAPER, ALPACA_API_SECRET_PAPER, paper=True)
+        
+        # Subscribe to trade updates
+        trading_stream.subscribe_trade_updates(trade_update_handler)
+        
+        logger.info("Starting TradingStream...")
+        await trading_stream._run_forever()
+        
+    except asyncio.CancelledError:
+        logger.info("Trading stream task was successfully cancelled.")
+    except Exception as e:
+        logger.error(f"Error in trading stream task: {e}", exc_info=True)
+    finally:
+        logger.info("Trading stream task has finished.")
+        trading_stream = None
+
+async def start_trading_stream():
+    """
+    Start the trading stream for order updates.
+    """
+    global trading_stream_task
+    
+    # Cancel existing trading stream task if running
+    if trading_stream_task and not trading_stream_task.done():
+        trading_stream_task.cancel()
+        try:
+            await trading_stream_task
+        except asyncio.CancelledError:
+            pass
+    
+    # Start new trading stream task
+    trading_stream_task = asyncio.create_task(run_trading_stream())
+    logger.info("Started trading stream background task")
+
+async def stop_trading_stream():
+    """
+    Stop the trading stream.
+    """
+    global trading_stream, trading_stream_task
+    
+    logger.info("Stopping trading stream...")
+    
+    # Close trading stream
+    if trading_stream:
+        await trading_stream.close()
+    
+    # Cancel trading stream task
+    if trading_stream_task and not trading_stream_task.done():
+        trading_stream_task.cancel()
+        try:
+            await trading_stream_task
+        except asyncio.CancelledError:
+            pass
+    
+    logger.info("Trading stream stopped")
+
 
 # --- FastAPI Application Lifecycle Events ---
 
@@ -356,12 +547,19 @@ async def startup_event():
     logger.info("Application started. Fetching initial prices for any pre-configured symbols.")
     if subscribed_stocks:
         await fetch_initial_prices(list(subscribed_stocks))
+    
+    # Start the trading stream for order updates
+    await start_trading_stream()
+    
+    # Sync initial open orders from API
+    await sync_open_orders_from_api()
+    
     logger.info("Waiting for initial subscriptions to start streaming.")
 
 @app.on_event("shutdown")
 async def shutdown_event():
     """Action to take when the application shuts down."""
-    global stream_task, option_stream, stock_stream
+    global stream_task, option_stream, stock_stream, trading_stream, trading_stream_task
     logger.info("Application shutting down...")
     
     # Gracefully close connections to Alpaca's servers
@@ -369,14 +567,23 @@ async def shutdown_event():
         await option_stream.close()
     if stock_stream:
         await stock_stream.close()
+    if trading_stream:
+        await trading_stream.close()
         
-    # Cancel the running task
+    # Cancel the running tasks
     if stream_task and not stream_task.done():
         stream_task.cancel()
         try:
             await stream_task
         except asyncio.CancelledError:
             logger.info("Streaming task cancelled successfully on shutdown.")
+    
+    if trading_stream_task and not trading_stream_task.done():
+        trading_stream_task.cancel()
+        try:
+            await trading_stream_task
+        except asyncio.CancelledError:
+            logger.info("Trading stream task cancelled successfully on shutdown.")
 
 
 # --- API Endpoints ---
@@ -516,6 +723,28 @@ async def websocket_endpoint(websocket: WebSocket):
                         "type": "positions_error",
                         "error": str(e)
                     }))
+            
+            elif message["type"] == "get_open_orders":
+                # Send current open orders via WebSocket
+                try:
+                    logger.info("WebSocket: Received get_open_orders request")
+                    # Call the orders function directly (it's not async)
+                    orders_response = get_open_orders()
+                    logger.info(f"WebSocket: Got open orders response with {orders_response.get('total_orders', 0)} orders")
+                    
+                    response_message = {
+                        "type": "open_orders_update",
+                        "data": orders_response
+                    }
+                    logger.info("WebSocket: Sending open orders response")
+                    await websocket.send_text(json.dumps(response_message))
+                    logger.info("WebSocket: Open orders response sent successfully")
+                except Exception as e:
+                    logger.error(f"Error getting open orders via WebSocket: {e}", exc_info=True)
+                    await websocket.send_text(json.dumps({
+                        "type": "open_orders_error",
+                        "error": str(e)
+                    }))
                         
     except WebSocketDisconnect:
         manager.disconnect(websocket)
@@ -532,8 +761,10 @@ async def root():
         "options_subscribed": list(subscribed_options),
         "stocks_subscribed": list(subscribed_stocks),
         "is_streaming_task_active": stream_task is not None and not stream_task.done(),
+        "is_trading_stream_active": trading_stream_task is not None and not trading_stream_task.done(),
         "total_option_prices": len(option_prices),
         "total_stock_prices": len(stock_prices),
+        "total_open_orders": len(open_orders),
         "websocket_connections": websocket_stats["total_connections"],
         "websocket_subscriptions": websocket_stats["total_subscriptions"],
         "symbols_with_websocket_subscribers": websocket_stats["symbols_with_subscribers"]
@@ -756,7 +987,7 @@ def get_next_market_date():
                             "next_market_date": market_date,
                             "timestamp": datetime.now().isoformat()
                         }
-        
+
         # Fallback to today's date if no future market date found
         return {
             "success": True,
@@ -770,6 +1001,168 @@ def get_next_market_date():
             "success": False,
             "error": str(e),
             "next_market_date": date.today().strftime("%Y-%m-%d"),
+            "timestamp": datetime.now().isoformat()
+        }
+
+async def sync_open_orders_from_api():
+    """
+    Sync the in-memory open_orders cache with current data from Alpaca API.
+    This is used for initial loading and periodic sync.
+    """
+    global open_orders
+    
+    try:
+        api_key, api_secret = get_api_credentials(is_paper_trade=True)
+        trading_client = TradingClient(api_key, api_secret, paper=True)
+        
+        # Get orders with various open statuses (not just "open")
+        orders = trading_client.get_orders()  # Get all recent orders
+        logger.info(f"Syncing: Fetched {len(orders)} total orders from Alpaca")
+        
+        # Filter for orders that are still open (not filled, canceled, etc.)
+        open_statuses = ["new", "accepted", "pending_new", "partially_filled", "held"]
+        open_orders_list = [order for order in orders if order.status.value.lower() in open_statuses]
+        logger.info(f"Syncing: Found {len(open_orders_list)} orders with open statuses")
+        
+        # Clear existing cache and rebuild it
+        open_orders.clear()
+        
+        for order in open_orders_list:
+            order_info = {
+                "id": str(order.id),
+                "asset": order.symbol,
+                "order_type": f"{order.order_type.value.title()} @ {order.limit_price or '-'}",
+                "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
+                "qty": float(order.qty),
+                "filled_qty": float(order.filled_qty) if order.filled_qty else 0.0,
+                "avg_fill_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+                "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+                "source": "access_key",
+                "submitted_at": order.submitted_at.isoformat() if order.submitted_at else datetime.now().isoformat(),
+                "filled_at": order.filled_at.isoformat() if order.filled_at else None,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Handle multi-leg orders
+            if hasattr(order, 'legs') and order.legs:
+                # This is a multi-leg order, create a parent entry
+                order_info["asset"] = f"{len(order.legs)}-Leg Order"
+                order_info["side"] = "-"
+                
+                # Store the parent order
+                open_orders[str(order.id)] = order_info
+                
+                # Store individual legs
+                for i, leg in enumerate(order.legs):
+                    leg_id = f"{order.id}_leg_{i}"
+                    leg_info = {
+                        "id": leg_id,
+                        "parent_id": str(order.id),
+                        "asset": leg.symbol,
+                        "order_type": f"{order.order_type.value.title()} @ -",
+                        "side": leg.side.value if hasattr(leg.side, 'value') else str(leg.side),
+                        "qty": float(leg.qty),
+                        "filled_qty": 0.0,  # Individual leg fill info may not be available
+                        "avg_fill_price": None,
+                        "status": order_info["status"],
+                        "source": "access_key",
+                        "submitted_at": order_info["submitted_at"],
+                        "filled_at": order_info["filled_at"],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    open_orders[leg_id] = leg_info
+            else:
+                # Single-leg order
+                open_orders[str(order.id)] = order_info
+        
+        logger.info(f"Synced {len(open_orders)} orders to in-memory cache")
+        
+        # Broadcast the updated orders to all WebSocket clients
+        await broadcast_open_orders()
+        
+    except Exception as e:
+        logger.error(f"Error syncing open orders from API: {e}")
+
+@app.get("/open_orders")
+def get_open_orders():
+    """
+    Retrieve current open orders directly from Alpaca API (always fresh data).
+    """
+    try:
+        api_key, api_secret = get_api_credentials(is_paper_trade=True)
+        trading_client = TradingClient(api_key, api_secret, paper=True)
+        
+        # Get orders with various open statuses (not just "open")
+        orders = trading_client.get_orders()  # Get all recent orders
+        logger.info(f"API Request: Fetched {len(orders)} total orders from Alpaca")
+        
+        # Filter for orders that are still open (not filled, canceled, etc.)
+        open_statuses = ["new", "accepted", "pending_new", "partially_filled", "held"]
+        open_orders_list = [order for order in orders if order.status.value.lower() in open_statuses]
+        logger.info(f"API Request: Found {len(open_orders_list)} orders with open statuses")
+        
+        order_data = []
+        for order in open_orders_list:
+            order_info = {
+                "id": str(order.id),
+                "asset": order.symbol,
+                "order_type": f"{order.order_type.value.title()} @ {order.limit_price or '-'}",
+                "side": order.side.value if hasattr(order.side, 'value') else str(order.side),
+                "qty": float(order.qty),
+                "filled_qty": float(order.filled_qty) if order.filled_qty else 0.0,
+                "avg_fill_price": float(order.filled_avg_price) if order.filled_avg_price else None,
+                "status": order.status.value if hasattr(order.status, 'value') else str(order.status),
+                "source": "access_key",
+                "submitted_at": order.submitted_at.isoformat() if order.submitted_at else datetime.now().isoformat(),
+                "filled_at": order.filled_at.isoformat() if order.filled_at else None,
+                "timestamp": datetime.now().isoformat()
+            }
+            
+            # Handle multi-leg orders
+            if hasattr(order, 'legs') and order.legs:
+                # This is a multi-leg order, create a parent entry
+                order_info["asset"] = f"{len(order.legs)}-Leg Order"
+                order_info["side"] = "-"
+                
+                # Add the parent order
+                order_data.append(order_info)
+                
+                # Add individual legs
+                for i, leg in enumerate(order.legs):
+                    leg_info = {
+                        "id": f"{order.id}_leg_{i}",
+                        "parent_id": str(order.id),
+                        "asset": leg.symbol,
+                        "order_type": f"{order.order_type.value.title()} @ -",
+                        "side": leg.side.value if hasattr(leg.side, 'value') else str(leg.side),
+                        "qty": float(leg.qty),
+                        "filled_qty": 0.0,  # Individual leg fill info may not be available
+                        "avg_fill_price": None,
+                        "status": order_info["status"],
+                        "source": "access_key",
+                        "submitted_at": order_info["submitted_at"],
+                        "filled_at": order_info["filled_at"],
+                        "timestamp": datetime.now().isoformat()
+                    }
+                    order_data.append(leg_info)
+            else:
+                # Single-leg order
+                order_data.append(order_info)
+        
+        return {
+            "success": True,
+            "orders": order_data,
+            "total_orders": len(order_data),
+            "timestamp": datetime.now().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error fetching open orders from API: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "orders": [],
+            "total_orders": 0,
             "timestamp": datetime.now().isoformat()
         }
 

@@ -70,7 +70,8 @@ export default {
     },
     underlyingPrice: {
       type: Number,
-      required: true,
+      required: false,
+      default: 0,
     },
     title: {
       type: String,

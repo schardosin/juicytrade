@@ -108,6 +108,10 @@ class WebSocketStreamingClient {
     this.callbacks.set("positions_error", callback);
   }
 
+  onOpenOrdersUpdate(callback) {
+    this.callbacks.set("open_orders_update", callback);
+  }
+
   requestPositions() {
     if (this.isConnected && this.ws) {
       const message = {
@@ -117,6 +121,18 @@ class WebSocketStreamingClient {
       this.ws.send(JSON.stringify(message));
     } else {
       console.error("Cannot request positions: WebSocket not connected");
+    }
+  }
+
+  requestOpenOrders() {
+    if (this.isConnected && this.ws) {
+      const message = {
+        type: "get_open_orders",
+      };
+      console.log("Requesting open orders via WebSocket:", message);
+      this.ws.send(JSON.stringify(message));
+    } else {
+      console.error("Cannot request open orders: WebSocket not connected");
     }
   }
 
@@ -156,6 +172,22 @@ class WebSocketStreamingClient {
         const posErrorCallback = this.callbacks.get("positions_error");
         if (posErrorCallback) {
           posErrorCallback(message.error);
+        }
+        break;
+
+      case "open_orders_update":
+        console.log("Open orders update received:", message);
+        const ordersCallback = this.callbacks.get("open_orders_update");
+        if (ordersCallback) {
+          ordersCallback(message.data);
+        }
+        break;
+
+      case "open_orders_error":
+        console.error("Open orders error received:", message);
+        const ordersErrorCallback = this.callbacks.get("open_orders_error");
+        if (ordersErrorCallback) {
+          ordersErrorCallback(message.error);
         }
         break;
 

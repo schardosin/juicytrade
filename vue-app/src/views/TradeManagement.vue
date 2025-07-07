@@ -389,7 +389,7 @@
             </template>
           </Card>
 
-          <!-- Active Positions Table (bottom) -->
+          <!-- Active Positions Table -->
           <Card class="positions-table-card">
             <template #title>
               <div class="positions-header">
@@ -537,6 +537,99 @@
               </DataTable>
             </template>
           </Card>
+
+          <!-- Open Orders Table -->
+          <Card v-if="openOrders.length > 0" class="open-orders-table-card">
+            <template #title>
+              <div class="orders-header">
+                <span>Open Orders ({{ openOrders.length }})</span>
+              </div>
+            </template>
+            <template #content>
+              <DataTable :value="openOrders" class="p-datatable-sm" stripedRows>
+                <Column field="asset" header="Asset" :sortable="true">
+                  <template #body="slotProps">
+                    <span class="symbol-cell">{{ slotProps.data.asset }}</span>
+                  </template>
+                </Column>
+                <Column field="order_type" header="Order Type" :sortable="true">
+                  <template #body="slotProps">
+                    <span class="order-type-cell">{{
+                      slotProps.data.order_type
+                    }}</span>
+                  </template>
+                </Column>
+                <Column field="side" header="Side" :sortable="true">
+                  <template #body="slotProps">
+                    <Tag
+                      v-if="slotProps.data.side !== '-'"
+                      :value="slotProps.data.side"
+                      :severity="
+                        slotProps.data.side === 'buy' ? 'success' : 'danger'
+                      "
+                      size="small"
+                    />
+                    <span v-else>-</span>
+                  </template>
+                </Column>
+                <Column field="qty" header="Qty" :sortable="true">
+                  <template #body="slotProps">
+                    {{ slotProps.data.qty }}
+                  </template>
+                </Column>
+                <Column field="filled_qty" header="Filled Qty" :sortable="true">
+                  <template #body="slotProps">
+                    {{ slotProps.data.filled_qty }}
+                  </template>
+                </Column>
+                <Column
+                  field="avg_fill_price"
+                  header="Avg Fill Price"
+                  :sortable="true"
+                >
+                  <template #body="slotProps">
+                    <span v-if="slotProps.data.avg_fill_price">
+                      ${{ slotProps.data.avg_fill_price.toFixed(2) }}
+                    </span>
+                    <span v-else>-</span>
+                  </template>
+                </Column>
+                <Column field="status" header="Status" :sortable="true">
+                  <template #body="slotProps">
+                    <Tag
+                      :value="slotProps.data.status"
+                      :severity="getOrderStatusSeverity(slotProps.data.status)"
+                      size="small"
+                    />
+                  </template>
+                </Column>
+                <Column field="source" header="Source" :sortable="true">
+                  <template #body="slotProps">
+                    <span class="source-cell">{{ slotProps.data.source }}</span>
+                  </template>
+                </Column>
+                <Column
+                  field="submitted_at"
+                  header="Submitted At"
+                  :sortable="true"
+                >
+                  <template #body="slotProps">
+                    <span class="time-cell">{{
+                      formatDateTime(slotProps.data.submitted_at)
+                    }}</span>
+                  </template>
+                </Column>
+                <Column field="filled_at" header="Filled At" :sortable="true">
+                  <template #body="slotProps">
+                    <span v-if="slotProps.data.filled_at" class="time-cell">
+                      {{ formatDateTime(slotProps.data.filled_at) }}
+                    </span>
+                    <span v-else>-</span>
+                  </template>
+                </Column>
+              </DataTable>
+            </template>
+          </Card>
         </div>
       </div>
     </div>
@@ -608,6 +701,7 @@ export default {
     const loading = ref(true);
     const error = ref(null);
     const positions = ref([]);
+    const openOrders = ref([]); // New reactive state for open orders
     const underlyingPrice = ref(null); // NO DEFAULT - wait for real data from Alpaca
     const isLivePrice = ref(false); // Track if price is live from WebSocket
     const symbol = ref("SPY"); // Default underlying symbol
@@ -760,8 +854,24 @@ export default {
           loading.value = false;
         });
 
+        // Set up open orders handler
+        webSocketClient.onOpenOrdersUpdate((ordersData) => {
+          console.log("Open orders received via WebSocket:", ordersData);
+          if (ordersData.success) {
+            openOrders.value = ordersData.orders || [];
+            console.log(
+              "Open orders set to:",
+              openOrders.value.length,
+              "orders"
+            );
+          }
+        });
+
         // Request positions via WebSocket
         webSocketClient.requestPositions();
+
+        // Request open orders via WebSocket
+        webSocketClient.requestOpenOrders();
       } catch (err) {
         console.error("Error fetching positions:", err);
         error.value = err.message || "Failed to fetch positions";
@@ -882,6 +992,37 @@ export default {
       if (!dateString) return "";
       const date = new Date(dateString);
       return date.toLocaleDateString();
+    };
+
+    const formatDateTime = (dateString) => {
+      if (!dateString) return "";
+      const date = new Date(dateString);
+      return date.toLocaleString("en-US", {
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+      });
+    };
+
+    const getOrderStatusSeverity = (status) => {
+      switch (status?.toLowerCase()) {
+        case "new":
+        case "accepted":
+        case "pending_new":
+          return "info";
+        case "partially_filled":
+          return "warning";
+        case "filled":
+          return "success";
+        case "canceled":
+        case "cancelled":
+        case "rejected":
+        case "expired":
+          return "danger";
+        default:
+          return "secondary";
+      }
     };
 
     // Streaming methods
@@ -1552,6 +1693,7 @@ export default {
       loading,
       error,
       positions,
+      openOrders,
       underlyingPrice,
       isLivePrice,
       symbol,
@@ -1573,6 +1715,8 @@ export default {
       // Methods
       fetchPositions,
       formatDate,
+      formatDateTime,
+      getOrderStatusSeverity,
       isPositionStrike,
       hasCallPosition,
       hasPutPosition,
