@@ -64,6 +64,31 @@
               @blur="fetchUnderlyingPrice"
             />
           </div>
+
+          <div class="field">
+            <label for="autoTrade">Auto-Trade</label>
+            <Checkbox id="autoTrade" v-model="autoTrade" :binary="true" />
+            <small
+              >Automatically enter trade when price is within trade
+              distance</small
+            >
+          </div>
+
+          <div class="field">
+            <label for="tradeDistance">Trade Distance (cents)</label>
+            <InputNumber
+              id="tradeDistance"
+              v-model="tradeDistance"
+              :min="1"
+              :max="50"
+              :step="1"
+              suffix=" cents"
+            />
+            <small
+              >Distance around rounded strike to trigger auto-trade (default: 5
+              cents)</small
+            >
+          </div>
         </div>
       </template>
     </Card>
@@ -199,6 +224,7 @@ import {
 } from "vue";
 import { Chart, registerables } from "chart.js";
 import Tag from "primevue/tag";
+import Checkbox from "primevue/checkbox";
 import api from "../services/api";
 import webSocketClient from "../services/webSocketClient";
 import {
@@ -218,6 +244,7 @@ export default {
   name: "TradeSetup",
   components: {
     Tag,
+    Checkbox,
     OrderConfirmationDialog,
     OrderResultDialog,
     PayoffChart,
@@ -253,6 +280,10 @@ export default {
     const chart = ref(null);
     const manualOrderPrice = ref(null); // For user-editable order price
     const streamingPrices = ref({}); // Store real-time prices like Trade Management
+
+    // Auto-trade functionality
+    const autoTrade = ref(false);
+    const tradeDistance = ref(5); // Default 5 cents
 
     // Options for dropdowns
     const strategyOptions = [
@@ -794,6 +825,11 @@ export default {
             const oldPrice = underlyingPrice.value;
             underlyingPrice.value = data.price;
             isLivePrice.value = true;
+
+            // Check for auto-trade trigger
+            if (autoTrade.value && butterflyInfo.value) {
+              checkAutoTradeTrigger(data.price);
+            }
 
             // Check if price change is significant enough to recalculate strikes
             if (butterflyInfo.value && oldPrice !== null) {
@@ -1494,6 +1530,102 @@ export default {
       console.log("Manual order price updated to:", manualOrderPrice.value);
     };
 
+    // Auto-trade trigger function
+    const checkAutoTradeTrigger = (currentPrice) => {
+      if (!autoTrade.value || !butterflyInfo.value || !canPlaceOrder.value) {
+        return;
+      }
+
+      // Get all available strikes for checking
+      const strikes = getStrikePrices();
+      const distanceCents = tradeDistance.value / 100; // Convert cents to dollars
+
+      // Check each strike to see if price is within trade distance
+      for (const strike of strikes) {
+        const roundedStrike = Math.round(strike);
+        const lowerBound = roundedStrike - distanceCents;
+        const upperBound = roundedStrike + distanceCents;
+
+        // Check if price is within the trigger range
+        if (currentPrice >= lowerBound && currentPrice <= upperBound) {
+          console.log(`Auto-trade trigger activated!`);
+          console.log(
+            `Price: ${currentPrice}, Strike: ${roundedStrike}, Range: ${lowerBound} - ${upperBound}`
+          );
+
+          // Trigger the auto-trade
+          executeAutoTrade(roundedStrike, currentPrice);
+
+          // Only trigger once per price movement, so break after first trigger
+          break;
+        }
+      }
+    };
+
+    // Execute auto-trade when triggered
+    const executeAutoTrade = async (triggerStrike, currentPrice) => {
+      try {
+        console.log(
+          `Executing auto-trade for strike ${triggerStrike} at price ${currentPrice}`
+        );
+
+        // Ensure we have valid butterfly info and order details
+        if (!butterflyInfo.value || !orderDetails.value) {
+          console.error(
+            "Cannot execute auto-trade: missing butterfly info or order details"
+          );
+          return;
+        }
+
+        // Build order data using the centralized composable
+        const orderDataToSubmit = buildButterflyOrderData({
+          symbol: symbol.value,
+          expiry: expiry.value,
+          strategyType: strategyType.value,
+          butterflyInfo: butterflyInfo.value,
+          orderPrice: orderDetails.value.orderPrice,
+          orderOffset: orderOffset.value,
+          underlyingPrice: underlyingPrice.value,
+          currentOptionsPrice: orderDetails.value.currentOptionsPrice,
+          calculatedOrderPrice: orderDetails.value.calculatedOrderPrice,
+          optionsChain: optionsChain.value,
+        });
+
+        // Add auto-trade metadata to the order
+        orderDataToSubmit.autoTrade = true;
+        orderDataToSubmit.triggerStrike = triggerStrike;
+        orderDataToSubmit.triggerPrice = currentPrice;
+        orderDataToSubmit.tradeDistance = tradeDistance.value;
+
+        // Execute the order directly without confirmation dialog for auto-trade
+        console.log("Auto-trade order data:", orderDataToSubmit);
+
+        // Use the centralized order management to place the order
+        // For auto-trade, we bypass the confirmation dialog and place directly
+        await handleOrderConfirmation(orderDataToSubmit);
+
+        // Automatically disable auto-trade after successful order placement
+        autoTrade.value = false;
+        console.log("Auto-trade disabled after successful order placement");
+
+        console.log(
+          `Auto-trade executed successfully for strike ${triggerStrike}`
+        );
+      } catch (error) {
+        console.error("Error executing auto-trade:", error);
+
+        // Show error in order result dialog
+        orderResult.value = {
+          success: false,
+          error: `Auto-trade failed: ${error.message}`,
+          autoTrade: true,
+          triggerStrike,
+          triggerPrice: currentPrice,
+        };
+        showOrderResult.value = true;
+      }
+    };
+
     const handlePlaceOrder = () => {
       if (!butterflyInfo.value || !orderDetails.value) return;
 
@@ -1576,6 +1708,10 @@ export default {
       chartData,
       chartCanvas,
       manualOrderPrice,
+
+      // Auto-trade functionality
+      autoTrade,
+      tradeDistance,
 
       // Centralized order management
       showOrderConfirmation,
