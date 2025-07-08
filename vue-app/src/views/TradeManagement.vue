@@ -674,7 +674,15 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted, nextTick, watch } from "vue";
+import {
+  ref,
+  computed,
+  onMounted,
+  onUnmounted,
+  nextTick,
+  watch,
+  shallowRef,
+} from "vue";
 import { Chart, registerables } from "chart.js";
 import Tag from "primevue/tag";
 import Checkbox from "primevue/checkbox";
@@ -715,18 +723,24 @@ export default {
       buildMultiLegOrderData,
       buildCloseOrderData,
     } = useOrderManagement();
-    // Reactive data
+    // Reactive data - Use shallowRef for large data structures to improve performance
     const loading = ref(true);
     const error = ref(null);
-    const positions = ref([]);
-    const openOrders = ref([]); // New reactive state for open orders
+    const positions = shallowRef([]); // Use shallowRef for better performance
+    const openOrders = shallowRef([]); // Use shallowRef for better performance
     const underlyingPrice = ref(null); // NO DEFAULT - wait for real data from Alpaca
     const isLivePrice = ref(false); // Track if price is live from WebSocket
     const symbol = ref("SPY"); // Default underlying symbol
     const chartData = ref(null);
-    const streamingPrices = ref({});
+    const streamingPrices = shallowRef({}); // Use shallowRef for streaming data
     const isStreaming = ref(false);
-    const optionsChain = ref([]);
+    const optionsChain = shallowRef([]); // Use shallowRef for large options chain
+
+    // Performance optimization: debouncing and throttling
+    let chartUpdateTimer = null;
+    let priceUpdateTimer = null;
+    const chartDebounceDelay = 200; // ms
+    const priceUpdateThrottle = 100; // ms
     const selectedOptions = ref([]);
     const selectedOptionsMap = ref({}); // Track selection type: { symbol: 'buy'|'sell' }
     const orderQuantities = ref({}); // Track quantities for each selected option
@@ -915,100 +929,91 @@ export default {
       }
     };
 
+    // Performance optimized: Debounced chart generation
     const generateChart = async () => {
       if (!hasOptionPositions.value) {
         return;
       }
 
-      try {
-        // Start with current positions
-        let combinedPositions = [...positions.value];
+      // Clear existing timer
+      if (chartUpdateTimer) {
+        clearTimeout(chartUpdateTimer);
+      }
 
-        // Add selected options as new positions using ADJUSTED ORDER PRICES
-        if (selectedOptions.value.length > 0) {
-          // Calculate price adjustment factor based on limit price vs natural price
-          const naturalPrice = Math.abs(getTotalEstimatedValue()) / 100;
-          const limitPrice = Math.abs(combinedOrderPrice.value) || naturalPrice;
-          const priceAdjustmentFactor =
-            naturalPrice > 0 ? limitPrice / naturalPrice : 1;
+      // Debounce chart updates
+      chartUpdateTimer = setTimeout(async () => {
+        try {
+          // Start with current positions
+          let combinedPositions = [...positions.value];
 
-          console.log(
-            `Chart: Price adjustment factor: ${priceAdjustmentFactor.toFixed(
-              4
-            )} (Limit: $${limitPrice.toFixed(
-              2
-            )}, Natural: $${naturalPrice.toFixed(2)})`
+          // Add selected options as new positions using ADJUSTED ORDER PRICES
+          if (selectedOptions.value.length > 0) {
+            // Calculate price adjustment factor based on limit price vs natural price
+            const naturalPrice = Math.abs(getTotalEstimatedValue()) / 100;
+            const limitPrice =
+              Math.abs(combinedOrderPrice.value) || naturalPrice;
+            const priceAdjustmentFactor =
+              naturalPrice > 0 ? limitPrice / naturalPrice : 1;
+
+            selectedOptions.value.forEach((symbol) => {
+              const selectionType = selectedOptionsMap.value[symbol];
+              const option = optionsChain.value.find(
+                (opt) => opt.symbol === symbol
+              );
+
+              if (option && selectionType) {
+                // Get base order price and apply adjustment factor
+                const baseOrderPrice = getOrderPrice(symbol);
+                const adjustedOrderPrice =
+                  baseOrderPrice * priceAdjustmentFactor;
+                const quantity = getOrderQuantity(symbol);
+
+                // For buy: qty = +quantity (long position)
+                // For sell: qty = -quantity (short position)
+                const positionQuantity =
+                  selectionType === "buy" ? quantity : -quantity;
+
+                // Calculate cost basis using the adjusted order price
+                const costBasis =
+                  adjustedOrderPrice * Math.abs(positionQuantity) * 100;
+
+                const syntheticPosition = {
+                  symbol: option.symbol,
+                  asset_class: "us_option",
+                  side: selectionType === "buy" ? "long" : "short",
+                  qty: positionQuantity,
+                  strike_price: option.strike_price,
+                  option_type: option.type,
+                  expiry_date: positionExpiry.value,
+                  current_price: adjustedOrderPrice, // Use adjusted order price
+                  market_value:
+                    adjustedOrderPrice * Math.abs(positionQuantity) * 100,
+                  avg_entry_price: adjustedOrderPrice, // Key field for chart calculation - use adjusted price
+                  cost_basis: costBasis,
+                  unrealized_pl: 0,
+                  unrealized_plpc: 0,
+                  underlying_symbol: underlyingSymbol.value,
+                  is_synthetic: true,
+                };
+
+                combinedPositions.push(syntheticPosition);
+              }
+            });
+          }
+
+          // Generate payoff data for combined positions (current + selected)
+          const payoffData = generateMultiLegPayoff(
+            combinedPositions,
+            underlyingPrice.value
           );
 
-          selectedOptions.value.forEach((symbol) => {
-            const selectionType = selectedOptionsMap.value[symbol];
-            const option = optionsChain.value.find(
-              (opt) => opt.symbol === symbol
-            );
-
-            if (option && selectionType) {
-              // Get base order price and apply adjustment factor
-              const baseOrderPrice = getOrderPrice(symbol);
-              const adjustedOrderPrice = baseOrderPrice * priceAdjustmentFactor;
-              const quantity = getOrderQuantity(symbol);
-
-              // For buy: qty = +quantity (long position)
-              // For sell: qty = -quantity (short position)
-              const positionQuantity =
-                selectionType === "buy" ? quantity : -quantity;
-
-              // Calculate cost basis using the adjusted order price
-              const costBasis =
-                adjustedOrderPrice * Math.abs(positionQuantity) * 100;
-
-              const syntheticPosition = {
-                symbol: option.symbol,
-                asset_class: "us_option",
-                side: selectionType === "buy" ? "long" : "short",
-                qty: positionQuantity,
-                strike_price: option.strike_price,
-                option_type: option.type,
-                expiry_date: positionExpiry.value,
-                current_price: adjustedOrderPrice, // Use adjusted order price
-                market_value:
-                  adjustedOrderPrice * Math.abs(positionQuantity) * 100,
-                avg_entry_price: adjustedOrderPrice, // Key field for chart calculation - use adjusted price
-                cost_basis: costBasis,
-                unrealized_pl: 0,
-                unrealized_plpc: 0,
-                underlying_symbol: underlyingSymbol.value,
-                is_synthetic: true,
-              };
-
-              console.log(
-                `Chart: Added ${selectionType} ${quantity} contracts of ${
-                  option.symbol
-                } at ADJUSTED PRICE $${adjustedOrderPrice.toFixed(
-                  2
-                )} (base: $${baseOrderPrice.toFixed(
-                  2
-                )}, factor: ${priceAdjustmentFactor.toFixed(4)})`
-              );
-              combinedPositions.push(syntheticPosition);
-            }
-          });
+          if (payoffData) {
+            chartData.value = payoffData;
+          }
+        } catch (err) {
+          console.error("Error generating chart:", err);
         }
-
-        // Generate payoff data for combined positions (current + selected)
-        const payoffData = generateMultiLegPayoff(
-          combinedPositions,
-          underlyingPrice.value
-        );
-
-        if (payoffData) {
-          chartData.value = payoffData;
-          // console.log(
-          //   `Chart updated with ${combinedPositions.length} positions (${selectedOptions.value.length} adjustments)`
-          // );
-        }
-      } catch (err) {
-        console.error("Error generating chart:", err);
-      }
+      }, chartDebounceDelay);
     };
 
     const formatDate = (dateString) => {
@@ -1786,6 +1791,17 @@ export default {
     );
 
     onUnmounted(async () => {
+      // Clean up timers to prevent memory leaks
+      if (chartUpdateTimer) {
+        clearTimeout(chartUpdateTimer);
+        chartUpdateTimer = null;
+      }
+
+      if (priceUpdateTimer) {
+        clearTimeout(priceUpdateTimer);
+        priceUpdateTimer = null;
+      }
+
       await stopStreaming();
     });
 

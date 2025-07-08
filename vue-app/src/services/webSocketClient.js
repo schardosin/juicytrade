@@ -9,6 +9,15 @@ class WebSocketStreamingClient {
     this.isConnected = false;
     this.subscribedSymbols = new Set();
     this.connectionPromise = null;
+
+    // Performance optimization: throttling and batching
+    this.priceUpdateQueue = new Map();
+    this.throttleDelay = 150; // ms
+    this.throttleTimer = null;
+    this.lastUpdateTime = 0;
+
+    // Cleanup tracking
+    this.activeCallbacks = new Set();
   }
 
   async connect() {
@@ -155,14 +164,12 @@ class WebSocketStreamingClient {
 
     switch (message.type) {
       case "price_update":
-        const priceCallback = this.callbacks.get("price_update");
-        if (priceCallback) {
-          priceCallback({
-            symbol: message.symbol,
-            price: message.data.ask || message.data.bid,
-            data: message.data,
-          });
-        }
+        // Queue price updates for throttled processing
+        this.queuePriceUpdate({
+          symbol: message.symbol,
+          price: message.data.ask || message.data.bid,
+          data: message.data,
+        });
         break;
 
       case "subscription_confirmed":
@@ -250,8 +257,66 @@ class WebSocketStreamingClient {
     }
   }
 
+  // Performance optimization: Queue and throttle price updates
+  queuePriceUpdate(priceData) {
+    // Store the latest price data for each symbol
+    this.priceUpdateQueue.set(priceData.symbol, priceData);
+
+    // Throttle the processing
+    if (!this.throttleTimer) {
+      this.throttleTimer = setTimeout(() => {
+        this.processPriceUpdateQueue();
+        this.throttleTimer = null;
+      }, this.throttleDelay);
+    }
+  }
+
+  processPriceUpdateQueue() {
+    const now = Date.now();
+
+    // Skip if we updated too recently
+    if (now - this.lastUpdateTime < this.throttleDelay) {
+      return;
+    }
+
+    const priceCallback = this.callbacks.get("price_update");
+    if (!priceCallback || this.priceUpdateQueue.size === 0) {
+      return;
+    }
+
+    // Process all queued updates in a batch
+    const updates = Array.from(this.priceUpdateQueue.values());
+    this.priceUpdateQueue.clear();
+    this.lastUpdateTime = now;
+
+    // Use requestAnimationFrame for smooth UI updates
+    requestAnimationFrame(() => {
+      updates.forEach((priceData) => {
+        try {
+          priceCallback(priceData);
+        } catch (error) {
+          console.error("Error in price update callback:", error);
+        }
+      });
+    });
+  }
+
+  // Clean up resources and prevent memory leaks
+  cleanup() {
+    if (this.throttleTimer) {
+      clearTimeout(this.throttleTimer);
+      this.throttleTimer = null;
+    }
+
+    this.priceUpdateQueue.clear();
+    this.activeCallbacks.clear();
+  }
+
   disconnect() {
     console.log("Disconnecting WebSocket");
+
+    // Clean up timers and queues
+    this.cleanup();
 
     if (this.ws) {
       this.ws.close(1000, "Client disconnect");
