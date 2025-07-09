@@ -439,10 +439,9 @@
 
                 <div class="adjustment-list">
                   <div
-                    v-for="(adjustment, index) in adjustmentSuggestions.slice(
-                      0,
-                      5
-                    )"
+                    v-for="(
+                      adjustment, index
+                    ) in liveAdjustmentSuggestions.slice(0, 5)"
                     :key="index"
                     class="adjustment-item"
                     :class="{ selected: selectedAdjustment === index }"
@@ -901,6 +900,48 @@ export default {
     const adjustmentData = ref({});
     const loadingAdjustments = ref(false);
     const selectedAdjustment = ref(-1);
+
+    // Computed property for live adjustment suggestions with updated prices
+    const liveAdjustmentSuggestions = computed(() => {
+      return adjustmentSuggestions.value.map((adjustment) => {
+        // Calculate live net premium for this adjustment
+        let liveNetPremium = 0;
+
+        const updatedLegs = adjustment.legs.map((leg) => {
+          // Find the option in the options chain to get live prices
+          const chainOption = optionsChain.value.find(
+            (opt) => opt.symbol === leg.symbol
+          );
+
+          let currentPrice = leg.current_price; // fallback to original price
+
+          if (chainOption) {
+            // Use live bid/ask prices from streaming data
+            if (leg.side === "buy") {
+              currentPrice = getOptionAsk(chainOption);
+            } else {
+              currentPrice = getOptionBid(chainOption);
+            }
+          }
+
+          // Calculate contribution to net premium
+          const premiumContribution =
+            leg.side === "buy" ? -currentPrice : currentPrice;
+          liveNetPremium += premiumContribution * leg.qty;
+
+          return {
+            ...leg,
+            current_price: currentPrice,
+          };
+        });
+
+        return {
+          ...adjustment,
+          legs: updatedLegs,
+          net_premium: liveNetPremium,
+        };
+      });
+    });
 
     // Computed properties
     const optionPositions = computed(() => {
@@ -1941,26 +1982,31 @@ export default {
       // Clear any existing selections
       clearAllSelections();
 
-      // Apply each leg of the adjustment
+      // Apply each leg of the adjustment using live options chain data
       adjustment.legs.forEach((leg) => {
-        // Find the option in the options chain
+        // Find the option in the options chain to get live prices
         const option = optionsChain.value.find(
           (opt) => opt.symbol === leg.symbol
         );
         if (option) {
-          // Add to selected options
-          selectedOptions.value.push(leg.symbol);
-          selectedOptionsMap.value[leg.symbol] = leg.side;
+          // Use the selectOption method to properly add to the order ticket
+          // This ensures we use live bid/ask prices from the options chain
+          selectOption(option, leg.side);
+
+          // Set the quantity for this leg
           orderQuantities.value[leg.symbol] = leg.qty;
-          orderPrices.value[leg.symbol] = leg.current_price;
+
+          // Don't set orderPrices - let it use live prices from getOrderPrice()
+        } else {
+          console.warn(`Option ${leg.symbol} not found in options chain`);
         }
       });
 
-      // Set the combined order price to the adjustment's net premium
-      combinedOrderPrice.value = -adjustment.net_premium; // Invert for limit price display
+      // The combined order price will be automatically calculated by the watcher
+      // based on live prices from the options chain
 
       console.log(
-        `Applied ${adjustment.legs.length}-leg adjustment with ${adjustment.qty}x quantity`
+        `Applied ${adjustment.legs.length}-leg adjustment with ${adjustment.qty}x quantity using live prices`
       );
     };
 
@@ -2208,6 +2254,7 @@ export default {
 
       // Adjustment suggestions
       adjustmentSuggestions,
+      liveAdjustmentSuggestions,
       adjustmentData,
       loadingAdjustments,
       selectedAdjustment,
