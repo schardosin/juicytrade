@@ -1788,8 +1788,8 @@ export default {
         return streamingPrices.value[option.symbol].bid;
       }
 
-      // Fall back to close price as estimate (real implementation would have bid/ask)
-      return parseFloat(option.close_price || 0) * 0.98; // Estimate bid as 98% of close
+      // Fall back to close price for both bid and ask (consistent with backend)
+      return parseFloat(option.close_price || 0);
     };
 
     const getOptionAsk = (option) => {
@@ -1803,8 +1803,8 @@ export default {
         return streamingPrices.value[option.symbol].ask;
       }
 
-      // Fall back to close price as estimate (real implementation would have bid/ask)
-      return parseFloat(option.close_price || 0) * 1.02; // Estimate ask as 102% of close
+      // Fall back to close price for both bid and ask (consistent with backend)
+      return parseFloat(option.close_price || 0);
     };
 
     // Position closing methods
@@ -1923,9 +1923,14 @@ export default {
 
     // Adjustment suggestions methods
     const fetchAdjustmentSuggestions = async () => {
-      if (!hasOptionPositions.value || !underlyingPrice.value) {
+      if (
+        !hasOptionPositions.value ||
+        !underlyingPrice.value ||
+        !optionsChain.value ||
+        optionsChain.value.length === 0
+      ) {
         console.warn(
-          "Cannot fetch adjustments: missing positions or underlying price"
+          "Cannot fetch adjustments: missing positions, underlying price, or options chain"
         );
         return;
       }
