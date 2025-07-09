@@ -4,7 +4,7 @@ import uvicorn
 from fastapi import FastAPI, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import List, Dict, Optional, Set
+from typing import List, Dict, Optional, Set, Union
 from alpaca.data.live import OptionDataStream, StockDataStream
 from alpaca.data.historical import StockHistoricalDataClient
 from alpaca.data.requests import StockLatestQuoteRequest
@@ -87,6 +87,415 @@ def get_options_chain(symbol, expiry, strategy_type):
     except Exception as e:
         logger.error(f"Error fetching options chain: {e}")
     return []
+
+def get_full_options_chain(symbol, expiry):
+    """
+    Get the complete options chain (both calls and puts) for a given symbol and expiry.
+    """
+    url = f"{get_base_url(is_paper_trade=True)}/v2/options/contracts"
+    api_key, api_secret = get_api_credentials(is_paper_trade=True)
+    params = {
+        "underlying_symbols": symbol,
+        "expiration_date": expiry,
+        "root_symbol": symbol,
+        "limit": 1000
+    }
+    headers = {
+        "APCA-API-KEY-ID": api_key,
+        "APCA-API-SECRET-KEY": api_secret,
+        "accept": "application/json"
+    }
+    resp = requests.get(url, headers=headers, params=params)
+    try:
+        response_data = resp.json()
+        if resp.status_code == 200:
+            contracts = response_data.get("option_contracts", [])
+            return contracts
+    except Exception as e:
+        logger.error(f"Error fetching full options chain: {e}")
+    return []
+
+def calculate_position_payoff(positions, price_range):
+    """
+    Calculate the payoff for a list of positions across a price range.
+    Returns a list of payoffs corresponding to each price in the range.
+    """
+    payoffs = []
+    
+    for price in price_range:
+        total_payoff = 0
+        
+        for position in positions:
+            if position.asset_class != "us_option":
+                continue
+                
+            strike_price = position.strike_price
+            option_type = position.option_type
+            qty = position.qty
+            avg_entry_price = position.avg_entry_price
+            
+            # Calculate intrinsic value
+            if option_type == "call":
+                intrinsic_value = max(price - strike_price, 0)
+            else:  # put
+                intrinsic_value = max(strike_price - price, 0)
+            
+            # Calculate position payoff
+            if qty > 0:  # Long position
+                position_payoff = (intrinsic_value - avg_entry_price) * qty * 100
+            else:  # Short position
+                position_payoff = (avg_entry_price - intrinsic_value) * abs(qty) * 100
+            
+            total_payoff += position_payoff
+        
+        payoffs.append(total_payoff)
+    
+    return payoffs
+
+def find_breakeven_points(prices, payoffs):
+    """
+    Find break-even points where payoff crosses zero.
+    """
+    breakeven_points = []
+    
+    for i in range(1, len(payoffs)):
+        if (payoffs[i-1] <= 0 and payoffs[i] >= 0) or (payoffs[i-1] >= 0 and payoffs[i] <= 0):
+            # Linear interpolation to find precise break-even
+            if payoffs[i] != payoffs[i-1]:
+                x1, x2 = prices[i-1], prices[i]
+                y1, y2 = payoffs[i-1], payoffs[i]
+                breakeven = x1 - (y1 * (x2 - x1)) / (y2 - y1)
+                breakeven_points.append(breakeven)
+    
+    return breakeven_points
+
+def identify_tested_side(positions, underlying_price, current_breakevens):
+    """
+    Identify which side of the iron butterfly is being tested.
+    Returns "call" or "put" based on which side the underlying price is closer to.
+    """
+    if not current_breakevens or len(current_breakevens) < 2:
+        # If we can't determine from breakevens, use ATM strike
+        atm_strikes = [pos.strike_price for pos in positions if pos.asset_class == "us_option"]
+        if atm_strikes:
+            atm_strike = min(atm_strikes, key=lambda x: abs(x - underlying_price))
+            return "call" if underlying_price > atm_strike else "put"
+        return "call"  # Default
+    
+    # Sort breakevens to get lower and upper
+    sorted_breakevens = sorted(current_breakevens)
+    lower_be, upper_be = sorted_breakevens[0], sorted_breakevens[-1]
+    
+    # Determine which side is being tested
+    distance_to_lower = abs(underlying_price - lower_be)
+    distance_to_upper = abs(underlying_price - upper_be)
+    
+    if distance_to_lower < distance_to_upper:
+        return "put"  # Testing the put side (lower breakeven)
+    else:
+        return "call"  # Testing the call side (upper breakeven)
+
+def generate_adjustment_candidates(options_chain, tested_side, underlying_price):
+    """
+    Generate candidate adjustment spreads for the tested side.
+    Returns a list of potential 2-leg spreads (credit or debit).
+    """
+    candidates = []
+    
+    # Calculate ATM strike and range (10 strikes above and below)
+    atm_strike = round(underlying_price)
+    min_strike = atm_strike - 10
+    max_strike = atm_strike + 10
+    
+    # Filter options by type and strike range
+    relevant_options = [
+        opt for opt in options_chain 
+        if opt.get("type") == tested_side and 
+        min_strike <= float(opt.get("strike_price", 0)) <= max_strike
+    ]
+    
+    # Sort by strike price
+    relevant_options.sort(key=lambda x: float(x.get("strike_price", 0)))
+    
+    # Generate spreads with different strike combinations
+    for i in range(len(relevant_options) - 1):
+        for j in range(i + 1, min(i + 6, len(relevant_options))):  # Limit to nearby strikes
+            lower_option = relevant_options[i]
+            upper_option = relevant_options[j]
+            
+            # Add null checks before converting to float
+            lower_strike_raw = lower_option.get("strike_price")
+            upper_strike_raw = upper_option.get("strike_price")
+            lower_price_raw = lower_option.get("close_price")
+            upper_price_raw = upper_option.get("close_price")
+            
+            # Skip if any required values are None
+            if any(val is None for val in [lower_strike_raw, upper_strike_raw, lower_price_raw, upper_price_raw]):
+                continue
+            
+            try:
+                lower_strike = float(lower_strike_raw)
+                upper_strike = float(upper_strike_raw)
+                lower_price = float(lower_price_raw)
+                upper_price = float(upper_price_raw)
+            except (ValueError, TypeError):
+                # Skip if conversion fails
+                continue
+            
+            # Skip if prices are invalid
+            if lower_price <= 0 or upper_price <= 0 or lower_strike <= 0 or upper_strike <= 0:
+                continue
+            
+            # Generate both credit and debit spread variations
+            # For tested side adjustments, we typically want to add protection
+            
+            if tested_side == "call":
+                # For call side testing, consider call spreads
+                # Credit spread: Sell lower strike, Buy higher strike
+                credit_spread = {
+                    "legs": [
+                        {
+                            "symbol": lower_option.get("symbol", ""),
+                            "side": "sell",
+                            "strike_price": lower_strike,
+                            "option_type": tested_side,
+                            "current_price": lower_price
+                        },
+                        {
+                            "symbol": upper_option.get("symbol", ""),
+                            "side": "buy", 
+                            "strike_price": upper_strike,
+                            "option_type": tested_side,
+                            "current_price": upper_price
+                        }
+                    ],
+                    "net_premium": lower_price - upper_price,
+                    "adjustment_type": "credit_spread"
+                }
+                
+                # Debit spread: Buy lower strike, Sell higher strike
+                debit_spread = {
+                    "legs": [
+                        {
+                            "symbol": lower_option.get("symbol", ""),
+                            "side": "buy",
+                            "strike_price": lower_strike,
+                            "option_type": tested_side,
+                            "current_price": lower_price
+                        },
+                        {
+                            "symbol": upper_option.get("symbol", ""),
+                            "side": "sell",
+                            "strike_price": upper_strike,
+                            "option_type": tested_side,
+                            "current_price": upper_price
+                        }
+                    ],
+                    "net_premium": upper_price - lower_price,
+                    "adjustment_type": "debit_spread"
+                }
+                
+            else:  # put side
+                # For put side testing, consider put spreads
+                # Credit spread: Sell higher strike, Buy lower strike
+                credit_spread = {
+                    "legs": [
+                        {
+                            "symbol": upper_option.get("symbol", ""),
+                            "side": "sell",
+                            "strike_price": upper_strike,
+                            "option_type": tested_side,
+                            "current_price": upper_price
+                        },
+                        {
+                            "symbol": lower_option.get("symbol", ""),
+                            "side": "buy",
+                            "strike_price": lower_strike,
+                            "option_type": tested_side,
+                            "current_price": lower_price
+                        }
+                    ],
+                    "net_premium": upper_price - lower_price,
+                    "adjustment_type": "credit_spread"
+                }
+                
+                # Debit spread: Buy higher strike, Sell lower strike
+                debit_spread = {
+                    "legs": [
+                        {
+                            "symbol": upper_option.get("symbol", ""),
+                            "side": "buy",
+                            "strike_price": upper_strike,
+                            "option_type": tested_side,
+                            "current_price": upper_price
+                        },
+                        {
+                            "symbol": lower_option.get("symbol", ""),
+                            "side": "sell",
+                            "strike_price": lower_strike,
+                            "option_type": tested_side,
+                            "current_price": lower_price
+                        }
+                    ],
+                    "net_premium": lower_price - upper_price,
+                    "adjustment_type": "debit_spread"
+                }
+            
+            # Only add spreads with reasonable premiums
+            if abs(credit_spread["net_premium"]) > 0.01:
+                candidates.append(credit_spread)
+            if abs(debit_spread["net_premium"]) > 0.01:
+                candidates.append(debit_spread)
+    
+    return candidates
+
+def simulate_adjustment(original_positions, adjustment_candidate, qty, underlying_price):
+    """
+    Simulate adding an adjustment to the original positions and calculate metrics.
+    """
+    # Create combined positions list
+    combined_positions = original_positions.copy()
+    
+    # Add adjustment legs as new positions
+    for leg in adjustment_candidate["legs"]:
+        adjustment_position = Position(
+            symbol=leg["symbol"],
+            qty=qty if leg["side"] == "buy" else -qty,
+            side="long" if leg["side"] == "buy" else "short",
+            strike_price=leg["strike_price"],
+            option_type=leg["option_type"],
+            expiry_date=original_positions[0].expiry_date,
+            current_price=leg["current_price"],
+            avg_entry_price=leg["current_price"],
+            cost_basis=leg["current_price"] * qty * 100 * (1 if leg["side"] == "buy" else -1),
+            market_value=leg["current_price"] * qty * 100 * (1 if leg["side"] == "buy" else -1),
+            unrealized_pl=0,
+            underlying_symbol=original_positions[0].underlying_symbol,
+            asset_class="us_option"
+        )
+        combined_positions.append(adjustment_position)
+    
+    # Generate price range for simulation
+    strikes = [pos.strike_price for pos in combined_positions if pos.asset_class == "us_option"]
+    min_strike = min(strikes)
+    max_strike = max(strikes)
+    price_range = list(range(int(min_strike - 10), int(max_strike + 11), 1))
+    
+    # Calculate payoffs
+    payoffs = calculate_position_payoff(combined_positions, price_range)
+    
+    # Find new breakeven points
+    new_breakevens = find_breakeven_points(price_range, payoffs)
+    
+    # Calculate metrics
+    profit_on_tested_side = calculate_profit_on_tested_side(
+        price_range, payoffs, adjustment_candidate["legs"][0]["option_type"], underlying_price
+    )
+    
+    distance_to_untested_breakeven = calculate_distance_to_untested_breakeven(
+        new_breakevens, adjustment_candidate["legs"][0]["option_type"], underlying_price
+    )
+    
+    max_loss_untested_side = calculate_max_loss_untested_side(
+        price_range, payoffs, adjustment_candidate["legs"][0]["option_type"], underlying_price
+    )
+    
+    return {
+        "combined_positions": combined_positions,
+        "price_range": price_range,
+        "payoffs": payoffs,
+        "new_breakevens": new_breakevens,
+        "profit_on_tested_side": profit_on_tested_side,
+        "distance_to_untested_breakeven": distance_to_untested_breakeven,
+        "max_loss_untested_side": max_loss_untested_side
+    }
+
+def calculate_profit_on_tested_side(price_range, payoffs, tested_side, underlying_price):
+    """
+    Calculate the minimum profit on the tested side.
+    """
+    if tested_side == "call":
+        # For call side, look at prices above current underlying price
+        relevant_indices = [i for i, price in enumerate(price_range) if price >= underlying_price]
+    else:
+        # For put side, look at prices below current underlying price
+        relevant_indices = [i for i, price in enumerate(price_range) if price <= underlying_price]
+    
+    if not relevant_indices:
+        return float('-inf')
+    
+    relevant_payoffs = [payoffs[i] for i in relevant_indices]
+    return min(relevant_payoffs)
+
+def calculate_distance_to_untested_breakeven(breakevens, tested_side, underlying_price):
+    """
+    Calculate distance to the breakeven on the untested side.
+    """
+    if not breakevens:
+        return 0
+    
+    if tested_side == "call":
+        # Untested side is put side (lower breakeven)
+        untested_breakevens = [be for be in breakevens if be < underlying_price]
+    else:
+        # Untested side is call side (upper breakeven)
+        untested_breakevens = [be for be in breakevens if be > underlying_price]
+    
+    if not untested_breakevens:
+        return 0
+    
+    closest_untested_be = min(untested_breakevens, key=lambda x: abs(x - underlying_price))
+    return abs(closest_untested_be - underlying_price)
+
+def calculate_max_loss_untested_side(price_range, payoffs, tested_side, underlying_price):
+    """
+    Calculate the maximum loss on the untested side.
+    """
+    if tested_side == "call":
+        # Untested side is put side (prices below current)
+        relevant_indices = [i for i, price in enumerate(price_range) if price <= underlying_price]
+    else:
+        # Untested side is call side (prices above current)
+        relevant_indices = [i for i, price in enumerate(price_range) if price >= underlying_price]
+    
+    if not relevant_indices:
+        return 0
+    
+    relevant_payoffs = [payoffs[i] for i in relevant_indices]
+    return abs(min(relevant_payoffs)) if min(relevant_payoffs) < 0 else 0
+
+def calculate_ranking_score(profit_tested, distance_untested, max_loss_untested, net_premium):
+    """
+    Calculate a ranking score based on the weighted factors.
+    Higher score is better.
+    """
+    # Normalize factors (these weights can be adjusted)
+    profit_weight = 0.2
+    distance_weight = 0.5
+    max_loss_weight = 0.2
+    premium_weight = 0.1
+    
+    # Normalize profit (higher is better)
+    profit_score = max(0, profit_tested) / 100  # Normalize to per $100
+    
+    # Normalize distance (higher is better)
+    distance_score = min(distance_untested / 10, 1)  # Cap at $10 distance
+    
+    # Normalize max loss (lower is better, so invert)
+    max_loss_score = max(0, 1 - (max_loss_untested / 500))  # Normalize to $500 max loss
+    
+    # Normalize premium (credit is better than debit)
+    premium_score = max(0, net_premium / 100)  # Normalize to per $100
+    
+    # Calculate weighted score
+    score = (
+        profit_score * profit_weight +
+        distance_score * distance_weight +
+        max_loss_score * max_loss_weight +
+        premium_score * premium_weight
+    )
+    
+    return score
 
 # --- FastAPI Application Setup ---
 
@@ -241,6 +650,55 @@ class SymbolResponse(BaseModel):
     success: bool
     message: str
     symbols: List[str]
+
+class Position(BaseModel):
+    symbol: str
+    qty: float
+    side: str
+    strike_price: Optional[float] = None
+    option_type: Optional[str] = None
+    expiry_date: Optional[str] = None
+    current_price: float
+    avg_entry_price: float
+    cost_basis: float
+    market_value: float
+    unrealized_pl: float
+    underlying_symbol: Optional[str] = None
+    asset_class: str
+
+class AdjustmentRequest(BaseModel):
+    positions: List[Position]
+    underlying_price: float
+    underlying_symbol: str
+    expiry_date: str
+
+class AdjustmentLeg(BaseModel):
+    symbol: str
+    side: str  # "buy" or "sell"
+    qty: int
+    strike_price: float
+    option_type: str  # "call" or "put"
+    current_price: float
+
+class AdjustmentOption(BaseModel):
+    legs: List[AdjustmentLeg]
+    net_premium: float
+    adjustment_type: str  # "credit_spread" or "debit_spread"
+    tested_side: str  # "call" or "put"
+    qty: int  # 1 or 2
+    profit_on_tested_side: float
+    distance_to_untested_breakeven: float
+    max_loss_untested_side: float
+    ranking_score: float
+    simulated_payoff: Dict[str, List[float]]  # {"prices": [...], "payoffs": [...]}
+
+class AdjustmentResponse(BaseModel):
+    success: bool
+    adjustments: List[AdjustmentOption]
+    current_breakeven_points: List[float]
+    tested_side: str
+    message: Optional[str] = None
+    error: Optional[str] = None
 
 
 # --- Real-Time Data Handlers ---
@@ -768,6 +1226,40 @@ async def websocket_endpoint(websocket: WebSocket):
                     logger.error(f"Error getting orders via WebSocket: {e}", exc_info=True)
                     await websocket.send_text(json.dumps({
                         "type": "orders_error",
+                        "error": str(e)
+                    }))
+            
+            elif message["type"] == "calculate_adjustments":
+                # Calculate adjustment suggestions via WebSocket
+                try:
+                    logger.info("WebSocket: Received calculate_adjustments request")
+                    request_data = message.get("data", {})
+                    
+                    # Convert to AdjustmentRequest format
+                    positions_data = request_data.get("positions", [])
+                    positions = [Position(**pos) for pos in positions_data]
+                    
+                    adjustment_request = AdjustmentRequest(
+                        positions=positions,
+                        underlying_price=request_data.get("underlying_price"),
+                        underlying_symbol=request_data.get("underlying_symbol"),
+                        expiry_date=request_data.get("expiry_date")
+                    )
+                    
+                    # Call the adjustment calculation function
+                    adjustments_response = await calculate_adjustments(adjustment_request)
+                    
+                    response_message = {
+                        "type": "adjustments_update",
+                        "data": adjustments_response.dict()
+                    }
+                    logger.info(f"WebSocket: Sending adjustments response with {len(adjustments_response.adjustments)} suggestions")
+                    await websocket.send_text(json.dumps(response_message))
+                    logger.info("WebSocket: Adjustments response sent successfully")
+                except Exception as e:
+                    logger.error(f"Error calculating adjustments via WebSocket: {e}", exc_info=True)
+                    await websocket.send_text(json.dumps({
+                        "type": "adjustments_error",
                         "error": str(e)
                     }))
                         
@@ -1377,6 +1869,158 @@ def get_open_positions():
             "error": str(e),
             "positions": [],
             "total_positions": 0,
+            "timestamp": datetime.now().isoformat()
+        }
+
+@app.post("/calculate_adjustments", response_model=AdjustmentResponse)
+async def calculate_adjustments(request: AdjustmentRequest):
+    """
+    Calculate and rank adjustment options for an iron butterfly position.
+    
+    This endpoint analyzes the current positions and underlying price to determine
+    which side is being tested, then generates and ranks potential adjustment spreads.
+    """
+    try:
+        logger.info(f"Calculating adjustments for {len(request.positions)} positions at underlying price ${request.underlying_price}")
+        
+        # Step 1: Calculate current position payoff and breakeven points
+        strikes = [pos.strike_price for pos in request.positions if pos.asset_class == "us_option" and pos.strike_price]
+        if not strikes:
+            return AdjustmentResponse(
+                success=False,
+                adjustments=[],
+                current_breakeven_points=[],
+                tested_side="",
+                error="No option positions found with valid strike prices"
+            )
+        
+        min_strike = min(strikes)
+        max_strike = max(strikes)
+        price_range = list(range(int(min_strike - 10), int(max_strike + 11), 1))
+        
+        # Calculate current payoffs
+        current_payoffs = calculate_position_payoff(request.positions, price_range)
+        current_breakevens = find_breakeven_points(price_range, current_payoffs)
+        
+        logger.info(f"Current breakeven points: {current_breakevens}")
+        
+        # Step 2: Identify which side is being tested
+        tested_side = identify_tested_side(request.positions, request.underlying_price, current_breakevens)
+        logger.info(f"Tested side identified: {tested_side}")
+        
+        # Step 3: Get full options chain for the expiry
+        options_chain = get_full_options_chain(request.underlying_symbol, request.expiry_date)
+        if not options_chain:
+            return AdjustmentResponse(
+                success=False,
+                adjustments=[],
+                current_breakeven_points=current_breakevens,
+                tested_side=tested_side,
+                error="Could not fetch options chain data"
+            )
+        
+        logger.info(f"Fetched options chain with {len(options_chain)} contracts")
+        
+        # Step 4: Generate adjustment candidates
+        adjustment_candidates = generate_adjustment_candidates(options_chain, tested_side, request.underlying_price)
+        logger.info(f"Generated {len(adjustment_candidates)} adjustment candidates")
+        
+        # Step 5: Simulate and rank adjustments
+        ranked_adjustments = []
+        
+        for candidate in adjustment_candidates:
+            # Only use qty = 1 to ensure relatively prime leg ratios
+            qty = 1
+            try:
+                simulation = simulate_adjustment(request.positions, candidate, qty, request.underlying_price)
+                
+                # Calculate ranking score
+                ranking_score = calculate_ranking_score(
+                    simulation["profit_on_tested_side"],
+                    simulation["distance_to_untested_breakeven"],
+                    simulation["max_loss_untested_side"],
+                    candidate["net_premium"]
+                )
+                
+                # Create adjustment legs
+                adjustment_legs = []
+                for leg in candidate["legs"]:
+                    adjustment_legs.append(AdjustmentLeg(
+                        symbol=leg["symbol"],
+                        side=leg["side"],
+                        qty=qty,
+                        strike_price=leg["strike_price"],
+                        option_type=leg["option_type"],
+                        current_price=leg["current_price"]
+                    ))
+                
+                # Create adjustment option
+                adjustment_option = AdjustmentOption(
+                    legs=adjustment_legs,
+                    net_premium=candidate["net_premium"] * qty,
+                    adjustment_type=candidate["adjustment_type"],
+                    tested_side=tested_side,
+                    qty=qty,
+                    profit_on_tested_side=simulation["profit_on_tested_side"],
+                    distance_to_untested_breakeven=simulation["distance_to_untested_breakeven"],
+                    max_loss_untested_side=simulation["max_loss_untested_side"],
+                    ranking_score=ranking_score,
+                    simulated_payoff={
+                        "prices": simulation["price_range"],
+                        "payoffs": simulation["payoffs"]
+                    }
+                )
+                
+                ranked_adjustments.append(adjustment_option)
+                
+            except Exception as e:
+                logger.warning(f"Error simulating adjustment with qty {qty}: {e}")
+                continue
+        
+        # Step 6: Sort by ranking score (higher is better) and limit to top 10
+        ranked_adjustments.sort(key=lambda x: x.ranking_score, reverse=True)
+        top_adjustments = ranked_adjustments[:10]
+        
+        logger.info(f"Returning top {len(top_adjustments)} ranked adjustments")
+        
+        return AdjustmentResponse(
+            success=True,
+            adjustments=top_adjustments,
+            current_breakeven_points=current_breakevens,
+            tested_side=tested_side,
+            message=f"Found {len(top_adjustments)} adjustment options for {tested_side} side testing"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error calculating adjustments: {e}", exc_info=True)
+        return AdjustmentResponse(
+            success=False,
+            adjustments=[],
+            current_breakeven_points=[],
+            tested_side="",
+            error=str(e)
+        )
+
+@app.get("/full_options_chain")
+async def api_get_full_options_chain(symbol: str, expiry: str):
+    """
+    Retrieve the complete options chain (both calls and puts) for a given symbol and expiry.
+    """
+    try:
+        options_chain = get_full_options_chain(symbol, expiry)
+        return {
+            "success": True,
+            "options_chain": options_chain,
+            "total_contracts": len(options_chain),
+            "timestamp": datetime.now().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error fetching full options chain: {e}")
+        return {
+            "success": False,
+            "error": str(e),
+            "options_chain": [],
+            "total_contracts": 0,
             "timestamp": datetime.now().isoformat()
         }
 

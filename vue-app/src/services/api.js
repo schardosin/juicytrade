@@ -100,6 +100,20 @@ export const api = {
       throw error;
     }
   },
+
+  // Calculate adjustment suggestions
+  async calculateAdjustments(requestData) {
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/calculate_adjustments`,
+        requestData
+      );
+      return response.data;
+    } catch (error) {
+      console.error("Error calculating adjustments:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;

@@ -121,6 +121,14 @@ class WebSocketStreamingClient {
     this.callbacks.set("open_orders_update", callback);
   }
 
+  onAdjustmentsUpdate(callback) {
+    this.callbacks.set("adjustments_update", callback);
+  }
+
+  onAdjustmentsError(callback) {
+    this.callbacks.set("adjustments_error", callback);
+  }
+
   requestPositions() {
     if (this.isConnected && this.ws) {
       const message = {
@@ -146,7 +154,7 @@ class WebSocketStreamingClient {
   }
 
   requestOrders(statusFilter = "open", dateFilter = "today") {
-    if (this.isConnected && this.ws) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
       const message = {
         type: "get_orders",
         filter: statusFilter,
@@ -155,7 +163,20 @@ class WebSocketStreamingClient {
       console.log("Requesting orders via WebSocket:", message);
       this.ws.send(JSON.stringify(message));
     } else {
-      console.error("Cannot request orders: WebSocket not connected");
+      console.warn("WebSocket not connected, cannot request orders");
+    }
+  }
+
+  requestAdjustments(requestData) {
+    if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+      const message = {
+        type: "calculate_adjustments",
+        data: requestData,
+      };
+      console.log("Requesting adjustments via WebSocket:", message);
+      this.ws.send(JSON.stringify(message));
+    } else {
+      console.warn("WebSocket not connected, cannot request adjustments");
     }
   }
 
@@ -225,6 +246,23 @@ class WebSocketStreamingClient {
         const allOrdersErrorCallback = this.callbacks.get("open_orders_error");
         if (allOrdersErrorCallback) {
           allOrdersErrorCallback(message.error);
+        }
+        break;
+
+      case "adjustments_update":
+        console.log("Adjustments update received:", message);
+        const adjustmentsCallback = this.callbacks.get("adjustments_update");
+        if (adjustmentsCallback) {
+          adjustmentsCallback(message.data);
+        }
+        break;
+
+      case "adjustments_error":
+        console.error("Adjustments error received:", message);
+        const adjustmentsErrorCallback =
+          this.callbacks.get("adjustments_error");
+        if (adjustmentsErrorCallback) {
+          adjustmentsErrorCallback(message.error);
         }
         break;
 

@@ -389,6 +389,131 @@
             </template>
           </Card>
 
+          <!-- Adjustment Suggestions Card -->
+          <Card
+            v-if="hasOptionPositions && adjustmentSuggestions.length > 0"
+            class="adjustment-suggestions-card"
+          >
+            <template #title>
+              <div class="adjustment-header">
+                <span>Adjustment Suggestions</span>
+                <Button
+                  icon="pi pi-refresh"
+                  severity="secondary"
+                  size="small"
+                  @click="fetchAdjustmentSuggestions"
+                  :loading="loadingAdjustments"
+                  class="refresh-adjustments-btn"
+                />
+              </div>
+            </template>
+            <template #content>
+              <div class="adjustment-content">
+                <div class="adjustment-info">
+                  <div class="info-item">
+                    <strong>Tested Side:</strong>
+                    <Tag
+                      :value="adjustmentData.tested_side?.toUpperCase()"
+                      :severity="
+                        adjustmentData.tested_side === 'call'
+                          ? 'success'
+                          : 'info'
+                      "
+                      size="small"
+                    />
+                  </div>
+                  <div class="info-item">
+                    <strong>Current BE:</strong>
+                    <span
+                      v-if="adjustmentData.current_breakeven_points?.length > 0"
+                    >
+                      {{
+                        adjustmentData.current_breakeven_points
+                          .map((p) => "$" + p.toFixed(2))
+                          .join(", ")
+                      }}
+                    </span>
+                    <span v-else>None</span>
+                  </div>
+                </div>
+
+                <div class="adjustment-list">
+                  <div
+                    v-for="(adjustment, index) in adjustmentSuggestions.slice(
+                      0,
+                      5
+                    )"
+                    :key="index"
+                    class="adjustment-item"
+                    :class="{ selected: selectedAdjustment === index }"
+                    @click="selectAdjustment(index)"
+                  >
+                    <div class="adjustment-rank">#{{ index + 1 }}</div>
+                    <div class="adjustment-details">
+                      <div class="adjustment-type">
+                        <Tag
+                          :value="
+                            adjustment.adjustment_type
+                              .replace('_', ' ')
+                              .toUpperCase()
+                          "
+                          :severity="
+                            adjustment.adjustment_type === 'credit_spread'
+                              ? 'success'
+                              : 'warning'
+                          "
+                          size="small"
+                        />
+                        <span class="qty-badge">{{ adjustment.qty }}x</span>
+                        <span class="expiry-badge">{{
+                          formatExpiry(positionExpiry)
+                        }}</span>
+                      </div>
+                      <div class="adjustment-legs">
+                        <span
+                          v-for="(leg, legIndex) in adjustment.legs"
+                          :key="legIndex"
+                          class="leg-info"
+                        >
+                          {{ leg.side.toUpperCase() }} ${{
+                            leg.strike_price.toFixed(0)
+                          }}{{ leg.option_type.charAt(0).toUpperCase() }}
+                          <span v-if="legIndex < adjustment.legs.length - 1">
+                            /
+                          </span>
+                        </span>
+                      </div>
+                      <div class="adjustment-metrics">
+                        <span
+                          class="net-premium"
+                          :class="
+                            adjustment.net_premium >= 0 ? 'credit' : 'debit'
+                          "
+                        >
+                          ${{ Math.abs(adjustment.net_premium).toFixed(2) }}
+                          {{ adjustment.net_premium >= 0 ? "CR" : "DB" }}
+                        </span>
+                        <span class="ranking-score"
+                          >Score:
+                          {{ adjustment.ranking_score.toFixed(2) }}</span
+                        >
+                      </div>
+                    </div>
+                    <div class="adjustment-actions">
+                      <Button
+                        label="Apply"
+                        severity="success"
+                        size="small"
+                        @click.stop="applyAdjustment(adjustment)"
+                        class="apply-adjustment-btn"
+                      />
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </template>
+          </Card>
+
           <!-- Active Positions Table -->
           <Card class="positions-table-card">
             <template #title>
@@ -771,6 +896,12 @@ export default {
       { label: "All Time", value: "all" },
     ];
 
+    // Adjustment suggestions functionality
+    const adjustmentSuggestions = ref([]);
+    const adjustmentData = ref({});
+    const loadingAdjustments = ref(false);
+    const selectedAdjustment = ref(-1);
+
     // Computed properties
     const optionPositions = computed(() => {
       return positions.value.filter((pos) => pos.asset_class === "us_option");
@@ -816,15 +947,15 @@ export default {
     });
 
     const strikeRange = computed(() => {
-      if (positionStrikes.value.length === 0) return { min: 0, max: 0 };
+      if (!underlyingPrice.value) return { min: 0, max: 0 };
 
-      const min = Math.min(...positionStrikes.value);
-      const max = Math.max(...positionStrikes.value);
+      // Use at-the-money strike as the center point
+      const atmStrike = Math.round(underlyingPrice.value);
 
-      // Add 5 strikes above and below the extreme positions
+      // Add 10 strikes above and below the at-the-money strike
       return {
-        min: min - 5,
-        max: max + 5,
+        min: atmStrike - 10,
+        max: atmStrike + 10,
       };
     });
 
@@ -1198,8 +1329,8 @@ export default {
     };
 
     const updatePositionPrices = () => {
-      // Update position prices with streaming data
-      positions.value.forEach((pos) => {
+      // Create a new array to trigger reactivity
+      const updatedPositions = positions.value.map((pos) => {
         if (streamingPrices.value[pos.symbol]) {
           const priceData = streamingPrices.value[pos.symbol];
           let newPrice;
@@ -1213,21 +1344,24 @@ export default {
             newPrice = priceData;
           } else {
             // Skip if we can't determine the price
-            return;
+            return pos;
           }
 
-          // Update current price
-          pos.current_price = newPrice;
+          // Only update if price actually changed to avoid unnecessary updates
+          if (Math.abs(pos.current_price - newPrice) < 0.001) {
+            return pos;
+          }
 
           // Recalculate market value based on position side
           const multiplier = pos.asset_class === "us_option" ? 100 : 1;
 
+          let market_value;
           if (pos.side === "long") {
             // Long position: positive market value
-            pos.market_value = newPrice * Math.abs(pos.qty) * multiplier;
+            market_value = newPrice * Math.abs(pos.qty) * multiplier;
           } else {
             // Short position: negative market value (you owe this amount)
-            pos.market_value = -newPrice * Math.abs(pos.qty) * multiplier;
+            market_value = -newPrice * Math.abs(pos.qty) * multiplier;
           }
 
           // Recalculate unrealized P&L
@@ -1236,13 +1370,24 @@ export default {
           // For P&L calculation:
           // Long: Current Market Value - Cost Basis
           // Short: Current Market Value - Cost Basis (where cost basis is negative for short)
-          pos.unrealized_pl = pos.market_value - costBasis;
-          pos.unrealized_plpc =
-            Math.abs(costBasis) !== 0
-              ? pos.unrealized_pl / Math.abs(costBasis)
-              : 0;
+          const unrealized_pl = market_value - costBasis;
+          const unrealized_plpc =
+            Math.abs(costBasis) !== 0 ? unrealized_pl / Math.abs(costBasis) : 0;
+
+          // Return new position object to trigger reactivity
+          return {
+            ...pos,
+            current_price: newPrice,
+            market_value: market_value,
+            unrealized_pl: unrealized_pl,
+            unrealized_plpc: unrealized_plpc,
+          };
         }
+        return pos;
       });
+
+      // Update positions array to trigger reactivity
+      positions.value = updatedPositions;
 
       // Regenerate chart with new prices
       if (hasOptionPositions.value) {
@@ -1459,6 +1604,20 @@ export default {
 
     const formatExpiry = (dateString) => {
       if (!dateString) return "";
+      // Handle date string parsing to avoid timezone issues
+      // If dateString is in format "2025-07-08", parse it directly
+      const parts = dateString.split("-");
+      if (parts.length === 3) {
+        const year = parseInt(parts[0]);
+        const month = parseInt(parts[1]) - 1; // Month is 0-indexed
+        const day = parseInt(parts[2]);
+        const date = new Date(year, month, day);
+        return date.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        });
+      }
+      // Fallback to regular parsing
       const date = new Date(dateString);
       return date.toLocaleDateString("en-US", {
         month: "short",
@@ -1721,6 +1880,90 @@ export default {
       );
     };
 
+    // Adjustment suggestions methods
+    const fetchAdjustmentSuggestions = async () => {
+      if (!hasOptionPositions.value || !underlyingPrice.value) {
+        console.warn(
+          "Cannot fetch adjustments: missing positions or underlying price"
+        );
+        return;
+      }
+
+      loadingAdjustments.value = true;
+
+      try {
+        console.log("Requesting adjustment suggestions via WebSocket...");
+
+        // Prepare positions data for WebSocket
+        const positionsData = positions.value.map((pos) => ({
+          symbol: pos.symbol,
+          qty: pos.qty,
+          side: pos.side,
+          strike_price: pos.strike_price,
+          option_type: pos.option_type,
+          expiry_date: pos.expiry_date,
+          current_price: pos.current_price,
+          avg_entry_price: pos.avg_entry_price,
+          cost_basis: pos.cost_basis,
+          market_value: pos.market_value,
+          unrealized_pl: pos.unrealized_pl,
+          underlying_symbol: pos.underlying_symbol,
+          asset_class: pos.asset_class,
+        }));
+
+        const requestData = {
+          positions: positionsData,
+          underlying_price: underlyingPrice.value,
+          underlying_symbol: underlyingSymbol.value,
+          expiry_date: positionExpiry.value,
+        };
+
+        console.log("Sending adjustment request via WebSocket:", requestData);
+
+        // Send request via WebSocket
+        webSocketClient.requestAdjustments(requestData);
+      } catch (error) {
+        console.error("Error requesting adjustment suggestions:", error);
+        adjustmentSuggestions.value = [];
+        adjustmentData.value = {};
+        loadingAdjustments.value = false;
+      }
+    };
+
+    const selectAdjustment = (index) => {
+      selectedAdjustment.value =
+        selectedAdjustment.value === index ? -1 : index;
+    };
+
+    const applyAdjustment = (adjustment) => {
+      console.log("Applying adjustment:", adjustment);
+
+      // Clear any existing selections
+      clearAllSelections();
+
+      // Apply each leg of the adjustment
+      adjustment.legs.forEach((leg) => {
+        // Find the option in the options chain
+        const option = optionsChain.value.find(
+          (opt) => opt.symbol === leg.symbol
+        );
+        if (option) {
+          // Add to selected options
+          selectedOptions.value.push(leg.symbol);
+          selectedOptionsMap.value[leg.symbol] = leg.side;
+          orderQuantities.value[leg.symbol] = leg.qty;
+          orderPrices.value[leg.symbol] = leg.current_price;
+        }
+      });
+
+      // Set the combined order price to the adjustment's net premium
+      combinedOrderPrice.value = -adjustment.net_premium; // Invert for limit price display
+
+      console.log(
+        `Applied ${adjustment.legs.length}-leg adjustment with ${adjustment.qty}x quantity`
+      );
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       // Set up open orders handler ONCE during component initialization
@@ -1731,6 +1974,36 @@ export default {
           openOrders.value = [...(ordersData.orders || [])];
           console.log("Open orders set to:", openOrders.value.length, "orders");
         }
+      });
+
+      // Set up adjustment suggestions handlers
+      webSocketClient.onAdjustmentsUpdate((adjustmentsData) => {
+        console.log("Adjustments received via WebSocket:", adjustmentsData);
+        if (adjustmentsData.success) {
+          adjustmentSuggestions.value = adjustmentsData.adjustments || [];
+          adjustmentData.value = {
+            tested_side: adjustmentsData.tested_side,
+            current_breakeven_points:
+              adjustmentsData.current_breakeven_points || [],
+          };
+
+          console.log(
+            `Received ${adjustmentSuggestions.value.length} adjustment suggestions via WebSocket`
+          );
+          console.log("Tested side:", adjustmentsData.tested_side);
+        } else {
+          console.error("Failed to fetch adjustments:", adjustmentsData.error);
+          adjustmentSuggestions.value = [];
+          adjustmentData.value = {};
+        }
+        loadingAdjustments.value = false;
+      });
+
+      webSocketClient.onAdjustmentsError((errorMsg) => {
+        console.error("Adjustments error via WebSocket:", errorMsg);
+        adjustmentSuggestions.value = [];
+        adjustmentData.value = {};
+        loadingAdjustments.value = false;
       });
 
       await fetchPositions();
@@ -1788,6 +2061,44 @@ export default {
           await fetchOptionsChain();
         }
       }
+    );
+
+    // Watch for positions and underlying price to fetch adjustment suggestions
+    watch(
+      [hasOptionPositions, underlyingPrice],
+      async ([hasPositions, price]) => {
+        if (hasPositions && price && price > 0) {
+          // Delay to ensure options chain is loaded first
+          setTimeout(() => {
+            fetchAdjustmentSuggestions();
+          }, 1000);
+        }
+      }
+    );
+
+    // Watch for streaming price updates to refresh adjustment suggestions
+    let adjustmentRefreshTimer = null;
+    watch(
+      streamingPrices,
+      () => {
+        if (
+          hasOptionPositions.value &&
+          adjustmentSuggestions.value.length > 0
+        ) {
+          // Debounce adjustment suggestions refresh to avoid too frequent updates
+          if (adjustmentRefreshTimer) {
+            clearTimeout(adjustmentRefreshTimer);
+          }
+
+          adjustmentRefreshTimer = setTimeout(() => {
+            console.log(
+              "Refreshing adjustment suggestions due to price updates"
+            );
+            fetchAdjustmentSuggestions();
+          }, 2000); // Refresh every 2 seconds when prices change
+        }
+      },
+      { deep: true }
     );
 
     onUnmounted(async () => {
@@ -1894,6 +2205,15 @@ export default {
       orderDateFilterOptions,
       getOrdersTitle,
       onOrderFilterChange,
+
+      // Adjustment suggestions
+      adjustmentSuggestions,
+      adjustmentData,
+      loadingAdjustments,
+      selectedAdjustment,
+      fetchAdjustmentSuggestions,
+      selectAdjustment,
+      applyAdjustment,
     };
   },
 };
@@ -3084,5 +3404,169 @@ export default {
 .compact-review-btn:disabled {
   background: #6c757d !important;
   color: #adb5bd !important;
+}
+
+/* Adjustment Suggestions Styles */
+.adjustment-suggestions-card {
+  flex: 0 0 auto;
+  margin-bottom: 10px;
+}
+
+.adjustment-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  width: 100%;
+}
+
+.refresh-adjustments-btn {
+  color: #6c757d !important;
+}
+
+.adjustment-content {
+  padding: 0;
+}
+
+.adjustment-info {
+  display: flex;
+  gap: 15px;
+  margin-bottom: 15px;
+  padding: 10px;
+  background: #f8f9fa;
+  border-radius: 6px;
+}
+
+.info-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.85rem;
+}
+
+.adjustment-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.adjustment-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e9ecef;
+  border-radius: 6px;
+  background: #f8f9fa;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.adjustment-item:hover {
+  background: #e9ecef;
+  border-color: #dee2e6;
+}
+
+.adjustment-item.selected {
+  background: #e3f2fd;
+  border-color: #2196f3;
+}
+
+.adjustment-rank {
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #495057;
+  min-width: 25px;
+  text-align: center;
+}
+
+.adjustment-details {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.adjustment-type {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.qty-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #6c757d;
+  color: white;
+}
+
+.expiry-badge {
+  font-size: 0.7rem;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+  background: #17a2b8;
+  color: white;
+  margin-left: 4px;
+}
+
+.adjustment-legs {
+  font-size: 0.8rem;
+  color: #6c757d;
+  font-family: monospace;
+}
+
+.leg-info {
+  white-space: nowrap;
+}
+
+.adjustment-metrics {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 0.75rem;
+}
+
+.net-premium {
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.net-premium.credit {
+  color: #28a745;
+  background: rgba(40, 167, 69, 0.1);
+  border: 1px solid #28a745;
+}
+
+.net-premium.debit {
+  color: #dc3545;
+  background: rgba(220, 53, 69, 0.1);
+  border: 1px solid #dc3545;
+}
+
+.ranking-score {
+  color: #6c757d;
+  font-weight: 500;
+}
+
+.adjustment-actions {
+  display: flex;
+  align-items: center;
+}
+
+.apply-adjustment-btn {
+  background: #28a745 !important;
+  border: none !important;
+  color: #fff !important;
+  font-weight: 600 !important;
+  padding: 4px 12px !important;
+  border-radius: 4px !important;
+  font-size: 0.8rem !important;
+}
+
+.apply-adjustment-btn:hover:not(:disabled) {
+  background: #218838 !important;
 }
 </style>
