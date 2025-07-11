@@ -1,0 +1,247 @@
+from abc import ABC, abstractmethod
+from typing import List, Dict, Optional, Any, Set
+from datetime import datetime
+import asyncio
+import logging
+
+from ..models import (
+    StockQuote, OptionContract, Position, Order, 
+    ExpirationDate, MarketData, ApiResponse
+)
+
+logger = logging.getLogger(__name__)
+
+class BaseProvider(ABC):
+    """
+    Abstract Base Class for trading data providers.
+    
+    This interface defines the contract that all trading providers must implement.
+    It ensures consistency across different providers (Alpaca, Public, etc.).
+    """
+    
+    def __init__(self, name: str):
+        self.name = name
+        self.is_connected = False
+        self._subscribed_symbols: Set[str] = set()
+        
+    # === Market Data Methods ===
+    
+    @abstractmethod
+    async def get_stock_quote(self, symbol: str) -> Optional[StockQuote]:
+        """
+        Get the latest stock quote for a symbol.
+        
+        Args:
+            symbol: Stock symbol (e.g., "SPY")
+            
+        Returns:
+            StockQuote object or None if not found
+        """
+        pass
+    
+    @abstractmethod
+    async def get_stock_quotes(self, symbols: List[str]) -> Dict[str, StockQuote]:
+        """
+        Get stock quotes for multiple symbols.
+        
+        Args:
+            symbols: List of stock symbols
+            
+        Returns:
+            Dictionary mapping symbols to StockQuote objects
+        """
+        pass
+    
+    @abstractmethod
+    async def get_expiration_dates(self, symbol: str) -> List[str]:
+        """
+        Get available expiration dates for options on a symbol.
+        
+        Args:
+            symbol: Underlying symbol (e.g., "SPY")
+            
+        Returns:
+            List of expiration dates in YYYY-MM-DD format
+        """
+        pass
+    
+    @abstractmethod
+    async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
+        """
+        Get options chain for a symbol and expiration date.
+        
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date in YYYY-MM-DD format
+            option_type: Optional filter for "call" or "put"
+            
+        Returns:
+            List of OptionContract objects
+        """
+        pass
+    
+    @abstractmethod
+    async def get_next_market_date(self) -> str:
+        """
+        Get the next trading date.
+        
+        Returns:
+            Next market date in YYYY-MM-DD format
+        """
+        pass
+    
+    # === Account & Portfolio Methods ===
+    
+    @abstractmethod
+    async def get_positions(self) -> List[Position]:
+        """
+        Get all current positions.
+        
+        Returns:
+            List of Position objects
+        """
+        pass
+    
+    @abstractmethod
+    async def get_orders(self, status: str = "open") -> List[Order]:
+        """
+        Get orders with optional status filter.
+        
+        Args:
+            status: Order status filter ("open", "filled", "canceled", "all")
+            
+        Returns:
+            List of Order objects
+        """
+        pass
+    
+    # === Order Management Methods ===
+    
+    @abstractmethod
+    async def place_order(self, order_data: Dict[str, Any]) -> Order:
+        """
+        Place a trading order.
+        
+        Args:
+            order_data: Order parameters
+            
+        Returns:
+            Order object representing the placed order
+        """
+        pass
+    
+    @abstractmethod
+    async def cancel_order(self, order_id: str) -> bool:
+        """
+        Cancel an existing order.
+        
+        Args:
+            order_id: ID of the order to cancel
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        pass
+    
+    # === Streaming Methods ===
+    
+    @abstractmethod
+    async def connect_streaming(self) -> bool:
+        """
+        Connect to the provider's streaming service.
+        
+        Returns:
+            True if connection successful, False otherwise
+        """
+        pass
+    
+    @abstractmethod
+    async def disconnect_streaming(self) -> bool:
+        """
+        Disconnect from the provider's streaming service.
+        
+        Returns:
+            True if disconnection successful, False otherwise
+        """
+        pass
+    
+    @abstractmethod
+    async def subscribe_to_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
+        """
+        Subscribe to real-time data for symbols.
+        
+        Args:
+            symbols: List of symbols to subscribe to
+            data_types: Types of data to subscribe to (e.g., ["quotes", "trades"])
+            
+        Returns:
+            True if subscription successful, False otherwise
+        """
+        pass
+    
+    @abstractmethod
+    async def unsubscribe_from_symbols(self, symbols: List[str]) -> bool:
+        """
+        Unsubscribe from real-time data for symbols.
+        
+        Args:
+            symbols: List of symbols to unsubscribe from
+            
+        Returns:
+            True if unsubscription successful, False otherwise
+        """
+        pass
+    
+    @abstractmethod
+    async def get_streaming_data(self) -> Optional[MarketData]:
+        """
+        Get the next piece of streaming market data.
+        
+        Returns:
+            MarketData object or None if no data available
+        """
+        pass
+    
+    # === Utility Methods ===
+    
+    def get_subscribed_symbols(self) -> Set[str]:
+        """Get currently subscribed symbols."""
+        return self._subscribed_symbols.copy()
+    
+    def is_streaming_connected(self) -> bool:
+        """Check if streaming connection is active."""
+        return self.is_connected
+    
+    async def health_check(self) -> Dict[str, Any]:
+        """
+        Perform a health check on the provider.
+        
+        Returns:
+            Dictionary with health status information
+        """
+        return {
+            "provider": self.name,
+            "connected": self.is_connected,
+            "subscribed_symbols": len(self._subscribed_symbols),
+            "timestamp": datetime.now().isoformat()
+        }
+    
+    # === Helper Methods for Subclasses ===
+    
+    def _create_api_response(self, success: bool, data: Any = None, error: str = None, message: str = None) -> ApiResponse:
+        """Helper method to create standardized API responses."""
+        return ApiResponse(
+            success=success,
+            data=data,
+            error=error,
+            message=message,
+            timestamp=datetime.now().isoformat()
+        )
+    
+    def _log_error(self, operation: str, error: Exception):
+        """Helper method for consistent error logging."""
+        logger.error(f"{self.name} provider error in {operation}: {str(error)}", exc_info=True)
+    
+    def _log_info(self, message: str):
+        """Helper method for consistent info logging."""
+        logger.info(f"{self.name} provider: {message}")
