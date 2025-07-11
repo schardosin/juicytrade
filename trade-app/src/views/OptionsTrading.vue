@@ -100,7 +100,7 @@
             @click="toggleRightPanel"
             :title="isRightPanelExpanded ? 'Collapse Panel' : 'Expand Panel'"
           >
-            {{ isRightPanelExpanded ? "◀" : "▶" }}
+            {{ isRightPanelExpanded ? "▶" : "◀" }}
           </button>
         </div>
 
