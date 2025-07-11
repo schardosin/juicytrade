@@ -91,7 +91,19 @@
       </div>
 
       <!-- Right Panel -->
-      <div class="right-panel">
+      <div class="right-panel" :class="{ expanded: isRightPanelExpanded }">
+        <!-- Panel Header with Expand/Collapse Button -->
+        <div class="panel-header">
+          <h3 class="panel-title">Analysis & Trading</h3>
+          <button
+            class="expand-toggle-btn"
+            @click="toggleRightPanel"
+            :title="isRightPanelExpanded ? 'Collapse Panel' : 'Expand Panel'"
+          >
+            {{ isRightPanelExpanded ? "◀" : "▶" }}
+          </button>
+        </div>
+
         <!-- Chart Section -->
         <div class="chart-section">
           <PayoffChart
@@ -100,7 +112,7 @@
             :underlyingPrice="currentPrice"
             title="Position P&L"
             :showInfo="false"
-            height="300px"
+            :height="isRightPanelExpanded ? '400px' : '300px'"
             :symbol="currentSymbol"
             :isLivePrice="isLivePrice"
           />
@@ -220,6 +232,7 @@ export default {
     const selectedOptions = ref([]);
     const chartData = ref(null);
     const selectedTradeMode = ref("options");
+    const isRightPanelExpanded = ref(false);
 
     // Trade modes
     const tradeModes = [
@@ -470,6 +483,10 @@ export default {
       initializeOrder(orderData);
     };
 
+    const toggleRightPanel = () => {
+      isRightPanelExpanded.value = !isRightPanelExpanded.value;
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       await fetchSymbolData(currentSymbol.value);
@@ -503,6 +520,7 @@ export default {
       chartData,
       selectedTradeMode,
       tradeModes,
+      isRightPanelExpanded,
 
       // Computed
       priceChangeClass,
@@ -515,6 +533,7 @@ export default {
       onOptionDeselected,
       clearAllSelections,
       onOrderPlaced,
+      toggleRightPanel,
 
       // Order management
       showOrderConfirmation,
@@ -731,6 +750,55 @@ export default {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  transition: width 0.3s ease;
+}
+
+.right-panel.expanded {
+  width: 700px;
+}
+
+.panel-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background-color: #3a3a3a;
+  border-bottom: 1px solid #444444;
+}
+
+.panel-title {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.expand-toggle-btn {
+  background: #444444;
+  border: 1px solid #555555;
+  color: #ffffff;
+  cursor: pointer;
+  padding: 6px 8px;
+  border-radius: 4px;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+  font-size: 16px;
+  font-weight: bold;
+}
+
+.expand-toggle-btn:hover {
+  background-color: #007bff;
+  border-color: #007bff;
+  color: #ffffff;
+  transform: scale(1.05);
+}
+
+.expand-toggle-btn:active {
+  transform: scale(0.95);
 }
 
 .chart-section {
