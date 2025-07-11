@@ -36,7 +36,7 @@ export default {
     // Reactive data
     const activeItem = ref("trade");
 
-    // Navigation items matching the Tastytrade layout
+    // Navigation items matching the JuicyTrade layout
     const navItems = [
       {
         id: "positions",

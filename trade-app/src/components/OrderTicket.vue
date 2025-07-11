@@ -449,11 +449,12 @@ export default {
 .option-controls {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
+  flex-shrink: 0;
 }
 
 .quantity-input {
-  width: 60px;
+  width: 65px;
 }
 
 .order-summary {
@@ -632,6 +633,7 @@ export default {
   border: none;
   color: #ffffff;
   text-align: center;
+  width: 65px;
 }
 
 :deep(.p-inputnumber-button) {

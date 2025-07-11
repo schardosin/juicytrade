@@ -3,7 +3,7 @@
     <!-- Logo Section -->
     <div class="logo-section">
       <div class="logo">
-        <span class="logo-text">tastytrade</span>
+        <span class="logo-text">juicytrade</span>
       </div>
     </div>
 

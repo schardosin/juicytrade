@@ -1,241 +1,199 @@
 <template>
-  <Dialog
-    :visible="visible"
-    modal
-    header="Order Confirmation"
-    :style="{ width: '50rem' }"
-    @show="initializeOrderPrice"
-    @hide="$emit('hide')"
-    @update:visible="$emit('hide')"
-  >
-    <div v-if="orderData" class="order-confirmation">
-      <!-- Order Summary -->
-      <div class="order-summary">
-        <!-- Basic Information - Two Column Layout -->
-        <div class="summary-grid">
-          <div class="summary-item">
-            <strong>Strategy:</strong> {{ orderData.strategyType }}
-          </div>
-          <div class="summary-item">
-            <strong>Symbol:</strong> {{ orderData.symbol }}
-          </div>
-          <div class="summary-item">
-            <strong>Expiry:</strong> {{ formatExpiry(orderData.expiry) }}
-          </div>
-          <div v-if="orderData.underlyingPrice" class="summary-item">
-            <strong>Underlying Price:</strong>
-            ${{ orderData.underlyingPrice.toFixed(2) }}
-          </div>
-          <div
-            v-if="orderData.currentOptionsPrice !== undefined"
-            class="summary-item"
+  <!-- Bottom Sheet Overlay -->
+  <div v-if="visible" class="bottom-sheet-overlay" @click="handleCancel">
+    <!-- Bottom Sheet Container -->
+    <div class="bottom-sheet" :class="{ 'slide-up': visible }" @click.stop>
+      <!-- Top Bar with Trade Info -->
+      <div class="trade-header">
+        <div class="trade-title">
+          <span class="trade-icon">⚡</span>
+          <span>Trade</span>
+          <span class="quick-analysis">📊 Quick Analysis</span>
+        </div>
+        <div class="trade-actions">
+          <button class="clear-trade-btn" @click="handleCancel">
+            🗑️ Clear Trade
+          </button>
+        </div>
+      </div>
+
+      <!-- Trade Stats Bar -->
+      <div class="trade-stats">
+        <div class="stat-item">
+          <span class="stat-label">POP</span>
+          <span class="stat-value">59%</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">EXT</span>
+          <span class="stat-value">660</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">P50</span>
+          <span class="stat-value">-</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Delta</span>
+          <span class="stat-value">{{ orderData?.netDelta || "9.32" }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Theta</span>
+          <span class="stat-value negative">{{
+            orderData?.netTheta || "-359.683"
+          }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Max Profit</span>
+          <span class="stat-value positive">{{
+            orderData?.maxReward || "660"
+          }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">Max Loss</span>
+          <span class="stat-value negative">{{
+            orderData?.maxRisk || "-340"
+          }}</span>
+        </div>
+        <div class="stat-item">
+          <span class="stat-label">BP Eff.</span>
+          <span class="stat-value"
+            >340.00 <span class="stat-unit">db</span></span
           >
-            <strong>Options Price:</strong>
-            ${{ orderData.currentOptionsPrice.toFixed(2) }}
+        </div>
+      </div>
+
+      <!-- Main Content -->
+      <div class="sheet-content">
+        <!-- Left Side - Account & Order Details -->
+        <div class="left-section">
+          <!-- Account Section -->
+          <div class="account-section">
+            <h3>Account</h3>
+            <div class="account-name">
+              {{
+                orderData?.accountName ||
+                "Joint Tenants with Rights of Survivorship"
+              }}
+            </div>
           </div>
-          <div
-            v-if="orderData.calculatedOrderPrice !== undefined"
-            class="summary-item"
-          >
-            <strong>Calculated Order Price:</strong>
-            ${{ orderData.calculatedOrderPrice.toFixed(2) }}
+
+          <!-- Order Details -->
+          <div class="order-details-section">
+            <h3>Order Details</h3>
+            <div class="order-legs">
+              <div
+                v-for="(leg, index) in formattedLegs"
+                :key="index"
+                class="order-leg"
+              >
+                <div class="leg-quantity">
+                  {{ leg.quantity > 0 ? leg.quantity : leg.quantity }}
+                </div>
+                <div class="leg-date">{{ leg.date }}</div>
+                <div class="leg-details">{{ leg.strike }}</div>
+                <div class="leg-type">{{ leg.type.charAt(0) }}</div>
+                <div class="leg-action" :class="leg.action.toLowerCase()">
+                  {{ leg.action.toUpperCase() }}
+                </div>
+                <div class="leg-price">${{ leg.priceValue }}</div>
+              </div>
+            </div>
           </div>
         </div>
 
-        <!-- Trade Management specific information -->
-        <div
-          v-if="
-            orderData.currentPositionPL !== undefined ||
-            orderData.adjustmentCost !== undefined ||
-            orderData.isClosingOrder
-          "
-          class="summary-section"
+        <!-- Right Side - Confirmation Details -->
+        <div class="right-section">
+          <!-- Confirm Title -->
+          <div class="confirm-section">
+            <h2 class="confirm-title">
+              Confirm <span class="strategy-name">{{ getStrategyName() }}</span>
+            </h2>
+
+            <!-- Trade Details Grid -->
+            <div class="trade-details-grid">
+              <div class="detail-row">
+                <span class="detail-label">Stock BP</span>
+                <span class="detail-value"
+                  >${{
+                    orderData?.underlyingPrice?.toFixed(2) || "441.50"
+                  }}</span
+                >
+                <span class="detail-label">Option BP</span>
+                <span class="detail-value"
+                  >${{
+                    orderData?.underlyingPrice?.toFixed(2) || "441.50"
+                  }}</span
+                >
+              </div>
+
+              <div class="detail-row">
+                <span class="detail-label">Type</span>
+                <span class="detail-value">{{
+                  orderData?.orderType || "Limit"
+                }}</span>
+                <span class="detail-label">Net Credit @</span>
+                <span class="detail-value positive">{{ getNetCredit() }}</span>
+              </div>
+
+              <div class="detail-row">
+                <span class="detail-label">Time in Force</span>
+                <span class="detail-value">{{
+                  orderData?.timeInForce || "Day"
+                }}</span>
+              </div>
+
+              <div class="detail-row">
+                <span class="detail-label">Estimated Trade Cost</span>
+                <span class="detail-value">{{ getEstimatedCost() }}</span>
+              </div>
+
+              <div class="detail-row">
+                <span class="detail-label">Comm. + Est. Fees</span>
+                <span class="detail-value"
+                  >2.00 + 1.56 <span class="detail-unit">db</span></span
+                >
+                <span class="detail-label">Estimated Total</span>
+                <span class="detail-value">{{ getEstimatedTotal() }}</span>
+              </div>
+
+              <div class="detail-row">
+                <span class="detail-label">Estimated BP Effect</span>
+                <span class="detail-value"
+                  >Reduced by
+                  <span class="positive">${{ getBPEffect() }}</span></span
+                >
+              </div>
+            </div>
+          </div>
+
+          <!-- Warning Message -->
+          <div class="warning-message">
+            ⚠️ Your order will begin working during next valid session.
+          </div>
+        </div>
+      </div>
+
+      <!-- Bottom Action Buttons -->
+      <div class="action-buttons">
+        <button class="edit-btn" @click="handleEdit">✏️ Edit</button>
+        <button
+          class="submit-btn"
+          @click="handleConfirm"
+          :disabled="!canConfirm || loading"
         >
-          <div class="summary-grid">
-            <div
-              v-if="orderData.currentPositionPL !== undefined"
-              class="summary-item"
-            >
-              <strong>Current Position P&L:</strong>
-              <span
-                :class="orderData.currentPositionPL >= 0 ? 'profit' : 'loss'"
-              >
-                ${{ orderData.currentPositionPL.toFixed(2) }}
-              </span>
-            </div>
-            <div
-              v-if="orderData.adjustmentCost !== undefined"
-              class="summary-item"
-            >
-              <strong>Adjustment Cost:</strong>
-              <span
-                :class="
-                  orderData.adjustmentType === 'Credit' ? 'profit' : 'loss'
-                "
-              >
-                ${{ Math.abs(orderData.adjustmentCost).toFixed(2) }}
-                {{ orderData.adjustmentType }}
-              </span>
-            </div>
-            <div
-              v-if="orderData.estimatedNewPL !== undefined"
-              class="summary-item"
-            >
-              <strong>Estimated New P&L:</strong>
-              <span :class="orderData.estimatedNewPL >= 0 ? 'profit' : 'loss'">
-                ${{ orderData.estimatedNewPL.toFixed(2) }}
-              </span>
-            </div>
-            <div
-              v-if="orderData.totalContracts !== undefined"
-              class="summary-item"
-            >
-              <strong>Total Contracts:</strong> {{ orderData.totalContracts }}
-            </div>
-            <div
-              v-if="orderData.positionCount !== undefined"
-              class="summary-item"
-            >
-              <strong>Positions Affected:</strong> {{ orderData.positionCount }}
-            </div>
-
-            <!-- Position Close specific information -->
-            <div
-              v-if="
-                orderData.isClosingOrder &&
-                orderData.estimatedProceeds !== undefined
-              "
-              class="summary-item"
-            >
-              <strong>Estimated Proceeds:</strong>
-              <span
-                :class="orderData.closeType === 'Credit' ? 'profit' : 'loss'"
-              >
-                ${{ orderData.estimatedProceeds.toFixed(2) }}
-                {{ orderData.closeType }}
-              </span>
-            </div>
-            <div
-              v-if="
-                orderData.isClosingOrder &&
-                orderData.totalPLImpact !== undefined
-              "
-              class="summary-item"
-            >
-              <strong>Total P&L Impact:</strong>
-              <span :class="orderData.totalPLImpact >= 0 ? 'profit' : 'loss'">
-                ${{ orderData.totalPLImpact.toFixed(2) }}
-              </span>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Editable Order Price -->
-      <div class="order-price-section">
-        <h4>Order Price</h4>
-        <div class="field">
-          <label for="orderPrice">Your Order Price:</label>
-          <InputNumber
-            id="orderPrice"
-            v-model="editableOrderPrice"
-            :min="-10"
-            :max="10"
-            :step="0.01"
-            :minFractionDigits="2"
-            :maxFractionDigits="2"
-            showButtons
-            @input="updateCalculations"
-          />
-          <div v-if="calculatedSummary" class="net-type-info">
-            <strong>Net Type:</strong>
-            <span :class="calculatedSummary.netCredit ? 'credit' : 'debit'">
-              {{ calculatedSummary.netCredit ? "Credit" : "Debit" }}
-            </span>
-          </div>
-        </div>
-      </div>
-
-      <!-- Updated calculations based on manual price -->
-      <div v-if="calculatedSummary" class="order-summary">
-        <div class="summary-item">
-          <strong>Max Profit:</strong> ${{
-            calculatedSummary.maxProfit.toFixed(2)
-          }}
-        </div>
-        <div class="summary-item">
-          <strong>Max Loss:</strong> ${{ calculatedSummary.maxLoss.toFixed(2) }}
-        </div>
-      </div>
-
-      <!-- Legs Table -->
-      <h4>Legs to be Traded:</h4>
-      <DataTable :value="formattedLegs" class="p-datatable-sm">
-        <Column field="action" header="Action">
-          <template #body="slotProps">
-            <Tag
-              :value="slotProps.data.action"
-              :severity="slotProps.data.action === 'Buy' ? 'success' : 'danger'"
-            />
-          </template>
-        </Column>
-        <Column field="symbol" header="Symbol">
-          <template #body="slotProps">
-            <span class="symbol-cell">{{ slotProps.data.symbol }}</span>
-          </template>
-        </Column>
-        <Column field="date" header="Date"></Column>
-        <Column field="type" header="Type">
-          <template #body="slotProps">
-            <Tag
-              :value="slotProps.data.type"
-              :severity="slotProps.data.type === 'Call' ? 'success' : 'info'"
-            />
-          </template>
-        </Column>
-        <Column field="strike" header="Strike"></Column>
-        <Column field="price" header="Price"></Column>
-        <Column field="quantity" header="Qty"></Column>
-      </DataTable>
-
-      <!-- Validation Errors -->
-      <div v-if="validationErrors.length > 0" class="validation-errors">
-        <Message severity="error" :closable="false">
-          <div>
-            <strong>Please fix the following errors:</strong>
-            <ul>
-              <li v-for="error in validationErrors" :key="error">
-                {{ error }}
-              </li>
-            </ul>
-          </div>
-        </Message>
+          <span v-if="loading">⏳</span>
+          <span v-else>📤</span>
+          {{ loading ? "Submitting..." : "Submit" }}
+        </button>
       </div>
     </div>
-
-    <template #footer>
-      <Button label="Cancel" @click="handleCancel" severity="secondary" />
-      <Button
-        label="Confirm Order"
-        @click="handleConfirm"
-        :loading="loading"
-        :disabled="!canConfirm"
-        severity="success"
-      />
-    </template>
-  </Dialog>
+  </div>
 </template>
 
 <script>
 import { ref, computed, watch } from "vue";
-import Tag from "primevue/tag";
-import orderService from "../services/orderService";
 
 export default {
   name: "OrderConfirmationDialog",
-  components: {
-    Tag,
-  },
   props: {
     visible: {
       type: Boolean,
@@ -253,36 +211,6 @@ export default {
   emits: ["hide", "confirm", "cancel"],
   setup(props, { emit }) {
     const editableOrderPrice = ref(0);
-    const calculatedSummary = ref(null);
-    const validationErrors = ref([]);
-
-    // Initialize order price when dialog opens
-    const initializeOrderPrice = () => {
-      if (props.orderData) {
-        editableOrderPrice.value =
-          props.orderData.orderPrice ||
-          props.orderData.calculatedOrderPrice ||
-          0;
-        updateCalculations();
-      }
-    };
-
-    // Update calculations when price changes
-    const updateCalculations = () => {
-      if (!props.orderData) return;
-
-      const orderDataWithPrice = {
-        ...props.orderData,
-        orderPrice: editableOrderPrice.value,
-      };
-
-      calculatedSummary.value =
-        orderService.calculateOrderSummary(orderDataWithPrice);
-
-      // Validate order
-      const validation = orderService.validateOrder(orderDataWithPrice);
-      validationErrors.value = validation.errors;
-    };
 
     // Format legs for display
     const formattedLegs = computed(() => {
@@ -292,28 +220,71 @@ export default {
         action: leg.side === "buy" ? "Buy" : "Sell",
         symbol: leg.displaySymbol || leg.symbol,
         date: leg.date || formatExpiry(props.orderData.expiry),
-        type: leg.type || "Option",
+        type: leg.type || "Call",
         strike: leg.strike || "-",
-        price: leg.price ? `$${leg.price.toFixed(2)}` : "-",
+        priceValue: leg.price?.toFixed(2) || "0.00",
         quantity: leg.ratio_qty || leg.quantity || 1,
       }));
     });
 
     // Check if order can be confirmed
     const canConfirm = computed(() => {
-      return (
-        validationErrors.value.length === 0 &&
-        editableOrderPrice.value !== null &&
-        editableOrderPrice.value !== undefined
-      );
+      return props.orderData && !props.loading;
     });
+
+    // Helper methods
+    const getStrategyName = () => {
+      if (!props.orderData?.legs) return "OPTION TRADE";
+
+      const legs = props.orderData.legs;
+      if (legs.length === 1) {
+        return `1 ${
+          props.orderData.symbol
+        } ${legs[0].side?.toUpperCase()} ${legs[0].type?.toUpperCase()} VERTICAL`;
+      }
+      return `${legs.length} LEG STRATEGY`;
+    };
+
+    const getNetCredit = () => {
+      const netPremium = props.orderData?.netPremium || 0;
+      return netPremium >= 0
+        ? `${Math.abs(netPremium).toFixed(2)}`
+        : `${Math.abs(netPremium).toFixed(2)}`;
+    };
+
+    const getEstimatedCost = () => {
+      const cost = props.orderData?.netPremium || 0;
+      return `${Math.abs(cost).toFixed(2)} ${cost >= 0 ? "cr" : "db"}`;
+    };
+
+    const getEstimatedTotal = () => {
+      const cost = props.orderData?.netPremium || 0;
+      const fees = 3.56; // 2.00 + 1.56
+      const total = Math.abs(cost) + fees;
+      return `${total.toFixed(2)} ${cost >= 0 ? "cr" : "db"}`;
+    };
+
+    const getBPEffect = () => {
+      return props.orderData?.maxRisk
+        ? Math.abs(props.orderData.maxRisk).toFixed(2)
+        : "343.56";
+    };
 
     // Format expiry date
     const formatExpiry = (expiry) => {
-      if (!expiry) return "";
-      if (typeof expiry === "string") return expiry;
+      if (!expiry) return "Jul 11";
+      if (typeof expiry === "string") {
+        const date = new Date(expiry);
+        return date.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        });
+      }
       if (expiry instanceof Date) {
-        return expiry.toLocaleDateString();
+        return expiry.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        });
       }
       return expiry.toString();
     };
@@ -324,11 +295,15 @@ export default {
       emit("hide");
     };
 
+    // Handle edit
+    const handleEdit = () => {
+      emit("hide");
+    };
+
     // Handle confirm
     const handleConfirm = () => {
       if (!canConfirm.value) return;
 
-      // Send exactly what's in the input box without any modifications
       const finalOrderData = {
         ...props.orderData,
         orderPrice: editableOrderPrice.value,
@@ -337,37 +312,18 @@ export default {
       emit("confirm", finalOrderData);
     };
 
-    // Watch for orderData changes
-    watch(
-      () => props.orderData,
-      () => {
-        if (props.orderData) {
-          initializeOrderPrice();
-        }
-      },
-      { deep: true }
-    );
-
-    // Watch for visible changes
-    watch(
-      () => props.visible,
-      (newVisible) => {
-        if (newVisible && props.orderData) {
-          initializeOrderPrice();
-        }
-      }
-    );
-
     return {
       editableOrderPrice,
-      calculatedSummary,
-      validationErrors,
       formattedLegs,
       canConfirm,
-      initializeOrderPrice,
-      updateCalculations,
+      getStrategyName,
+      getNetCredit,
+      getEstimatedCost,
+      getEstimatedTotal,
+      getBPEffect,
       formatExpiry,
       handleCancel,
+      handleEdit,
       handleConfirm,
     };
   },
@@ -375,132 +331,372 @@ export default {
 </script>
 
 <style scoped>
-.order-confirmation {
-  padding: 20px 0;
+/* Bottom Sheet Overlay */
+.bottom-sheet-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background-color: rgba(0, 0, 0, 0.7);
+  z-index: 9999;
+  display: flex;
+  align-items: flex-end;
 }
 
-.order-summary {
-  margin-bottom: 20px;
+/* Bottom Sheet Container */
+.bottom-sheet {
+  width: 100%;
+  max-height: 80vh;
+  background-color: #1a1a1a;
+  border-radius: 12px 12px 0 0;
+  color: #ffffff;
+  transform: translateY(100%);
+  transition: transform 0.3s ease-out;
+  overflow-y: auto;
 }
 
-.summary-grid {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-  margin-bottom: 15px;
+.bottom-sheet.slide-up {
+  transform: translateY(0);
 }
 
-.summary-section {
-  margin-top: 15px;
-  padding-top: 15px;
-  border-top: 1px solid #dee2e6;
+/* Trade Header */
+.trade-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 24px;
+  border-bottom: 1px solid #333333;
 }
 
-.summary-item {
-  padding: 8px 12px;
-  background: #f8f9fa;
-  border-radius: 4px;
-  font-size: 0.9rem;
+.trade-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 16px;
+  font-weight: 600;
 }
 
-/* Responsive design for smaller screens */
-@media (max-width: 768px) {
-  .summary-grid {
-    grid-template-columns: 1fr;
-    gap: 8px;
-  }
+.trade-icon {
+  font-size: 18px;
 }
 
-.order-price-section {
-  margin-bottom: 20px;
-  padding: 15px;
-  background: #f8f9fa;
+.quick-analysis {
+  color: #888888;
+  font-size: 14px;
+  font-weight: 400;
+}
+
+.clear-trade-btn {
+  background: none;
+  border: 1px solid #444444;
+  color: #cccccc;
+  padding: 8px 16px;
   border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  transition: all 0.2s ease;
 }
 
-.order-price-section h4 {
-  margin: 0 0 15px 0;
-  color: #2c3e50;
+.clear-trade-btn:hover {
+  background-color: #333333;
+  color: #ffffff;
 }
 
-.field {
+/* Trade Stats Bar */
+.trade-stats {
+  display: flex;
+  justify-content: space-between;
+  padding: 12px 24px;
+  background-color: #2a2a2a;
+  border-bottom: 1px solid #333333;
+  overflow-x: auto;
+}
+
+.stat-item {
   display: flex;
   flex-direction: column;
+  align-items: center;
+  min-width: 80px;
 }
 
-.field label {
+.stat-label {
+  font-size: 11px;
+  color: #888888;
+  font-weight: 500;
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  font-size: 13px;
   font-weight: 600;
-  margin-bottom: 8px;
-  color: #2c3e50;
+  color: #ffffff;
 }
 
-.field small {
-  margin-top: 5px;
-  color: #6c757d;
-  font-size: 0.875rem;
+.stat-value.positive {
+  color: #00c851;
 }
 
-.net-type-info {
-  margin-top: 8px;
-  padding: 6px 10px;
-  background: #fff;
+.stat-value.negative {
+  color: #ff4444;
+}
+
+.stat-unit {
+  font-size: 10px;
+  color: #888888;
+}
+
+/* Main Content */
+.sheet-content {
+  display: flex;
+  padding: 24px;
+  gap: 32px;
+}
+
+.left-section {
+  flex: 1;
+  max-width: 400px;
+}
+
+.right-section {
+  flex: 2;
+}
+
+/* Account Section */
+.account-section {
+  margin-bottom: 32px;
+}
+
+.account-section h3 {
+  font-size: 14px;
+  color: #cccccc;
+  margin: 0 0 8px 0;
+  font-weight: 500;
+}
+
+.account-name {
+  font-size: 16px;
+  color: #ffffff;
+  font-weight: 400;
+}
+
+/* Order Details */
+.order-details-section h3 {
+  font-size: 14px;
+  color: #cccccc;
+  margin: 0 0 16px 0;
+  font-weight: 500;
+}
+
+.order-legs {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.order-leg {
+  display: grid;
+  grid-template-columns: 40px 60px 60px 30px 50px 80px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px;
+  background-color: #2a2a2a;
+  border-radius: 6px;
+  font-size: 14px;
+}
+
+.leg-quantity {
+  font-weight: 600;
+  color: #ffffff;
+}
+
+.leg-date {
+  color: #cccccc;
+  font-size: 12px;
+}
+
+.leg-details {
+  color: #ffffff;
+  font-weight: 500;
+}
+
+.leg-type {
+  color: #888888;
+  font-weight: 600;
+  text-align: center;
+}
+
+.leg-action {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 8px;
   border-radius: 4px;
-  border: 1px solid #e9ecef;
-  font-size: 0.9rem;
+  text-align: center;
 }
 
-.validation-errors {
-  margin-top: 15px;
+.leg-action.buy {
+  background-color: rgba(0, 200, 81, 0.2);
+  color: #00c851;
 }
 
-.validation-errors ul {
-  margin: 10px 0 0 0;
-  padding-left: 20px;
+.leg-action.sell {
+  background-color: rgba(255, 68, 68, 0.2);
+  color: #ff4444;
 }
 
-.validation-errors li {
-  margin-bottom: 5px;
+.leg-price {
+  color: #ffffff;
+  font-weight: 500;
+  text-align: right;
 }
 
-.symbol-cell {
-  font-family: monospace;
+/* Confirm Section */
+.confirm-section {
+  margin-bottom: 24px;
+}
+
+.confirm-title {
+  font-size: 24px;
+  color: #ffffff;
+  margin: 0 0 24px 0;
   font-weight: 600;
 }
 
-.credit {
-  color: #28a745;
-  font-weight: 600;
+.strategy-name {
+  color: #00c851;
 }
 
-.debit {
-  color: #dc3545;
-  font-weight: 600;
+/* Trade Details Grid */
+.trade-details-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
 }
 
-.profit {
-  color: #28a745;
-  font-weight: 600;
+.detail-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr 1fr;
+  gap: 16px;
+  align-items: center;
 }
 
-.loss {
-  color: #dc3545;
-  font-weight: 600;
+.detail-label {
+  font-size: 14px;
+  color: #888888;
+  font-weight: 500;
 }
 
-/* DataTable styling */
-:deep(.p-datatable .p-datatable-thead > tr > th) {
-  background-color: #f8f9fa;
-  color: #495057;
-  font-weight: 600;
-  border-bottom: 2px solid #dee2e6;
+.detail-value {
+  font-size: 14px;
+  color: #ffffff;
+  font-weight: 500;
 }
 
-:deep(.p-datatable .p-datatable-tbody > tr:hover) {
-  background-color: #f8f9fa;
+.detail-value.positive {
+  color: #00c851;
 }
 
-:deep(.p-tag) {
-  font-size: 0.75rem;
+.detail-unit {
+  font-size: 12px;
+  color: #888888;
+}
+
+.positive {
+  color: #00c851;
+}
+
+/* Warning Message */
+.warning-message {
+  background-color: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
+  color: #ffc107;
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 14px;
+  margin-top: 24px;
+}
+
+/* Action Buttons */
+.action-buttons {
+  display: flex;
+  gap: 16px;
+  padding: 24px;
+  border-top: 1px solid #333333;
+}
+
+.edit-btn {
+  flex: 1;
+  background-color: #444444;
+  border: 1px solid #555555;
+  color: #ffffff;
+  padding: 16px 24px;
+  border-radius: 8px;
+  font-size: 16px;
   font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.edit-btn:hover {
+  background-color: #555555;
+}
+
+.submit-btn {
+  flex: 2;
+  background-color: #00c851;
+  border: none;
+  color: #ffffff;
+  padding: 16px 24px;
+  border-radius: 8px;
+  font-size: 16px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+}
+
+.submit-btn:hover:not(:disabled) {
+  background-color: #00a844;
+}
+
+.submit-btn:disabled {
+  background-color: #555555;
+  color: #888888;
+  cursor: not-allowed;
+}
+
+/* Responsive Design */
+@media (max-width: 768px) {
+  .sheet-content {
+    flex-direction: column;
+    gap: 24px;
+  }
+
+  .left-section {
+    max-width: none;
+  }
+
+  .trade-stats {
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .stat-item {
+    min-width: 60px;
+  }
+
+  .detail-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+
+  .order-leg {
+    grid-template-columns: 30px 50px 50px 25px 40px 60px;
+    gap: 8px;
+    font-size: 12px;
+  }
 }
 </style>
