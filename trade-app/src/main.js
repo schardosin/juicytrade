@@ -22,7 +22,7 @@ import Menu from "primevue/menu";
 import Checkbox from "primevue/checkbox";
 
 // PrimeVue styles
-import "primevue/resources/themes/aura-light-purple/theme.css";
+import "primevue/resources/themes/aura-dark-noir/theme.css";
 import "primevue/resources/primevue.min.css";
 import "primeicons/primeicons.css";
 
