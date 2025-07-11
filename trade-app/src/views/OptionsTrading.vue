@@ -104,55 +104,58 @@
           </button>
         </div>
 
-        <!-- Chart Section -->
-        <div class="chart-section">
-          <PayoffChart
-            v-if="chartData"
-            :chartData="chartData"
-            :underlyingPrice="currentPrice"
-            title="Position P&L"
-            :showInfo="false"
-            :height="isRightPanelExpanded ? '400px' : '300px'"
-            :symbol="currentSymbol"
-            :isLivePrice="isLivePrice"
-          />
-        </div>
+        <!-- Scrollable Content Area -->
+        <div class="panel-content">
+          <!-- Chart Section -->
+          <div class="chart-section">
+            <PayoffChart
+              v-if="chartData"
+              :chartData="chartData"
+              :underlyingPrice="currentPrice"
+              title="Position P&L"
+              :showInfo="false"
+              :height="isRightPanelExpanded ? '400px' : '300px'"
+              :symbol="currentSymbol"
+              :isLivePrice="isLivePrice"
+            />
+          </div>
 
-        <!-- Order Ticket -->
-        <div class="order-ticket-section" v-if="selectedOptions.length > 0">
-          <OrderTicket
-            :selectedOptions="selectedOptions"
-            :optionsData="optionsChainData"
-            :underlyingSymbol="currentSymbol"
-            :underlyingPrice="currentPrice"
-            @order-placed="onOrderPlaced"
-            @clear-selections="clearAllSelections"
-          />
-        </div>
+          <!-- Order Ticket -->
+          <div class="order-ticket-section" v-if="selectedOptions.length > 0">
+            <OrderTicket
+              :selectedOptions="selectedOptions"
+              :optionsData="optionsChainData"
+              :underlyingSymbol="currentSymbol"
+              :underlyingPrice="currentPrice"
+              @order-placed="onOrderPlaced"
+              @clear-selections="clearAllSelections"
+            />
+          </div>
 
-        <!-- Position Details -->
-        <div class="position-details-section">
-          <Card class="position-card">
-            <template #title>Position Details</template>
-            <template #content>
-              <div class="position-summary">
-                <div class="summary-item">
-                  <span class="label">Selected Contracts:</span>
-                  <span class="value">{{ selectedOptions.length }}</span>
+          <!-- Position Details -->
+          <div class="position-details-section">
+            <Card class="position-card">
+              <template #title>Position Details</template>
+              <template #content>
+                <div class="position-summary">
+                  <div class="summary-item">
+                    <span class="label">Selected Contracts:</span>
+                    <span class="value">{{ selectedOptions.length }}</span>
+                  </div>
+                  <div class="summary-item" v-if="estimatedCost !== null">
+                    <span class="label">Estimated Cost:</span>
+                    <span
+                      class="value"
+                      :class="estimatedCost >= 0 ? 'credit' : 'debit'"
+                    >
+                      ${{ Math.abs(estimatedCost).toFixed(2) }}
+                      {{ estimatedCost >= 0 ? "CR" : "DB" }}
+                    </span>
+                  </div>
                 </div>
-                <div class="summary-item" v-if="estimatedCost !== null">
-                  <span class="label">Estimated Cost:</span>
-                  <span
-                    class="value"
-                    :class="estimatedCost >= 0 ? 'credit' : 'debit'"
-                  >
-                    ${{ Math.abs(estimatedCost).toFixed(2) }}
-                    {{ estimatedCost >= 0 ? "CR" : "DB" }}
-                  </span>
-                </div>
-              </div>
-            </template>
-          </Card>
+              </template>
+            </Card>
+          </div>
         </div>
       </div>
     </div>
@@ -799,6 +802,30 @@ export default {
 
 .expand-toggle-btn:active {
   transform: scale(0.95);
+}
+
+.panel-content {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.panel-content::-webkit-scrollbar {
+  width: 8px;
+}
+
+.panel-content::-webkit-scrollbar-track {
+  background: #2a2a2a;
+  border-radius: 4px;
+}
+
+.panel-content::-webkit-scrollbar-thumb {
+  background: #555555;
+  border-radius: 4px;
+}
+
+.panel-content::-webkit-scrollbar-thumb:hover {
+  background: #666666;
 }
 
 .chart-section {
