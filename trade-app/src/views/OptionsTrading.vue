@@ -468,12 +468,18 @@ export default {
         (sel) => sel.symbol === optionSelection.symbol
       );
 
+      // Add expiry date to the selection
+      const selectionWithExpiry = {
+        ...optionSelection,
+        expiry: selectedExpiry.value,
+      };
+
       if (existingIndex >= 0) {
         // Update existing selection
-        selectedOptions.value[existingIndex] = optionSelection;
+        selectedOptions.value[existingIndex] = selectionWithExpiry;
       } else {
         // Add new selection
-        selectedOptions.value.push(optionSelection);
+        selectedOptions.value.push(selectionWithExpiry);
       }
 
       // Force show bottom panel and expand right panel

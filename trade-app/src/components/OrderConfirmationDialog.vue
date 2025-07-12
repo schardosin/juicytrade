@@ -222,7 +222,7 @@ export default {
         date: leg.date || formatExpiry(props.orderData.expiry),
         type: leg.type || "Call",
         strike: leg.strike || "-",
-        priceValue: leg.price?.toFixed(2) || "0.00",
+        priceValue: (leg.price || 0).toFixed(2),
         quantity: leg.ratio_qty || leg.quantity || 1,
       }));
     });

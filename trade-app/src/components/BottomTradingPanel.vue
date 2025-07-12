@@ -312,6 +312,13 @@ export default {
         const liveOption = props.optionsData.find(
           (o) => o.symbol === option.symbol
         );
+
+        // Use natural price: bid when selling, ask when buying
+        let price = 0;
+        if (liveOption) {
+          price = option.side === "buy" ? liveOption.ask : liveOption.bid;
+        }
+
         return {
           symbol: option.symbol,
           quantity: option.quantity,
@@ -319,9 +326,7 @@ export default {
           strike: option.strike?.toString() || "-",
           type: option.type?.charAt(0).toUpperCase() || "P",
           action: option.side === "buy" ? "BTO" : "STO",
-          price: liveOption
-            ? (liveOption.bid + liveOption.ask / 2).toFixed(2)
-            : "0.00",
+          price: price.toFixed(2),
         };
       });
     });
@@ -331,36 +336,83 @@ export default {
     });
 
     const priceProgressPercent = computed(() => {
-      const bid = bidPrice.value;
-      const ask = askPrice.value;
-      const current = limitPrice.value;
+      const bid = parseFloat(bidPrice.value);
+      const ask = parseFloat(askPrice.value);
+      const current = parseFloat(limitPrice.value);
+      const mid = parseFloat(midPrice.value);
 
       if (bid >= ask) return 50;
 
-      const progress = ((current - bid) / (ask - bid)) * 100;
+      // Use mid price as the center point (50%)
+      const progress = ((current - mid) / (ask - bid)) * 100 + 50;
       return Math.max(0, Math.min(100, progress));
     });
 
     const leftProgressPercent = computed(() => {
-      const progress = priceProgressPercent.value;
-      if (progress <= 50) {
-        return (50 - progress) * 2;
+      const bid = parseFloat(bidPrice.value);
+      const ask = parseFloat(askPrice.value);
+      const current = parseFloat(limitPrice.value);
+      const mid = parseFloat(midPrice.value);
+
+      if (bid >= ask) return 0;
+
+      // Show green bar when current price is below mid
+      if (current < mid) {
+        const maxDistance = mid - bid;
+        const currentDistance = mid - current;
+        return Math.min(100, (currentDistance / maxDistance) * 100);
       }
       return 0;
     });
 
     const rightProgressPercent = computed(() => {
-      const progress = priceProgressPercent.value;
-      if (progress >= 50) {
-        return (progress - 50) * 2;
+      const bid = parseFloat(bidPrice.value);
+      const ask = parseFloat(askPrice.value);
+      const current = parseFloat(limitPrice.value);
+      const mid = parseFloat(midPrice.value);
+
+      if (bid >= ask) return 0;
+
+      // Show red bar when current price is above mid
+      if (current > mid) {
+        const maxDistance = ask - mid;
+        const currentDistance = current - mid;
+        return Math.min(100, (currentDistance / maxDistance) * 100);
       }
       return 0;
     });
 
     const formatDate = (date) => {
       if (!date) return "Jul 11";
-      const d = new Date(date);
-      return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+
+      // Handle different date formats
+      let dateObj;
+      if (typeof date === "string") {
+        // Handle YYYY-MM-DD format - parse as UTC to avoid timezone issues
+        if (date.match(/^\d{4}-\d{2}-\d{2}$/)) {
+          const [year, month, day] = date.split("-").map(Number);
+          dateObj = new Date(Date.UTC(year, month - 1, day));
+        } else {
+          dateObj = new Date(date);
+        }
+      } else if (date instanceof Date) {
+        dateObj = date;
+      } else {
+        // If it's a timestamp or other format
+        dateObj = new Date(date);
+      }
+
+      // Check if date is valid
+      if (isNaN(dateObj.getTime())) {
+        console.warn("Invalid date:", date);
+        return "Jul 11";
+      }
+
+      return dateObj.toLocaleDateString("en-US", {
+        month: "short",
+        day: "numeric",
+        timeZone: "UTC",
+      });
     };
 
     const handleCancel = () => {
@@ -370,15 +422,33 @@ export default {
     const handleReviewSend = () => {
       const orderData = {
         symbol: props.symbol,
-        legs: props.selectedOptions.map((leg) => ({
-          symbol: leg.symbol,
-          side: leg.side,
-          quantity: leg.quantity,
-        })),
+        legs: props.selectedOptions.map((leg) => {
+          const liveOption = props.optionsData.find(
+            (o) => o.symbol === leg.symbol
+          );
+          return {
+            symbol: leg.symbol,
+            displaySymbol: leg.symbol,
+            side: leg.side,
+            quantity: leg.quantity,
+            ratio_qty: leg.quantity,
+            type: leg.type || "Call",
+            strike: leg.strike,
+            date: formatDate(leg.expiry),
+            expiry: leg.expiry,
+            price: liveOption ? (liveOption.bid + liveOption.ask) / 2 : 0,
+          };
+        }),
         orderType: selectedOrderType.value,
         timeInForce: selectedTimeInForce.value,
         limitPrice: limitPrice.value,
-        netPremium: netPremium.value * 100,
+        netPremium: netPremium.value,
+        underlyingPrice: props.underlyingPrice,
+        accountName: "Paper Trading Account",
+        maxReward: Math.abs(netPremium.value) * 100,
+        maxRisk: Math.abs(netPremium.value) * 100,
+        netDelta: 0, // Placeholder - would need Greeks calculation
+        netTheta: 0, // Placeholder - would need Greeks calculation
       };
       emit("review-send", orderData);
     };
