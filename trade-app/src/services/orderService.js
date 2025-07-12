@@ -55,6 +55,7 @@ class OrderService {
       expiry,
       strategyType,
       legs,
+      limitPrice,
       orderPrice,
       orderOffset = 0,
       quantity = 1,
@@ -62,17 +63,40 @@ class OrderService {
       orderType = "limit",
     } = orderData;
 
+    // Use limitPrice if available, otherwise fall back to orderPrice
+    const price = limitPrice !== undefined ? limitPrice : orderPrice;
+
     return {
-      symbol,
-      expiry: this.formatExpiry(expiry),
-      strategy_type: strategyType,
       legs: this.formatLegs(legs),
-      order_price: orderPrice,
-      order_offset: orderOffset,
-      qty: quantity,
-      time_in_force: timeInForce.toLowerCase(),
       order_type: orderType.toLowerCase(),
+      time_in_force: timeInForce.toLowerCase(),
+      limit_price: price, // Backend expects limit_price, not order_price
     };
+  }
+  /**
+   * Format legs for API payload
+   * @param {Array} legs - Order legs
+   * @returns {Array} Formatted legs
+   */
+  formatLegs(legs) {
+    return legs.map((leg) => ({
+      symbol: leg.symbol,
+      side: this.formatSide(leg.side),
+      qty: parseInt(leg.ratio_qty || leg.quantity || 1),
+    }));
+  }
+
+  /**
+   * Format side for API (convert to backend format)
+   * @param {string} side - Order side (buy/sell)
+   * @returns {string} Formatted side
+   */
+  formatSide(side) {
+    const sideMap = {
+      buy: "buy_to_open",
+      sell: "sell_to_open",
+    };
+    return sideMap[side.toLowerCase()] || side;
   }
 
   /**
@@ -88,19 +112,6 @@ class OrderService {
       return expiry.toISOString().split("T")[0];
     }
     return expiry;
-  }
-
-  /**
-   * Format legs for API payload
-   * @param {Array} legs - Order legs
-   * @returns {Array} Formatted legs
-   */
-  formatLegs(legs) {
-    return legs.map((leg) => ({
-      symbol: leg.symbol,
-      side: leg.side.toLowerCase(),
-      ratio_qty: leg.ratio_qty.toString(),
-    }));
   }
 
   /**

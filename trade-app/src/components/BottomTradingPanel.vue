@@ -443,8 +443,15 @@ export default {
     };
 
     const handleReviewSend = () => {
+      // Get the expiry date from the first selected option (all should have the same expiry)
+      const expiry =
+        props.selectedOptions.length > 0
+          ? props.selectedOptions[0].expiry
+          : null;
+
       const orderData = {
         symbol: props.symbol,
+        expiry: expiry, // Add the missing expiry field
         legs: props.selectedOptions.map((leg) => {
           const liveOption = props.optionsData.find(
             (o) => o.symbol === leg.symbol

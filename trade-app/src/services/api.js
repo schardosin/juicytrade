@@ -113,16 +113,16 @@ export const api = {
     }
   },
 
-  // Place butterfly order
+  // Place multi-leg order (updated to use correct backend endpoint)
   async placeButterflyOrder(orderPayload) {
     try {
       const response = await axios.post(
-        `${API_BASE_URL}/place_butterfly_order`,
+        `${API_BASE_URL}/orders/multi-leg`,
         orderPayload
       );
-      return response.data.data;
+      return response.data;
     } catch (error) {
-      console.error("Error placing butterfly order:", error);
+      console.error("Error placing multi-leg order:", error);
       throw error;
     }
   },
