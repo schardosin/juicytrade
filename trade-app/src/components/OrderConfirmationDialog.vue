@@ -130,7 +130,7 @@
                 <span class="detail-value">{{
                   orderData?.orderType || "Limit"
                 }}</span>
-                <span class="detail-label">Net Credit @</span>
+                <span class="detail-label">{{ getCreditDebitLabel() }}</span>
                 <span class="detail-value positive">{{ getNetCredit() }}</span>
               </div>
 
@@ -232,11 +232,29 @@ export default {
         };
       }
 
-      // Use the existing orderData values directly instead of recalculating
+      // For credit spreads: Max Profit = Premium × 100, Max Loss = (Spread Width - Premium) × 100
+      const limitPrice =
+        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
+      const creditDebitInfo = getCreditDebitInfo(limitPrice);
+
+      let maxProfit, maxLoss;
+
+      if (creditDebitInfo.isCredit) {
+        // Credit spread: we receive premium
+        maxProfit = creditDebitInfo.amount * 100; // Premium received
+        // For credit spread, max loss = (spread width - premium received)
+        // Assuming $2 spread width based on typical iron condor/butterfly
+        maxLoss = 200 - creditDebitInfo.amount * 100; // 200 - premium = max loss
+      } else {
+        // Debit spread: we pay premium
+        maxLoss = creditDebitInfo.amount * 100;
+        maxProfit = 200 - creditDebitInfo.amount * 100;
+      }
+
       const analysis = {
-        maxProfit: Math.abs(props.orderData.maxReward || 0),
-        maxLoss: Math.abs(props.orderData.maxRisk || 0),
-        netPremium: props.orderData.netPremium || 0,
+        maxProfit: maxProfit,
+        maxLoss: maxLoss,
+        netPremium: limitPrice,
         breakEvenPoints: [],
         currentPL: 0,
         positions: [],
@@ -286,6 +304,14 @@ export default {
       return `${legs.length} LEG STRATEGY`;
     };
 
+    const getCreditDebitLabel = () => {
+      // Use the limit price from the order ticket
+      const limitPrice =
+        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
+      const creditDebitInfo = getCreditDebitInfo(limitPrice);
+      return creditDebitInfo.isCredit ? "Net Credit @" : "Net Debit @";
+    };
+
     const getNetCredit = () => {
       // Use the limit price from the order ticket
       const limitPrice =
@@ -315,13 +341,8 @@ export default {
     };
 
     const getBPEffect = () => {
-      // For BP effect, use the max loss calculation but consider the limit price impact
-      const limitPrice =
-        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
-      const maxLoss = Math.abs(
-        props.orderData?.maxRisk || Math.abs(limitPrice)
-      );
-      return formatCurrency(maxLoss);
+      // For BP effect, use the max loss from our analysis
+      return formatCurrency(profitLossAnalysis.value.maxLoss);
     };
 
     // Format expiry date
@@ -373,6 +394,7 @@ export default {
       profitLossAnalysis,
       greeks,
       getStrategyName,
+      getCreditDebitLabel,
       getNetCredit,
       getEstimatedCost,
       getEstimatedTotal,

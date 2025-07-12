@@ -64,7 +64,18 @@ class OrderService {
     } = orderData;
 
     // Use limitPrice if available, otherwise fall back to orderPrice
-    const price = limitPrice !== undefined ? limitPrice : orderPrice;
+    let price = limitPrice !== undefined ? limitPrice : orderPrice;
+
+    // Determine if this is a credit or debit order based on the strategy
+    const isCredit = this.isCreditOrder(orderData);
+
+    // For credit orders, ensure the limit price is negative (we receive money)
+    // For debit orders, ensure the limit price is positive (we pay money)
+    if (isCredit && price > 0) {
+      price = -Math.abs(price);
+    } else if (!isCredit && price < 0) {
+      price = Math.abs(price);
+    }
 
     return {
       legs: this.formatLegs(legs),
@@ -72,6 +83,50 @@ class OrderService {
       time_in_force: timeInForce.toLowerCase(),
       limit_price: price, // Backend expects limit_price, not order_price
     };
+  }
+
+  /**
+   * Determine if an order is a credit order (we receive money)
+   * @param {Object} orderData - Order configuration
+   * @returns {boolean} True if credit order, false if debit order
+   */
+  isCreditOrder(orderData) {
+    const { legs, netPremium, limitPrice } = orderData;
+
+    // If we have netPremium, use that to determine credit/debit
+    // Note: In our system, negative netPremium means we receive money (credit)
+    // and positive netPremium means we pay money (debit)
+    if (netPremium !== undefined) {
+      return netPremium < 0; // Negative netPremium = credit
+    }
+
+    // Check if limitPrice indicates credit (negative means we receive money)
+    if (limitPrice !== undefined) {
+      return limitPrice < 0;
+    }
+
+    // Otherwise, calculate based on legs
+    if (legs && legs.length > 0) {
+      let totalPremium = 0;
+
+      legs.forEach((leg) => {
+        const price = leg.price || 0;
+        const quantity = leg.ratio_qty || leg.quantity || 1;
+
+        if (leg.side === "sell") {
+          // Selling = we receive premium (+)
+          totalPremium += price * quantity;
+        } else {
+          // Buying = we pay premium (-)
+          totalPremium -= price * quantity;
+        }
+      });
+
+      return totalPremium > 0; // Positive total = credit
+    }
+
+    // Default to debit if we can't determine
+    return false;
   }
   /**
    * Format legs for API payload
