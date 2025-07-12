@@ -204,6 +204,7 @@
       :underlyingPrice="currentPrice"
       @clear-trade="clearAllSelections"
       @review-send="onReviewAndSend"
+      @update-leg-quantity="onUpdateLegQuantity"
     />
   </div>
 </template>
@@ -579,6 +580,16 @@ export default {
       initializeOrder(orderData);
     };
 
+    const onUpdateLegQuantity = ({ symbol, quantity }) => {
+      const optionIndex = selectedOptions.value.findIndex(
+        (sel) => sel.symbol === symbol
+      );
+      if (optionIndex >= 0) {
+        selectedOptions.value[optionIndex].quantity = quantity;
+        updateChartData();
+      }
+    };
+
     const handleOrderEdit = () => {
       // Hide confirmation dialog and show bottom trading panel
       showBottomPanel.value = true;
@@ -659,6 +670,7 @@ export default {
       onOrderPlaced,
       toggleRightPanel,
       onReviewAndSend,
+      onUpdateLegQuantity,
       handleOrderEdit,
 
       // Order management

@@ -23,6 +23,7 @@
               :key="selection.symbol"
               class="option-row"
               :class="getRowClass(selection)"
+              @click="selectLeg(selection.symbol)"
             >
               <div class="option-info">
                 <div class="option-details">
@@ -45,7 +46,7 @@
                 </div>
               </div>
 
-              <div class="option-controls">
+              <div class="option-controls" @click.stop>
                 <InputNumber
                   :model-value="selection.quantity"
                   :min="1"
@@ -172,7 +173,12 @@ export default {
       default: null,
     },
   },
-  emits: ["order-placed", "clear-selections"],
+  emits: [
+    "order-placed",
+    "clear-selections",
+    "option-deselected",
+    "quantity-updated",
+  ],
   setup(props, { emit }) {
     const { selectedOptions, optionsData, underlyingSymbol, underlyingPrice } =
       toRefs(props);
@@ -181,6 +187,7 @@ export default {
     const orderType = ref("limit");
     const timeInForce = ref("day");
     const limitPrice = ref(0);
+    const selectedLeg = ref(null);
 
     // Options for dropdowns
     const orderTypeOptions = [
@@ -275,15 +282,16 @@ export default {
     const getRowClass = (selection) => ({
       "buy-row": selection.side === "buy",
       "sell-row": selection.side === "sell",
+      "selected-leg": selectedLeg.value === selection.symbol,
     });
 
+    const selectLeg = (symbol) => {
+      selectedLeg.value = selectedLeg.value === symbol ? null : symbol;
+    };
+
     const updateQuantity = (symbol, quantity) => {
-      const selection = selectedOptions.value.find(
-        (sel) => sel.symbol === symbol
-      );
-      if (selection) {
-        selection.quantity = quantity || 1;
-      }
+      // Emit event to parent to update quantity instead of modifying prop directly
+      emit("quantity-updated", { symbol, quantity: quantity || 1 });
     };
 
     const removeOption = (symbol) => {
@@ -352,6 +360,7 @@ export default {
       // Methods
       getOptionPrice,
       getRowClass,
+      selectLeg,
       updateQuantity,
       removeOption,
       clearSelections,
@@ -407,6 +416,12 @@ export default {
   border-radius: 6px;
   border: 1px solid #444444;
   transition: all 0.2s ease;
+  cursor: pointer;
+}
+
+.option-row:hover {
+  border-color: #666666;
+  background-color: rgba(255, 255, 255, 0.05);
 }
 
 .option-row.buy-row {
@@ -417,6 +432,22 @@ export default {
 .option-row.sell-row {
   background-color: rgba(255, 68, 68, 0.1);
   border-color: rgba(255, 68, 68, 0.3);
+}
+
+.option-row.selected-leg {
+  border-color: #ffd700;
+  box-shadow: 0 0 0 2px rgba(255, 215, 0, 0.3);
+  background-color: rgba(255, 215, 0, 0.1);
+}
+
+.option-row.selected-leg.buy-row {
+  border-color: #ffd700;
+  background-color: rgba(255, 215, 0, 0.15);
+}
+
+.option-row.selected-leg.sell-row {
+  border-color: #ffd700;
+  background-color: rgba(255, 215, 0, 0.15);
 }
 
 .option-info {

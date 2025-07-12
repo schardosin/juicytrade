@@ -58,8 +58,8 @@
       <div class="control-group">
         <span class="control-label">Quantity</span>
         <div class="control-buttons">
-          <button class="ctrl-btn">⬇</button>
-          <button class="ctrl-btn">⬆</button>
+          <button class="ctrl-btn" @click="decrementQuantity">⬇</button>
+          <button class="ctrl-btn" @click="incrementQuantity">⬆</button>
         </div>
       </div>
       <div class="control-group">
@@ -86,7 +86,13 @@
           <div class="symbol-display">{{ symbol }}</div>
         </div>
         <div class="order-legs">
-          <div v-for="(leg, index) in orderLegs" :key="index" class="order-leg">
+          <div
+            v-for="(leg, index) in orderLegs"
+            :key="index"
+            class="order-leg"
+            :class="{ selected: selectedLegs.includes(leg.symbol) }"
+            @click="toggleLegSelection(leg.symbol)"
+          >
             <span class="leg-qty">{{ leg.quantity }}</span>
             <span class="leg-date">{{ leg.date }}</span>
             <span class="leg-strike">{{ leg.strike }}</span>
@@ -243,6 +249,7 @@ export default {
     const limitPrice = ref(0);
     const selectedOrderType = ref("limit");
     const selectedTimeInForce = ref("day");
+    const selectedLegs = ref([]);
 
     const getOptionPrice = (selection, priceType) => {
       const option = optionsData.value.find(
@@ -459,6 +466,55 @@ export default {
       );
     };
 
+    const toggleLegSelection = (symbol) => {
+      const index = selectedLegs.value.indexOf(symbol);
+      if (index >= 0) {
+        // Remove from selection
+        selectedLegs.value.splice(index, 1);
+      } else {
+        // Add to selection
+        selectedLegs.value.push(symbol);
+      }
+    };
+
+    const incrementQuantity = () => {
+      // If legs are selected, only affect selected legs; otherwise affect all legs
+      const legsToUpdate =
+        selectedLegs.value.length > 0
+          ? props.selectedOptions.filter((option) =>
+              selectedLegs.value.includes(option.symbol)
+            )
+          : props.selectedOptions;
+
+      legsToUpdate.forEach((option) => {
+        if (option.quantity < 10) {
+          emit("update-leg-quantity", {
+            symbol: option.symbol,
+            quantity: option.quantity + 1,
+          });
+        }
+      });
+    };
+
+    const decrementQuantity = () => {
+      // If legs are selected, only affect selected legs; otherwise affect all legs
+      const legsToUpdate =
+        selectedLegs.value.length > 0
+          ? props.selectedOptions.filter((option) =>
+              selectedLegs.value.includes(option.symbol)
+            )
+          : props.selectedOptions;
+
+      legsToUpdate.forEach((option) => {
+        if (option.quantity > 1) {
+          emit("update-leg-quantity", {
+            symbol: option.symbol,
+            quantity: option.quantity - 1,
+          });
+        }
+      });
+    };
+
     const handleReviewSend = () => {
       // Get the expiry date from the first selected option (all should have the same expiry)
       const expiry =
@@ -524,6 +580,7 @@ export default {
       limitPrice,
       selectedOrderType,
       selectedTimeInForce,
+      selectedLegs,
       stats,
       orderLegs,
       bidPrice,
@@ -538,6 +595,9 @@ export default {
       handleReviewSend,
       incrementPrice,
       decrementPrice,
+      incrementQuantity,
+      decrementQuantity,
+      toggleLegSelection,
     };
   },
 };
@@ -711,6 +771,20 @@ export default {
   background-color: #2a2a2a;
   border-radius: 4px;
   font-size: 11px;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.order-leg:hover {
+  background-color: #333333;
+  border-color: #444444;
+}
+
+.order-leg.selected {
+  background-color: rgba(255, 215, 0, 0.1);
+  border-color: #ffd700;
+  box-shadow: 0 0 0 1px rgba(255, 215, 0, 0.3);
 }
 
 .leg-qty {
