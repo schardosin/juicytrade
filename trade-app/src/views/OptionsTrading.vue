@@ -93,57 +93,82 @@
 
       <!-- Right Panel -->
       <div class="right-panel" :class="{ expanded: isRightPanelExpanded }">
-        <!-- Panel Header with Expand/Collapse Button -->
-        <div class="panel-header">
-          <h3 class="panel-title">Analysis & Trading</h3>
-          <button
-            class="expand-toggle-btn"
-            @click="toggleRightPanel"
-            :title="isRightPanelExpanded ? 'Collapse Panel' : 'Expand Panel'"
-          >
-            {{ isRightPanelExpanded ? "▶" : "◀" }}
-          </button>
+        <!-- Collapsed Menu -->
+        <div v-if="!isRightPanelExpanded" class="collapsed-menu">
+          <div class="menu-item" @click="toggleRightPanel">
+            <i class="pi pi-th-large"></i>
+          </div>
+          <div class="menu-item" @click="toggleRightPanel">
+            <i class="pi pi-chart-bar"></i>
+          </div>
+          <div class="menu-item" @click="toggleRightPanel">
+            <i class="pi pi-inbox"></i>
+          </div>
+          <div class="menu-item" @click="toggleRightPanel">
+            <i class="pi pi-bolt"></i>
+          </div>
+          <div class="menu-item" @click="toggleRightPanel">
+            <i class="pi pi-heart"></i>
+          </div>
+          <div class="menu-item" @click="toggleRightPanel">
+            <i class="pi pi-bell"></i>
+          </div>
         </div>
 
-        <!-- Scrollable Content Area -->
-        <div class="panel-content">
-          <!-- Chart Section -->
-          <div class="chart-section">
-            <PayoffChart
-              v-if="chartData"
-              :chartData="chartData"
-              :underlyingPrice="currentPrice"
-              title="Position P&L"
-              :showInfo="false"
-              :height="isRightPanelExpanded ? '400px' : '300px'"
-              :symbol="currentSymbol"
-              :isLivePrice="isLivePrice"
-            />
+        <!-- Expanded Panel -->
+        <div v-if="isRightPanelExpanded" class="expanded-content">
+          <!-- Panel Header with Expand/Collapse Button -->
+          <div class="panel-header">
+            <h3 class="panel-title">Analysis & Trading</h3>
+            <button
+              class="expand-toggle-btn"
+              @click="toggleRightPanel"
+              :title="isRightPanelExpanded ? 'Collapse Panel' : 'Expand Panel'"
+            >
+              ▶
+            </button>
           </div>
 
-          <!-- Position Details -->
-          <div class="position-details-section">
-            <Card class="position-card">
-              <template #title>Position Details</template>
-              <template #content>
-                <div class="position-summary">
-                  <div class="summary-item">
-                    <span class="label">Selected Contracts:</span>
-                    <span class="value">{{ selectedOptions.length }}</span>
+          <!-- Scrollable Content Area -->
+          <div class="panel-content">
+            <!-- Chart Section -->
+            <div class="chart-section">
+              <PayoffChart
+                v-if="chartData"
+                :chartData="chartData"
+                :underlyingPrice="currentPrice"
+                title="Position P&L"
+                :showInfo="false"
+                :height="isRightPanelExpanded ? '400px' : '300px'"
+                :symbol="currentSymbol"
+                :isLivePrice="isLivePrice"
+              />
+            </div>
+
+            <!-- Position Details -->
+            <div class="position-details-section">
+              <Card class="position-card">
+                <template #title>Position Details</template>
+                <template #content>
+                  <div class="position-summary">
+                    <div class="summary-item">
+                      <span class="label">Selected Contracts:</span>
+                      <span class="value">{{ selectedOptions.length }}</span>
+                    </div>
+                    <div class="summary-item" v-if="estimatedCost !== null">
+                      <span class="label">Estimated Cost:</span>
+                      <span
+                        class="value"
+                        :class="estimatedCost >= 0 ? 'credit' : 'debit'"
+                      >
+                        ${{ Math.abs(estimatedCost).toFixed(2) }}
+                        {{ estimatedCost >= 0 ? "CR" : "DB" }}
+                      </span>
+                    </div>
                   </div>
-                  <div class="summary-item" v-if="estimatedCost !== null">
-                    <span class="label">Estimated Cost:</span>
-                    <span
-                      class="value"
-                      :class="estimatedCost >= 0 ? 'credit' : 'debit'"
-                    >
-                      ${{ Math.abs(estimatedCost).toFixed(2) }}
-                      {{ estimatedCost >= 0 ? "CR" : "DB" }}
-                    </span>
-                  </div>
-                </div>
-              </template>
-            </Card>
+                </template>
+              </Card>
+            </div>
           </div>
         </div>
       </div>
@@ -450,8 +475,9 @@ export default {
         selectedOptions.value.push(optionSelection);
       }
 
-      // Force show bottom panel
+      // Force show bottom panel and expand right panel
       showBottomPanel.value = true;
+      isRightPanelExpanded.value = true;
       updateChartData();
     };
 
@@ -466,6 +492,7 @@ export default {
         // Auto-hide panel if no options left
         if (selectedOptions.value.length === 0) {
           showBottomPanel.value = false;
+          isRightPanelExpanded.value = false;
         }
       }
     };
@@ -474,6 +501,7 @@ export default {
       selectedOptions.value = [];
       chartData.value = null;
       showBottomPanel.value = false;
+      isRightPanelExpanded.value = false;
     };
 
     const updateChartData = () => {
@@ -817,7 +845,7 @@ export default {
 }
 
 .right-panel {
-  width: 400px;
+  width: 60px;
   background-color: #333333;
   border-left: 1px solid #444444;
   display: flex;
@@ -830,6 +858,33 @@ export default {
   width: 700px;
 }
 
+.collapsed-menu {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding-top: 12px;
+  gap: 16px;
+}
+
+.menu-item {
+  font-size: 18px;
+  cursor: pointer;
+  padding: 8px;
+  border-radius: 4px;
+  transition: background-color 0.2s ease;
+  color: #cccccc;
+}
+
+.menu-item:hover {
+  background-color: #444444;
+}
+
+.expanded-content {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
 .panel-header {
   display: flex;
   justify-content: space-between;
@@ -837,6 +892,7 @@ export default {
   padding: 12px 16px;
   background-color: #3a3a3a;
   border-bottom: 1px solid #444444;
+  flex-shrink: 0;
 }
 
 .panel-title {
@@ -857,7 +913,7 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-width: 32px;
+  width: 32px;
   height: 32px;
   font-size: 16px;
   font-weight: bold;
