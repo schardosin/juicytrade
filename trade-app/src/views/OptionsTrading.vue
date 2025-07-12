@@ -183,6 +183,7 @@
       @confirm="handleOrderConfirmation"
       @cancel="handleOrderCancellation"
       @edit="handleOrderEdit"
+      @clear-selections="clearAllSelections"
     />
 
     <!-- Order Result Dialog -->
