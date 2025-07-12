@@ -7,7 +7,7 @@ from .providers.public_provider import PublicProvider
 from .providers.tradier_provider import TradierProvider
 from .provider_config import provider_config_manager
 from .config import settings
-from .models import StockQuote, OptionContract, Position, Order, MarketData
+from .models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult
 
 logger = logging.getLogger(__name__)
 
@@ -130,6 +130,12 @@ class ProviderManager:
         if provider:
             return await provider.place_multi_leg_order(order_data)
         return None
+
+    async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
+        provider = self._get_provider("symbol_lookup")
+        if provider:
+            return await provider.lookup_symbols(query)
+        return []
         
     async def health_check(self) -> Dict[str, Any]:
         health_status = {}

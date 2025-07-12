@@ -6,7 +6,7 @@ import logging
 
 from ..models import (
     StockQuote, OptionContract, Position, Order, 
-    ExpirationDate, MarketData, ApiResponse
+    ExpirationDate, MarketData, ApiResponse, SymbolSearchResult
 )
 
 logger = logging.getLogger(__name__)
@@ -87,6 +87,19 @@ class BaseProvider(ABC):
         
         Returns:
             Next market date in YYYY-MM-DD format
+        """
+        pass
+    
+    @abstractmethod
+    async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
+        """
+        Search for symbols matching the query.
+        
+        Args:
+            query: Search term (symbol or company name)
+            
+        Returns:
+            List of SymbolSearchResult objects
         """
         pass
     

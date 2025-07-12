@@ -8,8 +8,8 @@ import os
 
 from .base_provider import BaseProvider
 from ..models import (
-    StockQuote, OptionContract, Position, Order,
-    ExpirationDate, MarketData, ApiResponse
+    StockQuote, OptionContract, Position, Order, 
+    ExpirationDate, MarketData, ApiResponse, SymbolSearchResult
 )
 from ..config import settings
 
@@ -122,3 +122,7 @@ class PublicProvider(BaseProvider):
 
     async def get_streaming_data(self) -> Optional[MarketData]:
         return None
+
+    async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
+        """Search for symbols matching the query."""
+        raise NotImplementedError("Symbol lookup not implemented for Public provider")

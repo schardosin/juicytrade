@@ -21,7 +21,7 @@ from alpaca.trading.models import Order as AlpacaOrder
 from .base_provider import BaseProvider
 from ..models import (
     StockQuote, OptionContract, Position, Order, 
-    ExpirationDate, MarketData, ApiResponse
+    ExpirationDate, MarketData, ApiResponse, SymbolSearchResult
 )
 
 logger = logging.getLogger(__name__)
@@ -1054,3 +1054,7 @@ class AlpacaProvider(BaseProvider):
             await self._streaming_queue.put(market_data)
         except Exception as e:
             self._log_error("option_quote_handler", e)
+    
+    async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
+        """Search for symbols matching the query."""
+        raise NotImplementedError("Symbol lookup not implemented for Alpaca provider")

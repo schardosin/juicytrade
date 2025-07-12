@@ -14,6 +14,7 @@ DEFAULT_ROUTING = {
     "next_market_date": "alpaca",
     "positions": "alpaca",
     "orders": "alpaca",
+    "symbol_lookup": "tradier",
     "streaming": {
         "stock_quotes": "tradier",
         "option_quotes": "tradier",
@@ -35,11 +36,11 @@ PROVIDER_CAPABILITIES = {
         "rest": ["expiration_dates"]
     },
     "tradier": {
-        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order"],
+        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order", "symbol_lookup"],
         "streaming": ["stock_quotes", "option_quotes"]
     },
     "tradier_paper": {
-        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order"],
+        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order", "symbol_lookup"],
         "streaming": ["stock_quotes", "option_quotes"]
     }
 }

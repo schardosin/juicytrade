@@ -3,13 +3,107 @@ import requests
 import websockets
 import json
 import logging
-from typing import List, Dict, Optional, Any
+import time
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
+from collections import OrderedDict
 
 from .base_provider import BaseProvider
-from ..models import StockQuote, OptionContract, Position, Order, MarketData
+from ..models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult
 
 logger = logging.getLogger(__name__)
+
+class SymbolLookupCache:
+    """Smart caching for symbol lookup with prefix filtering."""
+    
+    def __init__(self, ttl_seconds: int = 21600, max_size: int = 500):
+        self.ttl_seconds = ttl_seconds  # 6 hours (21600 seconds)
+        self.max_size = max_size
+        self.cache: OrderedDict[str, Tuple[List[SymbolSearchResult], float]] = OrderedDict()
+    
+    def _cleanup_expired(self):
+        """Remove expired entries from cache."""
+        current_time = time.time()
+        expired_keys = [
+            key for key, (_, timestamp) in self.cache.items()
+            if current_time - timestamp > self.ttl_seconds
+        ]
+        for key in expired_keys:
+            del self.cache[key]
+    
+    def _enforce_size_limit(self):
+        """Enforce max cache size using LRU eviction."""
+        while len(self.cache) > self.max_size:
+            self.cache.popitem(last=False)  # Remove oldest (LRU)
+    
+    async def search(self, query: str, api_call_func) -> List[SymbolSearchResult]:
+        """
+        Smart search with caching and prefix filtering.
+        
+        Args:
+            query: Search query
+            api_call_func: Function to call API if cache miss
+            
+        Returns:
+            List of SymbolSearchResult objects
+        """
+        self._cleanup_expired()
+        normalized_query = query.lower().strip()
+        
+        # 1. Check for exact match in cache
+        if normalized_query in self.cache:
+            results, _ = self.cache[normalized_query]
+            # Move to end (mark as recently used)
+            self.cache.move_to_end(normalized_query)
+            return results
+        
+        # 2. Try to filter from cached broader search
+        filtered_results = self._try_filter_from_cache(normalized_query)
+        if filtered_results is not None:
+            # Cache the filtered results for future exact matches
+            self.cache[normalized_query] = (filtered_results, time.time())
+            self._enforce_size_limit()
+            return filtered_results
+        
+        # 3. Make API call and cache results (only if successful)
+        api_results = await api_call_func(query)
+        
+        # Only cache if we got actual results (don't cache empty results from API failures)
+        if api_results:
+            self.cache[normalized_query] = (api_results, time.time())
+            self._enforce_size_limit()
+        
+        return api_results
+    
+    def _try_filter_from_cache(self, query: str) -> Optional[List[SymbolSearchResult]]:
+        """
+        Try to filter results from a cached broader search.
+        
+        Args:
+            query: Current search query
+            
+        Returns:
+            Filtered results if found, None otherwise
+        """
+        current_time = time.time()
+        
+        # Look for cached results from shorter queries that could contain our results
+        for cached_query, (results, timestamp) in self.cache.items():
+            # Skip expired entries
+            if current_time - timestamp > self.ttl_seconds:
+                continue
+            
+            # Check if this cached query is a prefix of our query
+            if len(cached_query) < len(query) and query.startswith(cached_query):
+                # Filter the cached results to match our query
+                filtered = [
+                    result for result in results
+                    if (query in result.symbol.lower() or 
+                        query in result.description.lower())
+                ]
+                return filtered
+        
+        return None
 
 class TradierProvider(BaseProvider):
     def __init__(self, account_id: str, api_key: str, base_url: str, stream_url: str):
@@ -22,6 +116,7 @@ class TradierProvider(BaseProvider):
         self._stream_connection = None
         self._streaming_queue = asyncio.Queue()
         self._connection_ready = asyncio.Event()
+        self._symbol_cache = SymbolLookupCache()
 
     async def _create_session(self) -> bool:
         url = f"{self.base_url}/v1/markets/events/session"
@@ -556,6 +651,65 @@ class TradierProvider(BaseProvider):
         except Exception as e:
             self._log_error(f"parse_option_symbol {symbol}", e)
         return None
+
+    async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
+        """Search for symbols matching the query using Tradier API."""
+        return await self._symbol_cache.search(query, self._api_lookup_symbols)
+    
+    async def _api_lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
+        """Make actual API call to Tradier for symbol lookup."""
+        try:
+            url = f"{self.base_url}/v1/markets/lookup"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            params = {
+                "q": query,
+                "types": "stock,etf,index,option"
+            }
+            
+            resp = requests.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            # Handle the response structure
+            securities = data.get("securities", {})
+            if isinstance(securities, dict):
+                security_list = securities.get("security", [])
+            else:
+                security_list = securities
+            
+            # Ensure it's a list
+            if isinstance(security_list, dict):
+                security_list = [security_list]
+            
+            # Transform and limit results
+            results = []
+            for security in security_list[:50]:  # Limit to 50 results
+                transformed = self._transform_symbol_search_result(security)
+                if transformed:
+                    results.append(transformed)
+            
+            logger.info(f"Found {len(results)} symbols for query '{query}'")
+            return results
+            
+        except Exception as e:
+            self._log_error(f"lookup_symbols for query '{query}'", e)
+            return []
+    
+    def _transform_symbol_search_result(self, raw_security: Dict[str, Any]) -> Optional[SymbolSearchResult]:
+        """Transform Tradier security search result to our standard model."""
+        try:
+            return SymbolSearchResult(
+                symbol=raw_security.get("symbol", ""),
+                description=raw_security.get("description", ""),
+                exchange=raw_security.get("exchange", ""),
+                type=raw_security.get("type", "")
+            )
+        except Exception as e:
+            self._log_error("transform_symbol_search_result", e)
+            return None
 
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""

@@ -78,6 +78,13 @@ class MarketData(BaseModel):
     timestamp: str
     data: Dict[str, Any]
 
+class SymbolSearchResult(BaseModel):
+    """Standardized symbol search result model."""
+    symbol: str
+    description: str
+    exchange: str
+    type: str  # "stock", "etf", "index", "option"
+
 class ApiResponse(BaseModel):
     """Standardized API response wrapper."""
     success: bool

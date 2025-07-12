@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .models import (
     StockQuote, OptionContract, Position, Order, ApiResponse,
-    SymbolRequest, OrderRequest, MultiLegOrderRequest
+    SymbolRequest, OrderRequest, MultiLegOrderRequest, SymbolSearchResult
 )
 from .provider_manager import provider_manager
 from .provider_config import provider_config_manager
@@ -252,6 +252,20 @@ async def get_next_market_date():
         )
     except Exception as e:
         logger.error(f"Error getting next market date: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/symbols/lookup", response_model=ApiResponse)
+async def lookup_symbols(q: str):
+    """Search for symbols matching the query."""
+    try:
+        results = await provider_manager.lookup_symbols(q)
+        return ApiResponse(
+            success=True,
+            data={"symbols": [result.dict() for result in results]},
+            message=f"Found {len(results)} symbols matching '{q}'"
+        )
+    except Exception as e:
+        logger.error(f"Error looking up symbols: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # === Account & Portfolio Endpoints ===
