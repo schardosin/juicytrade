@@ -433,6 +433,7 @@ export default {
   box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
   transform: translateY(100%);
   transition: transform 0.3s ease-out;
+  margin-bottom: 5px;
 }
 
 .bottom-panel.slide-up {
@@ -973,9 +974,9 @@ export default {
 .center-indicator::before {
   content: "";
   position: absolute;
-  top: 50%;
+  top: 100%;
   left: 50%;
-  transform: translate(-50%, -50%);
+  transform: translate(-50%, 4px);
   width: 2px;
   height: 8px;
   background-color: #ff6b35;
