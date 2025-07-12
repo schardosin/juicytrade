@@ -119,8 +119,8 @@
                 step="0.01"
                 class="price-input"
               />
-              <button class="price-btn">-</button>
-              <button class="price-btn">+</button>
+              <button class="price-btn" @click="decrementPrice">-</button>
+              <button class="price-btn" @click="incrementPrice">+</button>
             </div>
           </div>
 
@@ -430,6 +430,18 @@ export default {
       emit("clear-trade");
     };
 
+    const incrementPrice = () => {
+      limitPrice.value = parseFloat(
+        (parseFloat(limitPrice.value) + 0.01).toFixed(2)
+      );
+    };
+
+    const decrementPrice = () => {
+      limitPrice.value = parseFloat(
+        (parseFloat(limitPrice.value) - 0.01).toFixed(2)
+      );
+    };
+
     const handleReviewSend = () => {
       const orderData = {
         symbol: props.symbol,
@@ -496,6 +508,8 @@ export default {
       netPremium,
       handleCancel,
       handleReviewSend,
+      incrementPrice,
+      decrementPrice,
     };
   },
 };
@@ -770,6 +784,17 @@ export default {
 .price-input:focus {
   outline: none;
   border-color: #007bff;
+}
+
+/* Hide number input arrows/spinners */
+.price-input::-webkit-outer-spin-button,
+.price-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.price-input[type="number"] {
+  -moz-appearance: textfield;
 }
 
 .order-config {
