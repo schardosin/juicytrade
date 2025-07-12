@@ -8,7 +8,7 @@
       <!-- Left Navigation -->
       <SideNav />
 
-      <!-- Content Area -->r
+      <!-- Content Area -->
       <div class="content-area">
         <!-- Symbol Header -->
         <div class="symbol-header">
