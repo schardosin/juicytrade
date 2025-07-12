@@ -142,7 +142,8 @@
             <div class="price-display">
               <span class="price-dot bid"></span>
               <span class="price-text"
-                >{{ parseFloat(bidPrice).toFixed(2) }} cr</span
+                >{{ Math.abs(parseFloat(bidPrice)).toFixed(2) }}
+                {{ parseFloat(bidPrice) >= 0 ? "cr" : "db" }}</span
               >
             </div>
           </div>
@@ -154,19 +155,28 @@
               <div class="progress-bar left">
                 <div
                   class="progress-fill-left"
+                  :class="parseFloat(midPrice) >= 0 ? 'credit' : 'debit'"
                   :style="{ width: leftProgressPercent + '%' }"
                 ></div>
               </div>
               <!-- Center Indicator -->
               <div class="center-indicator">
-                <span class="price-text highlight"
-                  >{{ parseFloat(midPrice).toFixed(2) }} cr</span
+                <span
+                  class="price-text"
+                  :class="
+                    parseFloat(midPrice) >= 0
+                      ? 'highlight-credit'
+                      : 'highlight-debit'
+                  "
+                  >{{ Math.abs(parseFloat(midPrice)).toFixed(2) }}
+                  {{ parseFloat(midPrice) >= 0 ? "cr" : "db" }}</span
                 >
               </div>
               <!-- Right Progress Bar -->
               <div class="progress-bar right">
                 <div
                   class="progress-fill-right"
+                  :class="parseFloat(midPrice) >= 0 ? 'credit' : 'debit'"
                   :style="{ width: rightProgressPercent + '%' }"
                 ></div>
               </div>
@@ -178,7 +188,8 @@
             <div class="price-display">
               <span class="price-dot ask"></span>
               <span class="price-text"
-                >{{ parseFloat(askPrice).toFixed(2) }} cr</span
+                >{{ Math.abs(parseFloat(askPrice)).toFixed(2) }}
+                {{ parseFloat(askPrice) >= 0 ? "cr" : "db" }}</span
               >
             </div>
           </div>
@@ -921,6 +932,16 @@ export default {
   font-size: 14px;
 }
 
+.price-text.highlight-credit {
+  color: #ff6b35;
+  font-size: 14px;
+}
+
+.price-text.highlight-debit {
+  color: #00c851;
+  font-size: 14px;
+}
+
 .review-btn {
   background-color: #ff6b35;
   border: none;
@@ -1018,7 +1039,6 @@ export default {
   top: 0;
   right: 0;
   height: 100%;
-  background-color: #00c851;
   border-radius: 2px;
   transition: width 0.3s ease;
 }
@@ -1028,9 +1048,19 @@ export default {
   top: 0;
   left: 0;
   height: 100%;
-  background-color: #ff4444;
   border-radius: 2px;
   transition: width 0.3s ease;
+}
+
+/* Dynamic colors based on credit/debit */
+.progress-fill-left.credit,
+.progress-fill-right.credit {
+  background-color: #ff6b35;
+}
+
+.progress-fill-left.debit,
+.progress-fill-right.debit {
+  background-color: #00c851;
 }
 
 .center-indicator {
