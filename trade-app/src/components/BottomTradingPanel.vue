@@ -113,7 +113,6 @@
           <div class="limit-price-section">
             <span class="price-label">Limit Price</span>
             <div class="price-input-group">
-              <button class="price-btn">🔒</button>
               <input
                 v-model="limitPrice"
                 type="number"
@@ -142,7 +141,9 @@
             <span class="price-label">BID (NAT)</span>
             <div class="price-display">
               <span class="price-dot bid"></span>
-              <span class="price-text">{{ bidPrice }} cr</span>
+              <span class="price-text"
+                >{{ parseFloat(bidPrice).toFixed(2) }} cr</span
+              >
             </div>
           </div>
 
@@ -158,7 +159,9 @@
               </div>
               <!-- Center Indicator -->
               <div class="center-indicator">
-                <span class="price-text highlight">{{ midPrice }} cr</span>
+                <span class="price-text highlight"
+                  >{{ parseFloat(midPrice).toFixed(2) }} cr</span
+                >
               </div>
               <!-- Right Progress Bar -->
               <div class="progress-bar right">
@@ -174,7 +177,9 @@
             <span class="price-label">ASK (OPP)</span>
             <div class="price-display">
               <span class="price-dot ask"></span>
-              <span class="price-text">{{ askPrice }} cr</span>
+              <span class="price-text"
+                >{{ parseFloat(askPrice).toFixed(2) }} cr</span
+              >
             </div>
           </div>
 
@@ -194,7 +199,7 @@
 </template>
 
 <script>
-import { ref, computed } from "vue";
+import { ref, computed, watch, toRefs } from "vue";
 
 export default {
   name: "BottomTradingPanel",
@@ -207,6 +212,10 @@ export default {
       type: Array,
       default: () => [],
     },
+    optionsData: {
+      type: Array,
+      default: () => [],
+    },
     symbol: {
       type: String,
       default: "SPX",
@@ -216,68 +225,134 @@ export default {
       default: null,
     },
   },
-  emits: ["clear-trade", "review-send"],
+  emits: ["clear-trade", "review-send", "update-leg-quantity"],
   setup(props, { emit }) {
-    const limitPrice = ref(6.2);
-    const selectedOrderType = ref("Net Credit");
-    const selectedTimeInForce = ref("Day");
+    const { selectedOptions, optionsData } = toRefs(props);
 
-    const stats = computed(() => ({
-      pop: 59,
-      ext: 620,
-      p50: null,
-      delta: 10.14,
-      theta: -353.946,
-      maxProfit: 620,
-      maxLoss: -380,
-      bpEff: 265.0,
-    }));
+    const limitPrice = ref(0);
+    const selectedOrderType = ref("limit");
+    const selectedTimeInForce = ref("day");
 
-    const orderLegs = computed(() => {
-      return props.selectedOptions.map((option) => ({
-        quantity: option.side === "buy" ? option.quantity : -option.quantity,
-        date: formatDate(option.expiry),
-        strike: option.strike?.toString() || "-",
-        type: option.type?.charAt(0).toUpperCase() || "P",
-        action: option.side === "buy" ? "BTO" : "STO",
-        price: option.price?.toFixed(2) || "0.00",
-      }));
+    const getOptionPrice = (selection, priceType) => {
+      const option = optionsData.value.find(
+        (opt) => opt.symbol === selection.symbol
+      );
+      if (!option) return 0;
+
+      if (priceType === "bid") return option.bid;
+      if (priceType === "ask") return option.ask;
+      if (priceType === "mid") return (option.bid + option.ask) / 2;
+
+      // Default to natural price for the side
+      return selection.side === "buy" ? option.ask : option.bid;
+    };
+
+    const netPremium = computed(() => {
+      let total = 0;
+      selectedOptions.value.forEach((selection) => {
+        const price = getOptionPrice(selection, "mid"); // Use mid for a neutral estimate
+        const premium = selection.side === "buy" ? -price : price;
+        total += premium * selection.quantity;
+      });
+      return total;
     });
 
-    const bidPrice = computed(() => "5.50");
-    const midPrice = computed(() => limitPrice.value.toFixed(2));
-    const askPrice = computed(() => "6.90");
+    const bidPrice = computed(() => {
+      let total = 0;
+      selectedOptions.value.forEach((selection) => {
+        const price =
+          selection.side === "buy"
+            ? getOptionPrice(selection, "ask")
+            : getOptionPrice(selection, "bid");
+        const premium = selection.side === "buy" ? -price : price;
+        total += premium * selection.quantity;
+      });
+      return total.toFixed(2);
+    });
+
+    const askPrice = computed(() => {
+      let total = 0;
+      selectedOptions.value.forEach((selection) => {
+        const price =
+          selection.side === "buy"
+            ? getOptionPrice(selection, "bid")
+            : getOptionPrice(selection, "ask");
+        const premium = selection.side === "buy" ? -price : price;
+        total += premium * selection.quantity;
+      });
+      return total.toFixed(2);
+    });
+
+    const midPrice = computed(() => {
+      return (
+        (parseFloat(bidPrice.value) + parseFloat(askPrice.value)) /
+        2
+      ).toFixed(2);
+    });
+
+    const stats = computed(() => {
+      const maxProfit =
+        netPremium.value > 0 ? netPremium.value * 100 : Infinity;
+      const maxLoss = netPremium.value < 0 ? netPremium.value * 100 : -Infinity;
+
+      return {
+        pop: 59, // Placeholder
+        ext: (netPremium.value * 100).toFixed(0),
+        p50: null, // Placeholder
+        delta: 0, // Placeholder
+        theta: 0, // Placeholder
+        maxProfit: maxProfit.toFixed(0),
+        maxLoss: maxLoss.toFixed(0),
+        bpEff: (Math.abs(netPremium.value) * 100).toFixed(0),
+      };
+    });
+
+    const orderLegs = computed(() => {
+      return props.selectedOptions.map((option) => {
+        const liveOption = props.optionsData.find(
+          (o) => o.symbol === option.symbol
+        );
+        return {
+          symbol: option.symbol,
+          quantity: option.quantity,
+          date: formatDate(option.expiry),
+          strike: option.strike?.toString() || "-",
+          type: option.type?.charAt(0).toUpperCase() || "P",
+          action: option.side === "buy" ? "BTO" : "STO",
+          price: liveOption
+            ? (liveOption.bid + liveOption.ask / 2).toFixed(2)
+            : "0.00",
+        };
+      });
+    });
 
     const canSubmit = computed(() => {
       return props.selectedOptions.length > 0;
     });
 
     const priceProgressPercent = computed(() => {
-      // Calculate how far the current limit price is from bid to ask
-      const bid = parseFloat(bidPrice.value);
-      const ask = parseFloat(askPrice.value);
+      const bid = bidPrice.value;
+      const ask = askPrice.value;
       const current = limitPrice.value;
 
-      if (bid >= ask) return 50; // Fallback if invalid spread
+      if (bid >= ask) return 50;
 
       const progress = ((current - bid) / (ask - bid)) * 100;
-      return Math.max(0, Math.min(100, progress)); // Clamp between 0-100%
+      return Math.max(0, Math.min(100, progress));
     });
 
     const leftProgressPercent = computed(() => {
-      // Left progress bar: from center (50%) to current position
       const progress = priceProgressPercent.value;
       if (progress <= 50) {
-        return (50 - progress) * 2; // Scale to 0-100% for left bar
+        return (50 - progress) * 2;
       }
       return 0;
     });
 
     const rightProgressPercent = computed(() => {
-      // Right progress bar: from center (50%) to current position
       const progress = priceProgressPercent.value;
       if (progress >= 50) {
-        return (progress - 50) * 2; // Scale to 0-100% for right bar
+        return (progress - 50) * 2;
       }
       return 0;
     });
@@ -295,14 +370,34 @@ export default {
     const handleReviewSend = () => {
       const orderData = {
         symbol: props.symbol,
-        legs: orderLegs.value,
+        legs: props.selectedOptions.map((leg) => ({
+          symbol: leg.symbol,
+          side: leg.side,
+          quantity: leg.quantity,
+        })),
         orderType: selectedOrderType.value,
         timeInForce: selectedTimeInForce.value,
         limitPrice: limitPrice.value,
-        stats: stats.value,
+        netPremium: netPremium.value * 100,
       };
       emit("review-send", orderData);
     };
+
+    watch(
+      netPremium,
+      (newValue) => {
+        limitPrice.value = parseFloat(newValue.toFixed(2));
+      },
+      { immediate: true }
+    );
+
+    watch(
+      () => props.selectedOptions,
+      () => {
+        limitPrice.value = parseFloat(netPremium.value.toFixed(2));
+      },
+      { deep: true, immediate: true }
+    );
 
     return {
       limitPrice,
@@ -317,6 +412,7 @@ export default {
       priceProgressPercent,
       leftProgressPercent,
       rightProgressPercent,
+      netPremium,
       handleCancel,
       handleReviewSend,
     };
@@ -326,7 +422,7 @@ export default {
 
 <style scoped>
 .bottom-panel {
-  position: fixed;
+  position: relative;
   bottom: 0;
   left: 0;
   right: 0;
