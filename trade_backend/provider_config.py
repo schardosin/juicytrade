@@ -11,6 +11,7 @@ DEFAULT_ROUTING = {
     "expiration_dates": "public",
     "stock_quotes": "alpaca",
     "options_chain": "alpaca",
+    "next_market_date": "alpaca",
     "positions": "alpaca",
     "orders": "alpaca",
     "streaming": {
@@ -23,22 +24,22 @@ DEFAULT_ROUTING = {
 
 PROVIDER_CAPABILITIES = {
     "alpaca": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders"],
+        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date"],
         "streaming": ["stock_quotes", "option_quotes", "positions", "orders"]
     },
     "alpaca_paper": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders"],
+        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date"],
         "streaming": ["stock_quotes", "option_quotes", "positions", "orders"]
     },
     "public": {
         "rest": ["expiration_dates"]
     },
     "tradier": {
-        "rest": ["orders"],
+        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order"],
         "streaming": ["stock_quotes", "option_quotes"]
     },
     "tradier_paper": {
-        "rest": ["orders"],
+        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order"],
         "streaming": ["stock_quotes", "option_quotes"]
     }
 }

@@ -114,19 +114,276 @@ class TradierProvider(BaseProvider):
 
     # --- Methods below are not implemented for Tradier yet ---
     async def get_stock_quote(self, symbol: str) -> Optional[StockQuote]:
-        raise NotImplementedError("get_stock_quote is not implemented for TradierProvider")
+        """Get latest stock quote for a symbol."""
+        try:
+            quotes = await self.get_stock_quotes([symbol])
+            return quotes.get(symbol)
+        except Exception as e:
+            self._log_error(f"get_stock_quote for {symbol}", e)
+            return None
+
     async def get_stock_quotes(self, symbols: List[str]) -> Dict[str, StockQuote]:
-        raise NotImplementedError("get_stock_quotes is not implemented for TradierProvider")
+        """Get stock quotes for multiple symbols."""
+        try:
+            url = f"{self.base_url}/v1/markets/quotes"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            params = {
+                "symbols": ",".join(symbols)
+            }
+            
+            resp = requests.post(url, headers=headers, data=params)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            quotes = data.get("quotes", {}).get("quote", [])
+            if isinstance(quotes, dict):
+                quotes = [quotes]
+            
+            result = {}
+            for quote in quotes:
+                transformed_quote = self._transform_stock_quote(quote)
+                if transformed_quote:
+                    result[transformed_quote.symbol] = transformed_quote
+            
+            return result
+        except Exception as e:
+            self._log_error(f"get_stock_quotes for {symbols}", e)
+            return {}
+
+    def _transform_stock_quote(self, raw_quote: Dict[str, Any]) -> Optional[StockQuote]:
+        """Transform Tradier stock quote to our standard model."""
+        try:
+            return StockQuote(
+                symbol=raw_quote.get("symbol", ""),
+                ask=float(raw_quote.get("ask", 0)) if raw_quote.get("ask") else None,
+                bid=float(raw_quote.get("bid", 0)) if raw_quote.get("bid") else None,
+                timestamp=datetime.fromtimestamp(raw_quote.get("trade_date") / 1000).isoformat() if raw_quote.get("trade_date") else datetime.now().isoformat()
+            )
+        except Exception as e:
+            self._log_error("transform_stock_quote", e)
+            return None
     async def get_expiration_dates(self, symbol: str) -> List[str]:
-        raise NotImplementedError("get_expiration_dates is not implemented for TradierProvider")
+        """Get available expiration dates for options on a symbol."""
+        try:
+            url = f"{self.base_url}/v1/markets/options/expirations"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            params = {
+                "symbol": symbol,
+                "includeAllRoots": "true"
+            }
+            
+            resp = requests.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            expirations = data.get("expirations", {}).get("date", [])
+            if isinstance(expirations, str):
+                return [expirations]
+            return expirations
+        except Exception as e:
+            self._log_error(f"get_expiration_dates for {symbol}", e)
+            return []
+
     async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
-        raise NotImplementedError("get_options_chain is not implemented for TradierProvider")
+        """Get options chain for a symbol and expiration."""
+        try:
+            url = f"{self.base_url}/v1/markets/options/chains"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            params = {
+                "symbol": symbol,
+                "expiration": expiry,
+                "greeks": "true"
+            }
+            
+            resp = requests.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            contracts = data.get("options", {}).get("option", [])
+            
+            result = []
+            for contract in contracts:
+                if option_type and contract.get("option_type") != option_type.lower():
+                    continue
+                
+                transformed_contract = self._transform_option_contract(contract)
+                if transformed_contract:
+                    result.append(transformed_contract)
+            
+            return result
+        except Exception as e:
+            self._log_error(f"get_options_chain for {symbol} {expiry}", e)
+            return []
+
+    def _transform_option_contract(self, raw_contract: Dict[str, Any]) -> Optional[OptionContract]:
+        """Transform Tradier option contract to our standard model."""
+        try:
+            greeks = raw_contract.get("greeks", {})
+            return OptionContract(
+                symbol=raw_contract.get("symbol", ""),
+                underlying_symbol=raw_contract.get("underlying", ""),
+                expiration_date=raw_contract.get("expiration_date", ""),
+                strike_price=float(raw_contract.get("strike", 0)),
+                type=raw_contract.get("option_type", "").lower(),
+                bid=float(raw_contract.get("bid", 0)) if raw_contract.get("bid") else None,
+                ask=float(raw_contract.get("ask", 0)) if raw_contract.get("ask") else None,
+                close_price=float(raw_contract.get("close", 0)) if raw_contract.get("close") else None,
+                volume=int(raw_contract.get("volume", 0)) if raw_contract.get("volume") else None,
+                open_interest=int(raw_contract.get("open_interest", 0)) if raw_contract.get("open_interest") else None,
+                implied_volatility=float(greeks.get("mid_iv", 0)) if greeks.get("mid_iv") else None,
+                delta=float(greeks.get("delta", 0)) if greeks.get("delta") else None,
+                gamma=float(greeks.get("gamma", 0)) if greeks.get("gamma") else None,
+                theta=float(greeks.get("theta", 0)) if greeks.get("theta") else None,
+                vega=float(greeks.get("vega", 0)) if greeks.get("vega") else None,
+            )
+        except Exception as e:
+            self._log_error("transform_option_contract", e)
+            return None
+
     async def get_next_market_date(self) -> str:
-        raise NotImplementedError("get_next_market_date is not implemented for TradierProvider")
+        """Get the next trading date."""
+        try:
+            url = f"{self.base_url}/v1/markets/calendar"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            
+            resp = requests.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            days = data.get("calendar", {}).get("days", {}).get("day", [])
+            if isinstance(days, dict):
+                days = [days]
+
+            for day in days:
+                if day.get("status") == "open":
+                    return day.get("date")
+            
+            # Fallback to today if no open market date is found
+            return datetime.now().strftime("%Y-%m-%d")
+        except Exception as e:
+            self._log_error("get_next_market_date", e)
+            return datetime.now().strftime("%Y-%m-%d")
+
     async def get_positions(self) -> List[Position]:
-        raise NotImplementedError("get_positions is not implemented for TradierProvider")
+        """Get all current positions."""
+        try:
+            url = f"{self.base_url}/v1/accounts/{self.account_id}/positions"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            
+            resp = requests.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            positions = data.get("positions", {}).get("position", [])
+            if isinstance(positions, dict):
+                positions = [positions]
+            
+            result = []
+            for position in positions:
+                transformed_position = self._transform_position(position)
+                if transformed_position:
+                    result.append(transformed_position)
+            
+            return result
+        except Exception as e:
+            self._log_error("get_positions", e)
+            return []
+
+    def _transform_position(self, raw_position: Dict[str, Any]) -> Optional[Position]:
+        """Transform Tradier position to our standard model."""
+        try:
+            return Position(
+                symbol=raw_position.get("symbol"),
+                qty=float(raw_position.get("quantity", 0)),
+                side="long" if float(raw_position.get("quantity", 0)) > 0 else "short",
+                cost_basis=float(raw_position.get("cost_basis", 0)),
+                # Tradier does not provide these fields directly in the positions endpoint
+                market_value=0,
+                unrealized_pl=0,
+                unrealized_plpc=0,
+                current_price=0,
+                avg_entry_price=float(raw_position.get("cost_basis", 0)) / float(raw_position.get("quantity", 1)),
+                asset_class="us_equity" if not self._is_option_symbol(raw_position.get("symbol")) else "us_option"
+            )
+        except Exception as e:
+            self._log_error("transform_position", e)
+            return None
+
     async def get_orders(self, status: str = "open") -> List[Order]:
-        raise NotImplementedError("get_orders is not implemented for TradierProvider")
+        """Get orders with optional status filter."""
+        try:
+            url = f"{self.base_url}/v1/accounts/{self.account_id}/orders"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            
+            resp = requests.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            orders = data.get("orders", {}).get("order", [])
+            if isinstance(orders, dict):
+                orders = [orders]
+            
+            result = []
+            for order in orders:
+                if status == "all" or order.get("status") == status:
+                    transformed_order = self._transform_order(order)
+                    if transformed_order:
+                        result.append(transformed_order)
+            
+            return result
+        except Exception as e:
+            self._log_error(f"get_orders with status {status}", e)
+            return []
+
+    def _transform_order(self, raw_order: Dict[str, Any]) -> Optional[Order]:
+        """Transform Tradier order to our standard model."""
+        try:
+            return Order(
+                id=str(raw_order.get("id")),
+                symbol=raw_order.get("symbol"),
+                asset_class=raw_order.get("class"),
+                side=raw_order.get("side"),
+                order_type=raw_order.get("type"),
+                qty=float(raw_order.get("quantity", 0)),
+                filled_qty=float(raw_order.get("exec_quantity", 0)),
+                limit_price=float(raw_order.get("price", 0)) if raw_order.get("price") else None,
+                stop_price=None,
+                avg_fill_price=float(raw_order.get("avg_fill_price", 0)) if raw_order.get("avg_fill_price") else None,
+                status=raw_order.get("status"),
+                time_in_force=raw_order.get("duration"),
+                submitted_at=raw_order.get("create_date"),
+                filled_at=raw_order.get("transaction_date"),
+                legs=[self._transform_order_leg(leg) for leg in raw_order.get("leg", [])] if raw_order.get("leg") else None
+            )
+        except Exception as e:
+            self._log_error("transform_order", e)
+            return None
+
+    def _transform_order_leg(self, raw_leg: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform Tradier order leg to our standard format."""
+        return {
+            "symbol": raw_leg.get("option_symbol"),
+            "side": raw_leg.get("side"),
+            "qty": float(raw_leg.get("quantity", 0))
+        }
     
     async def place_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a trading order."""
@@ -240,7 +497,22 @@ class TradierProvider(BaseProvider):
             raise
 
     async def cancel_order(self, order_id: str) -> bool:
-        raise NotImplementedError("cancel_order is not implemented for TradierProvider")
+        """Cancel an existing order."""
+        try:
+            url = f"{self.base_url}/v1/accounts/{self.account_id}/orders/{order_id}"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            
+            resp = requests.delete(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            return data.get("order", {}).get("status") == "ok"
+        except Exception as e:
+            self._log_error(f"cancel_order {order_id}", e)
+            return False
     async def disconnect_streaming(self) -> bool:
         if self._stream_connection:
             await self._stream_connection.close()
