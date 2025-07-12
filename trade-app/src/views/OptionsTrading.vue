@@ -618,6 +618,14 @@ export default {
       { immediate: true }
     );
 
+    // Clear selections when order is successfully placed
+    watch(orderResult, (newResult) => {
+      if (newResult && newResult.success) {
+        // Order was successful, clear all selections
+        clearAllSelections();
+      }
+    });
+
     return {
       // Reactive data
       currentSymbol,
