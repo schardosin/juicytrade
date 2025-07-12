@@ -334,7 +334,7 @@ export default {
           symbol: option.symbol,
           quantity: option.quantity,
           date: formatDate(option.expiry),
-          strike: option.strike?.toString() || "-",
+          strike: (option.strike_price || option.strike)?.toString() || "-",
           type: option.type?.charAt(0).toUpperCase() || "P",
           action: option.side === "buy" ? "BTO" : "STO",
           price: price.toFixed(2),

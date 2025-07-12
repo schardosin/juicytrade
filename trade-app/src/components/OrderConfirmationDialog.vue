@@ -221,7 +221,7 @@ export default {
         symbol: leg.displaySymbol || leg.symbol,
         date: leg.date || formatExpiry(props.orderData.expiry),
         type: leg.type || "Call",
-        strike: leg.strike || "-",
+        strike: leg.strike_price || leg.strike || "-",
         priceValue: (leg.price || 0).toFixed(2),
         quantity: leg.ratio_qty || leg.quantity || 1,
       }));
@@ -365,25 +365,25 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
+  padding: 8px 16px;
   border-bottom: 1px solid #333333;
 }
 
 .trade-title {
   display: flex;
   align-items: center;
-  gap: 12px;
-  font-size: 16px;
+  gap: 8px;
+  font-size: 14px;
   font-weight: 600;
 }
 
 .trade-icon {
-  font-size: 18px;
+  font-size: 14px;
 }
 
 .quick-analysis {
   color: #888888;
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 400;
 }
 
@@ -391,10 +391,10 @@ export default {
   background: none;
   border: 1px solid #444444;
   color: #cccccc;
-  padding: 8px 16px;
-  border-radius: 6px;
+  padding: 6px 12px;
+  border-radius: 4px;
   cursor: pointer;
-  font-size: 14px;
+  font-size: 12px;
   transition: all 0.2s ease;
 }
 
@@ -407,7 +407,7 @@ export default {
 .trade-stats {
   display: flex;
   justify-content: space-between;
-  padding: 12px 24px;
+  padding: 6px 16px;
   background-color: #2a2a2a;
   border-bottom: 1px solid #333333;
   overflow-x: auto;
@@ -417,18 +417,18 @@ export default {
   display: flex;
   flex-direction: column;
   align-items: center;
-  min-width: 80px;
+  min-width: 60px;
 }
 
 .stat-label {
-  font-size: 11px;
+  font-size: 9px;
   color: #888888;
   font-weight: 500;
-  margin-bottom: 4px;
+  margin-bottom: 2px;
 }
 
 .stat-value {
-  font-size: 13px;
+  font-size: 11px;
   font-weight: 600;
   color: #ffffff;
 }
@@ -442,15 +442,15 @@ export default {
 }
 
 .stat-unit {
-  font-size: 10px;
+  font-size: 8px;
   color: #888888;
 }
 
 /* Main Content */
 .sheet-content {
   display: flex;
-  padding: 24px;
-  gap: 32px;
+  padding: 12px 16px;
+  gap: 24px;
 }
 
 .left-section {
@@ -464,45 +464,45 @@ export default {
 
 /* Account Section */
 .account-section {
-  margin-bottom: 32px;
+  margin-bottom: 16px;
 }
 
 .account-section h3 {
-  font-size: 14px;
+  font-size: 12px;
   color: #cccccc;
-  margin: 0 0 8px 0;
+  margin: 0 0 4px 0;
   font-weight: 500;
 }
 
 .account-name {
-  font-size: 16px;
+  font-size: 14px;
   color: #ffffff;
   font-weight: 400;
 }
 
 /* Order Details */
 .order-details-section h3 {
-  font-size: 14px;
+  font-size: 12px;
   color: #cccccc;
-  margin: 0 0 16px 0;
+  margin: 0 0 8px 0;
   font-weight: 500;
 }
 
 .order-legs {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 4px;
 }
 
 .order-leg {
   display: grid;
-  grid-template-columns: 40px 60px 60px 30px 50px 80px;
-  gap: 12px;
+  grid-template-columns: 30px 50px 50px 20px 40px 60px;
+  gap: 8px;
   align-items: center;
-  padding: 12px;
+  padding: 6px 8px;
   background-color: #2a2a2a;
-  border-radius: 6px;
-  font-size: 14px;
+  border-radius: 4px;
+  font-size: 11px;
 }
 
 .leg-quantity {
@@ -512,7 +512,7 @@ export default {
 
 .leg-date {
   color: #cccccc;
-  font-size: 12px;
+  font-size: 10px;
 }
 
 .leg-details {
@@ -527,10 +527,10 @@ export default {
 }
 
 .leg-action {
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 600;
-  padding: 4px 8px;
-  border-radius: 4px;
+  padding: 2px 6px;
+  border-radius: 3px;
   text-align: center;
 }
 
@@ -552,13 +552,13 @@ export default {
 
 /* Confirm Section */
 .confirm-section {
-  margin-bottom: 24px;
+  margin-bottom: 12px;
 }
 
 .confirm-title {
-  font-size: 24px;
+  font-size: 18px;
   color: #ffffff;
-  margin: 0 0 24px 0;
+  margin: 0 0 12px 0;
   font-weight: 600;
 }
 
@@ -570,24 +570,24 @@ export default {
 .trade-details-grid {
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 8px;
 }
 
 .detail-row {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr;
-  gap: 16px;
+  gap: 12px;
   align-items: center;
 }
 
 .detail-label {
-  font-size: 14px;
+  font-size: 11px;
   color: #888888;
   font-weight: 500;
 }
 
 .detail-value {
-  font-size: 14px;
+  font-size: 12px;
   color: #ffffff;
   font-weight: 500;
 }
@@ -597,7 +597,7 @@ export default {
 }
 
 .detail-unit {
-  font-size: 12px;
+  font-size: 10px;
   color: #888888;
 }
 
@@ -610,17 +610,17 @@ export default {
   background-color: rgba(255, 193, 7, 0.1);
   border: 1px solid rgba(255, 193, 7, 0.3);
   color: #ffc107;
-  padding: 12px 16px;
-  border-radius: 6px;
-  font-size: 14px;
-  margin-top: 24px;
+  padding: 8px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-top: 12px;
 }
 
 /* Action Buttons */
 .action-buttons {
   display: flex;
-  gap: 16px;
-  padding: 24px;
+  gap: 12px;
+  padding: 12px 16px;
   border-top: 1px solid #333333;
 }
 
@@ -629,9 +629,9 @@ export default {
   background-color: #444444;
   border: 1px solid #555555;
   color: #ffffff;
-  padding: 16px 24px;
-  border-radius: 8px;
-  font-size: 16px;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
@@ -646,16 +646,16 @@ export default {
   background-color: #00c851;
   border: none;
   color: #ffffff;
-  padding: 16px 24px;
-  border-radius: 8px;
-  font-size: 16px;
+  padding: 10px 16px;
+  border-radius: 6px;
+  font-size: 14px;
   font-weight: 600;
   cursor: pointer;
   transition: all 0.2s ease;
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: 8px;
+  gap: 6px;
 }
 
 .submit-btn:hover:not(:disabled) {
