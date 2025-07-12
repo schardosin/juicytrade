@@ -44,13 +44,13 @@
         <div class="stat-item">
           <span class="stat-label">Max Profit</span>
           <span class="stat-value positive">{{
-            formatCurrency(Math.abs(profitLossAnalysis.maxProfit), 0)
+            formatCurrency(Math.abs(profitLossAnalysis.maxProfit), 2)
           }}</span>
         </div>
         <div class="stat-item">
           <span class="stat-label">Max Loss</span>
           <span class="stat-value negative">{{
-            formatCurrency(Math.abs(profitLossAnalysis.maxLoss), 0)
+            formatCurrency(Math.abs(profitLossAnalysis.maxLoss), 2)
           }}</span>
         </div>
         <div class="stat-item">
@@ -287,31 +287,41 @@ export default {
     };
 
     const getNetCredit = () => {
-      const analysis = profitLossAnalysis.value;
-      const creditDebitInfo = getCreditDebitInfo(analysis.netPremium);
+      // Use the limit price from the order ticket
+      const limitPrice =
+        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
+      const creditDebitInfo = getCreditDebitInfo(limitPrice);
       return formatCurrency(creditDebitInfo.amount);
     };
 
     const getEstimatedCost = () => {
-      const analysis = profitLossAnalysis.value;
-      const creditDebitInfo = getCreditDebitInfo(analysis.netPremium);
+      // Use the limit price from the order ticket
+      const limitPrice =
+        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
+      const creditDebitInfo = getCreditDebitInfo(limitPrice);
       return `${formatCurrency(creditDebitInfo.amount)} ${
         creditDebitInfo.label
       }`;
     };
 
     const getEstimatedTotal = () => {
-      const analysis = profitLossAnalysis.value;
-      const creditDebitInfo = getCreditDebitInfo(analysis.netPremium);
+      // Use the limit price from the order ticket
+      const limitPrice =
+        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
+      const creditDebitInfo = getCreditDebitInfo(limitPrice);
       const fees = 3.56; // 2.00 + 1.56
       const total = creditDebitInfo.amount + fees;
       return `${formatCurrency(total)} ${creditDebitInfo.label}`;
     };
 
     const getBPEffect = () => {
-      const analysis = profitLossAnalysis.value;
-      const bpEffect = calculateBuyingPowerEffect(analysis);
-      return formatCurrency(bpEffect);
+      // For BP effect, use the max loss calculation but consider the limit price impact
+      const limitPrice =
+        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
+      const maxLoss = Math.abs(
+        props.orderData?.maxRisk || Math.abs(limitPrice)
+      );
+      return formatCurrency(maxLoss);
     };
 
     // Format expiry date
