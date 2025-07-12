@@ -232,29 +232,35 @@ export default {
         };
       }
 
-      // For credit spreads: Max Profit = Premium × 100, Max Loss = (Spread Width - Premium) × 100
-      const limitPrice =
-        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
-      const creditDebitInfo = getCreditDebitInfo(limitPrice);
+      // Use the display limit price (always positive) for calculations
+      const displayPrice =
+        props.orderData?.displayLimitPrice ||
+        Math.abs(
+          props.orderData?.limitPrice || props.orderData?.netPremium || 0
+        );
+
+      // Use the original netPremium to determine if it's credit or debit
+      const originalNetPremium = props.orderData?.netPremium || 0;
+      const isCredit = originalNetPremium <= 0; // Negative netPremium = credit
 
       let maxProfit, maxLoss;
 
-      if (creditDebitInfo.isCredit) {
+      if (isCredit) {
         // Credit spread: we receive premium
-        maxProfit = creditDebitInfo.amount * 100; // Premium received
+        maxProfit = displayPrice * 100; // Premium received × 100
         // For credit spread, max loss = (spread width - premium received)
         // Assuming $2 spread width based on typical iron condor/butterfly
-        maxLoss = 200 - creditDebitInfo.amount * 100; // 200 - premium = max loss
+        maxLoss = 200 - displayPrice * 100; // 200 - premium = max loss
       } else {
         // Debit spread: we pay premium
-        maxLoss = creditDebitInfo.amount * 100;
-        maxProfit = 200 - creditDebitInfo.amount * 100;
+        maxLoss = displayPrice * 100; // Premium paid × 100
+        maxProfit = 200 - displayPrice * 100; // Spread width - premium paid
       }
 
       const analysis = {
         maxProfit: maxProfit,
         maxLoss: maxLoss,
-        netPremium: limitPrice,
+        netPremium: originalNetPremium,
         breakEvenPoints: [],
         currentPL: 0,
         positions: [],
@@ -305,39 +311,53 @@ export default {
     };
 
     const getCreditDebitLabel = () => {
-      // Use the limit price from the order ticket
-      const limitPrice =
-        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
-      const creditDebitInfo = getCreditDebitInfo(limitPrice);
-      return creditDebitInfo.isCredit ? "Net Credit @" : "Net Debit @";
+      // Use the display limit price for UI (always positive)
+      const displayPrice =
+        props.orderData?.displayLimitPrice ||
+        Math.abs(
+          props.orderData?.limitPrice || props.orderData?.netPremium || 0
+        );
+      const netPremium = props.orderData?.netPremium || 0;
+      // Invert the logic: negative netPremium = credit, positive = debit
+      return netPremium <= 0 ? "Net Credit @" : "Net Debit @";
     };
 
     const getNetCredit = () => {
-      // Use the limit price from the order ticket
-      const limitPrice =
-        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
-      const creditDebitInfo = getCreditDebitInfo(limitPrice);
-      return formatCurrency(creditDebitInfo.amount);
+      // Use the display limit price for UI (always positive)
+      const displayPrice =
+        props.orderData?.displayLimitPrice ||
+        Math.abs(
+          props.orderData?.limitPrice || props.orderData?.netPremium || 0
+        );
+      return formatCurrency(displayPrice);
     };
 
     const getEstimatedCost = () => {
-      // Use the limit price from the order ticket
-      const limitPrice =
-        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
-      const creditDebitInfo = getCreditDebitInfo(limitPrice);
-      return `${formatCurrency(creditDebitInfo.amount)} ${
-        creditDebitInfo.label
-      }`;
+      // Use the display limit price for UI (always positive)
+      const displayPrice =
+        props.orderData?.displayLimitPrice ||
+        Math.abs(
+          props.orderData?.limitPrice || props.orderData?.netPremium || 0
+        );
+      const netPremium = props.orderData?.netPremium || 0;
+      // Invert the logic: negative netPremium = credit, positive = debit
+      const label = netPremium <= 0 ? "cr" : "db";
+      return `${formatCurrency(displayPrice)} ${label}`;
     };
 
     const getEstimatedTotal = () => {
-      // Use the limit price from the order ticket
-      const limitPrice =
-        props.orderData?.limitPrice || props.orderData?.netPremium || 0;
-      const creditDebitInfo = getCreditDebitInfo(limitPrice);
+      // Use the display limit price for UI (always positive)
+      const displayPrice =
+        props.orderData?.displayLimitPrice ||
+        Math.abs(
+          props.orderData?.limitPrice || props.orderData?.netPremium || 0
+        );
+      const netPremium = props.orderData?.netPremium || 0;
+      // Invert the logic: negative netPremium = credit, positive = debit
+      const label = netPremium <= 0 ? "cr" : "db";
       const fees = 3.56; // 2.00 + 1.56
-      const total = creditDebitInfo.amount + fees;
-      return `${formatCurrency(total)} ${creditDebitInfo.label}`;
+      const total = displayPrice + fees;
+      return `${formatCurrency(total)} ${label}`;
     };
 
     const getBPEffect = () => {

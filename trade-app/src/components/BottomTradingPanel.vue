@@ -526,6 +526,12 @@ export default {
       const analysis = profitLossAnalysis.value;
       const greeksData = greeks.value;
 
+      // Calculate broker limit price: negative for credits, positive for debits
+      const brokerLimitPrice =
+        analysis.netPremium >= 0
+          ? -Math.abs(limitPrice.value) // Credit: negative
+          : Math.abs(limitPrice.value); // Debit: positive
+
       const orderData = {
         symbol: props.symbol,
         expiry: expiry,
@@ -548,7 +554,8 @@ export default {
         }),
         orderType: selectedOrderType.value,
         timeInForce: selectedTimeInForce.value,
-        limitPrice: limitPrice.value,
+        limitPrice: brokerLimitPrice,
+        displayLimitPrice: limitPrice.value, // Keep UI display price for confirmation dialog
         netPremium: analysis.netPremium,
         underlyingPrice: props.underlyingPrice,
         accountName: "Paper Trading Account",
@@ -563,7 +570,8 @@ export default {
     watch(
       netPremium,
       (newValue) => {
-        limitPrice.value = parseFloat(newValue.toFixed(2));
+        // Always display limit price as positive in UI
+        limitPrice.value = parseFloat(Math.abs(newValue).toFixed(2));
       },
       { immediate: true }
     );
@@ -571,7 +579,8 @@ export default {
     watch(
       () => props.selectedOptions,
       () => {
-        limitPrice.value = parseFloat(netPremium.value.toFixed(2));
+        // Always display limit price as positive in UI
+        limitPrice.value = parseFloat(Math.abs(netPremium.value).toFixed(2));
       },
       { deep: true, immediate: true }
     );
