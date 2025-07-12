@@ -72,14 +72,7 @@
       <div class="control-group">
         <span class="control-label">Swap</span>
         <div class="control-buttons">
-          <button class="ctrl-btn">🔄</button>
-        </div>
-      </div>
-      <div class="control-group">
-        <span class="control-label">Undo/Redo</span>
-        <div class="control-buttons">
-          <button class="ctrl-btn">↶</button>
-          <button class="ctrl-btn">↷</button>
+          <button class="ctrl-btn">↔</button>
         </div>
       </div>
     </div>
@@ -612,19 +605,20 @@ export default {
   color: #888;
 }
 
-/* Controls Row - Compact */
+/* Controls Row - Responsive like Tasty Trade */
 .controls-row {
   display: flex;
-  justify-content: space-between;
   padding: 8px 16px;
   background-color: #1a1a1a;
   border-bottom: 1px solid #333;
+  gap: 4px;
 }
 
 .control-group {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  align-items: center;
+  align-items: stretch;
   gap: 4px;
 }
 
@@ -632,19 +626,23 @@ export default {
   font-size: 10px;
   color: #888;
   font-weight: 500;
+  text-align: center;
+  white-space: nowrap;
 }
 
 .control-buttons {
   display: flex;
   gap: 2px;
+  width: 100%;
+  height: 32px;
 }
 
 .ctrl-btn {
   background-color: #333;
   border: 1px solid #444;
   color: #ccc;
-  width: 40px;
-  height: 32px;
+  flex: 1;
+  height: 100%;
   border-radius: 4px;
   cursor: pointer;
   font-size: 14px;
@@ -652,11 +650,17 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
+  min-width: 0;
 }
 
 .ctrl-btn:hover {
   background-color: #444;
   color: #fff;
+}
+
+/* For single button groups (like Swap), the button should still fill the space */
+.control-group .control-buttons .ctrl-btn:only-child {
+  flex: 1;
 }
 
 /* Content Row - Compact */
