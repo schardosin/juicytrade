@@ -92,7 +92,7 @@ class WebSocketStreamingClient {
         symbols: symbols,
       };
 
-      //console.log("Sending WebSocket subscription:", message);
+      console.log("Sending WebSocket subscription:", message);
       this.ws.send(JSON.stringify(message));
     } else {
       console.log(
@@ -181,8 +181,6 @@ class WebSocketStreamingClient {
   }
 
   handleMessage(message) {
-    //console.log("WebSocket message received:", message);
-
     switch (message.type) {
       case "price_update":
         // Queue price updates for throttled processing

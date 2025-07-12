@@ -101,6 +101,7 @@ class OrderRequest(BaseModel):
 
 class MultiLegOrderRequest(BaseModel):
     legs: List[Dict[str, Any]]
+    qty: int = 1
     order_type: str = "limit"
     time_in_force: str = "day"
     limit_price: Optional[float] = None

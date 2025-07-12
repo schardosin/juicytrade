@@ -129,6 +129,19 @@ class BaseProvider(ABC):
             Order object representing the placed order
         """
         pass
+
+    @abstractmethod
+    async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Order:
+        """
+        Place a multi-leg trading order.
+        
+        Args:
+            order_data: Order parameters for a multi-leg order
+            
+        Returns:
+            Order object representing the placed order
+        """
+        pass
     
     @abstractmethod
     async def cancel_order(self, order_id: str) -> bool:

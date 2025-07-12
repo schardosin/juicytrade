@@ -25,8 +25,19 @@ class Settings(BaseSettings):
     alpaca_base_url_paper: str = os.getenv("ALPACA_BASE_URL_PAPER", "https://paper-api.alpaca.markets")
     alpaca_data_url: str = os.getenv("ALPACA_DATA_URL", "https://data.alpaca.markets")
     
-    # Trading settings
-    use_paper_trading: bool = True
+    # Public API credentials
+    public_secret_key: str = os.getenv("PUBLIC_SECRET_KEY", "")
+    public_account_id: str = os.getenv("PUBLIC_ACCOUNT_ID", "")
+
+    # Tradier API credentials
+    tradier_secret_key: str = os.getenv("TRADIER_SECRET_KEY", "")
+    tradier_account_id: str = os.getenv("TRADIER_ACCOUNT_ID", "")
+    tradier_secret_key_paper: str = os.getenv("TRADIER_SECRET_KEY_PAPER", "")
+    tradier_account_id_paper: str = os.getenv("TRADIER_ACCOUNT_ID_PAPER", "")
+    tradier_base_url_live: str = os.getenv("TRADIER_BASE_URL_LIVE", "https://api.tradier.com")
+    tradier_base_url_paper: str = os.getenv("TRADIER_BASE_URL_PAPER", "https://sandbox.tradier.com")
+    tradier_stream_url_live: str = os.getenv("TRADIER_STREAM_URL_LIVE", "wss://ws.tradier.com/v1/markets/events")
+    tradier_stream_url_paper: str = os.getenv("TRADIER_STREAM_URL_PAPER", "wss://ws.sandbox.tradier.com/v1/markets/events")
     
     # Server settings
     host: str = "0.0.0.0"

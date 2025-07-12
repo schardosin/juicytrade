@@ -8,7 +8,7 @@
       <!-- Left Navigation -->
       <SideNav />
 
-      <!-- Content Area -->
+      <!-- Content Area -->r
       <div class="content-area">
         <!-- Symbol Header -->
         <div class="symbol-header">
@@ -80,6 +80,7 @@
           <!-- Options Chain -->
           <div class="options-chain-wrapper">
             <OptionsChain
+              :key="selectedExpiry"
               :optionsData="optionsChainData"
               :underlyingPrice="currentPrice"
               :selectedOptions="selectedOptions"
@@ -117,18 +118,6 @@
               :height="isRightPanelExpanded ? '400px' : '300px'"
               :symbol="currentSymbol"
               :isLivePrice="isLivePrice"
-            />
-          </div>
-
-          <!-- Order Ticket -->
-          <div class="order-ticket-section" v-if="selectedOptions.length > 0">
-            <OrderTicket
-              :selectedOptions="selectedOptions"
-              :optionsData="optionsChainData"
-              :underlyingSymbol="currentSymbol"
-              :underlyingPrice="currentPrice"
-              @order-placed="onOrderPlaced"
-              @clear-selections="clearAllSelections"
             />
           </div>
 
@@ -178,6 +167,16 @@
       @close="handleOrderResultClose"
       @viewPositions="handleOrderResultClose"
     />
+
+    <!-- Bottom Trading Panel -->
+    <BottomTradingPanel
+      :visible="showBottomPanel"
+      :selectedOptions="selectedOptions"
+      :symbol="currentSymbol"
+      :underlyingPrice="currentPrice"
+      @clear-trade="clearAllSelections"
+      @review-send="onReviewAndSend"
+    />
   </div>
 </template>
 
@@ -188,6 +187,7 @@ import SideNav from "../components/SideNav.vue";
 import OptionsChain from "../components/OptionsChain.vue";
 import OrderTicket from "../components/OrderTicket.vue";
 import PayoffChart from "../components/PayoffChart.vue";
+import BottomTradingPanel from "../components/BottomTradingPanel.vue";
 import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
 import OrderResultDialog from "../components/OrderResultDialog.vue";
 import { useOrderManagement } from "../composables/useOrderManagement";
@@ -203,6 +203,7 @@ export default {
     OptionsChain,
     OrderTicket,
     PayoffChart,
+    BottomTradingPanel,
     OrderConfirmationDialog,
     OrderResultDialog,
   },
@@ -236,6 +237,7 @@ export default {
     const chartData = ref(null);
     const selectedTradeMode = ref("options");
     const isRightPanelExpanded = ref(false);
+    const showBottomPanel = ref(false);
 
     // Trade modes
     const tradeModes = [
@@ -305,16 +307,20 @@ export default {
           );
 
           const dates = response.map((dateStr) => {
-            const date = new Date(dateStr);
+            const [year, month, day] = dateStr.split("-").map(Number);
+            const date = new Date(Date.UTC(year, month - 1, day));
             const today = new Date();
+            today.setHours(0, 0, 0, 0);
+
             return {
               label: date.toLocaleDateString("en-US", {
                 month: "short",
                 day: "numeric",
                 year:
-                  date.getFullYear() !== today.getFullYear()
+                  date.getUTCFullYear() !== today.getFullYear()
                     ? "numeric"
                     : undefined,
+                timeZone: "UTC",
               }),
               value: dateStr,
             };
@@ -386,6 +392,28 @@ export default {
             } else {
               marketStatus.value = "Market Closed";
             }
+          } else {
+            // Handle option price updates
+            const optionIndex = optionsChainData.value.findIndex(
+              (o) => o.symbol === data.symbol
+            );
+            if (optionIndex !== -1) {
+              //console.log(`Updating price for ${data.symbol}:`, data.data);
+              const newBid = data.data.bid;
+              const newAsk = data.data.ask;
+
+              // Create a new object to ensure reactivity
+              const updatedOption = {
+                ...optionsChainData.value[optionIndex],
+                bid: newBid,
+                ask: newAsk,
+              };
+
+              // Replace the old object with the new one
+              const newOptionsData = [...optionsChainData.value];
+              newOptionsData[optionIndex] = updatedOption;
+              optionsChainData.value = newOptionsData;
+            }
           }
         });
       } catch (error) {
@@ -393,9 +421,19 @@ export default {
       }
     };
 
-    const onExpiryChange = () => {
+    const onExpiryChange = async () => {
+      console.log("onExpiryChange called");
       if (selectedExpiry.value) {
-        fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
+        await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
+
+        // NEW: Subscribe to option symbols for live pricing
+        if (optionsChainData.value.length > 0) {
+          const optionSymbols = optionsChainData.value.map(
+            (option) => option.symbol
+          );
+          console.log("Subscribing to option symbols:", optionSymbols);
+          webSocketClient.subscribe(optionSymbols);
+        }
       }
     };
 
@@ -412,6 +450,8 @@ export default {
         selectedOptions.value.push(optionSelection);
       }
 
+      // Force show bottom panel
+      showBottomPanel.value = true;
       updateChartData();
     };
 
@@ -422,12 +462,18 @@ export default {
       if (index >= 0) {
         selectedOptions.value.splice(index, 1);
         updateChartData();
+
+        // Auto-hide panel if no options left
+        if (selectedOptions.value.length === 0) {
+          showBottomPanel.value = false;
+        }
       }
     };
 
     const clearAllSelections = () => {
       selectedOptions.value = [];
       chartData.value = null;
+      showBottomPanel.value = false;
     };
 
     const updateChartData = () => {
@@ -490,12 +536,19 @@ export default {
       isRightPanelExpanded.value = !isRightPanelExpanded.value;
     };
 
+    const onReviewAndSend = (orderData) => {
+      // Hide bottom panel and show confirmation dialog
+      showBottomPanel.value = false;
+      initializeOrder(orderData);
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       await fetchSymbolData(currentSymbol.value);
       await fetchExpirationDates(currentSymbol.value);
       if (selectedExpiry.value) {
         await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
+        onExpiryChange();
       }
     });
 
@@ -505,6 +558,21 @@ export default {
 
     // Watchers
     watch(selectedOptions, updateChartData, { deep: true });
+
+    watch(selectedExpiry, (newExpiry, oldExpiry) => {
+      if (newExpiry && newExpiry !== oldExpiry) {
+        onExpiryChange();
+      }
+    });
+
+    // Show/hide bottom panel based on selected options
+    watch(
+      selectedOptions,
+      (newOptions) => {
+        showBottomPanel.value = newOptions.length > 0;
+      },
+      { immediate: true }
+    );
 
     return {
       // Reactive data
@@ -524,6 +592,7 @@ export default {
       selectedTradeMode,
       tradeModes,
       isRightPanelExpanded,
+      showBottomPanel,
 
       // Computed
       priceChangeClass,
@@ -537,6 +606,7 @@ export default {
       clearAllSelections,
       onOrderPlaced,
       toggleRightPanel,
+      onReviewAndSend,
 
       // Order management
       showOrderConfirmation,

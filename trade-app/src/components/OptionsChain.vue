@@ -133,24 +133,18 @@ export default {
       return strikes;
     });
 
-    const callOptions = computed(() => {
-      return optionsData.value.filter((opt) => opt.type === "call");
-    });
-
-    const putOptions = computed(() => {
-      return optionsData.value.filter((opt) => opt.type === "put");
-    });
-
     // Methods
     const getCallOption = (strike) => {
-      return callOptions.value.find(
-        (opt) => Math.abs(opt.strike_price - strike) < 0.01
+      return optionsData.value.find(
+        (opt) =>
+          opt.type === "call" && Math.abs(opt.strike_price - strike) < 0.01
       );
     };
 
     const getPutOption = (strike) => {
-      return putOptions.value.find(
-        (opt) => Math.abs(opt.strike_price - strike) < 0.01
+      return optionsData.value.find(
+        (opt) =>
+          opt.type === "put" && Math.abs(opt.strike_price - strike) < 0.01
       );
     };
 
@@ -176,40 +170,22 @@ export default {
 
     const getCallDelta = (strike) => {
       const option = getCallOption(strike);
-      if (!option) return "-";
-      // Mock delta calculation - in real app this would come from the API
-      const delta = Math.max(
-        0,
-        Math.min(1, 0.5 + (underlyingPrice.value - strike) * 0.02)
-      );
-      return delta.toFixed(2);
+      return option && option.delta ? option.delta.toFixed(2) : "-";
     };
 
     const getCallTheta = (strike) => {
       const option = getCallOption(strike);
-      if (!option) return "-";
-      // Mock theta calculation - in real app this would come from the API
-      const theta = -0.05 - Math.random() * 0.1;
-      return theta.toFixed(2);
+      return option && option.theta ? option.theta.toFixed(2) : "-";
     };
 
     const getPutDelta = (strike) => {
       const option = getPutOption(strike);
-      if (!option) return "-";
-      // Mock delta calculation - in real app this would come from the API
-      const delta = Math.max(
-        -1,
-        Math.min(0, -0.5 + (underlyingPrice.value - strike) * 0.02)
-      );
-      return delta.toFixed(2);
+      return option && option.delta ? option.delta.toFixed(2) : "-";
     };
 
     const getPutTheta = (strike) => {
       const option = getPutOption(strike);
-      if (!option) return "-";
-      // Mock theta calculation - in real app this would come from the API
-      const theta = -0.05 - Math.random() * 0.1;
-      return theta.toFixed(2);
+      return option && option.theta ? option.theta.toFixed(2) : "-";
     };
 
     const formatPrice = (price) => {
@@ -306,8 +282,6 @@ export default {
     return {
       // Computed
       strikeList,
-      callOptions,
-      putOptions,
 
       // Methods
       getCallOption,
