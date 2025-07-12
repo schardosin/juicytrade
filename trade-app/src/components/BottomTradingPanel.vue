@@ -211,6 +211,13 @@
 
 <script>
 import { ref, computed, watch, toRefs } from "vue";
+import {
+  calculateMultiLegProfitLoss,
+  calculateBuyingPowerEffect,
+  formatCurrency,
+  getCreditDebitInfo,
+  calculateGreeks,
+} from "../services/optionsCalculator.js";
 
 export default {
   name: "BottomTradingPanel",
@@ -301,20 +308,37 @@ export default {
       ).toFixed(2);
     });
 
+    // Calculate comprehensive P&L analysis using centralized calculator
+    const profitLossAnalysis = computed(() => {
+      return calculateMultiLegProfitLoss(
+        selectedOptions.value,
+        optionsData.value,
+        props.underlyingPrice
+      );
+    });
+
+    // Calculate Greeks
+    const greeks = computed(() => {
+      if (profitLossAnalysis.value.positions.length > 0) {
+        return calculateGreeks(profitLossAnalysis.value.positions);
+      }
+      return { delta: 0, theta: 0 };
+    });
+
     const stats = computed(() => {
-      const maxProfit =
-        netPremium.value > 0 ? netPremium.value * 100 : Infinity;
-      const maxLoss = netPremium.value < 0 ? netPremium.value * 100 : -Infinity;
+      const analysis = profitLossAnalysis.value;
+      const creditDebitInfo = getCreditDebitInfo(analysis.netPremium);
+      const bpEffect = calculateBuyingPowerEffect(analysis);
 
       return {
-        pop: 59, // Placeholder
-        ext: (netPremium.value * 100).toFixed(0),
+        pop: 59, // Placeholder - would need probability calculation
+        ext: formatCurrency(Math.abs(analysis.maxProfit), 0),
         p50: null, // Placeholder
-        delta: 0, // Placeholder
-        theta: 0, // Placeholder
-        maxProfit: maxProfit.toFixed(0),
-        maxLoss: maxLoss.toFixed(0),
-        bpEff: (Math.abs(netPremium.value) * 100).toFixed(0),
+        delta: greeks.value.delta,
+        theta: greeks.value.theta,
+        maxProfit: formatCurrency(Math.abs(analysis.maxProfit), 0),
+        maxLoss: formatCurrency(Math.abs(analysis.maxLoss), 0),
+        bpEff: formatCurrency(bpEffect, 0),
       };
     });
 
@@ -449,9 +473,13 @@ export default {
           ? props.selectedOptions[0].expiry
           : null;
 
+      // Get comprehensive analysis from centralized calculator
+      const analysis = profitLossAnalysis.value;
+      const greeksData = greeks.value;
+
       const orderData = {
         symbol: props.symbol,
-        expiry: expiry, // Add the missing expiry field
+        expiry: expiry,
         legs: props.selectedOptions.map((leg) => {
           const liveOption = props.optionsData.find(
             (o) => o.symbol === leg.symbol
@@ -472,13 +500,13 @@ export default {
         orderType: selectedOrderType.value,
         timeInForce: selectedTimeInForce.value,
         limitPrice: limitPrice.value,
-        netPremium: netPremium.value,
+        netPremium: analysis.netPremium,
         underlyingPrice: props.underlyingPrice,
         accountName: "Paper Trading Account",
-        maxReward: Math.abs(netPremium.value) * 100,
-        maxRisk: Math.abs(netPremium.value) * 100,
-        netDelta: 0, // Placeholder - would need Greeks calculation
-        netTheta: 0, // Placeholder - would need Greeks calculation
+        maxReward: Math.abs(analysis.maxProfit),
+        maxRisk: Math.abs(analysis.maxLoss),
+        netDelta: greeksData.delta,
+        netTheta: greeksData.theta,
       };
       emit("review-send", orderData);
     };

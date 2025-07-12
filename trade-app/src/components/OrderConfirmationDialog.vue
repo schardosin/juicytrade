@@ -25,7 +25,9 @@
         </div>
         <div class="stat-item">
           <span class="stat-label">EXT</span>
-          <span class="stat-value">660</span>
+          <span class="stat-value">{{
+            formatCurrency(Math.abs(profitLossAnalysis.maxProfit), 0)
+          }}</span>
         </div>
         <div class="stat-item">
           <span class="stat-label">P50</span>
@@ -33,30 +35,28 @@
         </div>
         <div class="stat-item">
           <span class="stat-label">Delta</span>
-          <span class="stat-value">{{ orderData?.netDelta || "9.32" }}</span>
+          <span class="stat-value">{{ greeks.delta }}</span>
         </div>
         <div class="stat-item">
           <span class="stat-label">Theta</span>
-          <span class="stat-value negative">{{
-            orderData?.netTheta || "-359.683"
-          }}</span>
+          <span class="stat-value negative">{{ greeks.theta }}</span>
         </div>
         <div class="stat-item">
           <span class="stat-label">Max Profit</span>
           <span class="stat-value positive">{{
-            orderData?.maxReward || "660"
+            formatCurrency(Math.abs(profitLossAnalysis.maxProfit), 0)
           }}</span>
         </div>
         <div class="stat-item">
           <span class="stat-label">Max Loss</span>
           <span class="stat-value negative">{{
-            orderData?.maxRisk || "-340"
+            formatCurrency(Math.abs(profitLossAnalysis.maxLoss), 0)
           }}</span>
         </div>
         <div class="stat-item">
           <span class="stat-label">BP Eff.</span>
           <span class="stat-value"
-            >340.00 <span class="stat-unit">db</span></span
+            >{{ getBPEffect() }} <span class="stat-unit">db</span></span
           >
         </div>
       </div>
@@ -191,6 +191,13 @@
 
 <script>
 import { ref, computed, watch } from "vue";
+import {
+  calculateMultiLegProfitLoss,
+  calculateBuyingPowerEffect,
+  formatCurrency,
+  getCreditDebitInfo,
+  calculateGreeks,
+} from "../services/optionsCalculator.js";
 
 export default {
   name: "OrderConfirmationDialog",
@@ -211,6 +218,40 @@ export default {
   emits: ["hide", "confirm", "cancel", "edit"],
   setup(props, { emit }) {
     const editableOrderPrice = ref(0);
+
+    // Calculate comprehensive P&L analysis using centralized calculator
+    const profitLossAnalysis = computed(() => {
+      if (!props.orderData?.legs) {
+        return {
+          maxProfit: 0,
+          maxLoss: 0,
+          netPremium: 0,
+          breakEvenPoints: [],
+          currentPL: 0,
+          positions: [],
+        };
+      }
+
+      // Use the existing orderData values directly instead of recalculating
+      const analysis = {
+        maxProfit: Math.abs(props.orderData.maxReward || 0),
+        maxLoss: Math.abs(props.orderData.maxRisk || 0),
+        netPremium: props.orderData.netPremium || 0,
+        breakEvenPoints: [],
+        currentPL: 0,
+        positions: [],
+      };
+
+      return analysis;
+    });
+
+    // Calculate Greeks
+    const greeks = computed(() => {
+      return {
+        delta: formatCurrency(props.orderData?.netDelta || 0, 2),
+        theta: formatCurrency(props.orderData?.netTheta || 0, 2),
+      };
+    });
 
     // Format legs for display
     const formattedLegs = computed(() => {
@@ -246,28 +287,31 @@ export default {
     };
 
     const getNetCredit = () => {
-      const netPremium = props.orderData?.netPremium || 0;
-      return netPremium >= 0
-        ? `${Math.abs(netPremium).toFixed(2)}`
-        : `${Math.abs(netPremium).toFixed(2)}`;
+      const analysis = profitLossAnalysis.value;
+      const creditDebitInfo = getCreditDebitInfo(analysis.netPremium);
+      return formatCurrency(creditDebitInfo.amount);
     };
 
     const getEstimatedCost = () => {
-      const cost = props.orderData?.netPremium || 0;
-      return `${Math.abs(cost).toFixed(2)} ${cost >= 0 ? "cr" : "db"}`;
+      const analysis = profitLossAnalysis.value;
+      const creditDebitInfo = getCreditDebitInfo(analysis.netPremium);
+      return `${formatCurrency(creditDebitInfo.amount)} ${
+        creditDebitInfo.label
+      }`;
     };
 
     const getEstimatedTotal = () => {
-      const cost = props.orderData?.netPremium || 0;
+      const analysis = profitLossAnalysis.value;
+      const creditDebitInfo = getCreditDebitInfo(analysis.netPremium);
       const fees = 3.56; // 2.00 + 1.56
-      const total = Math.abs(cost) + fees;
-      return `${total.toFixed(2)} ${cost >= 0 ? "cr" : "db"}`;
+      const total = creditDebitInfo.amount + fees;
+      return `${formatCurrency(total)} ${creditDebitInfo.label}`;
     };
 
     const getBPEffect = () => {
-      return props.orderData?.maxRisk
-        ? Math.abs(props.orderData.maxRisk).toFixed(2)
-        : "343.56";
+      const analysis = profitLossAnalysis.value;
+      const bpEffect = calculateBuyingPowerEffect(analysis);
+      return formatCurrency(bpEffect);
     };
 
     // Format expiry date
@@ -316,11 +360,14 @@ export default {
       editableOrderPrice,
       formattedLegs,
       canConfirm,
+      profitLossAnalysis,
+      greeks,
       getStrategyName,
       getNetCredit,
       getEstimatedCost,
       getEstimatedTotal,
       getBPEffect,
+      formatCurrency,
       formatExpiry,
       handleCancel,
       handleEdit,
