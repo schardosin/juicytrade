@@ -182,6 +182,7 @@
       @hide="handleOrderCancellation"
       @confirm="handleOrderConfirmation"
       @cancel="handleOrderCancellation"
+      @edit="handleOrderEdit"
     />
 
     <!-- Order Result Dialog -->
@@ -577,6 +578,13 @@ export default {
       initializeOrder(orderData);
     };
 
+    const handleOrderEdit = () => {
+      // Hide confirmation dialog and show bottom trading panel
+      showBottomPanel.value = true;
+      // Also need to hide the confirmation dialog
+      handleOrderCancellation();
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       await fetchSymbolData(currentSymbol.value);
@@ -642,6 +650,7 @@ export default {
       onOrderPlaced,
       toggleRightPanel,
       onReviewAndSend,
+      handleOrderEdit,
 
       // Order management
       showOrderConfirmation,

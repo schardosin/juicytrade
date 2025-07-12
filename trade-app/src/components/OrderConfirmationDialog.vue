@@ -208,7 +208,7 @@ export default {
       default: false,
     },
   },
-  emits: ["hide", "confirm", "cancel"],
+  emits: ["hide", "confirm", "cancel", "edit"],
   setup(props, { emit }) {
     const editableOrderPrice = ref(0);
 
@@ -297,7 +297,7 @@ export default {
 
     // Handle edit
     const handleEdit = () => {
-      emit("hide");
+      emit("edit");
     };
 
     // Handle confirm
