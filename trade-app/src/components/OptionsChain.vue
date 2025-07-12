@@ -245,12 +245,9 @@ export default {
       } else {
         // Select or change side
         emit("option-selected", {
-          symbol: option.symbol,
+          ...option,
           side: side,
           quantity: 1,
-          strike: option.strike_price,
-          type: "call",
-          expiry: option.expiry_date,
         });
       }
     };
@@ -269,12 +266,9 @@ export default {
       } else {
         // Select or change side
         emit("option-selected", {
-          symbol: option.symbol,
+          ...option,
           side: side,
           quantity: 1,
-          strike: option.strike_price,
-          type: "put",
-          expiry: option.expiry_date,
         });
       }
     };

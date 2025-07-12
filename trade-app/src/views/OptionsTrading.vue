@@ -197,6 +197,7 @@
     <BottomTradingPanel
       :visible="showBottomPanel"
       :selectedOptions="selectedOptions"
+      :optionsData="optionsChainData"
       :symbol="currentSymbol"
       :underlyingPrice="currentPrice"
       @clear-trade="clearAllSelections"
