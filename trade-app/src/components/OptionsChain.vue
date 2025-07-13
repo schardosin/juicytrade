@@ -306,19 +306,19 @@ export default {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background-color: #0b0d10;
-  border-radius: 8px;
+  background-color: var(--options-grid-bg);
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 
 .chain-header {
   display: grid;
   grid-template-columns: 1fr 100px 1fr;
-  background-color: #0b0d10;
-  border-bottom: 2px solid #1a1d23;
-  font-weight: 600;
-  font-size: 12px;
-  color: #cccccc;
+  background-color: var(--options-grid-bg);
+  border-bottom: 2px solid var(--border-primary);
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-base);
+  color: var(--text-secondary);
   overflow-y: scroll;
 }
 
@@ -326,8 +326,8 @@ export default {
 .puts-header {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr;
-  gap: 8px;
-  padding: 12px 16px;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
 }
 
 .puts-header {
@@ -338,17 +338,17 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 12px 16px;
-  background-color: #1a1d23;
-  font-weight: 700;
-  color: #ffffff;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background-color: var(--options-strike-bg);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
 }
 
 .header-cell {
   text-align: center;
-  font-size: 11px;
-  font-weight: 600;
-  color: #888888;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-tertiary);
 }
 
 .chain-body {
@@ -359,18 +359,18 @@ export default {
 .option-row {
   display: grid;
   grid-template-columns: 1fr 100px 1fr;
-  border-bottom: 1px solid #1a1d23;
-  transition: background-color 0.2s ease;
+  border-bottom: 1px solid var(--border-primary);
+  transition: var(--transition-normal);
 }
 
 .option-row:hover {
-  background-color: #1a1d23;
+  background-color: var(--options-row-hover);
 }
 
 .option-row.at-the-money {
-  background-color: rgba(255, 107, 53, 0.1);
-  border-top: 1px solid rgba(255, 107, 53, 0.3);
-  border-bottom: 1px solid rgba(255, 107, 53, 0.3);
+  background-color: var(--options-atm-bg);
+  border-top: 1px solid var(--options-atm-border);
+  border-bottom: 1px solid var(--options-atm-border);
 }
 
 .call-side,
@@ -382,49 +382,49 @@ export default {
 .option-data {
   display: grid;
   grid-template-columns: 1fr 1fr 1fr 1fr;
-  gap: 8px;
-  padding: 8px 16px;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
   width: 100%;
   cursor: pointer;
-  transition: background-color 0.2s ease;
+  transition: var(--transition-normal);
 }
 
 .option-data:hover:not(.empty) {
-  background-color: #3a3a3a;
+  background-color: var(--bg-quaternary);
 }
 
 .option-data.selected-buy {
-  background-color: rgba(0, 200, 81, 0.2);
-  border-left: 3px solid #00c851;
+  background-color: var(--options-selected-buy);
+  border-left: 3px solid var(--color-success);
 }
 
 .option-data.selected-sell {
-  background-color: rgba(255, 68, 68, 0.2);
-  border-left: 3px solid #ff4444;
+  background-color: var(--options-selected-sell);
+  border-left: 3px solid var(--color-danger);
 }
 
 .option-data.empty {
   cursor: default;
-  color: #666666;
+  color: var(--text-quaternary);
 }
 
 .greek-cell,
 .price-cell {
-  font-size: 12px;
+  font-size: var(--font-size-base);
   text-align: center;
-  padding: 4px;
-  border-radius: 4px;
-  transition: background-color 0.2s ease;
+  padding: var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  transition: var(--transition-normal);
 }
 
 .greek-cell {
-  color: #cccccc;
-  font-weight: 500;
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
 }
 
 .price-cell {
-  color: #ffffff;
-  font-weight: 600;
+  color: var(--text-primary);
+  font-weight: var(--font-weight-semibold);
   cursor: pointer;
 }
 
@@ -444,16 +444,16 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 8px 16px;
-  background-color: #1a1d23;
-  border-left: 1px solid #2a2d33;
-  border-right: 1px solid #2a2d33;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background-color: var(--options-strike-bg);
+  border-left: 1px solid var(--border-secondary);
+  border-right: 1px solid var(--border-secondary);
 }
 
 .strike-price {
-  font-size: 14px;
-  font-weight: 700;
-  color: #ffffff;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
 }
 
 /* Scrollbar styling */
@@ -462,16 +462,16 @@ export default {
 }
 
 .chain-body::-webkit-scrollbar-track {
-  background: #2a2a2a;
+  background: var(--bg-secondary);
 }
 
 .chain-body::-webkit-scrollbar-thumb {
-  background: #444444;
-  border-radius: 3px;
+  background: var(--border-secondary);
+  border-radius: var(--radius-sm);
 }
 
 .chain-body::-webkit-scrollbar-thumb:hover {
-  background: #555555;
+  background: var(--border-tertiary);
 }
 
 /* Hide header scrollbar but keep the space */
@@ -490,28 +490,28 @@ export default {
 /* Responsive adjustments */
 @media (max-width: 1200px) {
   .chain-header {
-    font-size: 11px;
+    font-size: var(--font-size-sm);
   }
 
   .calls-header,
   .puts-header {
-    padding: 8px 12px;
-    gap: 4px;
+    padding: var(--spacing-sm) var(--spacing-md);
+    gap: var(--spacing-xs);
   }
 
   .option-data {
-    padding: 6px 12px;
-    gap: 4px;
+    padding: 6px var(--spacing-md);
+    gap: var(--spacing-xs);
   }
 
   .greek-cell,
   .price-cell {
-    font-size: 11px;
+    font-size: var(--font-size-sm);
     padding: 2px;
   }
 
   .strike-price {
-    font-size: 13px;
+    font-size: var(--font-size-base);
   }
 }
 </style>

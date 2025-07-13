@@ -400,8 +400,6 @@ export default {
               status = "Market Open";
             } else if (hour >= 4 && hour < 9) {
               status = "Pre-Market";
-            } else if (hour >= 16 && hour < 20) {
-              status = "After Hours";
             } else {
               status = "Market Closed";
             }

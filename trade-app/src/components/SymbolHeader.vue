@@ -127,78 +127,78 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 16px 24px;
-  background-color: #141519;
-  border-bottom: 1px solid #1a1d23;
+  padding: var(--spacing-lg) var(--spacing-xl);
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
 }
 
 .symbol-info {
   display: flex;
   align-items: center;
-  gap: 24px;
+  gap: var(--spacing-xl);
 }
 
 .symbol-details h2 {
   margin: 0;
-  font-size: 24px;
-  font-weight: 600;
-  color: #ffffff;
+  font-size: var(--font-size-xxl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 .symbol-meta {
   display: flex;
-  gap: 12px;
-  margin-top: 4px;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-xs);
 }
 
 .company-name {
-  color: #cccccc;
-  font-size: 14px;
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
 }
 
 .exchange {
-  color: #888888;
-  font-size: 14px;
+  color: var(--text-tertiary);
+  font-size: var(--font-size-md);
 }
 
 .price-info {
   display: flex;
   flex-direction: column;
   align-items: flex-end;
-  gap: 4px;
+  gap: var(--spacing-xs);
 }
 
 .current-price {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--spacing-sm);
 }
 
 .price {
-  font-size: 20px;
-  font-weight: 600;
-  color: #ffffff;
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 .change,
 .change-percent {
-  font-size: 14px;
-  font-weight: 500;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
 }
 
 .change.positive,
 .change-percent.positive {
-  color: #00c851;
+  color: var(--color-success);
 }
 
 .change.negative,
 .change-percent.negative {
-  color: #ff4444;
+  color: var(--color-danger);
 }
 
 .change.neutral,
 .change-percent.neutral {
-  color: #cccccc;
+  color: var(--text-secondary);
 }
 
 .market-status {
@@ -214,21 +214,21 @@ export default {
 }
 
 .status-indicator.open {
-  background-color: #00c851;
+  background-color: var(--color-success);
 }
 
 .status-indicator.closed {
-  background-color: #ff4444;
+  background-color: var(--color-danger);
 }
 
 .status-indicator.pre-market,
 .status-indicator.after-hours {
-  background-color: #ffbb33;
+  background-color: var(--color-warning);
 }
 
 .status-text {
-  font-size: 12px;
-  color: #cccccc;
+  font-size: var(--font-size-base);
+  color: var(--text-secondary);
 }
 
 .trade-mode-selector {
@@ -238,29 +238,29 @@ export default {
 
 .mode-tabs {
   display: flex;
-  background-color: #1a1d23;
-  border-radius: 6px;
+  background-color: var(--bg-tertiary);
+  border-radius: var(--radius-md);
   overflow: hidden;
 }
 
 .mode-tab {
-  padding: 8px 16px;
+  padding: var(--spacing-sm) var(--spacing-lg);
   background: none;
   border: none;
-  color: #cccccc;
-  font-size: 14px;
-  font-weight: 500;
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: var(--transition-normal);
 }
 
 .mode-tab:hover {
-  background-color: #2a2d33;
-  color: #ffffff;
+  background-color: var(--bg-quaternary);
+  color: var(--text-primary);
 }
 
 .mode-tab.active {
-  background-color: #4ecdc4;
-  color: #ffffff;
+  background-color: var(--color-primary);
+  color: var(--text-primary);
 }
 </style>

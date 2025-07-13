@@ -1,0 +1,330 @@
+/* ===== TASTY TRADE DARK THEME ===== */
+
+:root {
+  /* === Core Color Palette === */
+  --color-primary: #4ecdc4;
+  --color-primary-hover: #3db8b0;
+  --color-primary-active: #2ca49c;
+
+  /* === Background Colors === */
+  --bg-primary: #0b0d10; /* Darkest - headers, nav, grid */
+  --bg-secondary: #141519; /* Medium dark - main content, subheaders */
+  --bg-tertiary: #1a1d23; /* Light dark - interactive elements */
+  --bg-quaternary: #2a2d33; /* Lightest dark - hover states */
+
+  /* === Border Colors === */
+  --border-primary: #1a1d23; /* Main borders */
+  --border-secondary: #2a2d33; /* Secondary borders */
+  --border-tertiary: #3a3d43; /* Hover borders */
+
+  /* === Text Colors === */
+  --text-primary: #ffffff; /* Primary text */
+  --text-secondary: #cccccc; /* Secondary text */
+  --text-tertiary: #888888; /* Muted text */
+  --text-quaternary: #666666; /* Disabled text */
+
+  /* === Status Colors === */
+  --color-success: #00c851; /* Green - profits, buy actions */
+  --color-success-hover: #00b04a;
+  --color-danger: #ff4444; /* Red - losses, sell actions */
+  --color-danger-hover: #e63939;
+  --color-warning: #ffbb33; /* Orange - warnings, pre-market */
+  --color-warning-hover: #e6a82e;
+  --color-info: #007bff; /* Blue - info, focus states */
+  --color-info-hover: #0056b3;
+
+  /* === Brand Colors === */
+  --color-brand: #ff6b35; /* Orange brand color */
+  --color-brand-hover: #e55a2b;
+
+  /* === Component Specific === */
+  --options-grid-bg: var(--bg-primary);
+  --options-strike-bg: var(--bg-tertiary);
+  --options-row-hover: var(--bg-tertiary);
+  --options-selected-buy: rgba(0, 200, 81, 0.2);
+  --options-selected-sell: rgba(255, 68, 68, 0.2);
+  --options-atm-bg: rgba(255, 107, 53, 0.1);
+  --options-atm-border: rgba(255, 107, 53, 0.3);
+
+  /* === Spacing === */
+  --spacing-xs: 4px;
+  --spacing-sm: 8px;
+  --spacing-md: 12px;
+  --spacing-lg: 16px;
+  --spacing-xl: 24px;
+  --spacing-xxl: 32px;
+
+  /* === Border Radius === */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* === Shadows === */
+  --shadow-sm: 0 2px 4px rgba(0, 0, 0, 0.1);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.3);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.4);
+
+  /* === Transitions === */
+  --transition-fast: 0.15s ease;
+  --transition-normal: 0.2s ease;
+  --transition-slow: 0.3s ease;
+
+  /* === Typography === */
+  --font-size-xs: 10px;
+  --font-size-sm: 11px;
+  --font-size-base: 12px;
+  --font-size-md: 14px;
+  --font-size-lg: 16px;
+  --font-size-xl: 20px;
+  --font-size-xxl: 24px;
+
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --font-weight-bold: 700;
+}
+
+/* ===== PRIMEVUE THEME OVERRIDES ===== */
+
+/* === Global PrimeVue Overrides === */
+.p-component {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+}
+
+/* === Input Components === */
+.p-inputtext {
+  background-color: var(--bg-tertiary) !important;
+  border: 1px solid var(--border-secondary) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-md) !important;
+  padding: var(--spacing-sm) var(--spacing-md) !important;
+  transition: var(--transition-normal) !important;
+}
+
+.p-inputtext:focus {
+  border-color: var(--color-info) !important;
+  background-color: var(--bg-tertiary) !important;
+  box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25) !important;
+}
+
+.p-inputtext::placeholder {
+  color: var(--text-tertiary) !important;
+}
+
+/* === Dropdown Components === */
+.p-dropdown {
+  background-color: var(--bg-tertiary) !important;
+  border: 1px solid var(--border-secondary) !important;
+  color: var(--text-primary) !important;
+  border-radius: var(--radius-md) !important;
+  transition: var(--transition-normal) !important;
+}
+
+.p-dropdown:not(.p-disabled):hover {
+  border-color: var(--border-tertiary) !important;
+}
+
+.p-dropdown-panel {
+  background-color: var(--bg-tertiary) !important;
+  border: 1px solid var(--border-secondary) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+
+.p-dropdown-item {
+  color: var(--text-primary) !important;
+  padding: var(--spacing-sm) var(--spacing-md) !important;
+  transition: var(--transition-fast) !important;
+}
+
+.p-dropdown-item:not(.p-highlight):not(.p-disabled):hover {
+  background-color: var(--bg-quaternary) !important;
+}
+
+.p-dropdown-item.p-highlight {
+  background-color: var(--color-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+/* === Button Components === */
+.p-button {
+  border-radius: var(--radius-md) !important;
+  font-weight: var(--font-weight-medium) !important;
+  transition: var(--transition-normal) !important;
+}
+
+.p-button.p-button-text {
+  color: var(--text-secondary) !important;
+}
+
+.p-button.p-button-text:hover {
+  background-color: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+.p-button:not(.p-button-text) {
+  background-color: var(--color-primary) !important;
+  border-color: var(--color-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+.p-button:not(.p-button-text):hover {
+  background-color: var(--color-primary-hover) !important;
+  border-color: var(--color-primary-hover) !important;
+}
+
+/* === Menu Components === */
+.p-menu {
+  background-color: var(--bg-tertiary) !important;
+  border: 1px solid var(--border-secondary) !important;
+  border-radius: var(--radius-md) !important;
+  box-shadow: var(--shadow-md) !important;
+}
+
+.p-menu .p-menuitem-link {
+  color: var(--text-primary) !important;
+  padding: var(--spacing-sm) var(--spacing-md) !important;
+  transition: var(--transition-fast) !important;
+}
+
+.p-menu .p-menuitem-link:hover {
+  background-color: var(--bg-quaternary) !important;
+}
+
+.p-menu .p-menuitem-separator {
+  border-top: 1px solid var(--border-secondary) !important;
+}
+
+/* === Card Components === */
+.p-card {
+  background-color: var(--bg-secondary) !important;
+  border: 1px solid var(--border-primary) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-sm) !important;
+}
+
+.p-card .p-card-title {
+  color: var(--text-primary) !important;
+  font-weight: var(--font-weight-semibold) !important;
+}
+
+.p-card .p-card-content {
+  color: var(--text-secondary) !important;
+}
+
+/* === Dialog Components === */
+.p-dialog {
+  background-color: var(--bg-secondary) !important;
+  border: 1px solid var(--border-primary) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+
+.p-dialog .p-dialog-header {
+  background-color: var(--bg-primary) !important;
+  border-bottom: 1px solid var(--border-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+.p-dialog .p-dialog-content {
+  background-color: var(--bg-secondary) !important;
+  color: var(--text-secondary) !important;
+}
+
+/* === DataTable Components === */
+.p-datatable {
+  background-color: var(--bg-primary) !important;
+  border: 1px solid var(--border-primary) !important;
+  border-radius: var(--radius-lg) !important;
+}
+
+.p-datatable .p-datatable-header {
+  background-color: var(--bg-primary) !important;
+  border-bottom: 2px solid var(--border-primary) !important;
+  color: var(--text-secondary) !important;
+}
+
+.p-datatable .p-datatable-tbody > tr {
+  background-color: var(--bg-primary) !important;
+  border-bottom: 1px solid var(--border-primary) !important;
+  color: var(--text-primary) !important;
+}
+
+.p-datatable .p-datatable-tbody > tr:hover {
+  background-color: var(--bg-tertiary) !important;
+}
+
+/* === Scrollbar Styling === */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-sm);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--border-secondary);
+  border-radius: var(--radius-sm);
+  transition: var(--transition-normal);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-tertiary);
+}
+
+/* === Utility Classes === */
+.bg-primary {
+  background-color: var(--bg-primary) !important;
+}
+.bg-secondary {
+  background-color: var(--bg-secondary) !important;
+}
+.bg-tertiary {
+  background-color: var(--bg-tertiary) !important;
+}
+
+.text-primary {
+  color: var(--text-primary) !important;
+}
+.text-secondary {
+  color: var(--text-secondary) !important;
+}
+.text-tertiary {
+  color: var(--text-tertiary) !important;
+}
+
+.border-primary {
+  border-color: var(--border-primary) !important;
+}
+.border-secondary {
+  border-color: var(--border-secondary) !important;
+}
+
+.text-success {
+  color: var(--color-success) !important;
+}
+.text-danger {
+  color: var(--color-danger) !important;
+}
+.text-warning {
+  color: var(--color-warning) !important;
+}
+.text-info {
+  color: var(--color-info) !important;
+}
+
+.bg-success {
+  background-color: var(--color-success) !important;
+}
+.bg-danger {
+  background-color: var(--color-danger) !important;
+}
+.bg-warning {
+  background-color: var(--color-warning) !important;
+}
+.bg-info {
+  background-color: var(--color-info) !important;
+}

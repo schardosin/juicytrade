@@ -618,14 +618,14 @@ export default {
   bottom: 0;
   left: 0;
   right: 0;
-  background-color: #141519;
-  border-top: 1px solid #1a1d23;
-  color: #ffffff;
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
+  color: var(--text-primary);
   z-index: 1000;
-  box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
+  box-shadow: var(--shadow-lg);
   transform: translateY(100%);
-  transition: transform 0.3s ease-out;
-  margin-bottom: 5px;
+  transition: var(--transition-slow);
+  margin-bottom: var(--spacing-xs);
 }
 
 .bottom-panel.slide-up {
@@ -636,9 +636,9 @@ export default {
 .stats-row {
   display: flex;
   justify-content: space-between;
-  padding: 6px 16px;
-  background-color: #0b0d10;
-  border-bottom: 1px solid #1a1d23;
+  padding: 6px var(--spacing-lg);
+  background-color: var(--bg-primary);
+  border-bottom: 1px solid var(--border-primary);
 }
 
 .stat-group {
@@ -650,37 +650,37 @@ export default {
 
 .stat-label {
   font-size: 9px;
-  color: #888;
-  font-weight: 500;
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-medium);
   margin-bottom: 2px;
 }
 
 .stat-value {
-  font-size: 11px;
-  font-weight: 600;
-  color: #fff;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
 }
 
 .stat-value.positive {
-  color: #00c851;
+  color: var(--color-success);
 }
 
 .stat-value.negative {
-  color: #ff4444;
+  color: var(--color-danger);
 }
 
 .unit {
-  font-size: 8px;
-  color: #888;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
 }
 
 /* Controls Row - Responsive like Tasty Trade */
 .controls-row {
   display: flex;
-  padding: 8px 16px;
-  background-color: #141519;
-  border-bottom: 1px solid #1a1d23;
-  gap: 4px;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
+  gap: var(--spacing-xs);
 }
 
 .control-group {
@@ -688,13 +688,13 @@ export default {
   display: flex;
   flex-direction: column;
   align-items: stretch;
-  gap: 4px;
+  gap: var(--spacing-xs);
 }
 
 .control-label {
-  font-size: 10px;
-  color: #888;
-  font-weight: 500;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-medium);
   text-align: center;
   white-space: nowrap;
 }
@@ -707,15 +707,15 @@ export default {
 }
 
 .ctrl-btn {
-  background-color: #333;
-  border: 1px solid #444;
-  color: #ccc;
+  background-color: var(--bg-quaternary);
+  border: 1px solid var(--border-secondary);
+  color: var(--text-secondary);
   flex: 1;
   height: 100%;
-  border-radius: 4px;
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 14px;
-  transition: all 0.2s ease;
+  font-size: var(--font-size-md);
+  transition: var(--transition-normal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -723,8 +723,8 @@ export default {
 }
 
 .ctrl-btn:hover {
-  background-color: #444;
-  color: #fff;
+  background-color: var(--border-secondary);
+  color: var(--text-primary);
 }
 
 /* For single button groups (like Swap), the button should still fill the space */
@@ -735,10 +735,10 @@ export default {
 /* Content Row - Compact */
 .content-row {
   display: flex;
-  padding: 12px 16px;
-  gap: 24px;
-  background-color: #141519;
-  border-bottom: 1px solid #1a1d23;
+  padding: var(--spacing-md) var(--spacing-lg);
+  gap: var(--spacing-xl);
+  background-color: var(--bg-secondary);
+  border-bottom: 1px solid var(--border-primary);
 }
 
 .order-section {

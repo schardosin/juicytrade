@@ -26,6 +26,9 @@ import "primevue/resources/themes/aura-dark-noir/theme.css";
 import "primevue/resources/primevue.min.css";
 import "primeicons/primeicons.css";
 
+// Custom theme
+import "./assets/styles/theme.css";
+
 const app = createApp(App);
 
 app.use(PrimeVue);
