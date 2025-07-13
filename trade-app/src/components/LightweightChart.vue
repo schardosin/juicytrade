@@ -2,15 +2,36 @@
   <div class="lightweight-chart-container">
     <div ref="chartContainer" class="chart-container"></div>
     <div class="chart-controls">
-      <div class="timeframe-buttons">
-        <button
-          v-for="tf in timeframes"
-          :key="tf.value"
-          :class="['timeframe-btn', { active: selectedTimeframe === tf.value }]"
-          @click="changeTimeframe(tf.value)"
-        >
-          {{ tf.label }}
-        </button>
+      <div class="control-section">
+        <div class="timeframe-buttons">
+          <button
+            v-for="tf in timeframes"
+            :key="tf.value"
+            :class="[
+              'timeframe-btn',
+              { active: selectedTimeframe === tf.value },
+            ]"
+            @click="changeTimeframe(tf.value)"
+          >
+            {{ tf.label }}
+          </button>
+        </div>
+        <div class="date-range-selector">
+          <label class="range-label">Range:</label>
+          <select
+            v-model="selectedDateRange"
+            @change="onDateRangeChange"
+            class="range-dropdown"
+          >
+            <option
+              v-for="range in dateRanges"
+              :key="range.value"
+              :value="range.value"
+            >
+              {{ range.label }}
+            </option>
+          </select>
+        </div>
       </div>
       <div class="chart-info">
         <span class="symbol-info">{{ symbol }}</span>
@@ -56,6 +77,7 @@ export default {
     const loading = ref(false);
     const error = ref("");
     const selectedTimeframe = ref("D");
+    const selectedDateRange = ref("1M");
 
     let chart = null;
     let candlestickSeries = null;
@@ -71,6 +93,14 @@ export default {
       { label: "1D", value: "D" },
       { label: "1W", value: "W" },
       { label: "1M", value: "M" },
+    ];
+
+    const dateRanges = [
+      { label: "1 Day", value: "1D" },
+      { label: "1 Week", value: "1W" },
+      { label: "1 Month", value: "1M" },
+      { label: "6 Months", value: "6M" },
+      { label: "1 Year", value: "1Y" },
     ];
 
     const chartOptions = {
@@ -206,93 +236,102 @@ export default {
       }
     };
 
-    const loadHistoricalData = async (symbol, timeframe) => {
+    const calculateStartDate = (dateRange) => {
+      const now = new Date();
+      let startDate;
+
+      switch (dateRange) {
+        case "1D":
+          startDate = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+          break;
+        case "1W":
+          startDate = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+          break;
+        case "1M":
+          startDate = new Date(
+            now.getFullYear(),
+            now.getMonth() - 1,
+            now.getDate()
+          );
+          break;
+        case "6M":
+          startDate = new Date(
+            now.getFullYear(),
+            now.getMonth() - 6,
+            now.getDate()
+          );
+          break;
+        case "1Y":
+          startDate = new Date(
+            now.getFullYear() - 1,
+            now.getMonth(),
+            now.getDate()
+          );
+          break;
+        default:
+          startDate = new Date(
+            now.getFullYear(),
+            now.getMonth() - 1,
+            now.getDate()
+          );
+          break;
+      }
+
+      return startDate.toISOString().split("T")[0];
+    };
+
+    const calculateLimit = (timeframe, dateRange) => {
+      // Calculate appropriate limit based on timeframe and date range
+      const now = new Date();
+      const startDate = new Date(calculateStartDate(dateRange));
+      const daysDiff = Math.ceil((now - startDate) / (1000 * 60 * 60 * 24));
+
+      switch (timeframe) {
+        case "1m":
+          return Math.min(daysDiff * 390, 2000); // ~390 minutes per trading day
+        case "5m":
+          return Math.min(daysDiff * 78, 1500); // ~78 5-minute bars per trading day
+        case "15m":
+          return Math.min(daysDiff * 26, 1000); // ~26 15-minute bars per trading day
+        case "1h":
+          return Math.min(daysDiff * 6.5, 800); // ~6.5 hours per trading day
+        case "4h":
+          return Math.min(daysDiff * 2, 400); // ~2 4-hour bars per trading day
+        case "D":
+          return Math.min(daysDiff, 500); // 1 bar per day
+        case "W":
+          return Math.min(Math.ceil(daysDiff / 7), 200); // 1 bar per week
+        case "M":
+          return Math.min(Math.ceil(daysDiff / 30), 100); // 1 bar per month
+        default:
+          return 500;
+      }
+    };
+
+    const loadHistoricalData = async (
+      symbol,
+      timeframe,
+      dateRange = selectedDateRange.value
+    ) => {
       if (!symbol || !candlestickSeries || !volumeSeries) return;
 
       loading.value = true;
       error.value = "";
 
       try {
-        console.log(`Loading historical data for ${symbol} (${timeframe})`);
+        console.log(
+          `Loading historical data for ${symbol} (${timeframe}, ${dateRange})`
+        );
 
-        // Determine limit and date range based on timeframe
-        let limit, start_date;
-        const now = new Date();
-
-        switch (timeframe) {
-          case "M":
-            // For monthly data, get 10 years of history
-            limit = 120;
-            start_date = new Date(now.getFullYear() - 10, now.getMonth(), 1)
-              .toISOString()
-              .split("T")[0];
-            break;
-          case "W":
-            // For weekly data, get 3 years of history
-            limit = 156;
-            start_date = new Date(
-              now.getFullYear() - 3,
-              now.getMonth(),
-              now.getDate()
-            )
-              .toISOString()
-              .split("T")[0];
-            break;
-          case "D":
-            // For daily data, get 2 years of history
-            limit = 730;
-            start_date = new Date(
-              now.getFullYear() - 2,
-              now.getMonth(),
-              now.getDate()
-            )
-              .toISOString()
-              .split("T")[0];
-            break;
-          case "4h":
-            // For 4-hour data, get more data
-            limit = 2000;
-            start_date = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate() - 30
-            )
-              .toISOString()
-              .split("T")[0];
-            break;
-          case "1h":
-            // For hourly data, get more data
-            limit = 3000;
-            start_date = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate() - 14
-            )
-              .toISOString()
-              .split("T")[0];
-            break;
-          default:
-            // For intraday data (1m, 5m, 15m), get more recent data
-            limit = 1000;
-            start_date = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate() - 7
-            )
-              .toISOString()
-              .split("T")[0];
-            break;
-        }
+        // Calculate start date and limit based on user selection
+        const start_date = calculateStartDate(dateRange);
+        const limit = calculateLimit(timeframe, dateRange);
 
         const params = {
           timeframe,
           limit,
+          start_date,
         };
-
-        // Add start_date if we calculated one
-        if (start_date) {
-          params.start_date = start_date;
-        }
 
         const response = await axios.get(`/api/chart/historical/${symbol}`, {
           params,
@@ -370,7 +409,15 @@ export default {
 
     const changeTimeframe = (timeframe) => {
       selectedTimeframe.value = timeframe;
-      loadHistoricalData(props.symbol, timeframe);
+      loadHistoricalData(props.symbol, timeframe, selectedDateRange.value);
+    };
+
+    const onDateRangeChange = () => {
+      loadHistoricalData(
+        props.symbol,
+        selectedTimeframe.value,
+        selectedDateRange.value
+      );
     };
 
     const connectWebSocket = () => {
@@ -525,8 +572,11 @@ export default {
       loading,
       error,
       selectedTimeframe,
+      selectedDateRange,
       timeframes,
+      dateRanges,
       changeTimeframe,
+      onDateRangeChange,
     };
   },
 };
@@ -562,10 +612,58 @@ export default {
   min-height: 60px;
 }
 
+.control-section {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+}
+
 .timeframe-buttons {
   display: flex;
   gap: 4px;
   flex-wrap: wrap;
+}
+
+.date-range-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.range-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: #d1d4dc;
+  white-space: nowrap;
+}
+
+.range-dropdown {
+  padding: 6px 10px;
+  background-color: #3a3a3a;
+  color: #d1d4dc;
+  border: 1px solid #4a4a4a;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  min-width: 100px;
+}
+
+.range-dropdown:hover {
+  background-color: #4a4a4a;
+  border-color: #5a5a5a;
+}
+
+.range-dropdown:focus {
+  outline: none;
+  border-color: #2962ff;
+  box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.2);
+}
+
+.range-dropdown option {
+  background-color: #3a3a3a;
+  color: #d1d4dc;
 }
 
 .timeframe-btn {
