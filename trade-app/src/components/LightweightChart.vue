@@ -110,16 +110,16 @@ export default {
       layout: {
         background: {
           type: "solid",
-          color: props.theme === "dark" ? "#1e1e1e" : "#ffffff",
+          color: props.theme === "dark" ? "#141519" : "#ffffff",
         },
         textColor: props.theme === "dark" ? "#d1d4dc" : "#191919",
       },
       grid: {
         vertLines: {
-          color: props.theme === "dark" ? "#2B2B43" : "#e1e3e6",
+          color: props.theme === "dark" ? "#141519" : "#e1e3e6",
         },
         horzLines: {
-          color: props.theme === "dark" ? "#2B2B43" : "#e1e3e6",
+          color: props.theme === "dark" ? "#141519" : "#e1e3e6",
         },
       },
       crosshair: {

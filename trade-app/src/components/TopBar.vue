@@ -460,12 +460,12 @@ export default {
 }
 
 .nav-link:hover {
-  background-color: #333333;
+  background-color: #1a1d23;
   color: #ffffff;
 }
 
 .nav-link.active {
-  background-color: #444444;
+  background-color: #2a2d33;
   color: #ffffff;
 }
 
@@ -492,8 +492,8 @@ export default {
 .search-input {
   width: 100%;
   padding: 8px 12px 8px 36px;
-  background-color: #333333;
-  border: 1px solid #444444;
+  background-color: #1a1d23;
+  border: 1px solid #2a2d33;
   border-radius: 6px;
   color: #ffffff;
   font-size: 14px;
@@ -743,20 +743,20 @@ export default {
 
 /* Dark theme overrides for PrimeVue components */
 :deep(.p-inputtext) {
-  background-color: #333333;
-  border: 1px solid #444444;
+  background-color: #1a1d23;
+  border: 1px solid #2a2d33;
   color: #ffffff;
 }
 
 :deep(.p-inputtext:focus) {
   border-color: #007bff;
-  background-color: #2a2a2a;
+  background-color: #1a1d23;
   box-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
 }
 
 :deep(.p-menu) {
-  background-color: #333333;
-  border: 1px solid #444444;
+  background-color: #1a1d23;
+  border: 1px solid #2a2d33;
 }
 
 :deep(.p-menu .p-menuitem-link) {
@@ -764,11 +764,11 @@ export default {
 }
 
 :deep(.p-menu .p-menuitem-link:hover) {
-  background-color: #444444;
+  background-color: #2a2d33;
 }
 
 :deep(.p-menu .p-menuitem-separator) {
-  border-top: 1px solid #444444;
+  border-top: 1px solid #2a2d33;
 }
 
 :deep(.p-button.p-button-text) {
@@ -776,7 +776,7 @@ export default {
 }
 
 :deep(.p-button.p-button-text:hover) {
-  background-color: #333333;
+  background-color: #1a1d23;
   color: #ffffff;
 }
 </style>

@@ -238,7 +238,7 @@ export default {
 
 .mode-tabs {
   display: flex;
-  background-color: #444444;
+  background-color: #1a1d23;
   border-radius: 6px;
   overflow: hidden;
 }
@@ -255,7 +255,7 @@ export default {
 }
 
 .mode-tab:hover {
-  background-color: #555555;
+  background-color: #2a2d33;
   color: #ffffff;
 }
 

@@ -924,8 +924,8 @@ export default {
 
 .right-panel {
   width: 60px;
-  background-color: #333333;
-  border-left: 1px solid #444444;
+  background-color: #0b0d10;
+  border-left: 1px solid #1a1d23;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -954,7 +954,7 @@ export default {
 }
 
 .menu-item:hover {
-  background-color: #444444;
+  background-color: #1a1d23;
 }
 
 .expanded-content {
@@ -968,8 +968,8 @@ export default {
   justify-content: space-between;
   align-items: center;
   padding: 12px 16px;
-  background-color: #3a3a3a;
-  border-bottom: 1px solid #444444;
+  background-color: #1a1d23;
+  border-bottom: 1px solid #2a2d33;
   flex-shrink: 0;
 }
 
@@ -1084,18 +1084,18 @@ export default {
 
 /* Dark theme overrides for PrimeVue components */
 :deep(.p-dropdown) {
-  background-color: #444444;
-  border: 1px solid #555555;
+  background-color: #1a1d23;
+  border: 1px solid #2a2d33;
   color: #ffffff;
 }
 
 :deep(.p-dropdown:not(.p-disabled):hover) {
-  border-color: #666666;
+  border-color: #3a3d43;
 }
 
 :deep(.p-dropdown-panel) {
-  background-color: #444444;
-  border: 1px solid #555555;
+  background-color: #1a1d23;
+  border: 1px solid #2a2d33;
 }
 
 :deep(.p-dropdown-item) {
@@ -1103,7 +1103,7 @@ export default {
 }
 
 :deep(.p-dropdown-item:not(.p-highlight):not(.p-disabled):hover) {
-  background-color: #555555;
+  background-color: #2a2d33;
 }
 
 :deep(.p-card) {
