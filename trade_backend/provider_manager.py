@@ -136,6 +136,20 @@ class ProviderManager:
         if provider:
             return await provider.lookup_symbols(query)
         return []
+
+    async def get_historical_bars(self, symbol: str, timeframe: str, 
+                                start_date: str = None, end_date: str = None, 
+                                limit: int = 500) -> List[Dict[str, Any]]:
+        provider = self._get_provider("historical_data")
+        if provider:
+            return await provider.get_historical_bars(symbol, timeframe, start_date, end_date, limit)
+        return []
+
+    async def get_next_market_date(self) -> str:
+        provider = self._get_provider("market_calendar")
+        if provider:
+            return await provider.get_next_market_date()
+        return ""
         
     async def health_check(self) -> Dict[str, Any]:
         health_status = {}

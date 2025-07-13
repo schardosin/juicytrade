@@ -1271,6 +1271,131 @@ class AlpacaProvider(BaseProvider):
             self._log_error(f"lookup_symbols for query '{query}'", e)
             return []
     
+    async def get_historical_bars(self, symbol: str, timeframe: str, 
+                                start_date: str = None, end_date: str = None, 
+                                limit: int = 500) -> List[Dict[str, Any]]:
+        """Get historical OHLCV bars for charting using Alpaca StockHistoricalDataClient."""
+        try:
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+            from datetime import datetime, timedelta
+            from zoneinfo import ZoneInfo
+            
+            # Map our timeframe to Alpaca TimeFrame objects using amount and unit
+            tf_map = {
+                '1m': TimeFrame(amount=1, unit=TimeFrameUnit.Minute),
+                '5m': TimeFrame(amount=5, unit=TimeFrameUnit.Minute),
+                '15m': TimeFrame(amount=15, unit=TimeFrameUnit.Minute),
+                '30m': TimeFrame(amount=30, unit=TimeFrameUnit.Minute),
+                '1h': TimeFrame(amount=1, unit=TimeFrameUnit.Hour),
+                '4h': TimeFrame(amount=4, unit=TimeFrameUnit.Hour),
+                'D': TimeFrame(amount=1, unit=TimeFrameUnit.Day),
+                'W': TimeFrame(amount=1, unit=TimeFrameUnit.Week),
+                'M': TimeFrame(amount=1, unit=TimeFrameUnit.Month)
+            }
+            
+            alpaca_timeframe = tf_map.get(timeframe, TimeFrame(amount=1, unit=TimeFrameUnit.Day))
+            
+            # Use timezone-aware datetime for NY timezone
+            now = datetime.now(ZoneInfo("America/New_York"))
+            
+            # Set default start date if not provided
+            if not start_date:
+                if timeframe in ['1m', '5m', '15m', '30m', '1h', '4h']:
+                    # For intraday, get last 5 days
+                    start_dt = now - timedelta(days=5)
+                else:
+                    # For daily+, get last year
+                    start_dt = now - timedelta(days=365)
+            else:
+                # Convert string date to timezone-aware datetime
+                start_dt = datetime.strptime(start_date, '%Y-%m-%d').replace(tzinfo=ZoneInfo("America/New_York"))
+            
+            # Handle end date - only set if explicitly provided
+            end_dt = None
+            if end_date:
+                end_dt = datetime.strptime(end_date, '%Y-%m-%d').replace(tzinfo=ZoneInfo("America/New_York"))
+            
+            # Create the request - only include end if provided
+            request_params = {
+                "symbol_or_symbols": [symbol],
+                "timeframe": alpaca_timeframe,
+                "start": start_dt,
+                "limit": limit,
+                "adjustment": "raw"
+            }
+            
+            if end_dt:
+                request_params["end"] = end_dt
+            
+            request = StockBarsRequest(**request_params)
+            
+            self._log_info(f"Requesting Alpaca bars for {symbol}, timeframe: {timeframe}, start: {start_dt}, end: {end_dt}, limit: {limit}")
+            
+            # Get the bars
+            bars_response = self.historical_client.get_stock_bars(request)
+            
+            # Transform to Lightweight Charts format
+            result = []
+            
+            # Access the data from the bars_response object
+            if hasattr(bars_response, 'data') and symbol in bars_response.data:
+                bars_list = bars_response.data[symbol]
+                self._log_info(f"Received {len(bars_list)} bars from Alpaca for {symbol}")
+                
+                for bar in bars_list:
+                    # Format time based on timeframe
+                    if timeframe in ['1m', '5m', '15m', '30m', '1h', '4h']:
+                        # Intraday - include time
+                        time_str = bar.timestamp.strftime('%Y-%m-%d %H:%M')
+                    else:
+                        # Daily+ - date only
+                        time_str = bar.timestamp.strftime('%Y-%m-%d')
+                    
+                    result.append({
+                        'time': time_str,
+                        'open': float(bar.open),
+                        'high': float(bar.high),
+                        'low': float(bar.low),
+                        'close': float(bar.close),
+                        'volume': int(bar.volume) if bar.volume else 0
+                    })
+            elif hasattr(bars_response, symbol):
+                # Alternative access pattern
+                bars_list = getattr(bars_response, symbol)
+                self._log_info(f"Received {len(bars_list)} bars from Alpaca for {symbol} (alt access)")
+                
+                for bar in bars_list:
+                    # Format time based on timeframe
+                    if timeframe in ['1m', '5m', '15m', '30m', '1h', '4h']:
+                        # Intraday - include time
+                        time_str = bar.timestamp.strftime('%Y-%m-%d %H:%M')
+                    else:
+                        # Daily+ - date only
+                        time_str = bar.timestamp.strftime('%Y-%m-%d')
+                    
+                    result.append({
+                        'time': time_str,
+                        'open': float(bar.open),
+                        'high': float(bar.high),
+                        'low': float(bar.low),
+                        'close': float(bar.close),
+                        'volume': int(bar.volume) if bar.volume else 0
+                    })
+            else:
+                self._log_info(f"No bars found for symbol {symbol} in Alpaca response")
+                self._log_info(f"Response type: {type(bars_response)}")
+                self._log_info(f"Response attributes: {dir(bars_response)}")
+            
+            self._log_info(f"Transformed {len(result)} bars for {symbol} ({timeframe})")
+            return result
+            
+        except Exception as e:
+            self._log_error(f"get_historical_bars for {symbol} {timeframe}", e)
+            import traceback
+            self._log_error(f"Full traceback", Exception(traceback.format_exc()))
+            return []
+
     def _transform_asset_to_symbol_result(self, asset: Dict[str, Any]) -> Optional[SymbolSearchResult]:
         """Transform Alpaca asset to our standard SymbolSearchResult model."""
         try:

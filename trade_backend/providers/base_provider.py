@@ -103,6 +103,26 @@ class BaseProvider(ABC):
         """
         pass
     
+    @abstractmethod
+    async def get_historical_bars(self, symbol: str, timeframe: str, 
+                                start_date: str = None, end_date: str = None, 
+                                limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        Get historical OHLCV bars for charting.
+        
+        Args:
+            symbol: Stock symbol (e.g., "AAPL")
+            timeframe: Time interval ("1m", "5m", "15m", "30m", "1h", "4h", "D", "W", "M")
+            start_date: Start date in YYYY-MM-DD format (optional)
+            end_date: End date in YYYY-MM-DD format (optional)
+            limit: Maximum number of bars to return (default 500)
+            
+        Returns:
+            List of OHLCV dictionaries in Lightweight Charts format:
+            [{"time": "2024-01-15", "open": 150.25, "high": 152.80, "low": 149.90, "close": 151.45, "volume": 1234567}]
+        """
+        pass
+    
     # === Account & Portfolio Methods ===
     
     @abstractmethod

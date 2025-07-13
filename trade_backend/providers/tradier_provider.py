@@ -771,6 +771,167 @@ class TradierProvider(BaseProvider):
             self._log_error("transform_symbol_search_result", e)
             return None
 
+    async def get_historical_bars(self, symbol: str, timeframe: str, 
+                                start_date: str = None, end_date: str = None, 
+                                limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        Get historical OHLCV bars for charting using appropriate Tradier endpoint.
+        
+        Uses /v1/markets/timesales for intraday (1m, 5m, 15m)
+        Uses /v1/markets/history for daily/weekly/monthly (D, W, M)
+        """
+        try:
+            # Determine which endpoint to use based on timeframe
+            intraday_timeframes = ['1m', '5m', '15m', '30m', '1h', '4h']
+            daily_timeframes = ['D', 'W', 'M']
+            
+            if timeframe in intraday_timeframes:
+                return await self._get_intraday_bars(symbol, timeframe, start_date, end_date, limit)
+            elif timeframe in daily_timeframes:
+                return await self._get_daily_bars(symbol, timeframe, start_date, end_date, limit)
+            else:
+                self._log_error(f"get_historical_bars for {symbol}", 
+                              Exception(f"Unsupported timeframe: {timeframe}"))
+                return []
+                
+        except Exception as e:
+            self._log_error(f"get_historical_bars for {symbol} {timeframe}", e)
+            return []
+    
+    async def _get_intraday_bars(self, symbol: str, timeframe: str, 
+                               start_date: str = None, end_date: str = None, 
+                               limit: int = 500) -> List[Dict[str, Any]]:
+        """Get intraday bars using /v1/markets/timesales endpoint."""
+        try:
+            url = f"{self.base_url}/v1/markets/timesales"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            
+            # Map our timeframe to Tradier interval
+            interval_map = {
+                '1m': '1min',
+                '5m': '5min', 
+                '15m': '15min',
+                '30m': '15min',  # Tradier doesn't have 30min, use 15min
+                '1h': '15min',   # Tradier doesn't have 1h, use 15min
+                '4h': '15min'    # Tradier doesn't have 4h, use 15min
+            }
+            
+            params = {
+                "symbol": symbol,
+                "interval": interval_map.get(timeframe, '1min'),
+                "session_filter": "all"
+            }
+            
+            # Add date range if provided
+            if start_date:
+                params["start"] = f"{start_date} 09:30"
+            if end_date:
+                params["end"] = f"{end_date} 16:00"
+            
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extract timesales data
+            series_data = data.get("series", {}).get("data", [])
+            
+            # Transform to Lightweight Charts format
+            result = []
+            for bar in series_data:
+                # Convert timestamp to date string for Lightweight Charts
+                timestamp = bar.get("timestamp")
+                if timestamp:
+                    time_str = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M')
+                else:
+                    time_str = bar.get("time", "")
+                
+                result.append({
+                    "time": time_str,
+                    "open": float(bar.get("open", 0)),
+                    "high": float(bar.get("high", 0)),
+                    "low": float(bar.get("low", 0)),
+                    "close": float(bar.get("close", 0)),
+                    "volume": int(bar.get("volume", 0))
+                })
+            
+            # Apply limit if specified
+            if limit and len(result) > limit:
+                result = result[-limit:]  # Get most recent bars
+            
+            self._log_info(f"Retrieved {len(result)} intraday bars for {symbol} ({timeframe})")
+            return result
+            
+        except Exception as e:
+            self._log_error(f"_get_intraday_bars for {symbol} {timeframe}", e)
+            return []
+    
+    async def _get_daily_bars(self, symbol: str, timeframe: str, 
+                            start_date: str = None, end_date: str = None, 
+                            limit: int = 500) -> List[Dict[str, Any]]:
+        """Get daily/weekly/monthly bars using /v1/markets/history endpoint."""
+        try:
+            url = f"{self.base_url}/v1/markets/history"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            
+            # Map our timeframe to Tradier interval
+            interval_map = {
+                'D': 'daily',
+                'W': 'weekly', 
+                'M': 'monthly'
+            }
+            
+            params = {
+                "symbol": symbol,
+                "interval": interval_map.get(timeframe, 'daily'),
+                "session_filter": "all"
+            }
+            
+            # Add date range if provided
+            if start_date:
+                params["start"] = start_date
+            if end_date:
+                params["end"] = end_date
+            
+            response = requests.get(url, headers=headers, params=params)
+            response.raise_for_status()
+            data = response.json()
+            
+            # Extract history data
+            history_data = data.get("history", {})
+            if isinstance(history_data, dict):
+                bars = history_data.get("day", [])
+            else:
+                bars = []
+            
+            # Transform to Lightweight Charts format
+            result = []
+            for bar in bars:
+                result.append({
+                    "time": bar.get("date", ""),
+                    "open": float(bar.get("open", 0)),
+                    "high": float(bar.get("high", 0)),
+                    "low": float(bar.get("low", 0)),
+                    "close": float(bar.get("close", 0)),
+                    "volume": int(bar.get("volume", 0))
+                })
+            
+            # Apply limit if specified
+            if limit and len(result) > limit:
+                result = result[-limit:]  # Get most recent bars
+            
+            self._log_info(f"Retrieved {len(result)} daily bars for {symbol} ({timeframe})")
+            return result
+            
+        except Exception as e:
+            self._log_error(f"_get_daily_bars for {symbol} {timeframe}", e)
+            return []
+
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""
         return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])

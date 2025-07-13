@@ -268,6 +268,65 @@ async def lookup_symbols(q: str):
         logger.error(f"Error looking up symbols: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/chart/historical/{symbol}", response_model=ApiResponse)
+async def get_historical_chart_data(
+    symbol: str,
+    timeframe: str = "D",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    limit: int = 500
+):
+    """Get historical OHLCV data for charts."""
+    try:
+        bars = await provider_manager.get_historical_bars(
+            symbol, timeframe, start_date, end_date, limit
+        )
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "bars": bars,
+                "count": len(bars)
+            },
+            message=f"Retrieved {len(bars)} bars for {symbol}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting historical chart data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/chart/intraday/{symbol}", response_model=ApiResponse)
+async def get_intraday_chart_data(symbol: str, interval: str = "5m"):
+    """Get recent intraday data for real-time chart initialization."""
+    try:
+        from datetime import datetime, timedelta
+        
+        # Get last 2 days of intraday data
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=2)
+        
+        bars = await provider_manager.get_historical_bars(
+            symbol, interval, 
+            start_date.strftime('%Y-%m-%d'),
+            end_date.strftime('%Y-%m-%d'),
+            limit=200
+        )
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "symbol": symbol,
+                "interval": interval,
+                "bars": bars,
+                "count": len(bars)
+            },
+            message=f"Retrieved {len(bars)} intraday bars for {symbol}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting intraday chart data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # === Account & Portfolio Endpoints ===
 
 @app.get("/positions", response_model=ApiResponse)

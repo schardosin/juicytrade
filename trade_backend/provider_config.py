@@ -15,6 +15,8 @@ DEFAULT_ROUTING = {
     "positions": "alpaca",
     "orders": "alpaca",
     "symbol_lookup": "tradier",
+    "historical_data": "tradier",
+    "market_calendar": "tradier",
     "streaming": {
         "stock_quotes": "tradier",
         "option_quotes": "tradier",
@@ -25,22 +27,22 @@ DEFAULT_ROUTING = {
 
 PROVIDER_CAPABILITIES = {
     "alpaca": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date", "symbol_lookup"],
+        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
         "streaming": ["stock_quotes", "option_quotes", "positions", "orders"]
     },
     "alpaca_paper": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date", "symbol_lookup"],
+        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
         "streaming": ["stock_quotes", "option_quotes", "positions", "orders"]
     },
     "public": {
         "rest": ["expiration_dates"]
     },
     "tradier": {
-        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order", "symbol_lookup"],
+        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order", "symbol_lookup", "historical_data", "market_calendar"],
         "streaming": ["stock_quotes", "option_quotes"]
     },
     "tradier_paper": {
-        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order", "symbol_lookup"],
+        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "cancel_order", "symbol_lookup", "historical_data", "market_calendar"],
         "streaming": ["stock_quotes", "option_quotes"]
     }
 }
