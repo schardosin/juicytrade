@@ -226,12 +226,13 @@ class BaseProvider(ABC):
         pass
     
     @abstractmethod
-    async def unsubscribe_from_symbols(self, symbols: List[str]) -> bool:
+    async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         """
         Unsubscribe from real-time data for symbols.
         
         Args:
             symbols: List of symbols to unsubscribe from
+            data_types: Types of data to unsubscribe from (e.g., ["quotes", "trades"])
             
         Returns:
             True if unsubscription successful, False otherwise

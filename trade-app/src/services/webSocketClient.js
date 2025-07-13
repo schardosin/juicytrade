@@ -18,6 +18,11 @@ class WebSocketStreamingClient {
 
     // Cleanup tracking
     this.activeCallbacks = new Set();
+
+    // Debouncing for subscription calls
+    this.stockSubscriptionDebounce = null;
+    this.optionsSubscriptionDebounce = null;
+    this.debounceDelay = 300; // ms
   }
 
   async connect() {
@@ -364,6 +369,96 @@ class WebSocketStreamingClient {
     this.callbacks.clear();
     this.connectionPromise = null;
     this.reconnectAttempts = 0;
+  }
+
+  // Smart subscription methods with debouncing
+  replaceStockSubscription(symbol) {
+    console.log("replaceStockSubscription called with:", symbol);
+    console.log("WebSocket connected:", this.isConnected);
+    console.log("WebSocket state:", this.ws?.readyState);
+
+    // Clear existing debounce timer
+    if (this.stockSubscriptionDebounce) {
+      clearTimeout(this.stockSubscriptionDebounce);
+    }
+
+    // Debounce the subscription call
+    this.stockSubscriptionDebounce = setTimeout(() => {
+      if (this.isConnected && this.ws) {
+        const message = {
+          type: "subscribe_replace_stock",
+          symbol: symbol,
+        };
+
+        console.log("🔄 Sending stock subscription replacement:", message);
+        this.ws.send(JSON.stringify(message));
+      } else {
+        console.warn(
+          "⚠️ WebSocket not connected, stock subscription will be replaced on connection"
+        );
+      }
+    }, this.debounceDelay);
+  }
+
+  replaceOptionsSubscriptions(symbols) {
+    console.log("replaceOptionsSubscriptions called with:", symbols);
+    console.log("WebSocket connected:", this.isConnected);
+    console.log("WebSocket state:", this.ws?.readyState);
+
+    if (!Array.isArray(symbols)) {
+      symbols = [symbols];
+    }
+
+    // Clear existing debounce timer
+    if (this.optionsSubscriptionDebounce) {
+      clearTimeout(this.optionsSubscriptionDebounce);
+    }
+
+    // Debounce the subscription call
+    this.optionsSubscriptionDebounce = setTimeout(() => {
+      if (this.isConnected && this.ws) {
+        const message = {
+          type: "subscribe_replace_options",
+          symbols: symbols,
+        };
+
+        console.log("🔄 Sending options subscription replacement:", message);
+        this.ws.send(JSON.stringify(message));
+      } else {
+        console.warn(
+          "⚠️ WebSocket not connected, options subscriptions will be replaced on connection"
+        );
+      }
+    }, this.debounceDelay);
+  }
+
+  ensurePersistentSubscriptions(dataTypes = ["orders", "positions"]) {
+    if (this.isConnected && this.ws) {
+      const message = {
+        type: "subscribe_persistent",
+        data_types: dataTypes,
+      };
+
+      console.log("Ensuring persistent subscriptions:", message);
+      this.ws.send(JSON.stringify(message));
+    } else {
+      console.log(
+        "WebSocket not connected, persistent subscriptions will be ensured on connection"
+      );
+    }
+  }
+
+  getSubscriptionStatus() {
+    if (this.isConnected && this.ws) {
+      const message = {
+        type: "get_subscription_status",
+      };
+
+      console.log("Requesting subscription status");
+      this.ws.send(JSON.stringify(message));
+    } else {
+      console.warn("WebSocket not connected, cannot get subscription status");
+    }
   }
 
   getConnectionStatus() {

@@ -245,7 +245,12 @@ export default {
     const startStreaming = async (symbol) => {
       try {
         await webSocketClient.connect();
-        webSocketClient.subscribe([symbol]);
+
+        // Use smart stock subscription replacement
+        webSocketClient.replaceStockSubscription(symbol);
+
+        // Ensure persistent subscriptions for orders and positions
+        webSocketClient.ensurePersistentSubscriptions(["orders", "positions"]);
 
         webSocketClient.onPriceUpdate((data) => {
           if (data.symbol === symbol) {

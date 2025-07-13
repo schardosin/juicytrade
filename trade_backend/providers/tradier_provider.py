@@ -213,11 +213,15 @@ class TradierProvider(BaseProvider):
             self.is_connected = False
 
     async def subscribe_to_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
+        # Check if we need to reconnect
+        if not self.is_connected or not self._session_id or not self._stream_connection:
+            logger.info("Tradier stream not connected, attempting to reconnect...")
+            if not await self.connect_streaming():
+                logger.error("Failed to reconnect to Tradier stream. Cannot subscribe.")
+                return False
+        
         await self._connection_ready.wait() # Wait until connection is ready
-        if not self.is_connected or not self._session_id:
-            logger.error("Not connected to Tradier stream. Cannot subscribe.")
-            return False
-
+        
         payload = {
             "symbols": symbols,
             "sessionid": self._session_id,
@@ -230,6 +234,8 @@ class TradierProvider(BaseProvider):
             return True
         except Exception as e:
             logger.error(f"Failed to subscribe to symbols on Tradier: {e}")
+            # Try to reconnect on failure
+            self.is_connected = False
             return False
 
     async def get_streaming_data(self) -> Optional[MarketData]:
@@ -645,7 +651,7 @@ class TradierProvider(BaseProvider):
             self.is_connected = False
             logger.info("Disconnected from Tradier WebSocket.")
         return True
-    async def unsubscribe_from_symbols(self, symbols: List[str]) -> bool:
+    async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         # Tradier doesn't support unsubscribing, but we can send a new list of symbols
         current_symbols = self._subscribed_symbols.copy()
         current_symbols.difference_update(symbols)
@@ -763,9 +769,9 @@ class TradierProvider(BaseProvider):
         try:
             return SymbolSearchResult(
                 symbol=raw_security.get("symbol", ""),
-                description=raw_security.get("description", ""),
-                exchange=raw_security.get("exchange", ""),
-                type=raw_security.get("type", "")
+                description=raw_security.get("description") or "",  # Handle None values
+                exchange=raw_security.get("exchange") or "",        # Handle None values
+                type=raw_security.get("type") or ""                 # Handle None values
             )
         except Exception as e:
             self._log_error("transform_symbol_search_result", e)

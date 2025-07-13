@@ -164,6 +164,17 @@ export const api = {
       throw error;
     }
   },
+
+  // Get current subscription status
+  async getSubscriptionStatus() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/subscriptions/status`);
+      return response.data.data;
+    } catch (error) {
+      console.error("Error getting subscription status:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;

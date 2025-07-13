@@ -254,6 +254,20 @@ async def get_next_market_date():
         logger.error(f"Error getting next market date: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/subscriptions/status", response_model=ApiResponse)
+async def get_subscription_status():
+    """Get current WebSocket subscription status."""
+    try:
+        status = streaming_manager.get_subscription_status()
+        return ApiResponse(
+            success=True,
+            data=status,
+            message="Retrieved subscription status"
+        )
+    except Exception as e:
+        logger.error(f"Error getting subscription status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/symbols/lookup", response_model=ApiResponse)
 async def lookup_symbols(q: str):
     """Search for symbols matching the query."""
@@ -462,6 +476,48 @@ async def websocket_endpoint(websocket: WebSocket):
                         "symbols": symbols,
                         "message": f"Subscribed to {len(symbols)} symbols"
                     })
+            
+            elif data.get("type") == "subscribe_replace_stock":
+                symbol = data.get("symbol")
+                logger.info(f"🔄 WebSocket: Received stock subscription replacement request for {symbol}")
+                if symbol:
+                    await streaming_manager.replace_stock_subscription(symbol)
+                    await websocket.send_json({
+                        "type": "subscription_confirmed",
+                        "subscription_type": "stock_replace",
+                        "symbol": symbol,
+                        "message": f"Stock subscription replaced with {symbol}"
+                    })
+                    logger.info(f"✅ WebSocket: Stock subscription replaced with {symbol}")
+            
+            elif data.get("type") == "subscribe_replace_options":
+                symbols = data.get("symbols", [])
+                logger.info(f"🔄 WebSocket: Received options subscription replacement request for {len(symbols)} symbols: {symbols}")
+                await streaming_manager.replace_options_subscriptions(symbols)
+                await websocket.send_json({
+                    "type": "subscription_confirmed",
+                    "subscription_type": "options_replace",
+                    "symbols": symbols,
+                    "message": f"Options subscriptions replaced with {len(symbols)} symbols"
+                })
+                logger.info(f"✅ WebSocket: Options subscriptions replaced with {len(symbols)} symbols")
+            
+            elif data.get("type") == "subscribe_persistent":
+                data_types = data.get("data_types", ["orders", "positions"])
+                await streaming_manager.ensure_persistent_subscriptions(data_types)
+                await websocket.send_json({
+                    "type": "subscription_confirmed",
+                    "subscription_type": "persistent",
+                    "data_types": data_types,
+                    "message": f"Persistent subscriptions ensured for {data_types}"
+                })
+            
+            elif data.get("type") == "get_subscription_status":
+                status = streaming_manager.get_subscription_status()
+                await websocket.send_json({
+                    "type": "subscription_status",
+                    "data": status
+                })
             
             elif data.get("type") == "get_positions":
                 positions = await provider_manager.get_positions()

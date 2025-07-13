@@ -290,8 +290,18 @@ export default {
           updatePrice({ price, isLive: false });
         }
 
-        // Start WebSocket streaming for the symbol
-        await startStreaming(symbol);
+        // Use smart stock subscription replacement (don't call startStreaming again)
+        if (webSocketClient.isConnected) {
+          console.log(
+            "🔄 Replacing stock subscription for symbol change:",
+            symbol
+          );
+          webSocketClient.replaceStockSubscription(symbol);
+        } else {
+          console.log(
+            "⚠️ WebSocket not connected, will subscribe when connected"
+          );
+        }
       } catch (error) {
         console.error("Error fetching symbol data:", error);
       }
@@ -366,7 +376,12 @@ export default {
     const startStreaming = async (symbol) => {
       try {
         await webSocketClient.connect();
-        webSocketClient.subscribe([symbol]);
+
+        // Use smart stock subscription replacement
+        webSocketClient.replaceStockSubscription(symbol);
+
+        // Ensure persistent subscriptions for orders and positions
+        webSocketClient.ensurePersistentSubscriptions(["orders", "positions"]);
 
         webSocketClient.onPriceUpdate((data) => {
           if (data.symbol === symbol) {
@@ -425,13 +440,17 @@ export default {
       if (selectedExpiry.value) {
         await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
 
-        // NEW: Subscribe to option symbols for live pricing
+        // Use smart options subscription replacement
         if (optionsChainData.value.length > 0) {
           const optionSymbols = optionsChainData.value.map(
             (option) => option.symbol
           );
-          console.log("Subscribing to option symbols:", optionSymbols);
-          webSocketClient.subscribe(optionSymbols);
+          console.log("Replacing options subscriptions with:", optionSymbols);
+          webSocketClient.replaceOptionsSubscriptions(optionSymbols);
+        } else {
+          // Clear options subscriptions if no options available
+          console.log("Clearing options subscriptions (no options available)");
+          webSocketClient.replaceOptionsSubscriptions([]);
         }
       }
     };
@@ -599,6 +618,10 @@ export default {
 
     // Lifecycle hooks
     onMounted(async () => {
+      // First, establish WebSocket connection and set up streaming
+      await startStreaming(currentSymbol.value);
+
+      // Then fetch symbol data (this will use replaceStockSubscription for subsequent changes)
       await fetchSymbolData(currentSymbol.value);
       await fetchExpirationDates(currentSymbol.value);
       if (selectedExpiry.value) {
