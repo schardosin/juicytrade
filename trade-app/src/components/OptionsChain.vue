@@ -342,6 +342,8 @@ export default {
   background-color: var(--options-strike-bg);
   font-weight: var(--font-weight-bold);
   color: var(--text-primary);
+  border-left: 1px solid var(--border-secondary);
+  border-right: 1px solid var(--border-secondary);
 }
 
 .header-cell {
