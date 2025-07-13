@@ -11,56 +11,20 @@
       <!-- Content Area -->
       <div class="content-area">
         <!-- Symbol Header -->
-        <div class="symbol-header">
-          <div class="symbol-info">
-            <div class="symbol-details">
-              <h2 class="symbol-name">{{ currentSymbol }}</h2>
-              <div class="symbol-meta">
-                <span class="company-name">{{ companyName }}</span>
-                <span class="exchange">{{ exchange }}</span>
-              </div>
-            </div>
-            <div class="price-info">
-              <div class="current-price">
-                <span class="price"
-                  >${{ currentPrice?.toFixed(2) || "--" }}</span
-                >
-                <span class="change" :class="priceChangeClass">
-                  {{ priceChange >= 0 ? "+" : ""
-                  }}{{ priceChange?.toFixed(2) || "--" }}
-                </span>
-                <span class="change-percent" :class="priceChangeClass">
-                  ({{ priceChangePercent >= 0 ? "+" : ""
-                  }}{{ priceChangePercent?.toFixed(2) || "--" }}%)
-                </span>
-              </div>
-              <div class="market-status">
-                <span
-                  class="status-indicator"
-                  :class="marketStatusClass"
-                ></span>
-                <span class="status-text">{{ marketStatus }}</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- Trade Mode Selector -->
-          <div class="trade-mode-selector">
-            <div class="mode-tabs">
-              <button
-                v-for="mode in tradeModes"
-                :key="mode.value"
-                :class="[
-                  'mode-tab',
-                  { active: selectedTradeMode === mode.value },
-                ]"
-                @click="selectedTradeMode = mode.value"
-              >
-                {{ mode.label }}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SymbolHeader
+          :currentSymbol="currentSymbol"
+          :companyName="companyName"
+          :exchange="exchange"
+          :currentPrice="currentPrice"
+          :priceChange="priceChange"
+          :priceChangePercent="priceChangePercent"
+          :isLivePrice="isLivePrice"
+          :marketStatus="marketStatus"
+          :selectedTradeMode="selectedTradeMode"
+          :tradeModes="tradeModes"
+          :showTradeMode="true"
+          @trade-mode-changed="onTradeModeChanged"
+        />
 
         <!-- Options Chain Section -->
         <div class="options-section">
@@ -213,6 +177,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
+import SymbolHeader from "../components/SymbolHeader.vue";
 import OptionsChain from "../components/OptionsChain.vue";
 import OrderTicket from "../components/OrderTicket.vue";
 import PayoffChart from "../components/PayoffChart.vue";
@@ -229,6 +194,7 @@ export default {
   components: {
     TopBar,
     SideNav,
+    SymbolHeader,
     OptionsChain,
     OrderTicket,
     PayoffChart,
@@ -628,6 +594,10 @@ export default {
       }
     };
 
+    const onTradeModeChanged = (mode) => {
+      selectedTradeMode.value = mode;
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       await fetchSymbolData(currentSymbol.value);
@@ -723,6 +693,7 @@ export default {
       onUpdateLegQuantity,
       handleOrderEdit,
       onSymbolSelected,
+      onTradeModeChanged,
 
       // Order management
       showOrderConfirmation,

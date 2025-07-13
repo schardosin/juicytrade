@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from "vue-router";
 import OptionsTrading from "../views/OptionsTrading.vue";
+import ChartView from "../views/ChartView.vue";
 
 const routes = [
   {
@@ -8,6 +9,14 @@ const routes = [
     component: OptionsTrading,
     meta: {
       title: "Options Trading Platform",
+    },
+  },
+  {
+    path: "/chart",
+    name: "ChartView",
+    component: ChartView,
+    meta: {
+      title: "Chart View - Trading Platform",
     },
   },
 ];

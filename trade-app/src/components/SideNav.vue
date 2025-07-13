@@ -28,11 +28,14 @@
 </template>
 
 <script>
-import { ref } from "vue";
+import { ref, onMounted, watch } from "vue";
+import { useRouter, useRoute } from "vue-router";
 
 export default {
   name: "SideNav",
   setup() {
+    const router = useRouter();
+    const route = useRoute();
     // Reactive data
     const activeItem = ref("trade");
 
@@ -49,6 +52,12 @@ export default {
         label: "Trade",
         icon: "pi pi-shopping-cart",
         route: "/options-trading",
+      },
+      {
+        id: "chart",
+        label: "Chart",
+        icon: "pi pi-chart-bar",
+        route: "/chart",
       },
       {
         id: "activity",
@@ -94,8 +103,17 @@ export default {
       const item = navItems.find((nav) => nav.id === itemId);
       if (item) {
         console.log(`Navigating to ${item.route}`);
-        // Here you would typically handle routing
-        // this.$router.push(item.route);
+        router.push(item.route);
+      }
+    };
+
+    const updateActiveItemFromRoute = () => {
+      const currentPath = route.path;
+      const currentItem = navItems.find((item) => item.route === currentPath);
+      if (currentItem) {
+        activeItem.value = currentItem.id;
+      } else if (currentPath === "/") {
+        activeItem.value = "trade";
       }
     };
 
@@ -103,6 +121,14 @@ export default {
       console.log("Opening help");
       // Here you would open help documentation or support
     };
+
+    // Watch for route changes
+    watch(route, updateActiveItemFromRoute, { immediate: true });
+
+    // Set initial active item on mount
+    onMounted(() => {
+      updateActiveItemFromRoute();
+    });
 
     return {
       // Reactive data
