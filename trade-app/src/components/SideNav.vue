@@ -51,7 +51,7 @@ export default {
         id: "trade",
         label: "Trade",
         icon: "pi pi-shopping-cart",
-        route: "/options-trading",
+        route: "/trade",
       },
       {
         id: "chart",
@@ -112,7 +112,7 @@ export default {
       const currentItem = navItems.find((item) => item.route === currentPath);
       if (currentItem) {
         activeItem.value = currentItem.id;
-      } else if (currentPath === "/") {
+      } else if (currentPath === "/" || currentPath === "/trade") {
         activeItem.value = "trade";
       }
     };

@@ -5,10 +5,18 @@ import ChartView from "../views/ChartView.vue";
 const routes = [
   {
     path: "/",
-    name: "OptionsTrading",
+    name: "Trade",
     component: OptionsTrading,
     meta: {
-      title: "Options Trading Platform",
+      title: "Trading Platform",
+    },
+  },
+  {
+    path: "/trade",
+    name: "TradeAlias",
+    component: OptionsTrading,
+    meta: {
+      title: "Trading Platform",
     },
   },
   {
