@@ -337,8 +337,6 @@ export default {
     });
 
     onUnmounted(() => {
-      webSocketClient.disconnect();
-
       // Clean up event listener
       if (window._chartSymbolSelectionHandler) {
         window.removeEventListener(
