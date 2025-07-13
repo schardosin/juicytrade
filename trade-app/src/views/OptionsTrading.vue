@@ -185,6 +185,7 @@ import BottomTradingPanel from "../components/BottomTradingPanel.vue";
 import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
 import OrderResultDialog from "../components/OrderResultDialog.vue";
 import { useOrderManagement } from "../composables/useOrderManagement";
+import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import api from "../services/api";
 import webSocketClient from "../services/webSocketClient";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
@@ -216,15 +217,11 @@ export default {
       handleOrderResultClose,
     } = useOrderManagement();
 
-    // Reactive data
-    const currentSymbol = ref("SPY");
-    const companyName = ref("SPDR S&P 500 ETF Trust");
-    const exchange = ref("NYSE Arca");
-    const currentPrice = ref(null);
-    const priceChange = ref(0);
-    const priceChangePercent = ref(0);
-    const isLivePrice = ref(false);
-    const marketStatus = ref("Market Closed");
+    // Use global symbol state
+    const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
+      useGlobalSymbol();
+
+    // Local reactive data (non-symbol related)
     const selectedExpiry = ref(null);
     const expirationDates = ref([]);
     const optionsChainData = ref([]);
@@ -241,7 +238,18 @@ export default {
       { label: "Futures", value: "futures" },
     ];
 
-    // Computed properties
+    // Computed properties for global symbol state
+    const currentSymbol = computed(() => globalSymbolState.currentSymbol);
+    const companyName = computed(() => globalSymbolState.companyName);
+    const exchange = computed(() => globalSymbolState.exchange);
+    const currentPrice = computed(() => globalSymbolState.currentPrice);
+    const priceChange = computed(() => globalSymbolState.priceChange);
+    const priceChangePercent = computed(
+      () => globalSymbolState.priceChangePercent
+    );
+    const isLivePrice = computed(() => globalSymbolState.isLivePrice);
+    const marketStatus = computed(() => globalSymbolState.marketStatus);
+
     const priceChangeClass = computed(() => ({
       positive: priceChange.value > 0,
       negative: priceChange.value < 0,
@@ -279,8 +287,7 @@ export default {
         // Fetch current price and basic info
         const price = await api.getUnderlyingPrice(symbol);
         if (price !== null) {
-          currentPrice.value = price;
-          isLivePrice.value = false; // Will be updated by WebSocket
+          updatePrice({ price, isLive: false });
         }
 
         // Start WebSocket streaming for the symbol
@@ -363,30 +370,27 @@ export default {
 
         webSocketClient.onPriceUpdate((data) => {
           if (data.symbol === symbol) {
-            const oldPrice = currentPrice.value;
-            currentPrice.value =
+            const newPrice =
               data.price ||
               data.data?.mid ||
               (data.data?.bid + data.data?.ask) / 2;
-            isLivePrice.value = true;
 
-            if (oldPrice !== null) {
-              priceChange.value = currentPrice.value - oldPrice;
-              priceChangePercent.value = (priceChange.value / oldPrice) * 100;
-            }
+            updatePrice({ price: newPrice, isLive: true });
 
             // Update market status based on time (simplified)
             const now = new Date();
             const hour = now.getHours();
+            let status;
             if (hour >= 9 && hour < 16) {
-              marketStatus.value = "Market Open";
+              status = "Market Open";
             } else if (hour >= 4 && hour < 9) {
-              marketStatus.value = "Pre-Market";
+              status = "Pre-Market";
             } else if (hour >= 16 && hour < 20) {
-              marketStatus.value = "After Hours";
+              status = "After Hours";
             } else {
-              marketStatus.value = "Market Closed";
+              status = "Market Closed";
             }
+            updateMarketStatus(status);
           } else {
             // Handle option price updates
             const optionIndex = optionsChainData.value.findIndex(
@@ -571,14 +575,9 @@ export default {
       optionsChainData.value = [];
       expirationDates.value = [];
       selectedExpiry.value = null;
-      currentPrice.value = null;
-      priceChange.value = 0;
-      priceChangePercent.value = 0;
 
-      // Update symbol info
-      currentSymbol.value = symbol.symbol;
-      companyName.value = symbol.description;
-      exchange.value = symbol.exchange || "Unknown";
+      // Update global symbol state
+      updateSymbol(symbol);
 
       // Fetch new data for the selected symbol
       try {

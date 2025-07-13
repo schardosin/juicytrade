@@ -152,6 +152,7 @@ import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
 import LightweightChart from "../components/LightweightChart.vue";
+import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import api from "../services/api";
 import webSocketClient from "../services/webSocketClient";
 
@@ -164,15 +165,11 @@ export default {
     LightweightChart,
   },
   setup() {
-    // Reactive data
-    const currentSymbol = ref("SPY");
-    const companyName = ref("SPDR S&P 500 ETF Trust");
-    const exchange = ref("NYSE Arca");
-    const currentPrice = ref(null);
-    const priceChange = ref(0);
-    const priceChangePercent = ref(0);
-    const isLivePrice = ref(false);
-    const marketStatus = ref("Market Closed");
+    // Use global symbol state
+    const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
+      useGlobalSymbol();
+
+    // Local reactive data (non-symbol related)
     const selectedTradeMode = ref("chart");
     const isRightPanelExpanded = ref(false);
     const selectedTimeframe = ref("D");
@@ -181,6 +178,18 @@ export default {
     const avgVolume = ref(0);
     const marketCap = ref(0);
     const peRatio = ref(null);
+
+    // Computed properties for global symbol state
+    const currentSymbol = computed(() => globalSymbolState.currentSymbol);
+    const companyName = computed(() => globalSymbolState.companyName);
+    const exchange = computed(() => globalSymbolState.exchange);
+    const currentPrice = computed(() => globalSymbolState.currentPrice);
+    const priceChange = computed(() => globalSymbolState.priceChange);
+    const priceChangePercent = computed(
+      () => globalSymbolState.priceChangePercent
+    );
+    const isLivePrice = computed(() => globalSymbolState.isLivePrice);
+    const marketStatus = computed(() => globalSymbolState.marketStatus);
 
     // Chart configuration
     const chartProvider = ref("lightweight");
@@ -223,8 +232,7 @@ export default {
         // Fetch current price and basic info
         const price = await api.getUnderlyingPrice(symbol);
         if (price !== null) {
-          currentPrice.value = price;
-          isLivePrice.value = false; // Will be updated by WebSocket
+          updatePrice({ price, isLive: false });
         }
 
         // Start WebSocket streaming for the symbol
@@ -241,30 +249,27 @@ export default {
 
         webSocketClient.onPriceUpdate((data) => {
           if (data.symbol === symbol) {
-            const oldPrice = currentPrice.value;
-            currentPrice.value =
+            const newPrice =
               data.price ||
               data.data?.mid ||
               (data.data?.bid + data.data?.ask) / 2;
-            isLivePrice.value = true;
 
-            if (oldPrice !== null) {
-              priceChange.value = currentPrice.value - oldPrice;
-              priceChangePercent.value = (priceChange.value / oldPrice) * 100;
-            }
+            updatePrice({ price: newPrice, isLive: true });
 
             // Update market status based on time (simplified)
             const now = new Date();
             const hour = now.getHours();
+            let status;
             if (hour >= 9 && hour < 16) {
-              marketStatus.value = "Market Open";
+              status = "Market Open";
             } else if (hour >= 4 && hour < 9) {
-              marketStatus.value = "Pre-Market";
+              status = "Pre-Market";
             } else if (hour >= 16 && hour < 20) {
-              marketStatus.value = "After Hours";
+              status = "After Hours";
             } else {
-              marketStatus.value = "Market Closed";
+              status = "Market Closed";
             }
+            updateMarketStatus(status);
           }
         });
       } catch (error) {
@@ -275,13 +280,8 @@ export default {
     const onSymbolSelected = async (symbol) => {
       console.log("Chart view - Symbol selected:", symbol);
 
-      // Update symbol info
-      currentSymbol.value = symbol.symbol;
-      companyName.value = symbol.description;
-      exchange.value = symbol.exchange || "Unknown";
-      currentPrice.value = null;
-      priceChange.value = 0;
-      priceChangePercent.value = 0;
+      // Update global symbol state
+      updateSymbol(symbol);
 
       // Fetch new data for the selected symbol
       try {
