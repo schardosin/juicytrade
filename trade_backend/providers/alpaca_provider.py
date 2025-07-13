@@ -1,6 +1,7 @@
 import asyncio
 import requests
-from typing import List, Dict, Optional, Any, Set
+import time
+from typing import List, Dict, Optional, Any, Set, Tuple
 from datetime import datetime, date
 import logging
 import json
@@ -25,6 +26,131 @@ from ..models import (
 )
 
 logger = logging.getLogger(__name__)
+
+class SymbolLookupCache:
+    """Smart caching for symbol lookup with prefix filtering."""
+    
+    def __init__(self, ttl_seconds: int = 21600, max_size: int = 500):
+        self.ttl_seconds = ttl_seconds  # 6 hours (21600 seconds)
+        self.max_size = max_size
+        self.cache: Dict[str, Tuple[List[SymbolSearchResult], float]] = {}
+    
+    def _cleanup_expired(self):
+        """Remove expired entries from cache."""
+        current_time = time.time()
+        expired_keys = [
+            key for key, (_, timestamp) in self.cache.items()
+            if current_time - timestamp > self.ttl_seconds
+        ]
+        for key in expired_keys:
+            del self.cache[key]
+    
+    def _enforce_size_limit(self):
+        """Enforce max cache size using LRU eviction."""
+        if len(self.cache) > self.max_size:
+            # Simple LRU: remove oldest entries
+            sorted_items = sorted(self.cache.items(), key=lambda x: x[1][1])
+            items_to_remove = len(self.cache) - self.max_size + 1
+            for key, _ in sorted_items[:items_to_remove]:
+                del self.cache[key]
+    
+    async def search(self, query: str, api_call_func) -> List[SymbolSearchResult]:
+        """
+        Smart search with caching and prefix filtering.
+        
+        Args:
+            query: Search query
+            api_call_func: Function to call API if cache miss
+            
+        Returns:
+            List of SymbolSearchResult objects
+        """
+        self._cleanup_expired()
+        normalized_query = query.lower().strip()
+        
+        # 1. Check for exact match in cache
+        if normalized_query in self.cache:
+            results, _ = self.cache[normalized_query]
+            # Return top 50 for display
+            return results[:50] if len(results) > 50 else results
+        
+        # 2. Try to filter from cached broader search
+        filtered_results = self._try_filter_from_cache(normalized_query)
+        if filtered_results is not None:
+            # Cache the filtered results for future exact matches
+            self.cache[normalized_query] = (filtered_results, time.time())
+            self._enforce_size_limit()
+            # Return top 50 for display
+            return filtered_results[:50] if len(filtered_results) > 50 else filtered_results
+        
+        # 3. Make API call and cache results (only if successful)
+        api_results = await api_call_func(query)
+        
+        # Only cache if we got actual results (don't cache empty results from API failures)
+        if api_results:
+            # Cache the full results for better prefix filtering
+            self.cache[normalized_query] = (api_results, time.time())
+            self._enforce_size_limit()
+        
+        # Return top 50 for display
+        return api_results[:50] if len(api_results) > 50 else api_results
+    
+    def _try_filter_from_cache(self, query: str) -> Optional[List[SymbolSearchResult]]:
+        """
+        Try to filter results from a cached broader search.
+        
+        Args:
+            query: Current search query
+            
+        Returns:
+            Filtered results if found, None otherwise
+        """
+        current_time = time.time()
+        
+        # Look for cached results from shorter queries that could contain our results
+        for cached_query, (results, timestamp) in self.cache.items():
+            # Skip expired entries
+            if current_time - timestamp > self.ttl_seconds:
+                continue
+            
+            # Check if this cached query is a prefix of our query
+            if len(cached_query) < len(query) and query.startswith(cached_query):
+                # Filter the cached results to match our query
+                filtered = [
+                    result for result in results
+                    if (query in result.symbol.lower() or 
+                        query in result.description.lower())
+                ]
+                
+                # Sort the filtered results by relevance
+                def sort_key(result):
+                    symbol = result.symbol.upper()
+                    query_upper = query.upper()
+                    
+                    # Exact match gets highest priority
+                    if symbol == query_upper:
+                        return (0, symbol)
+                    
+                    # Starts with query gets second priority
+                    if symbol.startswith(query_upper):
+                        return (1, len(symbol), symbol)
+                    
+                    # Contains query gets third priority
+                    if query_upper in symbol:
+                        return (2, symbol.index(query_upper), len(symbol), symbol)
+                    
+                    # Description contains query gets fourth priority
+                    description = result.description.upper()
+                    if query_upper in description:
+                        return (3, description.index(query_upper), len(description), symbol)
+                    
+                    # Everything else
+                    return (4, symbol)
+                
+                filtered.sort(key=sort_key)
+                return filtered
+        
+        return None
 
 class AlpacaProvider(BaseProvider):
     """
@@ -64,6 +190,9 @@ class AlpacaProvider(BaseProvider):
         
         # Load cache from disk on startup
         self._load_cache_from_disk()
+        
+        # Initialize symbol lookup cache
+        self._symbol_cache = SymbolLookupCache()
         
     def _init_clients(self):
         """Initialize Alpaca API clients."""
@@ -1056,5 +1185,112 @@ class AlpacaProvider(BaseProvider):
             self._log_error("option_quote_handler", e)
     
     async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
-        """Search for symbols matching the query."""
-        raise NotImplementedError("Symbol lookup not implemented for Alpaca provider")
+        """Search for symbols matching the query using Alpaca assets endpoint with smart caching."""
+        return await self._symbol_cache.search(query, self._api_lookup_symbols)
+    
+    async def _api_lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
+        """Make actual API call to Alpaca for symbol lookup."""
+        try:
+            url = f"{self._get_base_url()}/v2/assets"
+            api_key, api_secret = self._get_api_credentials()
+            
+            # Alpaca assets endpoint parameters
+            params = {
+                "status": "active",  # Only active assets
+                "asset_class": "us_equity",  # Focus on US equities
+                "attributes": ""  # Can be used for additional filtering
+            }
+            
+            headers = {
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": api_secret,
+                "accept": "application/json"
+            }
+            
+            response = requests.get(url, headers=headers, params=params)
+            
+            if response.status_code == 200:
+                data = response.json()
+                
+                # Filter results based on query
+                query_upper = query.upper()
+                filtered_assets = []
+                
+                for asset in data:
+                    symbol = asset.get("symbol", "").upper()
+                    name = asset.get("name", "").upper()
+                    
+                    # Check if query matches symbol or name
+                    if (query_upper in symbol or query_upper in name):
+                        filtered_assets.append(asset)
+                
+                # Sort results by relevance
+                def sort_key(asset):
+                    symbol = asset.get("symbol", "").upper()
+                    name = asset.get("name", "").upper()
+                    
+                    # Exact symbol match gets highest priority
+                    if symbol == query_upper:
+                        return (0, symbol)
+                    
+                    # Symbol starts with query gets second priority
+                    if symbol.startswith(query_upper):
+                        return (1, len(symbol), symbol)
+                    
+                    # Symbol contains query gets third priority
+                    if query_upper in symbol:
+                        return (2, symbol.index(query_upper), len(symbol), symbol)
+                    
+                    # Name contains query gets fourth priority
+                    if query_upper in name:
+                        return (3, name.index(query_upper), len(name), symbol)
+                    
+                    # Everything else
+                    return (4, symbol)
+                
+                # Sort the filtered assets
+                filtered_assets.sort(key=sort_key)
+                
+                # Transform ALL results to our standard model (cache everything)
+                results = []
+                for asset in filtered_assets:  # Transform ALL filtered results
+                    transformed = self._transform_asset_to_symbol_result(asset)
+                    if transformed:
+                        results.append(transformed)
+                
+                logger.info(f"Found {len(results)} total symbols for query '{query}' from Alpaca assets, caching all results")
+                
+                # Return ALL results for caching, limiting will be done in the cache search method
+                return results
+            else:
+                self._log_error(f"lookup_symbols API call", 
+                              Exception(f"HTTP {response.status_code}: {response.text}"))
+                return []
+                
+        except Exception as e:
+            self._log_error(f"lookup_symbols for query '{query}'", e)
+            return []
+    
+    def _transform_asset_to_symbol_result(self, asset: Dict[str, Any]) -> Optional[SymbolSearchResult]:
+        """Transform Alpaca asset to our standard SymbolSearchResult model."""
+        try:
+            # Map Alpaca asset class to our type system
+            asset_class = asset.get("class", "")
+            if asset_class == "us_equity":
+                symbol_type = "stock"
+            elif asset_class == "us_option":
+                symbol_type = "option"
+            elif asset_class == "crypto":
+                symbol_type = "crypto"
+            else:
+                symbol_type = asset_class.lower() if asset_class else "unknown"
+            
+            return SymbolSearchResult(
+                symbol=asset.get("symbol", ""),
+                description=asset.get("name", ""),
+                exchange=asset.get("exchange", ""),
+                type=symbol_type
+            )
+        except Exception as e:
+            self._log_error("transform_asset_to_symbol_result", e)
+            return None

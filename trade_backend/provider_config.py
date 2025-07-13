@@ -25,11 +25,11 @@ DEFAULT_ROUTING = {
 
 PROVIDER_CAPABILITIES = {
     "alpaca": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date"],
+        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date", "symbol_lookup"],
         "streaming": ["stock_quotes", "option_quotes", "positions", "orders"]
     },
     "alpaca_paper": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date"],
+        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "next_market_date", "symbol_lookup"],
         "streaming": ["stock_quotes", "option_quotes", "positions", "orders"]
     },
     "public": {
