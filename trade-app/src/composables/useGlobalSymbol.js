@@ -1,16 +1,55 @@
 import { ref, reactive } from "vue";
 
-// Global symbol state - shared across all components
-const globalSymbolState = reactive({
-  currentSymbol: "SPY",
-  companyName: "SPDR S&P 500 ETF Trust",
-  exchange: "NYSE Arca",
-  currentPrice: null,
-  priceChange: 0,
-  priceChangePercent: 0,
-  isLivePrice: false,
-  marketStatus: "Market Closed",
-});
+// Load persisted symbol data from localStorage
+const loadPersistedSymbolData = () => {
+  try {
+    const saved = localStorage.getItem("globalSymbolState");
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      return {
+        currentSymbol: parsed.currentSymbol || "SPY",
+        companyName: parsed.companyName || "SPDR S&P 500 ETF Trust",
+        exchange: parsed.exchange || "NYSE Arca",
+        currentPrice: null, // Always reset price data on page load
+        priceChange: 0,
+        priceChangePercent: 0,
+        isLivePrice: false,
+        marketStatus: "Market Closed",
+      };
+    }
+  } catch (error) {
+    console.warn("Failed to load persisted symbol data:", error);
+  }
+
+  // Default fallback
+  return {
+    currentSymbol: "SPY",
+    companyName: "SPDR S&P 500 ETF Trust",
+    exchange: "NYSE Arca",
+    currentPrice: null,
+    priceChange: 0,
+    priceChangePercent: 0,
+    isLivePrice: false,
+    marketStatus: "Market Closed",
+  };
+};
+
+// Global symbol state - shared across all components with persistence
+const globalSymbolState = reactive(loadPersistedSymbolData());
+
+// Save symbol data to localStorage (only symbol info, not price data)
+const persistSymbolData = () => {
+  try {
+    const dataToSave = {
+      currentSymbol: globalSymbolState.currentSymbol,
+      companyName: globalSymbolState.companyName,
+      exchange: globalSymbolState.exchange,
+    };
+    localStorage.setItem("globalSymbolState", JSON.stringify(dataToSave));
+  } catch (error) {
+    console.warn("Failed to persist symbol data:", error);
+  }
+};
 
 // Global symbol management composable
 export function useGlobalSymbol() {
@@ -26,6 +65,9 @@ export function useGlobalSymbol() {
     globalSymbolState.priceChangePercent = 0;
     globalSymbolState.isLivePrice = false;
     globalSymbolState.marketStatus = "Market Closed";
+
+    // Persist the symbol data to localStorage
+    persistSymbolData();
 
     console.log("Global symbol updated:", symbolData.symbol);
   };

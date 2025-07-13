@@ -77,7 +77,7 @@ export default {
     const loading = ref(false);
     const error = ref("");
     const selectedTimeframe = ref("D");
-    const selectedDateRange = ref("1M");
+    const selectedDateRange = ref("6M");
 
     let chart = null;
     let candlestickSeries = null;
