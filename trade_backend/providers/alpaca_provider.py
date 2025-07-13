@@ -898,15 +898,27 @@ class AlpacaProvider(BaseProvider):
             self._log_error(f"subscribe_to_symbols {symbols}", e)
             return False
     
-    async def unsubscribe_from_symbols(self, symbols: List[str]) -> bool:
-        """Unsubscribe from real-time data for symbols."""
+    async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
+        """
+        Unsubscribe from real-time data for symbols.
+        
+        Note: Alpaca doesn't support true unsubscribing from individual symbols,
+        so we track what should be unsubscribed and manage subscriptions internally.
+        """
         try:
-            # Remove symbols from our tracking set
-            self._subscribed_symbols.difference_update(symbols)
+            logger.info(f"🗑️ Alpaca: Marking {len(symbols)} symbols for unsubscription: {symbols}")
             
-            # Note: Alpaca doesn't have direct unsubscribe methods,
-            # so we'd need to restart the streams with the new symbol list
-            self._log_info(f"Unsubscribed from {len(symbols)} symbols")
+            # Remove symbols from our tracking set
+            for symbol in symbols:
+                self._subscribed_symbols.discard(symbol)
+            
+            logger.info(f"📋 Alpaca: Remaining subscribed symbols: {list(self._subscribed_symbols)}")
+            
+            # Instead of restarting streams (which causes connection limits),
+            # we'll just track the unsubscribed symbols internally.
+            # New subscriptions will only include the remaining symbols.
+            logger.info(f"✅ Alpaca: Symbols marked for unsubscription. Next subscription will use remaining {len(self._subscribed_symbols)} symbols")
+            
             return True
         except Exception as e:
             self._log_error(f"unsubscribe_from_symbols {symbols}", e)
@@ -1419,3 +1431,62 @@ class AlpacaProvider(BaseProvider):
         except Exception as e:
             self._log_error("transform_asset_to_symbol_result", e)
             return None
+
+    # === Stream Management Helper Methods ===
+    
+    async def _restart_streams_with_symbols(self, symbols: List[str]) -> bool:
+        """Restart streaming connections with only the specified symbols."""
+        try:
+            logger.info(f"🔄 Alpaca: Restarting streams with {len(symbols)} symbols")
+            
+            # Stop current streams
+            await self._stop_all_streams()
+            
+            # Wait a moment for cleanup
+            await asyncio.sleep(0.5)
+            
+            # Reconnect streaming
+            if not await self.connect_streaming():
+                logger.error("Failed to reconnect streaming during restart")
+                return False
+            
+            # Subscribe to the new symbol list
+            return await self.subscribe_to_symbols(symbols)
+            
+        except Exception as e:
+            self._log_error("_restart_streams_with_symbols", e)
+            return False
+    
+    async def _stop_all_streams(self) -> bool:
+        """Stop all streaming connections."""
+        try:
+            logger.info("🛑 Alpaca: Stopping all streams")
+            
+            if self.option_stream:
+                try:
+                    await self.option_stream.close()
+                except Exception as e:
+                    logger.warning(f"Error closing option stream: {e}")
+                self.option_stream = None
+            
+            if self.stock_stream:
+                try:
+                    await self.stock_stream.close()
+                except Exception as e:
+                    logger.warning(f"Error closing stock stream: {e}")
+                self.stock_stream = None
+            
+            if self.trading_stream:
+                try:
+                    await self.trading_stream.close()
+                except Exception as e:
+                    logger.warning(f"Error closing trading stream: {e}")
+                self.trading_stream = None
+            
+            self.is_connected = False
+            logger.info("✅ Alpaca: All streams stopped")
+            return True
+            
+        except Exception as e:
+            self._log_error("_stop_all_streams", e)
+            return False

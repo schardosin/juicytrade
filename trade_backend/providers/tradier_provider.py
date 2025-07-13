@@ -198,13 +198,38 @@ class TradierProvider(BaseProvider):
             async for message in self._stream_connection:
                 data = json.loads(message)
                 if data['type'] == 'quote':
+                    symbol = data['symbol']
+                    
+                    # Log streaming data for debugging (only for underlying symbols, not options)
+                    if not self._is_option_symbol(symbol):
+                        logger.info(f"📡 Tradier streaming data received for {symbol}: bid={data.get('bid')}, ask={data.get('ask')}, last={data.get('last')}")
+                    
+                    # Validate that we're subscribed to this symbol
+                    if symbol not in self._subscribed_symbols:
+                        if not self._is_option_symbol(symbol):
+                            logger.warning(f"⚠️ Received streaming data for unsubscribed symbol: {symbol}")
+                        continue
+                    
+                    # Create market data with proper price handling
+                    price_data = {
+                        'bid': data.get('bid'),
+                        'ask': data.get('ask'),
+                        'last': data.get('last'),
+                        'volume': data.get('volume'),
+                        'timestamp': data.get('biddate') or data.get('timestamp')
+                    }
+                    
                     market_data = MarketData(
-                        symbol=data['symbol'],
+                        symbol=symbol,
                         data_type='quote',
-                        timestamp=str(data['biddate']),
-                        data={'bid': data['bid'], 'ask': data['ask']}
+                        timestamp=str(data.get('biddate') or data.get('timestamp', '')),
+                        data=price_data
                     )
                     await self._streaming_queue.put(market_data)
+                    
+                else:
+                    logger.debug(f"Received non-quote message type: {data.get('type')}")
+                    
         except websockets.exceptions.ConnectionClosed as e:
             logger.warning(f"Tradier WebSocket connection closed: {e}")
             self.is_connected = False
@@ -652,10 +677,24 @@ class TradierProvider(BaseProvider):
             logger.info("Disconnected from Tradier WebSocket.")
         return True
     async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
-        # Tradier doesn't support unsubscribing, but we can send a new list of symbols
-        current_symbols = self._subscribed_symbols.copy()
-        current_symbols.difference_update(symbols)
-        return await self.subscribe_to_symbols(list(current_symbols))
+        """
+        Tradier doesn't support true unsubscribing, so we need to track what should be unsubscribed
+        and only subscribe to the remaining symbols when a new subscription is made.
+        """
+        logger.info(f"🗑️ Tradier: Marking {len(symbols)} symbols for unsubscription")
+        
+        # Remove from our tracked subscribed symbols
+        for symbol in symbols:
+            self._subscribed_symbols.discard(symbol)
+        
+        # Since Tradier doesn't support true unsubscribing, we'll re-subscribe to only the remaining symbols
+        if self._subscribed_symbols:
+            logger.info(f"🔄 Tradier: Re-subscribing to remaining {len(self._subscribed_symbols)} symbols")
+            return await self.subscribe_to_symbols(list(self._subscribed_symbols))
+        else:
+            logger.info("🔄 Tradier: No symbols remaining, clearing all subscriptions")
+            # We can't truly clear all subscriptions in Tradier, but we've cleared our tracking
+            return True
 
     def _parse_option_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Parse option symbol to extract components."""

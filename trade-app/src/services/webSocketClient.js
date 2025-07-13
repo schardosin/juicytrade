@@ -188,10 +188,28 @@ class WebSocketStreamingClient {
   handleMessage(message) {
     switch (message.type) {
       case "price_update":
+        // Log the raw streaming data for debugging (only for underlying symbols, not options)
+        if (!this.isOptionSymbol(message.symbol)) {
+          console.log(
+            `📡 Frontend received price update for ${message.symbol}:`,
+            message.data
+          );
+        }
+
+        // For index symbols like SPX, prefer 'last' price over bid/ask
+        let price;
+        if (message.data.last && message.data.last > 0) {
+          price = message.data.last;
+        } else if (message.data.ask && message.data.bid) {
+          price = (message.data.ask + message.data.bid) / 2;
+        } else {
+          price = message.data.ask || message.data.bid;
+        }
+
         // Queue price updates for throttled processing
         this.queuePriceUpdate({
           symbol: message.symbol,
-          price: message.data.ask || message.data.bid,
+          price: price,
           data: message.data,
         });
         break;
@@ -467,6 +485,16 @@ class WebSocketStreamingClient {
       subscribedSymbols: Array.from(this.subscribedSymbols),
       reconnectAttempts: this.reconnectAttempts,
     };
+  }
+
+  // Helper method to check if symbol is an option symbol
+  isOptionSymbol(symbol) {
+    return (
+      symbol &&
+      symbol.length > 10 &&
+      (symbol.includes("C") || symbol.includes("P")) &&
+      /\d{6}[CP]\d{8}/.test(symbol)
+    );
   }
 }
 

@@ -97,29 +97,37 @@ class StreamingManager:
 
     async def replace_stock_subscription(self, symbol: str):
         """Replace current stock subscription with new symbol"""
-        logger.info(f"Replacing stock subscription: {self._stock_subscription} -> {symbol}")
+        logger.info(f"🔄 StreamingManager: Replacing stock subscription: {self._stock_subscription} -> {symbol}")
         
         # Unsubscribe from current stock if exists
         if self._stock_subscription:
+            logger.info(f"🗑️ StreamingManager: Unsubscribing from current stock: {self._stock_subscription}")
             await self._unsubscribe_symbols([self._stock_subscription], ["stock_quotes"])
         
         # Subscribe to new stock
+        logger.info(f"➕ StreamingManager: Subscribing to new stock: {symbol}")
         await self._subscribe_symbols([symbol], ["stock_quotes"])
         self._stock_subscription = symbol
+        
+        logger.info(f"✅ StreamingManager: Stock subscription replacement complete. Current: {self._stock_subscription}")
 
     async def replace_options_subscriptions(self, symbols: List[str]):
         """Replace all current options subscriptions with new symbols"""
-        logger.info(f"Replacing options subscriptions: {len(self._options_subscriptions)} -> {len(symbols)} symbols")
+        logger.info(f"🔄 StreamingManager: Replacing options subscriptions: {len(self._options_subscriptions)} -> {len(symbols)} symbols")
         
         # Unsubscribe from all current options
         if self._options_subscriptions:
+            logger.info(f"🗑️ StreamingManager: Unsubscribing from {len(self._options_subscriptions)} current options")
             await self._unsubscribe_symbols(list(self._options_subscriptions), ["option_quotes"])
         
         # Subscribe to new options
         if symbols:
+            logger.info(f"➕ StreamingManager: Subscribing to {len(symbols)} new options")
             await self._subscribe_symbols(symbols, ["option_quotes"])
         
         self._options_subscriptions = set(symbols)
+        
+        logger.info(f"✅ StreamingManager: Options subscription replacement complete. Current: {len(self._options_subscriptions)} options")
 
     async def ensure_persistent_subscriptions(self, data_types: List[str]):
         """Ensure persistent subscriptions are active (orders, positions)"""
