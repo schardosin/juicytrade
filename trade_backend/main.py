@@ -492,7 +492,7 @@ async def websocket_endpoint(websocket: WebSocket):
             
             elif data.get("type") == "subscribe_replace_options":
                 symbols = data.get("symbols", [])
-                logger.info(f"🔄 WebSocket: Received options subscription replacement request for {len(symbols)} symbols: {symbols}")
+                logger.info(f"🔄 WebSocket: Received options subscription replacement request for {len(symbols)} ")
                 await streaming_manager.replace_options_subscriptions(symbols)
                 await websocket.send_json({
                     "type": "subscription_confirmed",
@@ -558,7 +558,7 @@ async def handle_streaming_data():
         try:
             market_data = await streaming_manager.get_data()
             if market_data:
-                logger.info(f"Broadcasting price update for {market_data.symbol}")
+                #logger.info(f"Broadcasting price update for {market_data.symbol}")
                 # Broadcast to all connected WebSocket clients
                 await manager.broadcast({
                     "type": "price_update",

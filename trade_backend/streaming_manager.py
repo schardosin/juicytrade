@@ -73,7 +73,7 @@ class StreamingManager:
                 
                 new_symbols = set(symbols) - self._subscriptions[data_type]
                 if new_symbols:
-                    logger.info(f"Subscribing to {len(new_symbols)} symbols for {data_type}: {new_symbols}")
+                    logger.info(f"Subscribing to {len(new_symbols)} symbols for {data_type}")
                     await provider.subscribe_to_symbols(list(new_symbols), [data_type])
                     self._subscriptions[data_type].update(new_symbols)
 
@@ -89,7 +89,7 @@ class StreamingManager:
                 if data_type in self._subscriptions:
                     symbols_to_remove = set(symbols) & self._subscriptions[data_type]
                     if symbols_to_remove:
-                        logger.info(f"Unsubscribing from {len(symbols_to_remove)} symbols for {data_type}: {symbols_to_remove}")
+                        logger.info(f"Unsubscribing from {len(symbols_to_remove)} symbols for {data_type}")
                         # Check if provider has unsubscribe method
                         if hasattr(provider, 'unsubscribe_from_symbols'):
                             await provider.unsubscribe_from_symbols(list(symbols_to_remove), [data_type])
