@@ -77,24 +77,6 @@ export default {
         icon: "pi pi-history",
         route: "/history",
       },
-      {
-        id: "fixed-income",
-        label: "Fixed Income",
-        icon: "pi pi-money-bill",
-        route: "/fixed-income",
-      },
-      {
-        id: "backtest",
-        label: "Backtest",
-        icon: "pi pi-chart-bar",
-        route: "/backtest",
-      },
-      {
-        id: "lastview",
-        label: "tastylive",
-        icon: "pi pi-video",
-        route: "/tastylive",
-      },
     ];
 
     // Methods
