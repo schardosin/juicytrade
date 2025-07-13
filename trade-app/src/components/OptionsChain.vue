@@ -319,6 +319,7 @@ export default {
   font-weight: 600;
   font-size: 12px;
   color: #cccccc;
+  overflow-y: scroll;
 }
 
 .calls-header,
@@ -471,6 +472,19 @@ export default {
 
 .chain-body::-webkit-scrollbar-thumb:hover {
   background: #555555;
+}
+
+/* Hide header scrollbar but keep the space */
+.chain-header::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chain-header::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.chain-header::-webkit-scrollbar-thumb {
+  background: transparent;
 }
 
 /* Responsive adjustments */
