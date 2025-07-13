@@ -391,7 +391,7 @@ export default {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background-color: #1a1a1a;
+  background-color: #141519;
   color: #ffffff;
 }
 
@@ -406,13 +406,13 @@ export default {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background-color: #2a2a2a;
+  background-color: #141519;
 }
 
 .chart-section {
   flex: 1;
   overflow: hidden;
-  background-color: rgba(51, 51, 51, 1);
+  background-color: #0b0d10;
   position: relative;
 }
 

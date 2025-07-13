@@ -148,8 +148,8 @@ export default {
 <style scoped>
 .side-nav {
   width: 80px;
-  background-color: #1a1a1a;
-  border-right: 1px solid #333333;
+  background-color: #0b0d10;
+  border-right: 1px solid #1a1d23;
   display: flex;
   flex-direction: column;
   justify-content: space-between;
@@ -176,11 +176,11 @@ export default {
 }
 
 .nav-item:hover {
-  background-color: #333333;
+  background-color: #1a1d23;
 }
 
 .nav-item.active {
-  background-color: #444444;
+  background-color: #1a1d23;
 }
 
 .nav-item.active::before {
@@ -234,7 +234,7 @@ export default {
 .nav-bottom {
   margin-top: auto;
   padding-top: 16px;
-  border-top: 1px solid #333333;
+  border-top: 1px solid #1a1d23;
 }
 
 /* Scrollbar styling for the nav */

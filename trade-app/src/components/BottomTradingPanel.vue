@@ -618,8 +618,8 @@ export default {
   bottom: 0;
   left: 0;
   right: 0;
-  background-color: #1a1a1a;
-  border-top: 1px solid #333;
+  background-color: #141519;
+  border-top: 1px solid #1a1d23;
   color: #ffffff;
   z-index: 1000;
   box-shadow: 0 -2px 10px rgba(0, 0, 0, 0.3);
@@ -637,8 +637,8 @@ export default {
   display: flex;
   justify-content: space-between;
   padding: 6px 16px;
-  background-color: #2a2a2a;
-  border-bottom: 1px solid #333;
+  background-color: #0b0d10;
+  border-bottom: 1px solid #1a1d23;
 }
 
 .stat-group {
@@ -678,8 +678,8 @@ export default {
 .controls-row {
   display: flex;
   padding: 8px 16px;
-  background-color: #1a1a1a;
-  border-bottom: 1px solid #333;
+  background-color: #141519;
+  border-bottom: 1px solid #1a1d23;
   gap: 4px;
 }
 
@@ -737,8 +737,8 @@ export default {
   display: flex;
   padding: 12px 16px;
   gap: 24px;
-  background-color: #1a1a1a;
-  border-bottom: 1px solid #333;
+  background-color: #141519;
+  border-bottom: 1px solid #1a1d23;
 }
 
 .order-section {
@@ -1090,7 +1090,7 @@ export default {
 }
 
 .review-btn {
-  background-color: #ff6b35;
+  background-color: #4ecdc4;
   border: none;
   color: #fff;
   padding: 10px 20px;
@@ -1104,7 +1104,7 @@ export default {
 }
 
 .review-btn:hover:not(:disabled) {
-  background-color: #e55a2b;
+  background-color: #3db8b0;
   transform: translateY(-1px);
 }
 

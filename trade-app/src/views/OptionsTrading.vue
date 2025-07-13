@@ -734,7 +734,7 @@ export default {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  background-color: #1a1a1a;
+  background-color: #141519;
   color: #ffffff;
 }
 
@@ -749,16 +749,7 @@ export default {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background-color: #2a2a2a;
-}
-
-.symbol-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 16px 24px;
-  background-color: #333333;
-  border-bottom: 1px solid #444444;
+  background-color: #141519;
 }
 
 .symbol-search-section {
@@ -903,14 +894,16 @@ export default {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  padding: 16px 24px;
 }
 
 .expiration-selector {
   display: flex;
   align-items: center;
   gap: 12px;
-  margin-bottom: 16px;
+  padding: 16px 24px;
+  background-color: #141519;
+  border-bottom: 1px solid #1a1d23;
+  margin-bottom: 0;
 }
 
 .expiration-selector label {
@@ -926,6 +919,7 @@ export default {
 .options-chain-wrapper {
   flex: 1;
   overflow: hidden;
+  padding: 16px 24px;
 }
 
 .right-panel {

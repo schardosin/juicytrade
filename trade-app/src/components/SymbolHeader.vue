@@ -128,8 +128,8 @@ export default {
   justify-content: space-between;
   align-items: center;
   padding: 16px 24px;
-  background-color: #333333;
-  border-bottom: 1px solid #444444;
+  background-color: #141519;
+  border-bottom: 1px solid #1a1d23;
 }
 
 .symbol-info {
@@ -260,7 +260,7 @@ export default {
 }
 
 .mode-tab.active {
-  background-color: #007bff;
+  background-color: #4ecdc4;
   color: #ffffff;
 }
 </style>

@@ -423,8 +423,8 @@ export default {
   display: flex;
   align-items: center;
   height: 60px;
-  background-color: #1a1a1a;
-  border-bottom: 1px solid #333333;
+  background-color: #0b0d10;
+  border-bottom: 1px solid #1a1d23;
   padding: 0 24px;
   gap: 24px;
 }
@@ -707,7 +707,7 @@ export default {
 }
 
 .connection-status.connected .status-dot {
-  background-color: #00c851;
+  background-color: #4ecdc4;
 }
 
 .connection-status.disconnected .status-dot {
@@ -715,7 +715,7 @@ export default {
 }
 
 .connection-status.connected .status-text {
-  color: #00c851;
+  color: #4ecdc4;
 }
 
 .connection-status.disconnected .status-text {

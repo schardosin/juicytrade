@@ -306,7 +306,7 @@ export default {
   display: flex;
   flex-direction: column;
   height: 100%;
-  background-color: #2a2a2a;
+  background-color: #0b0d10;
   border-radius: 8px;
   overflow: hidden;
 }
@@ -314,8 +314,8 @@ export default {
 .chain-header {
   display: grid;
   grid-template-columns: 1fr 100px 1fr;
-  background-color: #333333;
-  border-bottom: 2px solid #444444;
+  background-color: #0b0d10;
+  border-bottom: 2px solid #1a1d23;
   font-weight: 600;
   font-size: 12px;
   color: #cccccc;
@@ -338,7 +338,7 @@ export default {
   align-items: center;
   justify-content: center;
   padding: 12px 16px;
-  background-color: #444444;
+  background-color: #1a1d23;
   font-weight: 700;
   color: #ffffff;
 }
@@ -358,12 +358,12 @@ export default {
 .option-row {
   display: grid;
   grid-template-columns: 1fr 100px 1fr;
-  border-bottom: 1px solid #333333;
+  border-bottom: 1px solid #1a1d23;
   transition: background-color 0.2s ease;
 }
 
 .option-row:hover {
-  background-color: #2d2d2d;
+  background-color: #1a1d23;
 }
 
 .option-row.at-the-money {
@@ -444,9 +444,9 @@ export default {
   align-items: center;
   justify-content: center;
   padding: 8px 16px;
-  background-color: #333333;
-  border-left: 1px solid #444444;
-  border-right: 1px solid #444444;
+  background-color: #1a1d23;
+  border-left: 1px solid #2a2d33;
+  border-right: 1px solid #2a2d33;
 }
 
 .strike-price {
