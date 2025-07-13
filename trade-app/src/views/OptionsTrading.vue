@@ -597,6 +597,37 @@ export default {
       handleOrderCancellation();
     };
 
+    const onSymbolSelected = async (symbol) => {
+      console.log("Symbol selected:", symbol);
+
+      // Clear existing data
+      clearAllSelections();
+      optionsChainData.value = [];
+      expirationDates.value = [];
+      selectedExpiry.value = null;
+      currentPrice.value = null;
+      priceChange.value = 0;
+      priceChangePercent.value = 0;
+
+      // Update symbol info
+      currentSymbol.value = symbol.symbol;
+      companyName.value = symbol.description;
+      exchange.value = symbol.exchange || "Unknown";
+
+      // Fetch new data for the selected symbol
+      try {
+        await fetchSymbolData(symbol.symbol);
+        await fetchExpirationDates(symbol.symbol);
+
+        if (selectedExpiry.value) {
+          await fetchOptionsChain(symbol.symbol, selectedExpiry.value);
+          onExpiryChange();
+        }
+      } catch (error) {
+        console.error("Error loading data for new symbol:", error);
+      }
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       await fetchSymbolData(currentSymbol.value);
@@ -605,10 +636,29 @@ export default {
         await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
         onExpiryChange();
       }
+
+      // Listen for symbol selection events from TopBar
+      const handleSymbolSelection = (event) => {
+        onSymbolSelected(event.detail);
+      };
+
+      window.addEventListener("symbol-selected", handleSymbolSelection);
+
+      // Store the handler for cleanup
+      window._symbolSelectionHandler = handleSymbolSelection;
     });
 
     onUnmounted(() => {
       webSocketClient.disconnect();
+
+      // Clean up event listener
+      if (window._symbolSelectionHandler) {
+        window.removeEventListener(
+          "symbol-selected",
+          window._symbolSelectionHandler
+        );
+        delete window._symbolSelectionHandler;
+      }
     });
 
     // Watchers
@@ -672,6 +722,7 @@ export default {
       onReviewAndSend,
       onUpdateLegQuantity,
       handleOrderEdit,
+      onSymbolSelected,
 
       // Order management
       showOrderConfirmation,
@@ -717,6 +768,11 @@ export default {
   padding: 16px 24px;
   background-color: #333333;
   border-bottom: 1px solid #444444;
+}
+
+.symbol-search-section {
+  min-width: 300px;
+  margin-right: 24px;
 }
 
 .symbol-info {

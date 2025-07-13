@@ -55,7 +55,8 @@ class SymbolLookupCache:
             results, _ = self.cache[normalized_query]
             # Move to end (mark as recently used)
             self.cache.move_to_end(normalized_query)
-            return results
+            # Return top 50 for display
+            return results[:50] if len(results) > 50 else results
         
         # 2. Try to filter from cached broader search
         filtered_results = self._try_filter_from_cache(normalized_query)
@@ -63,17 +64,20 @@ class SymbolLookupCache:
             # Cache the filtered results for future exact matches
             self.cache[normalized_query] = (filtered_results, time.time())
             self._enforce_size_limit()
-            return filtered_results
+            # Return top 50 for display
+            return filtered_results[:50] if len(filtered_results) > 50 else filtered_results
         
         # 3. Make API call and cache results (only if successful)
         api_results = await api_call_func(query)
         
         # Only cache if we got actual results (don't cache empty results from API failures)
         if api_results:
+            # Cache the full results (not just top 50) for better prefix filtering
             self.cache[normalized_query] = (api_results, time.time())
             self._enforce_size_limit()
         
-        return api_results
+        # Return top 50 for display
+        return api_results[:50] if len(api_results) > 50 else api_results
     
     def _try_filter_from_cache(self, query: str) -> Optional[List[SymbolSearchResult]]:
         """
@@ -101,6 +105,33 @@ class SymbolLookupCache:
                     if (query in result.symbol.lower() or 
                         query in result.description.lower())
                 ]
+                
+                # Sort the filtered results by relevance (same logic as API)
+                def sort_key(result):
+                    symbol = result.symbol.upper()
+                    query_upper = query.upper()
+                    
+                    # Exact match gets highest priority
+                    if symbol == query_upper:
+                        return (0, symbol)
+                    
+                    # Starts with query gets second priority
+                    if symbol.startswith(query_upper):
+                        return (1, len(symbol), symbol)
+                    
+                    # Contains query gets third priority
+                    if query_upper in symbol:
+                        return (2, symbol.index(query_upper), len(symbol), symbol)
+                    
+                    # Description contains query gets fourth priority
+                    description = result.description.upper()
+                    if query_upper in description:
+                        return (3, description.index(query_upper), len(description), symbol)
+                    
+                    # Everything else
+                    return (4, symbol)
+                
+                filtered.sort(key=sort_key)
                 return filtered
         
         return None
@@ -665,8 +696,7 @@ class TradierProvider(BaseProvider):
                 "Accept": "application/json"
             }
             params = {
-                "q": query,
-                "types": "stock,etf,index,option"
+                "q": query
             }
             
             resp = requests.get(url, headers=headers, params=params)
@@ -684,15 +714,45 @@ class TradierProvider(BaseProvider):
             if isinstance(security_list, dict):
                 security_list = [security_list]
             
-            # Transform and limit results
-            results = []
-            for security in security_list[:50]:  # Limit to 50 results
+            # Sort results by relevance before limiting
+            def sort_key(security):
+                symbol = security.get("symbol", "").upper()
+                query_upper = query.upper()
+                
+                # Exact match gets highest priority
+                if symbol == query_upper:
+                    return (0, symbol)
+                
+                # Starts with query gets second priority
+                if symbol.startswith(query_upper):
+                    return (1, len(symbol), symbol)
+                
+                # Contains query gets third priority
+                if query_upper in symbol:
+                    return (2, symbol.index(query_upper), len(symbol), symbol)
+                
+                # Description contains query gets fourth priority
+                description = security.get("description", "").upper()
+                if query_upper in description:
+                    return (3, description.index(query_upper), len(description), symbol)
+                
+                # Everything else
+                return (4, symbol)
+            
+            # Sort the security list
+            security_list.sort(key=sort_key)
+            
+            # Transform ALL results first (don't limit yet)
+            all_results = []
+            for security in security_list:  # Transform ALL results
                 transformed = self._transform_symbol_search_result(security)
                 if transformed:
-                    results.append(transformed)
+                    all_results.append(transformed)
             
-            logger.info(f"Found {len(results)} symbols for query '{query}'")
-            return results
+            logger.info(f"Found {len(all_results)} total symbols for query '{query}', caching all results")
+            
+            # Return ALL results for caching, limiting will be done in the cache search method
+            return all_results
             
         except Exception as e:
             self._log_error(f"lookup_symbols for query '{query}'", e)

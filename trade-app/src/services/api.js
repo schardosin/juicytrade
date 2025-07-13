@@ -151,6 +151,19 @@ export const api = {
       throw error;
     }
   },
+
+  // Symbol lookup
+  async lookupSymbols(query) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/symbols/lookup`, {
+        params: { q: query },
+      });
+      return response.data.data.symbols;
+    } catch (error) {
+      console.error("Error looking up symbols:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;
