@@ -101,6 +101,9 @@ export default {
       { label: "1 Month", value: "1M" },
       { label: "6 Months", value: "6M" },
       { label: "1 Year", value: "1Y" },
+      { label: "5 Years", value: "5Y" },
+      { label: "10 Years", value: "10Y" },
+      { label: "20 Years", value: "20Y" },
     ];
 
     const chartOptions = {
@@ -268,6 +271,27 @@ export default {
             now.getDate()
           );
           break;
+        case "5Y":
+          startDate = new Date(
+            now.getFullYear() - 5,
+            now.getMonth(),
+            now.getDate()
+          );
+          break;
+        case "10Y":
+          startDate = new Date(
+            now.getFullYear() - 10,
+            now.getMonth(),
+            now.getDate()
+          );
+          break;
+        case "20Y":
+          startDate = new Date(
+            now.getFullYear() - 20,
+            now.getMonth(),
+            now.getDate()
+          );
+          break;
         default:
           startDate = new Date(
             now.getFullYear(),
@@ -286,25 +310,29 @@ export default {
       const startDate = new Date(calculateStartDate(dateRange));
       const daysDiff = Math.ceil((now - startDate) / (1000 * 60 * 60 * 24));
 
+      // For very long ranges, we need higher limits
+      const isLongRange = ["5Y", "10Y", "20Y"].includes(dateRange);
+      const maxLimit = isLongRange ? 10000 : 2000;
+
       switch (timeframe) {
         case "1m":
-          return Math.min(daysDiff * 390, 2000); // ~390 minutes per trading day
+          return Math.min(daysDiff * 390, isLongRange ? 5000 : 2000); // ~390 minutes per trading day
         case "5m":
-          return Math.min(daysDiff * 78, 1500); // ~78 5-minute bars per trading day
+          return Math.min(daysDiff * 78, isLongRange ? 3000 : 1500); // ~78 5-minute bars per trading day
         case "15m":
-          return Math.min(daysDiff * 26, 1000); // ~26 15-minute bars per trading day
+          return Math.min(daysDiff * 26, isLongRange ? 2000 : 1000); // ~26 15-minute bars per trading day
         case "1h":
-          return Math.min(daysDiff * 6.5, 800); // ~6.5 hours per trading day
+          return Math.min(daysDiff * 6.5, isLongRange ? 1500 : 800); // ~6.5 hours per trading day
         case "4h":
-          return Math.min(daysDiff * 2, 400); // ~2 4-hour bars per trading day
+          return Math.min(daysDiff * 2, isLongRange ? 1000 : 400); // ~2 4-hour bars per trading day
         case "D":
-          return Math.min(daysDiff, 500); // 1 bar per day
+          return Math.min(daysDiff, isLongRange ? 8000 : 2000); // 1 bar per day - much higher for long ranges
         case "W":
-          return Math.min(Math.ceil(daysDiff / 7), 200); // 1 bar per week
+          return Math.min(Math.ceil(daysDiff / 7), isLongRange ? 1200 : 500); // 1 bar per week
         case "M":
-          return Math.min(Math.ceil(daysDiff / 30), 100); // 1 bar per month
+          return Math.min(Math.ceil(daysDiff / 30), isLongRange ? 300 : 120); // 1 bar per month
         default:
-          return 500;
+          return isLongRange ? 5000 : 1000;
       }
     };
 
