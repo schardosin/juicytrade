@@ -89,13 +89,25 @@
       <div class="account-info">
         <div class="account-balance">
           <span class="balance-label">Net Liq</span>
-          <span class="balance-value"
-            >${{ netLiquidation.toLocaleString() }}</span
+          <span
+            class="balance-value"
+            :class="{ loading: accountLoading, error: accountError }"
           >
+            <span v-if="accountLoading" class="loading-dots">...</span>
+            <span v-else-if="accountError" class="error-text">--</span>
+            <span v-else>${{ netLiquidation.toLocaleString() }}</span>
+          </span>
         </div>
         <div class="buying-power">
           <span class="power-label">BP</span>
-          <span class="power-value">${{ buyingPower.toLocaleString() }}</span>
+          <span
+            class="power-value"
+            :class="{ loading: accountLoading, error: accountError }"
+          >
+            <span v-if="accountLoading" class="loading-dots">...</span>
+            <span v-else-if="accountError" class="error-text">--</span>
+            <span v-else>${{ buyingPower.toLocaleString() }}</span>
+          </span>
         </div>
       </div>
 
@@ -136,6 +148,7 @@
 <script>
 import { ref, computed, onMounted } from "vue";
 import webSocketClient from "../services/webSocketClient";
+import api from "../services/api";
 
 export default {
   name: "TopBar",
@@ -148,10 +161,12 @@ export default {
     const isLoading = ref(false);
     const highlightedIndex = ref(-1);
     const activeLink = ref("Trading");
-    const netLiquidation = ref(125000);
-    const buyingPower = ref(250000);
+    const netLiquidation = ref(0);
+    const buyingPower = ref(0);
     const isConnected = ref(false);
     const userMenuRef = ref();
+    const accountLoading = ref(true);
+    const accountError = ref(null);
 
     let searchTimeout = null;
 
@@ -373,12 +388,51 @@ export default {
       }
     };
 
+    // Fetch account information
+    const fetchAccountInfo = async () => {
+      try {
+        accountLoading.value = true;
+        accountError.value = null;
+
+        const accountData = await api.getAccount();
+
+        if (accountData) {
+          // Update Net Liq (Portfolio Value/Equity)
+          netLiquidation.value =
+            accountData.portfolio_value || accountData.equity || 0;
+
+          // Update Buying Power
+          buyingPower.value =
+            accountData.buying_power || accountData.options_buying_power || 0;
+
+          console.log("Account data loaded:", {
+            netLiq: netLiquidation.value,
+            buyingPower: buyingPower.value,
+            accountData,
+          });
+        }
+      } catch (error) {
+        console.error("Error fetching account information:", error);
+        accountError.value = error.message || "Failed to load account data";
+
+        // Set default values on error
+        netLiquidation.value = 0;
+        buyingPower.value = 0;
+      } finally {
+        accountLoading.value = false;
+      }
+    };
+
     // Lifecycle hooks
     onMounted(() => {
       checkConnectionStatus();
+      fetchAccountInfo();
 
       // Set up periodic connection status checks
       setInterval(checkConnectionStatus, 5000);
+
+      // Set up periodic account data refresh (every 30 seconds)
+      setInterval(fetchAccountInfo, 30000);
     });
 
     return {
@@ -393,6 +447,8 @@ export default {
       netLiquidation,
       buyingPower,
       userMenuRef,
+      accountLoading,
+      accountError,
 
       // Static data
       navLinks,
@@ -684,6 +740,34 @@ export default {
 .power-value {
   color: var(--text-primary);
   font-weight: var(--font-weight-semibold);
+}
+
+.balance-value.loading,
+.power-value.loading {
+  color: var(--text-tertiary);
+}
+
+.balance-value.error,
+.power-value.error {
+  color: var(--color-danger);
+}
+
+.loading-dots {
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+.error-text {
+  font-style: italic;
+}
+
+@keyframes pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
 }
 
 .status-section {

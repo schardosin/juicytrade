@@ -175,6 +175,17 @@ export const api = {
       throw error;
     }
   },
+
+  // Get account information including balance and buying power
+  async getAccount() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/account`);
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching account information:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;
