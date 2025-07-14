@@ -10,6 +10,19 @@
       <div class="chart-container" :style="{ height: height }">
         <canvas ref="chartCanvas"></canvas>
       </div>
+      <div class="chart-controls">
+        <small class="chart-instructions">
+          💡 <strong>Interactive Chart:</strong> Mouse wheel to zoom
+          horizontally, drag to pan left/right, double-click to reset
+        </small>
+        <button
+          class="reset-zoom-btn"
+          @click="resetZoom"
+          title="Reset zoom to fit all data"
+        >
+          🔍 Reset
+        </button>
+      </div>
       <div v-if="showInfo && chartData" class="chart-info mt-3">
         <div class="info-grid">
           <div v-if="underlyingPrice !== null">
@@ -57,9 +70,10 @@
 <script>
 import { ref, watch, nextTick, onMounted, onUnmounted } from "vue";
 import { Chart, registerables } from "chart.js";
+import zoomPlugin from "chartjs-plugin-zoom";
 import { createMultiLegChartConfig } from "../utils/chartUtils";
 
-Chart.register(...registerables);
+Chart.register(...registerables, zoomPlugin);
 
 export default {
   name: "PayoffChart",
@@ -170,6 +184,13 @@ export default {
       }
     });
 
+    // Reset zoom function
+    const resetZoom = () => {
+      if (chart.value) {
+        chart.value.resetZoom();
+      }
+    };
+
     // Cleanup
     onUnmounted(() => {
       if (chart.value) {
@@ -180,6 +201,7 @@ export default {
 
     return {
       chartCanvas,
+      resetZoom,
     };
   },
 };
@@ -192,6 +214,53 @@ export default {
 
 .chart-container {
   position: relative;
+}
+
+.chart-controls {
+  margin-top: 8px;
+  padding: 8px 12px;
+  background: var(--bg-tertiary, rgba(55, 55, 55, 0.8));
+  border-radius: 6px;
+  border: 1px solid var(--border-secondary, rgba(255, 255, 255, 0.1));
+  display: flex;
+  flex-direction: row;
+  gap: 12px;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.chart-instructions {
+  color: var(--text-secondary, #b0b0b0);
+  font-size: 11px;
+  line-height: 1.2;
+  display: block;
+  margin: 0;
+}
+
+.reset-zoom-btn {
+  background: var(--color-primary, #007bff);
+  color: var(--text-primary, white);
+  border: none;
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.2s ease;
+  white-space: nowrap;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
+}
+
+.reset-zoom-btn:hover {
+  background: var(--color-primary-dark, #0056b3);
+  transform: translateY(-1px);
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
+}
+
+.reset-zoom-btn:active {
+  background: var(--color-primary-darker, #004085);
+  transform: translateY(0);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
 }
 
 .chart-info {

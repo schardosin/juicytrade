@@ -379,33 +379,35 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
   const maxStrike = Math.max(...strikes);
   const strikeRange = maxStrike - minStrike;
 
-  // Create price range for chart (extend beyond strikes)
-  // For single leg (strikeRange = 0), use a reasonable range around the strike
+  // Create EXPANDED price range for chart to show both profit and loss areas
   let lowerBound, upperBound, step;
 
   if (strikeRange === 0) {
-    // Single leg: create reasonable range around the single strike
+    // Single leg: create much wider range to show full P&L spectrum
     const singleStrike = minStrike;
 
-    // Use a smaller, more reasonable range based on strike price
+    // Use a much wider range to show both profit and loss areas
     let range;
     if (singleStrike < 50) {
-      range = Math.max(singleStrike * 0.4, 10); // 40% for low-priced stocks, min $10
+      range = Math.max(singleStrike * 0.8, 25); // 80% range for low-priced stocks
     } else if (singleStrike < 200) {
-      range = Math.max(singleStrike * 0.15, 20); // 15% for mid-priced stocks, min $20
+      range = Math.max(singleStrike * 0.5, 50); // 50% range for mid-priced stocks
     } else {
-      range = Math.max(singleStrike * 0.1, 50); // 10% for high-priced stocks, min $50
+      range = Math.max(singleStrike * 0.3, 100); // 30% range for high-priced stocks
     }
 
     lowerBound = Math.floor(singleStrike - range);
     upperBound = Math.ceil(singleStrike + range);
-    step = range > 100 ? 5 : range > 50 ? 2 : 1;
+    step = range > 200 ? 5 : range > 100 ? 2 : 1;
   } else {
-    // Multi-leg: use original logic but with slightly smaller extension
-    const extension = Math.min(strikeRange * 0.2, 100); // Cap extension at $100
-    lowerBound = Math.floor(minStrike - extension);
-    upperBound = Math.ceil(maxStrike + extension);
-    step = strikeRange > 50 ? (strikeRange > 100 ? 5 : 2) : 1;
+    // Multi-leg: significantly expand the range to show full profit/loss spectrum
+    const baseExtension = Math.max(strikeRange * 0.5, 50); // At least 50% extension or $50
+    const maxExtension = Math.min(baseExtension, 200); // Cap at $200 for very wide spreads
+
+    lowerBound = Math.floor(minStrike - maxExtension);
+    upperBound = Math.ceil(maxStrike + maxExtension);
+    step =
+      upperBound - lowerBound > 200 ? 5 : upperBound - lowerBound > 100 ? 2 : 1;
   }
 
   const prices = [];
@@ -629,6 +631,11 @@ export function createChartConfig(chartData, underlyingPrice) {
 export function createMultiLegChartConfig(chartData, underlyingPrice) {
   const { prices, payoffs, maxProfit, maxLoss, positionCount } = chartData;
 
+  // Calculate strikes for initial zoom range
+  const strikes = [];
+  // Extract strikes from the prices array - we'll use a reasonable range around current price
+  const currentPrice = underlyingPrice;
+
   // Data preparation code remains the same
   const chartPoints = prices.map((price, index) => ({
     x: price,
@@ -825,16 +832,149 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
           display: true,
           position: "top",
         },
+        // Add zoom and pan functionality (horizontal only for payoff charts)
+        zoom: {
+          zoom: {
+            wheel: {
+              enabled: true,
+            },
+            pinch: {
+              enabled: true,
+            },
+            mode: "x", // Only allow horizontal zoom
+            scaleMode: "x", // Only scale X-axis
+            onZoomComplete: function (context) {
+              // Optional: Add any zoom completion logic here
+            },
+          },
+          pan: {
+            enabled: true,
+            mode: "x", // Only allow horizontal panning
+            modifierKey: null, // Allow panning without modifier key
+            onPanComplete: function (context) {
+              // Optional: Add any pan completion logic here
+            },
+          },
+          limits: {
+            x: {
+              min: Math.min(...prices) - 50,
+              max: Math.max(...prices) + 50,
+            },
+            // Remove Y limits to prevent vertical zoom/pan
+          },
+        },
       },
       scales: {
         x: {
           type: "linear",
           title: { display: true, text: "Underlying Price at Expiry ($)" },
           grid: { display: true, color: "rgba(0, 0, 0, 0.1)" },
+          // Set initial view to be tightly focused around current price
+          min: function (context) {
+            const currentPrice = underlyingPrice;
+
+            // Use a fixed range that makes sense for options trading
+            // Most options strategies work within a $15-25 range for initial analysis
+            const initialRange = 15; // Fixed $15 range on each side
+
+            return Math.max(currentPrice - initialRange, Math.min(...prices));
+          },
+          max: function (context) {
+            const currentPrice = underlyingPrice;
+
+            // Use a fixed range that makes sense for options trading
+            // Most options strategies work within a $15-25 range for initial analysis
+            const initialRange = 15; // Fixed $15 range on each side
+
+            return Math.min(currentPrice + initialRange, Math.max(...prices));
+          },
         },
         y: {
           title: { display: true, text: "Profit / Loss ($)" },
           grid: { display: true, color: "rgba(0, 0, 0, 0.1)" },
+          // Dynamically adjust Y-axis based on visible X-axis range
+          min: function (context) {
+            const chart = context.chart;
+            if (!chart || !chart.scales || !chart.scales.x) {
+              // Fallback to full range if chart not ready
+              const maxAbsValue = Math.max(
+                Math.abs(Math.max(...payoffs)),
+                Math.abs(Math.min(...payoffs))
+              );
+              return -maxAbsValue * 1.1;
+            }
+
+            // Get visible X-axis range
+            const xScale = chart.scales.x;
+            const visibleMin = xScale.min || underlyingPrice - 15;
+            const visibleMax = xScale.max || underlyingPrice + 15;
+
+            // Find P&L values within visible price range
+            const visiblePayoffs = [];
+            for (let i = 0; i < prices.length; i++) {
+              if (prices[i] >= visibleMin && prices[i] <= visibleMax) {
+                visiblePayoffs.push(payoffs[i]);
+              }
+            }
+
+            if (visiblePayoffs.length === 0) {
+              // Fallback if no data in visible range
+              return -1000;
+            }
+
+            // Use symmetric scaling around zero for visible data
+            const maxAbsValue = Math.max(
+              Math.abs(Math.max(...visiblePayoffs)),
+              Math.abs(Math.min(...visiblePayoffs))
+            );
+
+            // Ensure minimum range for readability
+            const minRange = 100;
+            const finalRange = Math.max(maxAbsValue * 1.2, minRange);
+
+            return -finalRange;
+          },
+          max: function (context) {
+            const chart = context.chart;
+            if (!chart || !chart.scales || !chart.scales.x) {
+              // Fallback to full range if chart not ready
+              const maxAbsValue = Math.max(
+                Math.abs(Math.max(...payoffs)),
+                Math.abs(Math.min(...payoffs))
+              );
+              return maxAbsValue * 1.1;
+            }
+
+            // Get visible X-axis range
+            const xScale = chart.scales.x;
+            const visibleMin = xScale.min || underlyingPrice - 15;
+            const visibleMax = xScale.max || underlyingPrice + 15;
+
+            // Find P&L values within visible price range
+            const visiblePayoffs = [];
+            for (let i = 0; i < prices.length; i++) {
+              if (prices[i] >= visibleMin && prices[i] <= visibleMax) {
+                visiblePayoffs.push(payoffs[i]);
+              }
+            }
+
+            if (visiblePayoffs.length === 0) {
+              // Fallback if no data in visible range
+              return 1000;
+            }
+
+            // Use symmetric scaling around zero for visible data
+            const maxAbsValue = Math.max(
+              Math.abs(Math.max(...visiblePayoffs)),
+              Math.abs(Math.min(...visiblePayoffs))
+            );
+
+            // Ensure minimum range for readability
+            const minRange = 100;
+            const finalRange = Math.max(maxAbsValue * 1.2, minRange);
+
+            return finalRange;
+          },
         },
       },
     },
