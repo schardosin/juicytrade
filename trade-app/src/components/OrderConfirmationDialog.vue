@@ -448,9 +448,9 @@ export default {
 .bottom-sheet {
   width: 100%;
   max-height: 80vh;
-  background-color: #1a1a1a;
+  background-color: var(--bg-secondary);
   border-radius: 12px 12px 0 0;
-  color: #ffffff;
+  color: var(--text-primary);
   transform: translateY(100%);
   transition: transform 0.3s ease-out;
   overflow-y: auto;
@@ -466,7 +466,7 @@ export default {
   justify-content: space-between;
   align-items: center;
   padding: 8px 16px;
-  border-bottom: 1px solid #333333;
+  border-bottom: 1px solid var(--border-secondary);
 }
 
 .trade-title {
@@ -482,15 +482,15 @@ export default {
 }
 
 .quick-analysis {
-  color: #888888;
+  color: var(--text-tertiary);
   font-size: 12px;
   font-weight: 400;
 }
 
 .clear-trade-btn {
   background: none;
-  border: 1px solid #444444;
-  color: #cccccc;
+  border: 1px solid var(--border-secondary);
+  color: var(--text-secondary);
   padding: 6px 12px;
   border-radius: 4px;
   cursor: pointer;
@@ -499,8 +499,8 @@ export default {
 }
 
 .clear-trade-btn:hover {
-  background-color: #333333;
-  color: #ffffff;
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 /* Trade Stats Bar */
@@ -508,8 +508,8 @@ export default {
   display: flex;
   justify-content: space-between;
   padding: 6px 16px;
-  background-color: #2a2a2a;
-  border-bottom: 1px solid #333333;
+  background-color: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-secondary);
   overflow-x: auto;
 }
 
@@ -522,7 +522,7 @@ export default {
 
 .stat-label {
   font-size: 9px;
-  color: #888888;
+  color: var(--text-tertiary);
   font-weight: 500;
   margin-bottom: 2px;
 }
@@ -530,20 +530,20 @@ export default {
 .stat-value {
   font-size: 11px;
   font-weight: 600;
-  color: #ffffff;
+  color: var(--text-primary);
 }
 
 .stat-value.positive {
-  color: #00c851;
+  color: var(--color-success);
 }
 
 .stat-value.negative {
-  color: #ff4444;
+  color: var(--color-danger);
 }
 
 .stat-unit {
   font-size: 8px;
-  color: #888888;
+  color: var(--text-tertiary);
 }
 
 /* Main Content */
@@ -569,21 +569,21 @@ export default {
 
 .account-section h3 {
   font-size: 12px;
-  color: #cccccc;
+  color: var(--text-secondary);
   margin: 0 0 4px 0;
   font-weight: 500;
 }
 
 .account-name {
   font-size: 14px;
-  color: #ffffff;
+  color: var(--text-primary);
   font-weight: 400;
 }
 
 /* Order Details */
 .order-details-section h3 {
   font-size: 12px;
-  color: #cccccc;
+  color: var(--text-secondary);
   margin: 0 0 8px 0;
   font-weight: 500;
 }
@@ -600,28 +600,28 @@ export default {
   gap: 8px;
   align-items: center;
   padding: 6px 8px;
-  background-color: #2a2a2a;
+  background-color: var(--bg-tertiary);
   border-radius: 4px;
   font-size: 11px;
 }
 
 .leg-quantity {
   font-weight: 600;
-  color: #ffffff;
+  color: var(--text-primary);
 }
 
 .leg-date {
-  color: #cccccc;
+  color: var(--text-secondary);
   font-size: 10px;
 }
 
 .leg-details {
-  color: #ffffff;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 .leg-type {
-  color: #888888;
+  color: var(--text-tertiary);
   font-weight: 600;
   text-align: center;
 }
@@ -635,17 +635,17 @@ export default {
 }
 
 .leg-action.buy {
-  background-color: rgba(0, 200, 81, 0.2);
-  color: #00c851;
+  background-color: var(--options-selected-buy);
+  color: var(--color-success);
 }
 
 .leg-action.sell {
-  background-color: rgba(255, 68, 68, 0.2);
-  color: #ff4444;
+  background-color: var(--options-selected-sell);
+  color: var(--color-danger);
 }
 
 .leg-price {
-  color: #ffffff;
+  color: var(--text-primary);
   font-weight: 500;
   text-align: right;
 }
@@ -657,13 +657,13 @@ export default {
 
 .confirm-title {
   font-size: 18px;
-  color: #ffffff;
+  color: var(--text-primary);
   margin: 0 0 12px 0;
   font-weight: 600;
 }
 
 .strategy-name {
-  color: #00c851;
+  color: var(--color-success);
 }
 
 /* Trade Details Grid */
@@ -682,34 +682,34 @@ export default {
 
 .detail-label {
   font-size: 11px;
-  color: #888888;
+  color: var(--text-tertiary);
   font-weight: 500;
 }
 
 .detail-value {
   font-size: 12px;
-  color: #ffffff;
+  color: var(--text-primary);
   font-weight: 500;
 }
 
 .detail-value.positive {
-  color: #00c851;
+  color: var(--color-success);
 }
 
 .detail-unit {
   font-size: 10px;
-  color: #888888;
+  color: var(--text-tertiary);
 }
 
 .positive {
-  color: #00c851;
+  color: var(--color-success);
 }
 
 /* Warning Message */
 .warning-message {
   background-color: rgba(255, 193, 7, 0.1);
   border: 1px solid rgba(255, 193, 7, 0.3);
-  color: #ffc107;
+  color: var(--color-warning);
   padding: 8px 12px;
   border-radius: 4px;
   font-size: 12px;
@@ -721,37 +721,39 @@ export default {
   display: flex;
   gap: 12px;
   padding: 12px 16px;
-  border-top: 1px solid #333333;
+  border-top: 1px solid var(--border-secondary);
 }
 
 .edit-btn {
   flex: 1;
-  background-color: #444444;
-  border: 1px solid #555555;
-  color: #ffffff;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  color: var(--text-secondary);
   padding: 10px 16px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: var(--transition-normal);
 }
 
 .edit-btn:hover {
-  background-color: #555555;
+  background-color: var(--bg-quaternary);
+  color: var(--text-primary);
+  border-color: var(--border-tertiary);
 }
 
 .submit-btn {
   flex: 2;
-  background-color: #00c851;
+  background-color: var(--color-primary);
   border: none;
-  color: #ffffff;
+  color: var(--text-primary);
   padding: 10px 16px;
-  border-radius: 6px;
+  border-radius: var(--radius-md);
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: var(--transition-normal);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -759,12 +761,12 @@ export default {
 }
 
 .submit-btn:hover:not(:disabled) {
-  background-color: #00a844;
+  background-color: var(--color-primary-hover);
 }
 
 .submit-btn:disabled {
-  background-color: #555555;
-  color: #888888;
+  background-color: var(--bg-tertiary);
+  color: var(--text-quaternary);
   cursor: not-allowed;
 }
 

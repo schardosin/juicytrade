@@ -900,7 +900,6 @@ export default {
   gap: 12px;
   padding: 16px 24px;
   background-color: #141519;
-  border-bottom: 1px solid #1a1d23;
   margin-bottom: 0;
 }
 

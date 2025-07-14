@@ -492,7 +492,7 @@ export default {
 .search-input {
   width: 100%;
   padding: var(--spacing-sm) var(--spacing-md) var(--spacing-sm) 36px !important;
-  background-color: var(--bg-tertiary) !important;
+  background-color: var(--bg-secondary) !important;
   border: 1px solid var(--border-secondary) !important;
   border-radius: var(--radius-md) !important;
   color: var(--text-primary) !important;

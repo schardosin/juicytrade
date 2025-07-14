@@ -129,7 +129,6 @@ export default {
   align-items: center;
   padding: var(--spacing-lg) var(--spacing-xl);
   background-color: var(--bg-secondary);
-  border-bottom: 1px solid var(--border-primary);
 }
 
 .symbol-info {
