@@ -56,86 +56,16 @@
       </div>
 
       <!-- Right Panel -->
-      <div class="right-panel" :class="{ expanded: isRightPanelExpanded }">
-        <!-- Collapsed Menu -->
-        <div v-if="!isRightPanelExpanded" class="collapsed-menu">
-          <div class="menu-item" @click="toggleRightPanel">
-            <i class="pi pi-th-large"></i>
-          </div>
-          <div class="menu-item" @click="toggleRightPanel">
-            <i class="pi pi-chart-bar"></i>
-          </div>
-          <div class="menu-item" @click="toggleRightPanel">
-            <i class="pi pi-inbox"></i>
-          </div>
-          <div class="menu-item" @click="toggleRightPanel">
-            <i class="pi pi-bolt"></i>
-          </div>
-          <div class="menu-item" @click="toggleRightPanel">
-            <i class="pi pi-heart"></i>
-          </div>
-          <div class="menu-item" @click="toggleRightPanel">
-            <i class="pi pi-bell"></i>
-          </div>
-        </div>
-
-        <!-- Expanded Panel -->
-        <div v-if="isRightPanelExpanded" class="expanded-content">
-          <!-- Panel Header with Expand/Collapse Button -->
-          <div class="panel-header">
-            <h3 class="panel-title">Analysis & Trading</h3>
-            <button
-              class="expand-toggle-btn"
-              @click="toggleRightPanel"
-              :title="isRightPanelExpanded ? 'Collapse Panel' : 'Expand Panel'"
-            >
-              ▶
-            </button>
-          </div>
-
-          <!-- Scrollable Content Area -->
-          <div class="panel-content">
-            <!-- Chart Section -->
-            <div class="chart-section">
-              <PayoffChart
-                v-if="chartData"
-                :chartData="chartData"
-                :underlyingPrice="currentPrice"
-                title="Position P&L"
-                :showInfo="false"
-                :height="isRightPanelExpanded ? '400px' : '300px'"
-                :symbol="currentSymbol"
-                :isLivePrice="isLivePrice"
-              />
-            </div>
-
-            <!-- Position Details -->
-            <div class="position-details-section">
-              <Card class="position-card">
-                <template #title>Position Details</template>
-                <template #content>
-                  <div class="position-summary">
-                    <div class="summary-item">
-                      <span class="label">Selected Contracts:</span>
-                      <span class="value">{{ selectedOptions.length }}</span>
-                    </div>
-                    <div class="summary-item" v-if="estimatedCost !== null">
-                      <span class="label">Estimated Cost:</span>
-                      <span
-                        class="value"
-                        :class="estimatedCost >= 0 ? 'credit' : 'debit'"
-                      >
-                        ${{ Math.abs(estimatedCost).toFixed(2) }}
-                        {{ estimatedCost >= 0 ? "CR" : "DB" }}
-                      </span>
-                    </div>
-                  </div>
-                </template>
-              </Card>
-            </div>
-          </div>
-        </div>
-      </div>
+      <RightPanel
+        :currentSymbol="currentSymbol"
+        :currentPrice="currentPrice"
+        :priceChange="priceChange"
+        :isLivePrice="isLivePrice"
+        :selectedOptions="selectedOptions"
+        :chartData="chartData"
+        :additionalQuoteData="additionalQuoteData"
+        @panel-collapsed="onRightPanelCollapsed"
+      />
     </div>
 
     <!-- Order Confirmation Dialog -->
@@ -184,6 +114,7 @@ import PayoffChart from "../components/PayoffChart.vue";
 import BottomTradingPanel from "../components/BottomTradingPanel.vue";
 import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
 import OrderResultDialog from "../components/OrderResultDialog.vue";
+import RightPanel from "../components/RightPanel.vue";
 import { useOrderManagement } from "../composables/useOrderManagement";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import api from "../services/api";
@@ -202,6 +133,7 @@ export default {
     BottomTradingPanel,
     OrderConfirmationDialog,
     OrderResultDialog,
+    RightPanel,
   },
   setup() {
     // Use centralized order management
@@ -640,6 +572,36 @@ export default {
       selectedTradeMode.value = mode;
     };
 
+    const onRightPanelCollapsed = () => {
+      console.log("Right panel collapsed");
+    };
+
+    // Additional quote data for the right panel
+    const additionalQuoteData = computed(() => ({
+      // Mock data - in real implementation, this would come from API
+      open: 623.16,
+      close: 623.62,
+      high: 625.16,
+      low: 621.8,
+      yearHigh: 626.87,
+      yearLow: 481.8,
+      bid: currentPrice.value - 0.05,
+      ask: currentPrice.value + 0.05,
+      bidSize: 400,
+      askSize: 300,
+      ivRank: 13.2,
+      ivIndex: 17.5,
+      volume: 51500000,
+      marketCap: null,
+      peRatio: null,
+      eps: null,
+      earnings: null,
+      dividend: 1.76,
+      dividendYield: 1.13,
+      correlation: 1.0,
+      liquidity: 4,
+    }));
+
     // Lifecycle hooks
     onMounted(async () => {
       // First, establish WebSocket connection and set up streaming
@@ -738,6 +700,8 @@ export default {
       handleOrderEdit,
       onSymbolSelected,
       onTradeModeChanged,
+      onRightPanelCollapsed,
+      additionalQuoteData,
 
       // Order management
       showOrderConfirmation,
@@ -766,6 +730,7 @@ export default {
   display: flex;
   flex: 1;
   overflow: hidden;
+  position: relative;
 }
 
 .content-area {
@@ -774,6 +739,7 @@ export default {
   flex-direction: column;
   overflow: hidden;
   background-color: #141519;
+  transition: margin-right 0.3s ease;
 }
 
 .symbol-search-section {
@@ -943,20 +909,6 @@ export default {
   flex: 1;
   overflow: hidden;
   padding: 16px 24px;
-}
-
-.right-panel {
-  width: 60px;
-  background-color: #0b0d10;
-  border-left: 1px solid #1a1d23;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-  transition: width 0.3s ease;
-}
-
-.right-panel.expanded {
-  width: 700px;
 }
 
 .collapsed-menu {
