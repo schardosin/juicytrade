@@ -10,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .models import (
     StockQuote, OptionContract, Position, Order, ApiResponse,
-    SymbolRequest, OrderRequest, MultiLegOrderRequest, SymbolSearchResult
+    SymbolRequest, OrderRequest, MultiLegOrderRequest, SymbolSearchResult, Account
 )
 from .provider_manager import provider_manager
 from .provider_config import provider_config_manager
@@ -385,6 +385,23 @@ async def get_orders(status: str = "open", date_filter: str = "today"):
 async def get_open_orders():
     """Get current open orders (backward compatibility)."""
     return await get_orders(status="open")
+
+@app.get("/account", response_model=ApiResponse)
+async def get_account():
+    """Get account information including balance and buying power."""
+    try:
+        account = await provider_manager.get_account()
+        if account:
+            return ApiResponse(
+                success=True,
+                data=account.dict(),
+                message="Retrieved account information"
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Account information not available")
+    except Exception as e:
+        logger.error(f"Error getting account: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/orders", response_model=ApiResponse)
 async def place_order(order_request: OrderRequest):

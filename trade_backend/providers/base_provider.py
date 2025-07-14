@@ -6,7 +6,7 @@ import logging
 
 from ..models import (
     StockQuote, OptionContract, Position, Order, 
-    ExpirationDate, MarketData, ApiResponse, SymbolSearchResult
+    ExpirationDate, MarketData, ApiResponse, SymbolSearchResult, Account
 )
 
 logger = logging.getLogger(__name__)
@@ -145,6 +145,16 @@ class BaseProvider(ABC):
             
         Returns:
             List of Order objects
+        """
+        pass
+    
+    @abstractmethod
+    async def get_account(self) -> Optional[Account]:
+        """
+        Get account information including balance and buying power.
+        
+        Returns:
+            Account object with account details or None if not available
         """
         pass
     

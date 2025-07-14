@@ -106,7 +106,8 @@ export default {
       if (
         !chartCanvas.value ||
         !props.chartData ||
-        props.underlyingPrice === null
+        props.underlyingPrice === null ||
+        props.underlyingPrice === undefined
       ) {
         console.warn(
           "Chart not rendered: missing canvas, chartData, or underlyingPrice",

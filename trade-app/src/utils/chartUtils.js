@@ -360,11 +360,6 @@ export function convertButterflyToPositions(
 }
 
 export function generateMultiLegPayoff(positions, underlyingPrice) {
-  // console.log("generateMultiLegPayoff called with:", {
-  //   positionsCount: positions.length,
-  //   underlyingPrice,
-  // });
-
   if (!positions || positions.length === 0) {
     return null;
   }
@@ -385,9 +380,33 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
   const strikeRange = maxStrike - minStrike;
 
   // Create price range for chart (extend beyond strikes)
-  const lowerBound = Math.floor(minStrike - strikeRange * 0.2);
-  const upperBound = Math.ceil(maxStrike + strikeRange * 0.2);
-  const step = strikeRange > 50 ? (strikeRange > 100 ? 5 : 2) : 1;
+  // For single leg (strikeRange = 0), use a reasonable range around the strike
+  let lowerBound, upperBound, step;
+
+  if (strikeRange === 0) {
+    // Single leg: create reasonable range around the single strike
+    const singleStrike = minStrike;
+
+    // Use a smaller, more reasonable range based on strike price
+    let range;
+    if (singleStrike < 50) {
+      range = Math.max(singleStrike * 0.4, 10); // 40% for low-priced stocks, min $10
+    } else if (singleStrike < 200) {
+      range = Math.max(singleStrike * 0.15, 20); // 15% for mid-priced stocks, min $20
+    } else {
+      range = Math.max(singleStrike * 0.1, 50); // 10% for high-priced stocks, min $50
+    }
+
+    lowerBound = Math.floor(singleStrike - range);
+    upperBound = Math.ceil(singleStrike + range);
+    step = range > 100 ? 5 : range > 50 ? 2 : 1;
+  } else {
+    // Multi-leg: use original logic but with slightly smaller extension
+    const extension = Math.min(strikeRange * 0.2, 100); // Cap extension at $100
+    lowerBound = Math.floor(minStrike - extension);
+    upperBound = Math.ceil(maxStrike + extension);
+    step = strikeRange > 50 ? (strikeRange > 100 ? 5 : 2) : 1;
+  }
 
   const prices = [];
   const payoffs = [];

@@ -22,7 +22,7 @@ from alpaca.trading.models import Order as AlpacaOrder
 from .base_provider import BaseProvider
 from ..models import (
     StockQuote, OptionContract, Position, Order, 
-    ExpirationDate, MarketData, ApiResponse, SymbolSearchResult
+    ExpirationDate, MarketData, ApiResponse, SymbolSearchResult, Account
 )
 
 logger = logging.getLogger(__name__)
@@ -750,6 +750,19 @@ class AlpacaProvider(BaseProvider):
             self._log_error(f"get_orders with status {status}", e)
             return []
     
+    async def get_account(self) -> Optional[Account]:
+        """Get account information including balance and buying power."""
+        try:
+            # Use the trading client to get account information
+            account_info = self.trading_client.get_account()
+            
+            if account_info:
+                return self._transform_account(account_info)
+            return None
+        except Exception as e:
+            self._log_error("get_account", e)
+            return None
+    
     # === Order Management Methods ===
     
     async def place_order(self, order_data: Dict[str, Any]) -> Order:
@@ -1021,6 +1034,39 @@ class AlpacaProvider(BaseProvider):
             "side": raw_leg.side.value if hasattr(raw_leg.side, 'value') else str(raw_leg.side),
             "qty": float(raw_leg.qty)
         }
+    
+    def _transform_account(self, raw_account) -> Optional[Account]:
+        """Transform Alpaca account to our standard model."""
+        try:
+            return Account(
+                account_id=str(raw_account.id),
+                account_number=raw_account.account_number,
+                status=raw_account.status.value if hasattr(raw_account.status, 'value') else str(raw_account.status),
+                currency=raw_account.currency or "USD",
+                buying_power=float(raw_account.buying_power) if raw_account.buying_power else None,
+                cash=float(raw_account.cash) if raw_account.cash else None,
+                portfolio_value=float(raw_account.portfolio_value) if raw_account.portfolio_value else None,
+                equity=float(raw_account.equity) if raw_account.equity else None,
+                day_trading_buying_power=float(raw_account.daytrading_buying_power) if raw_account.daytrading_buying_power else None,
+                regt_buying_power=float(raw_account.regt_buying_power) if raw_account.regt_buying_power else None,
+                options_buying_power=float(raw_account.options_buying_power) if raw_account.options_buying_power else None,
+                pattern_day_trader=raw_account.pattern_day_trader,
+                trading_blocked=raw_account.trading_blocked,
+                transfers_blocked=raw_account.transfers_blocked,
+                account_blocked=raw_account.account_blocked,
+                created_at=raw_account.created_at.isoformat() if raw_account.created_at else None,
+                multiplier=raw_account.multiplier,
+                long_market_value=float(raw_account.long_market_value) if raw_account.long_market_value else None,
+                short_market_value=float(raw_account.short_market_value) if raw_account.short_market_value else None,
+                initial_margin=float(raw_account.initial_margin) if raw_account.initial_margin else None,
+                maintenance_margin=float(raw_account.maintenance_margin) if raw_account.maintenance_margin else None,
+                daytrade_count=raw_account.daytrade_count,
+                options_approved_level=raw_account.options_approved_level,
+                options_trading_level=raw_account.options_trading_level
+            )
+        except Exception as e:
+            self._log_error("transform_account", e)
+            return None
     
     # === Helper Methods ===
     

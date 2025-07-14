@@ -7,7 +7,7 @@ from .providers.public_provider import PublicProvider
 from .providers.tradier_provider import TradierProvider
 from .provider_config import provider_config_manager
 from .config import settings
-from .models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult
+from .models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult, Account
 
 logger = logging.getLogger(__name__)
 
@@ -118,6 +118,12 @@ class ProviderManager:
         if provider:
             return await provider.get_orders(status)
         return []
+
+    async def get_account(self) -> Optional[Account]:
+        provider = self._get_provider("account")
+        if provider:
+            return await provider.get_account()
+        return None
 
     async def place_order(self, order_data: Dict[str, Any]) -> Optional[Order]:
         provider = self._get_provider("orders")

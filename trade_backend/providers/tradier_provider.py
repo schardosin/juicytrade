@@ -9,7 +9,7 @@ from datetime import datetime
 from collections import OrderedDict
 
 from .base_provider import BaseProvider
-from ..models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult
+from ..models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult, Account
 
 logger = logging.getLogger(__name__)
 
@@ -510,6 +510,27 @@ class TradierProvider(BaseProvider):
             self._log_error(f"get_orders with status {status}", e)
             return []
 
+    async def get_account(self) -> Optional[Account]:
+        """Get account information including balance and buying power."""
+        try:
+            url = f"{self.base_url}/v1/accounts/{self.account_id}/balances"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            
+            resp = requests.get(url, headers=headers)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            balances = data.get("balances", {})
+            if balances:
+                return self._transform_account(balances)
+            return None
+        except Exception as e:
+            self._log_error("get_account", e)
+            return None
+
     def _transform_order(self, raw_order: Dict[str, Any]) -> Optional[Order]:
         """Transform Tradier order to our standard model."""
         try:
@@ -541,6 +562,69 @@ class TradierProvider(BaseProvider):
             "side": raw_leg.get("side"),
             "qty": float(raw_leg.get("quantity", 0))
         }
+    
+    def _transform_account(self, raw_balances: Dict[str, Any]) -> Optional[Account]:
+        """Transform Tradier account balances to our standard model."""
+        try:
+            # Extract account type to determine which sub-object to use for buying power
+            account_type = raw_balances.get("account_type", "").lower()
+            
+            # Get buying power based on account type
+            stock_buying_power = None
+            options_buying_power = None
+            cash_available = None
+            
+            if account_type == "margin" and "margin" in raw_balances:
+                margin_data = raw_balances["margin"]
+                stock_buying_power = float(margin_data.get("stock_buying_power", 0)) if margin_data.get("stock_buying_power") else None
+                options_buying_power = float(margin_data.get("option_buying_power", 0)) if margin_data.get("option_buying_power") else None
+            elif account_type == "cash" and "cash" in raw_balances:
+                cash_data = raw_balances["cash"]
+                cash_available = float(cash_data.get("cash_available", 0)) if cash_data.get("cash_available") else None
+                # For cash accounts, buying power is typically the same as available cash
+                stock_buying_power = cash_available
+                options_buying_power = cash_available
+            elif account_type == "pdt" and "pdt" in raw_balances:
+                pdt_data = raw_balances["pdt"]
+                stock_buying_power = float(pdt_data.get("stock_buying_power", 0)) if pdt_data.get("stock_buying_power") else None
+                options_buying_power = float(pdt_data.get("option_buying_power", 0)) if pdt_data.get("option_buying_power") else None
+            
+            # If cash_available wasn't set above, use total_cash as fallback
+            if cash_available is None:
+                cash_available = float(raw_balances.get("total_cash", 0)) if raw_balances.get("total_cash") else None
+            
+            # Determine overall buying power (prefer options buying power, then stock buying power)
+            buying_power = options_buying_power or stock_buying_power
+            
+            return Account(
+                account_id=self.account_id,
+                account_number=raw_balances.get("account_number", self.account_id),
+                status="active",  # Tradier doesn't provide account status in balances
+                currency="USD",
+                buying_power=buying_power,
+                cash=cash_available,
+                portfolio_value=float(raw_balances.get("total_equity", 0)) if raw_balances.get("total_equity") else None,
+                equity=float(raw_balances.get("total_equity", 0)) if raw_balances.get("total_equity") else None,
+                day_trading_buying_power=buying_power,  # Use same as buying_power for day trading
+                regt_buying_power=stock_buying_power,
+                options_buying_power=options_buying_power,
+                pattern_day_trader=account_type == "pdt",  # True if account type is PDT
+                trading_blocked=None,     # Tradier doesn't provide this in balances
+                transfers_blocked=None,   # Tradier doesn't provide this in balances
+                account_blocked=None,     # Tradier doesn't provide this in balances
+                created_at=None,          # Tradier doesn't provide this in balances
+                multiplier=None,          # Tradier doesn't provide this in balances
+                long_market_value=float(raw_balances.get("long_market_value", 0)) if raw_balances.get("long_market_value") else None,
+                short_market_value=float(raw_balances.get("short_market_value", 0)) if raw_balances.get("short_market_value") else None,
+                initial_margin=float(raw_balances.get("current_requirement", 0)) if raw_balances.get("current_requirement") else None,
+                maintenance_margin=None,  # Tradier doesn't provide this separately
+                daytrade_count=None,      # Tradier doesn't provide this in balances
+                options_approved_level=None,  # Tradier doesn't provide this in balances
+                options_trading_level=None     # Tradier doesn't provide this in balances
+            )
+        except Exception as e:
+            self._log_error("transform_account", e)
+            return None
     
     async def place_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a trading order."""

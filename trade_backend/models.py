@@ -85,6 +85,33 @@ class SymbolSearchResult(BaseModel):
     exchange: str
     type: str  # "stock", "etf", "index", "option"
 
+class Account(BaseModel):
+    """Standardized account information model."""
+    account_id: str
+    account_number: Optional[str] = None
+    status: str
+    currency: str = "USD"
+    buying_power: Optional[float] = None
+    cash: Optional[float] = None
+    portfolio_value: Optional[float] = None
+    equity: Optional[float] = None
+    day_trading_buying_power: Optional[float] = None
+    regt_buying_power: Optional[float] = None
+    options_buying_power: Optional[float] = None
+    pattern_day_trader: Optional[bool] = None
+    trading_blocked: Optional[bool] = None
+    transfers_blocked: Optional[bool] = None
+    account_blocked: Optional[bool] = None
+    created_at: Optional[str] = None
+    multiplier: Optional[str] = None
+    long_market_value: Optional[float] = None
+    short_market_value: Optional[float] = None
+    initial_margin: Optional[float] = None
+    maintenance_margin: Optional[float] = None
+    daytrade_count: Optional[int] = None
+    options_approved_level: Optional[int] = None
+    options_trading_level: Optional[int] = None
+
 class ApiResponse(BaseModel):
     """Standardized API response wrapper."""
     success: bool
