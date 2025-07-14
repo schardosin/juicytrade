@@ -51,6 +51,7 @@ import {
   HistogramSeries,
 } from "lightweight-charts";
 import axios from "axios";
+import webSocketClient from "../services/webSocketClient";
 
 export default {
   name: "LightweightChart",
@@ -83,6 +84,7 @@ export default {
     let candlestickSeries = null;
     let volumeSeries = null;
     let wsConnection = null;
+    let currentCandle = null; // Track the current candle being updated
 
     const timeframes = [
       { label: "1m", value: "1m" },
@@ -437,10 +439,12 @@ export default {
 
     const changeTimeframe = (timeframe) => {
       selectedTimeframe.value = timeframe;
+      currentCandle = null; // Reset current candle when timeframe changes
       loadHistoricalData(props.symbol, timeframe, selectedDateRange.value);
     };
 
     const onDateRangeChange = () => {
+      currentCandle = null; // Reset current candle when date range changes
       loadHistoricalData(
         props.symbol,
         selectedTimeframe.value,
@@ -451,72 +455,156 @@ export default {
     const connectWebSocket = () => {
       if (!props.enableRealtime) return;
 
-      try {
-        const wsUrl = `ws://localhost:8008/ws`;
-        wsConnection = new WebSocket(wsUrl);
+      console.log("Setting up real-time chart updates for", props.symbol);
 
-        wsConnection.onopen = () => {
-          console.log("WebSocket connected for real-time updates");
-          // Subscribe to symbol updates
-          wsConnection.send(
-            JSON.stringify({
-              type: "subscribe",
-              symbols: [props.symbol],
-            })
-          );
-        };
-
-        wsConnection.onmessage = (event) => {
-          try {
-            const data = JSON.parse(event.data);
-            if (data.type === "price_update" && data.symbol === props.symbol) {
-              // Update the last candle with real-time data
-              updateRealTimeData(data.data);
-            }
-          } catch (err) {
-            console.error("Error processing WebSocket message:", err);
-          }
-        };
-
-        wsConnection.onclose = () => {
-          console.log("WebSocket connection closed");
-          // Attempt to reconnect after 5 seconds
-          setTimeout(connectWebSocket, 5000);
-        };
-
-        wsConnection.onerror = (err) => {
-          console.error("WebSocket error:", err);
-        };
-      } catch (err) {
-        console.error("Error connecting to WebSocket:", err);
-      }
+      // Use the shared WebSocket client instead of creating a new connection
+      webSocketClient.onPriceUpdate((data) => {
+        if (data.symbol === props.symbol) {
+          console.log("📈 Chart received price update for", props.symbol, data);
+          updateRealTimeData(data.data);
+        }
+      });
     };
 
     const updateRealTimeData = (priceData) => {
       if (!candlestickSeries || !priceData) return;
 
       try {
-        // For real-time updates, we would update the last candle
-        // This is a simplified implementation
-        const currentTime = Math.floor(Date.now() / 1000);
-        const lastPrice = priceData.bid || priceData.ask || priceData.price;
+        // Get the current price from the streaming data - prioritize last price
+        const newPrice =
+          priceData.price ||
+          priceData.last ||
+          priceData.mid ||
+          (priceData.bid && priceData.ask
+            ? (priceData.bid + priceData.ask) / 2
+            : null) ||
+          priceData.bid ||
+          priceData.ask;
 
-        if (lastPrice) {
-          candlestickSeries.update({
-            time: currentTime,
-            close: lastPrice,
-          });
+        if (!newPrice) return;
+
+        // Get the current time aligned to the timeframe
+        const now = new Date();
+        let alignedTime;
+
+        // Align time based on selected timeframe
+        switch (selectedTimeframe.value) {
+          case "1m":
+            alignedTime = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate(),
+              now.getHours(),
+              now.getMinutes(),
+              0,
+              0
+            );
+            break;
+          case "5m":
+            alignedTime = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate(),
+              now.getHours(),
+              Math.floor(now.getMinutes() / 5) * 5,
+              0,
+              0
+            );
+            break;
+          case "15m":
+            alignedTime = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate(),
+              now.getHours(),
+              Math.floor(now.getMinutes() / 15) * 15,
+              0,
+              0
+            );
+            break;
+          case "1h":
+            alignedTime = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate(),
+              now.getHours(),
+              0,
+              0,
+              0
+            );
+            break;
+          case "4h":
+            alignedTime = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate(),
+              Math.floor(now.getHours() / 4) * 4,
+              0,
+              0,
+              0
+            );
+            break;
+          case "D":
+            alignedTime = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate(),
+              0,
+              0,
+              0,
+              0
+            );
+            break;
+          default:
+            // For daily and above, just use current day
+            alignedTime = new Date(
+              now.getFullYear(),
+              now.getMonth(),
+              now.getDate(),
+              0,
+              0,
+              0,
+              0
+            );
         }
+
+        const timeInSeconds = Math.floor(alignedTime.getTime() / 1000);
+
+        // Check if this is a new candle or updating existing one
+        if (!currentCandle || currentCandle.time !== timeInSeconds) {
+          // New candle - create it with current price as OHLC
+          currentCandle = {
+            time: timeInSeconds,
+            open: newPrice,
+            high: newPrice,
+            low: newPrice,
+            close: newPrice,
+          };
+        } else {
+          // Update existing candle - adjust high, low, and close
+          currentCandle = {
+            time: currentCandle.time,
+            open: currentCandle.open, // Keep original open
+            high: Math.max(currentCandle.high, newPrice),
+            low: Math.min(currentCandle.low, newPrice),
+            close: newPrice, // Always update close to latest price
+          };
+        }
+
+        // Update the chart with the current candle
+        candlestickSeries.update(currentCandle);
+
+        console.log(
+          `📈 Chart updated: ${props.symbol} @ ${newPrice} (${new Date(
+            timeInSeconds * 1000
+          ).toISOString()})`
+        );
       } catch (err) {
         console.error("Error updating real-time data:", err);
       }
     };
 
     const cleanup = () => {
-      if (wsConnection) {
-        wsConnection.close();
-        wsConnection = null;
-      }
       if (chart) {
         chart.remove();
         chart = null;
@@ -528,19 +616,19 @@ export default {
     // Watch for symbol changes
     watch(
       () => props.symbol,
-      (newSymbol) => {
+      (newSymbol, oldSymbol) => {
         if (newSymbol && candlestickSeries) {
-          loadHistoricalData(newSymbol, selectedTimeframe.value);
-
-          // Update WebSocket subscription
-          if (wsConnection && wsConnection.readyState === WebSocket.OPEN) {
-            wsConnection.send(
-              JSON.stringify({
-                type: "subscribe",
-                symbols: [newSymbol],
-              })
+          // CRITICAL: Reset current candle when symbol changes to prevent price contamination
+          if (newSymbol !== oldSymbol) {
+            console.log(
+              `🔄 Chart symbol changed from ${oldSymbol} to ${newSymbol} - resetting current candle`
             );
+            currentCandle = null;
           }
+
+          loadHistoricalData(newSymbol, selectedTimeframe.value);
+          // WebSocket subscription is handled by the shared client
+          console.log("Chart symbol changed to:", newSymbol);
         }
       }
     );

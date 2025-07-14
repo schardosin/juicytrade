@@ -23,6 +23,7 @@ class BaseProvider(ABC):
         self.name = name
         self.is_connected = False
         self._subscribed_symbols: Set[str] = set()
+        self._streaming_queue: Optional[asyncio.Queue] = None
         
     # === Market Data Methods ===
     
@@ -249,15 +250,9 @@ class BaseProvider(ABC):
         """
         pass
     
-    @abstractmethod
-    async def get_streaming_data(self) -> Optional[MarketData]:
-        """
-        Get the next piece of streaming market data.
-        
-        Returns:
-            MarketData object or None if no data available
-        """
-        pass
+    def set_streaming_queue(self, queue: asyncio.Queue):
+        """Set the queue for streaming data."""
+        self._streaming_queue = queue
     
     # === Utility Methods ===
     

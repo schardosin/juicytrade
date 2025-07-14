@@ -284,19 +284,28 @@ export default {
     // Methods
     const fetchSymbolData = async (symbol) => {
       try {
-        // Fetch current price and basic info
-        const price = await api.getUnderlyingPrice(symbol);
-        if (price !== null) {
-          updatePrice({ price, isLive: false });
-        }
-
-        // Use smart stock subscription replacement (don't call startStreaming again)
-        if (webSocketClient.isConnected) {
+        // Only fetch price via API if we don't have live data already
+        if (!isLivePrice.value || currentPrice.value === 0) {
+          console.log("Fetching initial price via API for", symbol);
+          const price = await api.getUnderlyingPrice(symbol);
+          if (price !== null) {
+            updatePrice({ price, isLive: false });
+          }
+        } else {
           console.log(
-            "🔄 Replacing stock subscription for symbol change:",
+            "Skipping API call - already have live price data for",
             symbol
           );
-          webSocketClient.replaceStockSubscription(symbol);
+        }
+
+        // Use unified subscription replacement
+        if (webSocketClient.isConnected) {
+          console.log(
+            "🔄 Replacing unified subscription for symbol change:",
+            symbol
+          );
+          // Replace with new underlying symbol and clear options (will be set when expiration is selected)
+          webSocketClient.replaceAllSubscriptions(symbol, []);
         } else {
           console.log(
             "⚠️ WebSocket not connected, will subscribe when connected"
@@ -377,18 +386,24 @@ export default {
       try {
         await webSocketClient.connect();
 
-        // Use smart stock subscription replacement
-        webSocketClient.replaceStockSubscription(symbol);
+        // Use unified subscription replacement
+        webSocketClient.replaceAllSubscriptions(symbol, []);
 
         // Ensure persistent subscriptions for orders and positions
         webSocketClient.ensurePersistentSubscriptions(["orders", "positions"]);
 
         webSocketClient.onPriceUpdate((data) => {
-          if (data.symbol === symbol) {
+          // CRITICAL: Always check against current symbol, not the symbol from when callback was registered
+          if (data.symbol === currentSymbol.value) {
             const newPrice =
               data.price ||
+              data.data?.last ||
               data.data?.mid ||
-              (data.data?.bid + data.data?.ask) / 2;
+              (data.data?.bid && data.data?.ask
+                ? (data.data?.bid + data.data?.ask) / 2
+                : null) ||
+              data.data?.bid ||
+              data.data?.ask;
 
             updatePrice({ price: newPrice, isLive: true });
 
@@ -405,7 +420,7 @@ export default {
             }
             updateMarketStatus(status);
           } else {
-            // Handle option price updates
+            // Handle option price updates - only for current symbol's options
             const optionIndex = optionsChainData.value.findIndex(
               (o) => o.symbol === data.symbol
             );
@@ -438,17 +453,28 @@ export default {
       if (selectedExpiry.value) {
         await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
 
-        // Use smart options subscription replacement
+        // Use unified subscription replacement with underlying + options
         if (optionsChainData.value.length > 0) {
           const optionSymbols = optionsChainData.value.map(
             (option) => option.symbol
           );
-          console.log("Replacing options subscriptions with:", optionSymbols);
-          webSocketClient.replaceOptionsSubscriptions(optionSymbols);
+          console.log(
+            "Replacing unified subscriptions with underlying + options:",
+            {
+              underlying: currentSymbol.value,
+              options: optionSymbols.length,
+            }
+          );
+          webSocketClient.replaceAllSubscriptions(
+            currentSymbol.value,
+            optionSymbols
+          );
         } else {
-          // Clear options subscriptions if no options available
-          console.log("Clearing options subscriptions (no options available)");
-          webSocketClient.replaceOptionsSubscriptions([]);
+          // Clear options subscriptions if no options available, keep underlying
+          console.log(
+            "Clearing options subscriptions (no options available), keeping underlying"
+          );
+          webSocketClient.replaceAllSubscriptions(currentSymbol.value, []);
         }
       }
     };

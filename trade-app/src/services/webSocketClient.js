@@ -2,9 +2,9 @@ class WebSocketStreamingClient {
   constructor(baseUrl = "ws://localhost:8008") {
     this.baseUrl = baseUrl;
     this.ws = null;
-    this.callbacks = new Map();
+    this.callbacks = new Map(); // Map of event type -> Set of callbacks
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
+    this.maxReconnectAttempts = 10; // Increased for better resilience
     this.reconnectDelay = 1000;
     this.isConnected = false;
     this.subscribedSymbols = new Set();
@@ -23,6 +23,21 @@ class WebSocketStreamingClient {
     this.stockSubscriptionDebounce = null;
     this.optionsSubscriptionDebounce = null;
     this.debounceDelay = 300; // ms
+
+    // Enhanced connection monitoring
+    this.heartbeatInterval = null;
+    this.heartbeatTimeout = null;
+    this.lastHeartbeat = null;
+    this.heartbeatIntervalMs = 30000; // 30 seconds
+    this.heartbeatTimeoutMs = 10000; // 10 seconds
+
+    // Page visibility handling
+    this.isPageVisible = !document.hidden;
+    this.setupPageVisibilityHandling();
+
+    // Store current subscriptions for recovery
+    this.currentStockSubscription = null;
+    this.currentOptionsSubscriptions = [];
   }
 
   async connect() {
@@ -107,31 +122,67 @@ class WebSocketStreamingClient {
   }
 
   onPriceUpdate(callback) {
-    this.callbacks.set("price_update", callback);
+    if (!this.callbacks.has("price_update")) {
+      this.callbacks.set("price_update", new Set());
+    }
+    this.callbacks.get("price_update").add(callback);
+  }
+
+  // Clear all price update callbacks - useful when switching symbols
+  clearPriceUpdateCallbacks() {
+    if (this.callbacks.has("price_update")) {
+      this.callbacks.get("price_update").clear();
+      console.log("🧹 Cleared all price update callbacks");
+    }
+  }
+
+  // Remove a specific callback
+  removePriceUpdateCallback(callback) {
+    if (this.callbacks.has("price_update")) {
+      this.callbacks.get("price_update").delete(callback);
+    }
   }
 
   onSubscriptionConfirmed(callback) {
-    this.callbacks.set("subscription_confirmed", callback);
+    if (!this.callbacks.has("subscription_confirmed")) {
+      this.callbacks.set("subscription_confirmed", new Set());
+    }
+    this.callbacks.get("subscription_confirmed").add(callback);
   }
 
   onPositionsUpdate(callback) {
-    this.callbacks.set("positions_update", callback);
+    if (!this.callbacks.has("positions_update")) {
+      this.callbacks.set("positions_update", new Set());
+    }
+    this.callbacks.get("positions_update").add(callback);
   }
 
   onPositionsError(callback) {
-    this.callbacks.set("positions_error", callback);
+    if (!this.callbacks.has("positions_error")) {
+      this.callbacks.set("positions_error", new Set());
+    }
+    this.callbacks.get("positions_error").add(callback);
   }
 
   onOpenOrdersUpdate(callback) {
-    this.callbacks.set("open_orders_update", callback);
+    if (!this.callbacks.has("open_orders_update")) {
+      this.callbacks.set("open_orders_update", new Set());
+    }
+    this.callbacks.get("open_orders_update").add(callback);
   }
 
   onAdjustmentsUpdate(callback) {
-    this.callbacks.set("adjustments_update", callback);
+    if (!this.callbacks.has("adjustments_update")) {
+      this.callbacks.set("adjustments_update", new Set());
+    }
+    this.callbacks.get("adjustments_update").add(callback);
   }
 
   onAdjustmentsError(callback) {
-    this.callbacks.set("adjustments_error", callback);
+    if (!this.callbacks.has("adjustments_error")) {
+      this.callbacks.set("adjustments_error", new Set());
+    }
+    this.callbacks.get("adjustments_error").add(callback);
   }
 
   requestPositions() {
@@ -216,74 +267,78 @@ class WebSocketStreamingClient {
 
       case "subscription_confirmed":
         // console.log("Subscription confirmed:", message);
-        const subCallback = this.callbacks.get("subscription_confirmed");
-        if (subCallback) {
-          subCallback(message);
+        const subCallbacks = this.callbacks.get("subscription_confirmed");
+        if (subCallbacks && subCallbacks.size > 0) {
+          subCallbacks.forEach((callback) => callback(message));
         }
         break;
 
       case "positions_update":
         //console.log("Positions update received:", message);
-        const posCallback = this.callbacks.get("positions_update");
-        if (posCallback) {
-          posCallback(message.data);
+        const posCallbacks = this.callbacks.get("positions_update");
+        if (posCallbacks && posCallbacks.size > 0) {
+          posCallbacks.forEach((callback) => callback(message.data));
         }
         break;
 
       case "positions_error":
         console.error("Positions error received:", message);
-        const posErrorCallback = this.callbacks.get("positions_error");
-        if (posErrorCallback) {
-          posErrorCallback(message.error);
+        const posErrorCallbacks = this.callbacks.get("positions_error");
+        if (posErrorCallbacks && posErrorCallbacks.size > 0) {
+          posErrorCallbacks.forEach((callback) => callback(message.error));
         }
         break;
 
       case "open_orders_update":
         console.log("Open orders update received:", message);
-        const ordersCallback = this.callbacks.get("open_orders_update");
-        if (ordersCallback) {
-          ordersCallback(message.data);
+        const ordersCallbacks = this.callbacks.get("open_orders_update");
+        if (ordersCallbacks && ordersCallbacks.size > 0) {
+          ordersCallbacks.forEach((callback) => callback(message.data));
         }
         break;
 
       case "open_orders_error":
         console.error("Open orders error received:", message);
-        const ordersErrorCallback = this.callbacks.get("open_orders_error");
-        if (ordersErrorCallback) {
-          ordersErrorCallback(message.error);
+        const ordersErrorCallbacks = this.callbacks.get("open_orders_error");
+        if (ordersErrorCallbacks && ordersErrorCallbacks.size > 0) {
+          ordersErrorCallbacks.forEach((callback) => callback(message.error));
         }
         break;
 
       case "orders_update":
         console.log("Orders update received:", message);
-        const allOrdersCallback = this.callbacks.get("open_orders_update");
-        if (allOrdersCallback) {
-          allOrdersCallback(message.data);
+        const allOrdersCallbacks = this.callbacks.get("open_orders_update");
+        if (allOrdersCallbacks && allOrdersCallbacks.size > 0) {
+          allOrdersCallbacks.forEach((callback) => callback(message.data));
         }
         break;
 
       case "orders_error":
         console.error("Orders error received:", message);
-        const allOrdersErrorCallback = this.callbacks.get("open_orders_error");
-        if (allOrdersErrorCallback) {
-          allOrdersErrorCallback(message.error);
+        const allOrdersErrorCallbacks = this.callbacks.get("open_orders_error");
+        if (allOrdersErrorCallbacks && allOrdersErrorCallbacks.size > 0) {
+          allOrdersErrorCallbacks.forEach((callback) =>
+            callback(message.error)
+          );
         }
         break;
 
       case "adjustments_update":
         console.log("Adjustments update received:", message);
-        const adjustmentsCallback = this.callbacks.get("adjustments_update");
-        if (adjustmentsCallback) {
-          adjustmentsCallback(message.data);
+        const adjustmentsCallbacks = this.callbacks.get("adjustments_update");
+        if (adjustmentsCallbacks && adjustmentsCallbacks.size > 0) {
+          adjustmentsCallbacks.forEach((callback) => callback(message.data));
         }
         break;
 
       case "adjustments_error":
         console.error("Adjustments error received:", message);
-        const adjustmentsErrorCallback =
+        const adjustmentsErrorCallbacks =
           this.callbacks.get("adjustments_error");
-        if (adjustmentsErrorCallback) {
-          adjustmentsErrorCallback(message.error);
+        if (adjustmentsErrorCallbacks && adjustmentsErrorCallbacks.size > 0) {
+          adjustmentsErrorCallbacks.forEach((callback) =>
+            callback(message.error)
+          );
         }
         break;
 
@@ -338,8 +393,12 @@ class WebSocketStreamingClient {
       return;
     }
 
-    const priceCallback = this.callbacks.get("price_update");
-    if (!priceCallback || this.priceUpdateQueue.size === 0) {
+    const priceCallbacks = this.callbacks.get("price_update");
+    if (
+      !priceCallbacks ||
+      priceCallbacks.size === 0 ||
+      this.priceUpdateQueue.size === 0
+    ) {
       return;
     }
 
@@ -351,11 +410,14 @@ class WebSocketStreamingClient {
     // Use requestAnimationFrame for smooth UI updates
     requestAnimationFrame(() => {
       updates.forEach((priceData) => {
-        try {
-          priceCallback(priceData);
-        } catch (error) {
-          console.error("Error in price update callback:", error);
-        }
+        // Call all registered callbacks
+        priceCallbacks.forEach((callback) => {
+          try {
+            callback(priceData);
+          } catch (error) {
+            console.error("Error in price update callback:", error);
+          }
+        });
       });
     });
   }
@@ -389,65 +451,65 @@ class WebSocketStreamingClient {
     this.reconnectAttempts = 0;
   }
 
-  // Smart subscription methods with debouncing
-  replaceStockSubscription(symbol) {
-    console.log("replaceStockSubscription called with:", symbol);
+  // Unified subscription replacement method
+  replaceAllSubscriptions(underlyingSymbol, optionSymbols = []) {
+    console.log(
+      "replaceAllSubscriptions called with:",
+      underlyingSymbol,
+      optionSymbols
+    );
     console.log("WebSocket connected:", this.isConnected);
     console.log("WebSocket state:", this.ws?.readyState);
 
-    // Clear existing debounce timer
+    if (!Array.isArray(optionSymbols)) {
+      optionSymbols = [optionSymbols];
+    }
+
+    // Store current subscriptions for recovery
+    this.currentStockSubscription = underlyingSymbol;
+    this.currentOptionsSubscriptions = [...optionSymbols];
+
+    // Clear existing debounce timers
     if (this.stockSubscriptionDebounce) {
       clearTimeout(this.stockSubscriptionDebounce);
     }
+    if (this.optionsSubscriptionDebounce) {
+      clearTimeout(this.optionsSubscriptionDebounce);
+    }
 
-    // Debounce the subscription call
-    this.stockSubscriptionDebounce = setTimeout(() => {
+    // Use a single debounce timer for unified subscription
+    this.unifiedSubscriptionDebounce = setTimeout(() => {
       if (this.isConnected && this.ws) {
         const message = {
-          type: "subscribe_replace_stock",
-          symbol: symbol,
+          type: "subscribe_replace_all",
+          underlying_symbol: underlyingSymbol,
+          option_symbols: optionSymbols,
         };
 
-        console.log("🔄 Sending stock subscription replacement:", message);
+        console.log("🔄 Sending unified subscription replacement:", message);
         this.ws.send(JSON.stringify(message));
       } else {
         console.warn(
-          "⚠️ WebSocket not connected, stock subscription will be replaced on connection"
+          "⚠️ WebSocket not connected, unified subscription will be replaced on connection"
         );
       }
     }, this.debounceDelay);
   }
 
+  // Legacy methods - deprecated but kept for backward compatibility
+  replaceStockSubscription(symbol) {
+    console.warn(
+      "replaceStockSubscription is deprecated - use replaceAllSubscriptions"
+    );
+    this.replaceAllSubscriptions(symbol, []);
+  }
+
   replaceOptionsSubscriptions(symbols) {
-    console.log("replaceOptionsSubscriptions called with:", symbols);
-    console.log("WebSocket connected:", this.isConnected);
-    console.log("WebSocket state:", this.ws?.readyState);
-
-    if (!Array.isArray(symbols)) {
-      symbols = [symbols];
-    }
-
-    // Clear existing debounce timer
-    if (this.optionsSubscriptionDebounce) {
-      clearTimeout(this.optionsSubscriptionDebounce);
-    }
-
-    // Debounce the subscription call
-    this.optionsSubscriptionDebounce = setTimeout(() => {
-      if (this.isConnected && this.ws) {
-        const message = {
-          type: "subscribe_replace_options",
-          symbols: symbols,
-        };
-
-        console.log("🔄 Sending options subscription replacement:", message);
-        this.ws.send(JSON.stringify(message));
-      } else {
-        console.warn(
-          "⚠️ WebSocket not connected, options subscriptions will be replaced on connection"
-        );
-      }
-    }, this.debounceDelay);
+    console.warn(
+      "replaceOptionsSubscriptions is deprecated - use replaceAllSubscriptions"
+    );
+    const currentStock = this.currentStockSubscription || "SPY"; // fallback
+    this.replaceAllSubscriptions(currentStock, symbols);
   }
 
   ensurePersistentSubscriptions(dataTypes = ["orders", "positions"]) {
@@ -485,6 +547,159 @@ class WebSocketStreamingClient {
       subscribedSymbols: Array.from(this.subscribedSymbols),
       reconnectAttempts: this.reconnectAttempts,
     };
+  }
+
+  // Page visibility handling for sleep/wake scenarios
+  setupPageVisibilityHandling() {
+    const handleVisibilityChange = () => {
+      const wasVisible = this.isPageVisible;
+      this.isPageVisible = !document.hidden;
+
+      console.log(
+        `Page visibility changed: ${this.isPageVisible ? "visible" : "hidden"}`
+      );
+
+      if (!wasVisible && this.isPageVisible) {
+        // Page became visible (wake up from sleep)
+        console.log("🌅 Page became visible - checking connection health");
+        this.checkConnectionHealth();
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+
+    // Also handle focus events as backup
+    window.addEventListener("focus", () => {
+      if (this.isPageVisible) {
+        console.log("🔍 Window focused - checking connection health");
+        this.checkConnectionHealth();
+      }
+    });
+  }
+
+  // Check connection health and reconnect if needed
+  async checkConnectionHealth() {
+    console.log("🏥 Checking connection health...");
+    console.log("Connection state:", {
+      isConnected: this.isConnected,
+      wsReadyState: this.ws?.readyState,
+      wsReadyStateText: this.getReadyStateText(),
+    });
+
+    // If we think we're connected but WebSocket is not in OPEN state
+    if (
+      this.isConnected &&
+      (!this.ws || this.ws.readyState !== WebSocket.OPEN)
+    ) {
+      console.log("🚨 Connection health check failed - forcing reconnection");
+      this.isConnected = false;
+      this.connectionPromise = null;
+
+      try {
+        await this.connect();
+        await this.restoreSubscriptions();
+      } catch (error) {
+        console.error("Failed to restore connection:", error);
+      }
+    } else if (!this.isConnected) {
+      console.log("🔄 Not connected - attempting to reconnect");
+      try {
+        await this.connect();
+        await this.restoreSubscriptions();
+      } catch (error) {
+        console.error("Failed to reconnect:", error);
+      }
+    } else {
+      console.log("✅ Connection appears healthy");
+      // Send a ping to verify the connection is actually working
+      this.sendPing();
+    }
+  }
+
+  // Send ping to verify connection
+  sendPing() {
+    if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
+      try {
+        this.ws.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
+        console.log("📡 Ping sent to verify connection");
+      } catch (error) {
+        console.error("Failed to send ping:", error);
+        this.checkConnectionHealth();
+      }
+    }
+  }
+
+  // Restore subscriptions after reconnection
+  async restoreSubscriptions() {
+    console.log("🔄 Restoring subscriptions after reconnection");
+
+    // Restore stock subscription
+    if (this.currentStockSubscription) {
+      console.log(
+        "📈 Restoring stock subscription:",
+        this.currentStockSubscription
+      );
+      this.replaceStockSubscription(this.currentStockSubscription);
+    }
+
+    // Restore options subscriptions
+    if (this.currentOptionsSubscriptions.length > 0) {
+      console.log(
+        "📊 Restoring options subscriptions:",
+        this.currentOptionsSubscriptions.length,
+        "symbols"
+      );
+      this.replaceOptionsSubscriptions(this.currentOptionsSubscriptions);
+    }
+
+    // Restore persistent subscriptions
+    this.ensurePersistentSubscriptions(["orders", "positions"]);
+  }
+
+  // Get human-readable WebSocket ready state
+  getReadyStateText() {
+    if (!this.ws) return "null";
+    switch (this.ws.readyState) {
+      case WebSocket.CONNECTING:
+        return "CONNECTING";
+      case WebSocket.OPEN:
+        return "OPEN";
+      case WebSocket.CLOSING:
+        return "CLOSING";
+      case WebSocket.CLOSED:
+        return "CLOSED";
+      default:
+        return "UNKNOWN";
+    }
+  }
+
+  // Enhanced disconnect with cleanup
+  disconnect() {
+    console.log("Disconnecting WebSocket");
+
+    // Clean up timers and queues
+    this.cleanup();
+
+    // Clear heartbeat timers
+    if (this.heartbeatInterval) {
+      clearInterval(this.heartbeatInterval);
+      this.heartbeatInterval = null;
+    }
+    if (this.heartbeatTimeout) {
+      clearTimeout(this.heartbeatTimeout);
+      this.heartbeatTimeout = null;
+    }
+
+    if (this.ws) {
+      this.ws.close(1000, "Client disconnect");
+      this.ws = null;
+    }
+
+    this.isConnected = false;
+    this.subscribedSymbols.clear();
+    this.callbacks.clear();
+    this.connectionPromise = null;
+    this.reconnectAttempts = 0;
   }
 
   // Helper method to check if symbol is an option symbol

@@ -885,27 +885,29 @@ class AlpacaProvider(BaseProvider):
             return False
     
     async def subscribe_to_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
-        """Subscribe to real-time data for symbols."""
+        """Subscribe to real-time data for symbols - handles mixed stock/option symbols transparently."""
         try:
             if not self.is_connected:
                 await self.connect_streaming()
             
-            # Add symbols to our tracking set
-            self._subscribed_symbols.update(symbols)
+            # Clear previous subscriptions and replace with new ones
+            self._subscribed_symbols = set(symbols)
             
-            # Subscribe to stock quotes
+            # Separate symbols by type for internal routing
             stock_symbols = [s for s in symbols if not self._is_option_symbol(s)]
-            if self.stock_stream and stock_symbols:
-                self._log_info(f"Subscribing to {len(stock_symbols)} stock symbols: {stock_symbols}")
-                self.stock_stream.subscribe_quotes(self._stock_quote_handler, *stock_symbols)
-
-            # Subscribe to option quotes
             option_symbols = [s for s in symbols if self._is_option_symbol(s)]
-            if self.option_stream and option_symbols:
-                self._log_info(f"Subscribing to {len(option_symbols)} option symbols: {option_symbols}")
-                self.option_stream.subscribe_quotes(self._option_quote_handler, *option_symbols)
+            
+            # Subscribe to stock quotes using unified handler
+            if stock_symbols and self.stock_stream:
+                self._log_info(f"Subscribing to {len(stock_symbols)} stock symbols via unified handler")
+                self.stock_stream.subscribe_quotes(self._unified_quote_handler, *stock_symbols)
 
-            self._log_info(f"Subscribed to {len(symbols)} symbols")
+            # Subscribe to option quotes using unified handler
+            if option_symbols and self.option_stream:
+                self._log_info(f"Subscribing to {len(option_symbols)} option symbols via unified handler")
+                self.option_stream.subscribe_quotes(self._unified_quote_handler, *option_symbols)
+
+            self._log_info(f"✅ Alpaca: Subscribed to {len(symbols)} symbols ({len(stock_symbols)} stocks, {len(option_symbols)} options)")
             return True
         except Exception as e:
             self._log_error(f"subscribe_to_symbols {symbols}", e)
@@ -1241,6 +1243,34 @@ class AlpacaProvider(BaseProvider):
             await self._streaming_queue.put(market_data)
         except Exception as e:
             self._log_error("option_quote_handler", e)
+    
+    async def _unified_quote_handler(self, data):
+        """Unified handler for both stock and option quotes - provides consistent output."""
+        try:
+            # Determine if this is a stock or option symbol
+            is_option = self._is_option_symbol(data.symbol)
+            
+            # Create standardized MarketData regardless of source stream
+            market_data = MarketData(
+                symbol=data.symbol,
+                data_type="quote",  # Unified type for both stocks and options
+                timestamp=datetime.now().isoformat(),
+                data={
+                    "ask": data.ask_price,
+                    "bid": data.bid_price,
+                    "last": getattr(data, 'last_price', None)
+                }
+            )
+            
+            # Put into unified queue - same format as Tradier
+            await self._streaming_queue.put(market_data)
+            
+            # Log only for debugging (less verbose for options)
+            if not is_option:
+                self._log_info(f"📡 Alpaca unified handler: {data.symbol} -> bid: {data.bid_price}, ask: {data.ask_price}")
+                
+        except Exception as e:
+            self._log_error("unified_quote_handler", e)
     
     async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
         """Search for symbols matching the query using Alpaca assets endpoint with smart caching."""

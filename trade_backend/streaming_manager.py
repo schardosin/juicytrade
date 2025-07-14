@@ -20,29 +20,29 @@ class StreamingManager:
         self._persistent_subscriptions: Set[str] = set()
 
     async def connect(self):
+        """Connect to streaming providers and set up data flow."""
         config = provider_config_manager.get_config().get("streaming", {})
         for stream_type, provider_name in config.items():
             if provider_name not in self._providers:
                 provider = provider_manager._providers.get(provider_name)
                 if provider:
+                    # Pass the streaming manager's queue to the provider
+                    provider.set_streaming_queue(self._streaming_queue)
+                    
                     self._providers[provider_name] = provider
                     await provider.connect_streaming()
-                    asyncio.create_task(self._data_aggregator(provider))
-
-    async def _data_aggregator(self, provider):
-        while provider.is_streaming_connected():
-            data = await provider.get_streaming_data()
-            if data:
-                await self._streaming_queue.put(data)
-            await asyncio.sleep(0.01)
+                    
+                    # No data aggregator needed - provider puts directly into our queue
+                    logger.info(f"Provider {provider_name} connected for {stream_type} streaming.")
 
     async def disconnect(self):
         for provider in self._providers.values():
             await provider.disconnect_streaming()
 
     async def subscribe(self, symbols: List[str], data_types: List[str] = None):
+        """Legacy method - use replace_all_subscriptions for new code"""
         if not data_types:
-            data_types = ["stock_quotes", "option_quotes"]
+            data_types = ["quotes"]
 
         config = provider_config_manager.get_config().get("streaming", {})
         
@@ -56,78 +56,100 @@ class StreamingManager:
                 
                 new_symbols = set(symbols) - self._subscriptions[data_type]
                 if new_symbols:
-                    await provider.subscribe_to_symbols(list(new_symbols), [data_type])
+                    await provider.subscribe_to_symbols(list(new_symbols))
                     self._subscriptions[data_type].update(new_symbols)
 
-    async def _subscribe_symbols(self, symbols: List[str], data_types: List[str]):
-        """Internal method to subscribe to symbols"""
+    async def _subscribe_symbols(self, symbols: List[str]):
+        """Internal method to subscribe to symbols using unified quotes provider"""
         config = provider_config_manager.get_config().get("streaming", {})
+        quotes_provider_name = config.get("quotes")
         
-        for data_type in data_types:
-            provider_name = config.get(data_type)
-            if provider_name and provider_name in self._providers:
-                provider = self._providers[provider_name]
-                
-                if data_type not in self._subscriptions:
-                    self._subscriptions[data_type] = set()
-                
-                new_symbols = set(symbols) - self._subscriptions[data_type]
-                if new_symbols:
-                    logger.info(f"Subscribing to {len(new_symbols)} symbols for {data_type}")
-                    await provider.subscribe_to_symbols(list(new_symbols), [data_type])
-                    self._subscriptions[data_type].update(new_symbols)
+        if quotes_provider_name and quotes_provider_name in self._providers:
+            provider = self._providers[quotes_provider_name]
+            
+            if "quotes" not in self._subscriptions:
+                self._subscriptions["quotes"] = set()
+            
+            new_symbols = set(symbols) - self._subscriptions["quotes"]
+            if new_symbols:
+                logger.info(f"Subscribing to {len(new_symbols)} symbols via {quotes_provider_name} quotes provider")
+                await provider.subscribe_to_symbols(list(new_symbols))
+                self._subscriptions["quotes"].update(new_symbols)
 
-    async def _unsubscribe_symbols(self, symbols: List[str], data_types: List[str]):
-        """Internal method to unsubscribe from symbols"""
+    async def _unsubscribe_symbols(self, symbols: List[str]):
+        """Internal method to unsubscribe from symbols using unified quotes provider"""
         config = provider_config_manager.get_config().get("streaming", {})
+        quotes_provider_name = config.get("quotes")
         
-        for data_type in data_types:
-            provider_name = config.get(data_type)
-            if provider_name and provider_name in self._providers:
-                provider = self._providers[provider_name]
-                
-                if data_type in self._subscriptions:
-                    symbols_to_remove = set(symbols) & self._subscriptions[data_type]
-                    if symbols_to_remove:
-                        logger.info(f"Unsubscribing from {len(symbols_to_remove)} symbols for {data_type}")
-                        # Check if provider has unsubscribe method
-                        if hasattr(provider, 'unsubscribe_from_symbols'):
-                            await provider.unsubscribe_from_symbols(list(symbols_to_remove), [data_type])
-                        self._subscriptions[data_type] -= symbols_to_remove
+        if quotes_provider_name and quotes_provider_name in self._providers:
+            provider = self._providers[quotes_provider_name]
+            
+            if "quotes" in self._subscriptions:
+                symbols_to_remove = set(symbols) & self._subscriptions["quotes"]
+                if symbols_to_remove:
+                    logger.info(f"Unsubscribing from {len(symbols_to_remove)} symbols via {quotes_provider_name} quotes provider")
+                    # Check if provider has unsubscribe method
+                    if hasattr(provider, 'unsubscribe_from_symbols'):
+                        await provider.unsubscribe_from_symbols(list(symbols_to_remove))
+                    self._subscriptions["quotes"] -= symbols_to_remove
+
+    async def replace_all_subscriptions(self, underlying_symbol: str, option_symbols: List[str]):
+        """Unified method to replace ALL subscriptions with new underlying + options symbols"""
+        logger.info(f"🔄 StreamingManager: Replacing all subscriptions - underlying: {underlying_symbol}, options: {len(option_symbols)} symbols")
+        
+        # Step 1: Unsubscribe from all current symbols
+        all_current_symbols = []
+        if self._stock_subscription:
+            all_current_symbols.append(self._stock_subscription)
+        all_current_symbols.extend(list(self._options_subscriptions))
+        
+        if all_current_symbols:
+            logger.info(f"🧹 StreamingManager: Unsubscribing from {len(all_current_symbols)} current symbols")
+            await self._unsubscribe_symbols(all_current_symbols)
+        
+        # Step 2: Subscribe to all new symbols
+        all_new_symbols = [underlying_symbol] + option_symbols
+        if all_new_symbols:
+            logger.info(f"📡 StreamingManager: Subscribing to {len(all_new_symbols)} new symbols")
+            await self._subscribe_symbols(all_new_symbols)
+        
+        # Step 3: Update tracking
+        old_stock = self._stock_subscription
+        old_options_count = len(self._options_subscriptions)
+        self._stock_subscription = underlying_symbol
+        self._options_subscriptions = set(option_symbols)
+        
+        logger.info(f"✅ StreamingManager: All subscriptions replaced. Stock: {old_stock} -> {underlying_symbol}, Options: {old_options_count} -> {len(option_symbols)}")
 
     async def replace_stock_subscription(self, symbol: str):
-        """Replace current stock subscription with new symbol"""
-        logger.info(f"🔄 StreamingManager: Replacing stock subscription: {self._stock_subscription} -> {symbol}")
-        
-        # Unsubscribe from current stock if exists
-        if self._stock_subscription:
-            logger.info(f"🗑️ StreamingManager: Unsubscribing from current stock: {self._stock_subscription}")
-            await self._unsubscribe_symbols([self._stock_subscription], ["stock_quotes"])
-        
-        # Subscribe to new stock
-        logger.info(f"➕ StreamingManager: Subscribing to new stock: {symbol}")
-        await self._subscribe_symbols([symbol], ["stock_quotes"])
-        self._stock_subscription = symbol
-        
-        logger.info(f"✅ StreamingManager: Stock subscription replacement complete. Current: {self._stock_subscription}")
+        """Legacy method - use replace_all_subscriptions for new code"""
+        logger.warning("replace_stock_subscription is deprecated - use replace_all_subscriptions")
+        await self.replace_all_subscriptions(symbol, [])
 
     async def replace_options_subscriptions(self, symbols: List[str]):
-        """Replace all current options subscriptions with new symbols"""
-        logger.info(f"🔄 StreamingManager: Replacing options subscriptions: {len(self._options_subscriptions)} -> {len(symbols)} symbols")
+        """Legacy method - use replace_all_subscriptions for new code"""
+        logger.warning("replace_options_subscriptions is deprecated - use replace_all_subscriptions")
+        current_stock = self._stock_subscription or "SPY"  # fallback
+        await self.replace_all_subscriptions(current_stock, symbols)
+
+    async def unsubscribe_all(self):
+        """Unsubscribe from all current subscriptions"""
+        logger.info("🔄 StreamingManager: Unsubscribing from all subscriptions")
         
-        # Unsubscribe from all current options
-        if self._options_subscriptions:
-            logger.info(f"🗑️ StreamingManager: Unsubscribing from {len(self._options_subscriptions)} current options")
-            await self._unsubscribe_symbols(list(self._options_subscriptions), ["option_quotes"])
+        # Get all current symbols
+        all_current_symbols = []
+        if self._stock_subscription:
+            all_current_symbols.append(self._stock_subscription)
+        all_current_symbols.extend(list(self._options_subscriptions))
         
-        # Subscribe to new options
-        if symbols:
-            logger.info(f"➕ StreamingManager: Subscribing to {len(symbols)} new options")
-            await self._subscribe_symbols(symbols, ["option_quotes"])
+        if all_current_symbols:
+            await self._unsubscribe_symbols(all_current_symbols)
         
-        self._options_subscriptions = set(symbols)
+        # Clear tracking
+        self._stock_subscription = None
+        self._options_subscriptions.clear()
         
-        logger.info(f"✅ StreamingManager: Options subscription replacement complete. Current: {len(self._options_subscriptions)} options")
+        logger.info("✅ StreamingManager: All subscriptions cleared")
 
     async def ensure_persistent_subscriptions(self, data_types: List[str]):
         """Ensure persistent subscriptions are active (orders, positions)"""
@@ -155,6 +177,31 @@ class StreamingManager:
                 data_type: len(symbols) for data_type, symbols in self._subscriptions.items()
             }
         }
+
+    async def _resubscribe_current_symbols(self, provider):
+        """Re-subscribe to current symbols after provider reconnection"""
+        try:
+            # Get all current symbols that should be subscribed
+            all_current_symbols = []
+            if self._stock_subscription:
+                all_current_symbols.append(self._stock_subscription)
+            all_current_symbols.extend(list(self._options_subscriptions))
+            
+            if all_current_symbols:
+                logger.info(f"🔄 Re-subscribing to {len(all_current_symbols)} symbols after {provider.name} reconnection")
+                await provider.subscribe_to_symbols(all_current_symbols)
+                
+                # Update internal subscriptions tracking
+                if "quotes" not in self._subscriptions:
+                    self._subscriptions["quotes"] = set()
+                self._subscriptions["quotes"].update(all_current_symbols)
+                
+                logger.info(f"✅ Successfully re-subscribed to {len(all_current_symbols)} symbols")
+            else:
+                logger.info("No symbols to re-subscribe after reconnection")
+                
+        except Exception as e:
+            logger.error(f"❌ Error re-subscribing to symbols after {provider.name} reconnection: {e}")
 
     async def get_data(self) -> Optional[MarketData]:
         return await self._streaming_queue.get()

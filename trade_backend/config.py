@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     port: int = 8008
     reload: bool = True
     
+    # Logging settings
+    log_level: str = "INFO"
+    
     class Config:
         env_file = ".env"
         extra = "ignore"  # Ignore extra fields from environment

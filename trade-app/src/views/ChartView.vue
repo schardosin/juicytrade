@@ -229,10 +229,18 @@ export default {
     // Methods
     const fetchSymbolData = async (symbol) => {
       try {
-        // Fetch current price and basic info
-        const price = await api.getUnderlyingPrice(symbol);
-        if (price !== null) {
-          updatePrice({ price, isLive: false });
+        // Only fetch price via API if we don't have live data already
+        if (!isLivePrice.value || currentPrice.value === 0) {
+          console.log("Fetching initial price via API for", symbol);
+          const price = await api.getUnderlyingPrice(symbol);
+          if (price !== null) {
+            updatePrice({ price, isLive: false });
+          }
+        } else {
+          console.log(
+            "Skipping API call - already have live price data for",
+            symbol
+          );
         }
 
         // Start WebSocket streaming for the symbol
@@ -253,11 +261,17 @@ export default {
         webSocketClient.ensurePersistentSubscriptions(["orders", "positions"]);
 
         webSocketClient.onPriceUpdate((data) => {
-          if (data.symbol === symbol) {
+          // CRITICAL: Always check against current symbol, not the symbol from when callback was registered
+          if (data.symbol === currentSymbol.value) {
             const newPrice =
               data.price ||
+              data.data?.last ||
               data.data?.mid ||
-              (data.data?.bid + data.data?.ask) / 2;
+              (data.data?.bid && data.data?.ask
+                ? (data.data?.bid + data.data?.ask) / 2
+                : null) ||
+              data.data?.bid ||
+              data.data?.ask;
 
             updatePrice({ price: newPrice, isLive: true });
 
