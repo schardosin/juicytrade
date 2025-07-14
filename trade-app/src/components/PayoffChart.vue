@@ -12,8 +12,8 @@
       </div>
       <div class="chart-controls">
         <small class="chart-instructions">
-          💡 <strong>Interactive Chart:</strong> Mouse wheel to zoom
-          horizontally, drag to pan left/right
+          💡 <strong>Interactive Chart:</strong> Use +/- buttons to zoom, drag
+          to pan left/right
         </small>
         <div class="chart-buttons">
           <button
@@ -131,6 +131,40 @@ export default {
   setup(props) {
     const chartCanvas = ref(null);
     const chart = ref(null);
+    const savedZoomState = ref(null);
+
+    const saveZoomState = () => {
+      if (chart.value && chart.value.scales) {
+        try {
+          const xScale = chart.value.scales.x;
+          if (xScale) {
+            savedZoomState.value = {
+              min: xScale.min,
+              max: xScale.max,
+            };
+          }
+        } catch (error) {
+          console.warn("Could not save zoom state:", error);
+        }
+      }
+    };
+
+    const restoreZoomState = () => {
+      if (chart.value && savedZoomState.value) {
+        try {
+          chart.value.zoomScale(
+            "x",
+            {
+              min: savedZoomState.value.min,
+              max: savedZoomState.value.max,
+            },
+            "none"
+          );
+        } catch (error) {
+          console.warn("Could not restore zoom state:", error);
+        }
+      }
+    };
 
     const updateChart = async () => {
       if (
@@ -151,8 +185,9 @@ export default {
       }
 
       try {
-        // Destroy existing chart
+        // Save zoom state before destroying chart
         if (chart.value) {
+          saveZoomState();
           chart.value.destroy();
           chart.value = null;
         }
@@ -166,6 +201,10 @@ export default {
 
         if (ctx && config) {
           chart.value = new Chart(chartCanvas.value, config);
+
+          // Restore zoom state after chart is created
+          await nextTick();
+          restoreZoomState();
         } else {
           console.error(
             "PayoffChart: Chart.js not created - missing ctx or config",
@@ -217,6 +256,8 @@ export default {
     const resetZoom = () => {
       if (chart.value) {
         chart.value.resetZoom();
+        // Clear saved zoom state when user explicitly resets
+        savedZoomState.value = null;
       }
     };
 

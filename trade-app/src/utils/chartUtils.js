@@ -836,7 +836,7 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
         zoom: {
           zoom: {
             wheel: {
-              enabled: true,
+              enabled: false,
             },
             pinch: {
               enabled: true,
