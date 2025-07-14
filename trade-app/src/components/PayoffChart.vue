@@ -13,15 +13,31 @@
       <div class="chart-controls">
         <small class="chart-instructions">
           💡 <strong>Interactive Chart:</strong> Mouse wheel to zoom
-          horizontally, drag to pan left/right, double-click to reset
+          horizontally, drag to pan left/right
         </small>
-        <button
-          class="reset-zoom-btn"
-          @click="resetZoom"
-          title="Reset zoom to fit all data"
-        >
-          🔍 Reset
-        </button>
+        <div class="chart-buttons">
+          <button
+            class="zoom-btn zoom-out-btn"
+            @click="zoomOut"
+            title="Zoom out to see wider price range"
+          >
+            −
+          </button>
+          <button
+            class="zoom-btn zoom-in-btn"
+            @click="zoomIn"
+            title="Zoom in for more detail"
+          >
+            +
+          </button>
+          <button
+            class="zoom-btn reset-zoom-btn"
+            @click="resetZoom"
+            title="Reset zoom to fit all data"
+          >
+            ⟲
+          </button>
+        </div>
       </div>
       <div v-if="showInfo && chartData" class="chart-info mt-3">
         <div class="info-grid">
@@ -184,6 +200,19 @@ export default {
       }
     });
 
+    // Zoom functions
+    const zoomIn = () => {
+      if (chart.value) {
+        chart.value.zoom(1.5); // Zoom in by 50%
+      }
+    };
+
+    const zoomOut = () => {
+      if (chart.value) {
+        chart.value.zoom(0.75); // Zoom out by 25%
+      }
+    };
+
     // Reset zoom function
     const resetZoom = () => {
       if (chart.value) {
@@ -201,6 +230,8 @@ export default {
 
     return {
       chartCanvas,
+      zoomIn,
+      zoomOut,
       resetZoom,
     };
   },
@@ -237,30 +268,52 @@ export default {
   margin: 0;
 }
 
-.reset-zoom-btn {
-  background: var(--color-primary, #007bff);
+.chart-buttons {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.zoom-btn {
+  background: var(--bg-secondary, rgba(70, 70, 70, 0.9));
   color: var(--text-primary, white);
-  border: none;
-  padding: 6px 10px;
+  border: 1px solid var(--border-secondary, rgba(255, 255, 255, 0.2));
+  width: 28px;
+  height: 28px;
   border-radius: 4px;
-  font-size: 11px;
-  font-weight: 500;
+  font-size: 16px;
+  font-weight: bold;
   cursor: pointer;
   transition: all 0.2s ease;
-  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
   box-shadow: 0 1px 3px rgba(0, 0, 0, 0.2);
 }
 
-.reset-zoom-btn:hover {
-  background: var(--color-primary-dark, #0056b3);
+.zoom-btn:hover {
+  background: var(--bg-primary, rgba(90, 90, 90, 0.9));
   transform: translateY(-1px);
   box-shadow: 0 2px 6px rgba(0, 0, 0, 0.3);
 }
 
-.reset-zoom-btn:active {
-  background: var(--color-primary-darker, #004085);
+.zoom-btn:active {
+  background: var(--bg-primary-dark, rgba(50, 50, 50, 0.9));
   transform: translateY(0);
   box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.zoom-in-btn {
+  font-size: 14px;
+}
+
+.zoom-out-btn {
+  font-size: 18px;
+}
+
+.reset-zoom-btn {
+  font-size: 14px;
 }
 
 .chart-info {
