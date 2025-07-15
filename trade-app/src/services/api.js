@@ -186,6 +186,19 @@ export const api = {
       throw error;
     }
   },
+
+  // Get orders with optional status filter
+  async getOrders(status = "all") {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/orders`, {
+        params: status !== "all" ? { status } : {},
+      });
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching orders:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;

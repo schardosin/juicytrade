@@ -264,6 +264,11 @@
           </RightPanelSection>
         </div>
 
+        <!-- Activity Section -->
+        <div v-else-if="activeSection === 'activity'" class="section-content">
+          <ActivitySection :currentSymbol="currentSymbol" />
+        </div>
+
         <!-- Other Sections (Placeholder) -->
         <div v-else class="section-content">
           <div class="placeholder-content">
@@ -281,6 +286,7 @@ import { ref, computed, watch, onMounted } from "vue";
 import RightPanelSection from "./RightPanelSection.vue";
 import QuoteDetailsSection from "./QuoteDetailsSection.vue";
 import PayoffChart from "./PayoffChart.vue";
+import ActivitySection from "./ActivitySection.vue";
 import api from "../services/api";
 
 export default {
@@ -289,6 +295,7 @@ export default {
     RightPanelSection,
     QuoteDetailsSection,
     PayoffChart,
+    ActivitySection,
   },
   props: {
     currentSymbol: {
