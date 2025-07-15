@@ -156,16 +156,28 @@
               <!-- Header with Total P/L -->
               <div class="position-header">
                 <div class="header-row">
-                  <span class="header-label">Qty</span>
-                  <span class="header-label">Description</span>
-                  <span class="header-label">Price</span>
-                </div>
-                <div
-                  class="total-pl"
-                  :class="{ negative: totalPL < 0, positive: totalPL > 0 }"
-                >
-                  {{ totalPL >= 0 ? "" : "-"
-                  }}{{ Math.abs(totalPL).toFixed(2) }}
+                  <!-- Select All Checkbox -->
+                  <div class="header-checkbox">
+                    <input
+                      type="checkbox"
+                      id="select-all-positions"
+                      :checked="isAllSelected"
+                      :indeterminate="isIndeterminate"
+                      @change="toggleSelectAll"
+                      class="custom-checkbox"
+                    />
+                    <label
+                      for="select-all-positions"
+                      class="checkbox-label"
+                    ></label>
+                  </div>
+
+                  <!-- Header labels aligned with position fields -->
+                  <span class="header-label qty-header">QTY</span>
+                  <span class="header-label description-header"
+                    >DESCRIPTION</span
+                  >
+                  <span class="header-label price-header">PRICE</span>
                 </div>
               </div>
 
@@ -199,23 +211,6 @@
                       ></label>
                     </div>
 
-                    <!-- Position Icon -->
-                    <div class="position-icon">
-                      <i
-                        :class="
-                          formatEnhancedOptionDescription(position).type === 'P'
-                            ? 'pi pi-shield'
-                            : 'pi pi-circle'
-                        "
-                        class="option-type-icon"
-                        :title="
-                          formatEnhancedOptionDescription(position).type === 'P'
-                            ? 'Put'
-                            : 'Call'
-                        "
-                      ></i>
-                    </div>
-
                     <!-- Quantity -->
                     <div class="position-qty">
                       {{ position.qty }}
@@ -227,7 +222,12 @@
                         <span class="expiry-date">{{
                           formatEnhancedOptionDescription(position).expiry
                         }}</span>
-                        <span class="day-indicator">1d</span>
+                        <span class="day-indicator"
+                          >{{
+                            formatEnhancedOptionDescription(position)
+                              .daysToExpiry
+                          }}d</span
+                        >
                         <span class="strike-price">{{
                           formatEnhancedOptionDescription(position).strike
                         }}</span>
@@ -559,13 +559,6 @@ export default {
       return positions;
     });
 
-    // Computed property for total P/L
-    const totalPL = computed(() => {
-      return allPositions.value
-        .filter((pos) => checkedPositions.value.has(pos.id))
-        .reduce((total, pos) => total + (pos.unrealized_pl || 0), 0);
-    });
-
     // Method to toggle position checkbox
     const togglePositionCheck = (positionId) => {
       if (checkedPositions.value.has(positionId)) {
@@ -583,6 +576,37 @@ export default {
         checkedPositions.value.has(pos.id)
       );
       emit("positions-changed", checkedPositionsList);
+    };
+
+    // Computed property for select-all checkbox state
+    const isAllSelected = computed(() => {
+      if (allPositions.value.length === 0) return false;
+      return allPositions.value.every((pos) =>
+        checkedPositions.value.has(pos.id)
+      );
+    });
+
+    // Computed property for indeterminate state (some but not all selected)
+    const isIndeterminate = computed(() => {
+      if (allPositions.value.length === 0) return false;
+      const checkedCount = allPositions.value.filter((pos) =>
+        checkedPositions.value.has(pos.id)
+      ).length;
+      return checkedCount > 0 && checkedCount < allPositions.value.length;
+    });
+
+    // Method to toggle select all positions
+    const toggleSelectAll = () => {
+      if (isAllSelected.value) {
+        // Uncheck all
+        checkedPositions.value.clear();
+      } else {
+        // Check all
+        allPositions.value.forEach((pos) => {
+          checkedPositions.value.add(pos.id);
+        });
+      }
+      updateChartWithCheckedPositions();
     };
 
     // Method to determine if option is ITM
@@ -608,9 +632,26 @@ export default {
 
       // Format expiry date (e.g., "Jul 14")
       let formattedExpiry = expiry;
+      let daysToExpiry = 0;
+
       if (expiry && expiry.includes("-")) {
-        const date = new Date(expiry);
-        formattedExpiry = date.toLocaleDateString("en-US", {
+        // Parse date components directly to avoid timezone issues
+        const [year, month, day] = expiry.split("-").map(Number);
+
+        // Create date objects in local timezone
+        const expiryDate = new Date(year, month - 1, day); // month is 0-indexed
+        const currentDate = new Date();
+
+        // Set both dates to midnight to get accurate day difference
+        expiryDate.setHours(0, 0, 0, 0);
+        currentDate.setHours(0, 0, 0, 0);
+
+        // Calculate days difference
+        const timeDiff = expiryDate.getTime() - currentDate.getTime();
+        daysToExpiry = Math.ceil(timeDiff / (1000 * 3600 * 24));
+
+        // Format the date directly from components to avoid timezone conversion
+        formattedExpiry = expiryDate.toLocaleDateString("en-US", {
           month: "short",
           day: "numeric",
         });
@@ -620,6 +661,7 @@ export default {
         type: type === "CALL" || type === "C" ? "C" : "P",
         strike,
         expiry: formattedExpiry,
+        daysToExpiry: Math.max(0, daysToExpiry), // Don't show negative days
         isITM: isInTheMoney(position),
       };
     };
@@ -797,7 +839,8 @@ export default {
       existingPositions,
       checkedPositions,
       allPositions,
-      totalPL,
+      isAllSelected,
+      isIndeterminate,
       toggleSection,
       collapsePanel,
       getSectionTitle,
@@ -805,6 +848,7 @@ export default {
       formatOptionDescription,
       formatPrice,
       togglePositionCheck,
+      toggleSelectAll,
       updateChartWithCheckedPositions,
       isInTheMoney,
       formatEnhancedOptionDescription,
@@ -1051,8 +1095,15 @@ export default {
 
 .header-row {
   display: flex;
-  gap: 16px;
+  align-items: center;
   flex: 1;
+}
+
+.header-checkbox {
+  position: relative;
+  width: 20px;
+  height: 20px;
+  margin-right: 12px;
 }
 
 .header-label {
@@ -1060,6 +1111,38 @@ export default {
   font-weight: 600;
   color: var(--text-secondary, #cccccc);
   text-transform: uppercase;
+}
+
+.qty-header {
+  min-width: 30px;
+  text-align: center;
+  margin-right: 12px;
+}
+
+.description-header {
+  flex: 1;
+  margin-right: 12px;
+}
+
+.price-header {
+  min-width: 60px;
+  text-align: right;
+}
+
+/* Indeterminate checkbox styling */
+.custom-checkbox:indeterminate + .checkbox-label {
+  background-color: #007bff;
+  border-color: #007bff;
+}
+
+.custom-checkbox:indeterminate + .checkbox-label::after {
+  content: "−";
+  position: absolute;
+  top: -4px;
+  left: 2px;
+  color: white;
+  font-size: 16px;
+  font-weight: bold;
 }
 
 .total-pl {
@@ -1139,17 +1222,6 @@ export default {
   color: white;
   font-size: 12px;
   font-weight: bold;
-}
-
-.position-icon {
-  width: 20px;
-  display: flex;
-  justify-content: center;
-}
-
-.option-type-icon {
-  font-size: 14px;
-  color: var(--text-secondary, #cccccc);
 }
 
 .position-qty {
