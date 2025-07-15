@@ -381,6 +381,8 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
   //     strike_price: pos.strike_price,
   //     avg_entry_price: pos.avg_entry_price,
   //     option_type: pos.option_type,
+  //     current_price: pos.current_price,
+  //     isExisting: pos.is_synthetic === false,
   //   }))
   // );
 
@@ -439,9 +441,17 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
       const { strike_price, option_type, qty, avg_entry_price } = position;
 
       let intrinsicValue = 0;
-      if (option_type === "call" || option_type === "CALL") {
+      if (
+        option_type === "call" ||
+        option_type === "CALL" ||
+        option_type === "C"
+      ) {
         intrinsicValue = Math.max(price - strike_price, 0);
-      } else if (option_type === "put" || option_type === "PUT") {
+      } else if (
+        option_type === "put" ||
+        option_type === "PUT" ||
+        option_type === "P"
+      ) {
         intrinsicValue = Math.max(strike_price - price, 0);
       }
 
