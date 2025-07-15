@@ -112,6 +112,24 @@
           <div class="limit-price-section">
             <span class="price-label">Limit Price</span>
             <div class="price-input-group">
+              <button
+                class="price-btn lock-btn"
+                :class="{ locked: priceLocked }"
+                @click="togglePriceLock"
+                :title="
+                  priceLocked
+                    ? 'Unlock automatic price updates'
+                    : 'Lock price (disable automatic updates)'
+                "
+              >
+                <div class="lock-icon" :class="{ locked: priceLocked }">
+                  <div class="lock-body"></div>
+                  <div
+                    class="lock-shackle"
+                    :class="{ open: !priceLocked }"
+                  ></div>
+                </div>
+              </button>
               <input
                 v-model="limitPrice"
                 type="number"
@@ -250,6 +268,7 @@ export default {
     const selectedOrderType = ref("limit");
     const selectedTimeInForce = ref("day");
     const selectedLegs = ref([]);
+    const priceLocked = ref(false);
 
     const getOptionPrice = (selection, priceType) => {
       const option = optionsData.value.find(
@@ -515,6 +534,10 @@ export default {
       });
     };
 
+    const togglePriceLock = () => {
+      priceLocked.value = !priceLocked.value;
+    };
+
     const handleReviewSend = () => {
       // Get the expiry date from the first selected option (all should have the same expiry)
       const expiry =
@@ -570,17 +593,29 @@ export default {
     watch(
       netPremium,
       (newValue) => {
-        // Always display limit price as positive in UI
-        limitPrice.value = parseFloat(Math.abs(newValue).toFixed(2));
+        if (!priceLocked.value) {
+          // Always display limit price as positive in UI
+          limitPrice.value = parseFloat(Math.abs(newValue).toFixed(2));
+        }
       },
       { immediate: true }
     );
 
     watch(
       () => props.selectedOptions,
-      () => {
-        // Always display limit price as positive in UI
-        limitPrice.value = parseFloat(Math.abs(netPremium.value).toFixed(2));
+      (newOptions, oldOptions) => {
+        // Simple approach: unlock on ANY change if currently locked
+        if (priceLocked.value) {
+          console.log(
+            "🔓 Auto-unlocking because price was locked and options changed"
+          );
+          priceLocked.value = false;
+        }
+
+        if (!priceLocked.value) {
+          // Always display limit price as positive in UI
+          limitPrice.value = parseFloat(Math.abs(netPremium.value).toFixed(2));
+        }
       },
       { deep: true, immediate: true }
     );
@@ -590,6 +625,7 @@ export default {
       selectedOrderType,
       selectedTimeInForce,
       selectedLegs,
+      priceLocked,
       stats,
       orderLegs,
       bidPrice,
@@ -607,6 +643,7 @@ export default {
       incrementQuantity,
       decrementQuantity,
       toggleLegSelection,
+      togglePriceLock,
     };
   },
 };
@@ -884,11 +921,64 @@ export default {
   cursor: pointer;
   font-size: 12px;
   transition: all 0.2s ease;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .price-btn:hover {
   background-color: #444;
   color: #fff;
+}
+
+.lock-btn.locked {
+  color: #ffd700;
+  background-color: rgba(255, 215, 0, 0.1);
+}
+
+.lock-btn.locked:hover {
+  background-color: rgba(255, 215, 0, 0.2);
+}
+
+/* Custom Lock Icon */
+.lock-icon {
+  position: relative;
+  width: 14px;
+  height: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lock-body {
+  width: 8px;
+  height: 6px;
+  background-color: currentColor;
+  border-radius: 1px;
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -25%);
+  z-index: 2;
+}
+
+.lock-shackle {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -75%);
+  width: 6px;
+  height: 6px;
+  border: 1.5px solid currentColor;
+  border-bottom: none;
+  border-radius: 3px 3px 0 0;
+  background: transparent;
+  transition: all 0.2s ease;
+}
+
+.lock-shackle.open {
+  transform: translate(-50%, -75%) rotate(-30deg);
+  transform-origin: bottom left;
 }
 
 .price-input {

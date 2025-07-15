@@ -406,12 +406,6 @@ export default {
           // Update Buying Power
           buyingPower.value =
             accountData.buying_power || accountData.options_buying_power || 0;
-
-          console.log("Account data loaded:", {
-            netLiq: netLiquidation.value,
-            buyingPower: buyingPower.value,
-            accountData,
-          });
         }
       } catch (error) {
         console.error("Error fetching account information:", error);
@@ -439,8 +433,6 @@ export default {
 
     // Clean up intervals when component is unmounted
     onUnmounted(() => {
-      console.log("TopBar component unmounting - cleaning up intervals");
-
       if (searchTimeout) {
         clearTimeout(searchTimeout);
         searchTimeout = null;

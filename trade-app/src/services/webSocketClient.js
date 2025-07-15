@@ -47,11 +47,9 @@ class WebSocketStreamingClient {
 
     this.connectionPromise = new Promise((resolve, reject) => {
       try {
-        console.log(`Connecting to WebSocket: ${this.baseUrl}/ws`);
         this.ws = new WebSocket(`${this.baseUrl}/ws`);
 
         this.ws.onopen = () => {
-          console.log("WebSocket connected successfully");
           this.isConnected = true;
           this.reconnectAttempts = 0;
 
@@ -445,14 +443,6 @@ class WebSocketStreamingClient {
 
   // Unified subscription replacement method
   replaceAllSubscriptions(underlyingSymbol, optionSymbols = []) {
-    console.log(
-      "replaceAllSubscriptions called with:",
-      underlyingSymbol,
-      optionSymbols
-    );
-    console.log("WebSocket connected:", this.isConnected);
-    console.log("WebSocket state:", this.ws?.readyState);
-
     if (!Array.isArray(optionSymbols)) {
       optionSymbols = [optionSymbols];
     }
@@ -478,7 +468,6 @@ class WebSocketStreamingClient {
           option_symbols: optionSymbols,
         };
 
-        console.log("🔄 Sending unified subscription replacement:", message);
         this.ws.send(JSON.stringify(message));
       } else {
         console.warn(
@@ -511,7 +500,6 @@ class WebSocketStreamingClient {
         data_types: dataTypes,
       };
 
-      console.log("Ensuring persistent subscriptions:", message);
       this.ws.send(JSON.stringify(message));
     } else {
       console.log(
@@ -563,7 +551,6 @@ class WebSocketStreamingClient {
     // Also handle focus events as backup
     window.addEventListener("focus", () => {
       if (this.isPageVisible) {
-        console.log("🔍 Window focused - checking connection health");
         this.checkConnectionHealth();
       }
     });
@@ -571,13 +558,6 @@ class WebSocketStreamingClient {
 
   // Check connection health and reconnect if needed
   async checkConnectionHealth() {
-    console.log("🏥 Checking connection health...");
-    console.log("Connection state:", {
-      isConnected: this.isConnected,
-      wsReadyState: this.ws?.readyState,
-      wsReadyStateText: this.getReadyStateText(),
-    });
-
     // If we think we're connected but WebSocket is not in OPEN state
     if (
       this.isConnected &&
@@ -602,7 +582,6 @@ class WebSocketStreamingClient {
         console.error("Failed to reconnect:", error);
       }
     } else {
-      console.log("✅ Connection appears healthy");
       // Send a ping to verify the connection is actually working
       this.sendPing();
     }
@@ -613,7 +592,6 @@ class WebSocketStreamingClient {
     if (this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN) {
       try {
         this.ws.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
-        console.log("📡 Ping sent to verify connection");
       } catch (error) {
         console.error("Failed to send ping:", error);
         this.checkConnectionHealth();

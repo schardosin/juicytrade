@@ -220,7 +220,6 @@ export default {
       try {
         // Only fetch price via API if we don't have live data already
         if (!isLivePrice.value || currentPrice.value === 0) {
-          console.log("Fetching initial price via API for", symbol);
           const price = await api.getUnderlyingPrice(symbol);
           if (price !== null) {
             updatePrice({ price, isLive: false });
@@ -234,10 +233,6 @@ export default {
 
         // Use unified subscription replacement
         if (webSocketClient.isConnected) {
-          console.log(
-            "🔄 Replacing unified subscription for symbol change:",
-            symbol
-          );
           // Replace with new underlying symbol and clear options (will be set when expiration is selected)
           webSocketClient.replaceAllSubscriptions(symbol, []);
         } else {
@@ -252,15 +247,9 @@ export default {
 
     const fetchExpirationDates = async (symbol) => {
       try {
-        console.log(`Fetching real expiration dates for ${symbol} from API...`);
         const response = await api.getAvailableExpirations(symbol);
 
         if (response && response.length > 0) {
-          console.log(
-            `Found ${response.length} expiration dates from API:`,
-            response
-          );
-
           const dates = response.map((dateStr) => {
             const [year, month, day] = dateStr.split("-").map(Number);
             const date = new Date(Date.UTC(year, month - 1, day));
@@ -285,8 +274,6 @@ export default {
           if (dates.length > 0) {
             selectedExpiry.value = dates[0].value;
           }
-
-          console.log(`Successfully loaded ${dates.length} expiration dates`);
         } else {
           console.warn("No expiration dates returned from API");
           expirationDates.value = [];
@@ -383,7 +370,6 @@ export default {
     };
 
     const onExpiryChange = async () => {
-      console.log("onExpiryChange called");
       if (selectedExpiry.value) {
         await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
 
@@ -391,13 +377,6 @@ export default {
         if (optionsChainData.value.length > 0) {
           const optionSymbols = optionsChainData.value.map(
             (option) => option.symbol
-          );
-          console.log(
-            "Replacing unified subscriptions with underlying + options:",
-            {
-              underlying: currentSymbol.value,
-              options: optionSymbols.length,
-            }
           );
           webSocketClient.replaceAllSubscriptions(
             currentSymbol.value,
@@ -579,8 +558,6 @@ export default {
     };
 
     const onPositionsChanged = (checkedPositions) => {
-      console.log("Positions changed:", checkedPositions);
-
       // Update chart data based on checked positions
       if (checkedPositions.length === 0) {
         chartData.value = null;
@@ -610,14 +587,11 @@ export default {
           };
         });
 
-        console.log("Converted positions for chart:", positions);
-
         if (positions.length > 0) {
           const payoffData = generateMultiLegPayoff(
             positions,
             currentPrice.value
           );
-          console.log("Generated payoff data:", payoffData);
           chartData.value = payoffData;
         }
       } catch (error) {

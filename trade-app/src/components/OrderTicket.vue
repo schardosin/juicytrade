@@ -128,6 +128,18 @@
                   showButtons
                   buttonLayout="horizontal"
                 />
+                <Button
+                  :icon="priceLocked ? 'pi pi-lock' : 'pi pi-unlock'"
+                  :class="['price-lock-button', { locked: priceLocked }]"
+                  size="small"
+                  text
+                  @click="togglePriceLock"
+                  :title="
+                    priceLocked
+                      ? 'Unlock automatic price updates'
+                      : 'Lock price (disable automatic updates)'
+                  "
+                />
                 <span class="price-type" :class="netPremiumClass">
                   {{ netPremium >= 0 ? "CR" : "DB" }}
                 </span>
@@ -188,6 +200,7 @@ export default {
     const timeInForce = ref("day");
     const limitPrice = ref(0);
     const selectedLeg = ref(null);
+    const priceLocked = ref(false);
 
     // Options for dropdowns
     const orderTypeOptions = [
@@ -302,6 +315,10 @@ export default {
       emit("clear-selections");
     };
 
+    const togglePriceLock = () => {
+      priceLocked.value = !priceLocked.value;
+    };
+
     const submitOrder = () => {
       if (!canSubmitOrder.value) return;
 
@@ -331,8 +348,8 @@ export default {
     watch(
       netPremium,
       (newValue) => {
-        // Auto-set limit price based on net premium
-        if (orderType.value === "limit") {
+        // Auto-set limit price based on net premium only if not locked
+        if (orderType.value === "limit" && !priceLocked.value) {
           limitPrice.value = parseFloat((newValue / 100).toFixed(2));
         }
       },
@@ -344,6 +361,7 @@ export default {
       orderType,
       timeInForce,
       limitPrice,
+      priceLocked,
 
       // Options
       orderTypeOptions,
@@ -364,6 +382,7 @@ export default {
       updateQuantity,
       removeOption,
       clearSelections,
+      togglePriceLock,
       submitOrder,
     };
   },
@@ -578,6 +597,28 @@ export default {
 
 .price-input {
   flex: 1;
+}
+
+.price-lock-button {
+  color: #888888 !important;
+  padding: 4px !important;
+  min-width: 32px !important;
+  transition: all 0.2s ease;
+}
+
+.price-lock-button:hover {
+  color: #ffffff !important;
+  background-color: #444444 !important;
+}
+
+.price-lock-button.locked {
+  color: #ffd700 !important;
+  background-color: rgba(255, 215, 0, 0.1) !important;
+}
+
+.price-lock-button.locked:hover {
+  color: #ffd700 !important;
+  background-color: rgba(255, 215, 0, 0.2) !important;
 }
 
 .price-type {

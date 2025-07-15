@@ -231,16 +231,10 @@ export default {
       try {
         // Only fetch price via API if we don't have live data already
         if (!isLivePrice.value || currentPrice.value === 0) {
-          console.log("Fetching initial price via API for", symbol);
           const price = await api.getUnderlyingPrice(symbol);
           if (price !== null) {
             updatePrice({ price, isLive: false });
           }
-        } else {
-          console.log(
-            "Skipping API call - already have live price data for",
-            symbol
-          );
         }
 
         // Start WebSocket streaming for the symbol

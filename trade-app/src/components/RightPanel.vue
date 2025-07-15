@@ -449,10 +449,6 @@ export default {
                 multiplier: 100,
               },
             });
-          } else {
-            console.log(
-              `No chain data found for existing position ${position.symbol} - keeping fallback values: currentPrice=${currentPrice}, unrealizedPL=${unrealizedPL}`
-            );
           }
 
           const positionData = {
@@ -463,13 +459,6 @@ export default {
             isExisting: true,
             isSelected: false,
           };
-
-          console.log(`FINAL POSITION DATA for ${position.symbol}:`, {
-            id: positionData.id,
-            current_price: positionData.current_price,
-            unrealized_pl: positionData.unrealized_pl,
-            avg_entry_price: positionData.avg_entry_price,
-          });
 
           positions.push(positionData);
           existingSymbols.add(position.symbol);
@@ -515,37 +504,6 @@ export default {
               }
             }
           }
-
-          console.log(`Creating position for ${option.symbol}:`, {
-            side: option.side,
-            quantity: option.quantity,
-            chainOption: chainOption
-              ? { bid: chainOption.bid, ask: chainOption.ask }
-              : null,
-            currentPrice,
-            avgEntryPrice,
-            unrealizedPL,
-            calculation:
-              avgEntryPrice > 0
-                ? {
-                    qty:
-                      option.side === "buy"
-                        ? option.quantity
-                        : -option.quantity,
-                    priceDiff:
-                      option.side === "buy"
-                        ? currentPrice - avgEntryPrice
-                        : avgEntryPrice - currentPrice,
-                    multiplier: 100,
-                    rawPL:
-                      option.side === "buy"
-                        ? (currentPrice - avgEntryPrice) * option.quantity * 100
-                        : (avgEntryPrice - currentPrice) *
-                          option.quantity *
-                          100,
-                  }
-                : null,
-          });
 
           positions.push({
             id: option.symbol,
@@ -710,13 +668,7 @@ export default {
     // Fetch existing positions from API
     const fetchExistingPositions = async () => {
       try {
-        console.log(
-          "Fetching existing positions from API for symbol:",
-          props.currentSymbol
-        );
         const response = await api.getPositions();
-
-        console.log("Raw API response:", response);
 
         // Handle the response structure
         let positions = [];
@@ -732,12 +684,7 @@ export default {
           positions = response;
         }
 
-        console.log("Extracted positions:", positions);
-        console.log("Is array:", Array.isArray(positions));
-
         if (positions && Array.isArray(positions)) {
-          console.log(`Total positions from API: ${positions.length}`);
-
           // Filter and format positions for options only
           const optionPositions = positions
             .filter((pos) => {
@@ -750,9 +697,6 @@ export default {
               const isCurrentSymbol =
                 underlyingFromSymbol === props.currentSymbol;
 
-              console.log(
-                `Position ${pos.symbol}: isOption=${isOption}, extractedUnderlying=${underlyingFromSymbol}, isCurrentSymbol=${isCurrentSymbol}`
-              );
               return isOption && isCurrentSymbol;
             })
             .map((pos) => {
@@ -777,15 +721,7 @@ export default {
               };
             });
 
-          console.log(`Filtered option positions: ${optionPositions.length}`);
-          optionPositions.forEach((pos, index) => {
-            console.log(`Filtered position ${index}:`, pos);
-          });
-
           existingPositions.value = optionPositions;
-          console.log(
-            `Loaded ${optionPositions.length} existing positions for ${props.currentSymbol}`
-          );
         } else {
           existingPositions.value = [];
           console.log("No existing positions found - API returned:", response);
