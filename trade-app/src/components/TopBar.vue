@@ -146,7 +146,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted } from "vue";
+import { ref, computed, onMounted, onUnmounted } from "vue";
 import webSocketClient from "../services/webSocketClient";
 import api from "../services/api";
 
@@ -169,6 +169,8 @@ export default {
     const accountError = ref(null);
 
     let searchTimeout = null;
+    let connectionStatusInterval = null;
+    let accountRefreshInterval = null;
 
     // Navigation links
     const navLinks = [
@@ -429,10 +431,30 @@ export default {
       fetchAccountInfo();
 
       // Set up periodic connection status checks
-      setInterval(checkConnectionStatus, 5000);
+      connectionStatusInterval = setInterval(checkConnectionStatus, 5000);
 
       // Set up periodic account data refresh (every 30 seconds)
-      setInterval(fetchAccountInfo, 30000);
+      accountRefreshInterval = setInterval(fetchAccountInfo, 30000);
+    });
+
+    // Clean up intervals when component is unmounted
+    onUnmounted(() => {
+      console.log("TopBar component unmounting - cleaning up intervals");
+
+      if (searchTimeout) {
+        clearTimeout(searchTimeout);
+        searchTimeout = null;
+      }
+
+      if (connectionStatusInterval) {
+        clearInterval(connectionStatusInterval);
+        connectionStatusInterval = null;
+      }
+
+      if (accountRefreshInterval) {
+        clearInterval(accountRefreshInterval);
+        accountRefreshInterval = null;
+      }
     });
 
     return {

@@ -549,18 +549,30 @@ class TradierProvider(BaseProvider):
     def _transform_position(self, raw_position: Dict[str, Any]) -> Optional[Position]:
         """Transform Tradier position to our standard model."""
         try:
+            symbol = raw_position.get("symbol")
+            cost_basis = float(raw_position.get("cost_basis", 0))
+            quantity = float(raw_position.get("quantity", 1))
+            
+            # Calculate average entry price
+            if self._is_option_symbol(symbol):
+                # For options: cost_basis is total cost, divide by quantity and then by 100 to get per-contract price
+                avg_entry_price = (cost_basis / quantity) / 100 if quantity != 0 else 0
+            else:
+                # For stocks: cost_basis is total cost, divide by quantity to get per-share price
+                avg_entry_price = cost_basis / quantity if quantity != 0 else 0
+            
             return Position(
-                symbol=raw_position.get("symbol"),
-                qty=float(raw_position.get("quantity", 0)),
-                side="long" if float(raw_position.get("quantity", 0)) > 0 else "short",
-                cost_basis=float(raw_position.get("cost_basis", 0)),
+                symbol=symbol,
+                qty=quantity,
+                side="long" if quantity > 0 else "short",
+                cost_basis=cost_basis,
                 # Tradier does not provide these fields directly in the positions endpoint
                 market_value=0,
                 unrealized_pl=0,
                 unrealized_plpc=0,
                 current_price=0,
-                avg_entry_price=float(raw_position.get("cost_basis", 0)) / float(raw_position.get("quantity", 1)),
-                asset_class="us_equity" if not self._is_option_symbol(raw_position.get("symbol")) else "us_option"
+                avg_entry_price=avg_entry_price,
+                asset_class="us_equity" if not self._is_option_symbol(symbol) else "us_option"
             )
         except Exception as e:
             self._log_error("transform_position", e)

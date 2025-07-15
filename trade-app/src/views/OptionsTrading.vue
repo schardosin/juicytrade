@@ -64,7 +64,9 @@
         :selectedOptions="selectedOptions"
         :chartData="chartData"
         :additionalQuoteData="additionalQuoteData"
+        :optionsChainData="optionsChainData"
         @panel-collapsed="onRightPanelCollapsed"
+        @positions-changed="onPositionsChanged"
       />
     </div>
 
@@ -576,6 +578,54 @@ export default {
       console.log("Right panel collapsed");
     };
 
+    const onPositionsChanged = (checkedPositions) => {
+      console.log("Positions changed:", checkedPositions);
+
+      // Update chart data based on checked positions
+      if (checkedPositions.length === 0) {
+        chartData.value = null;
+        return;
+      }
+
+      try {
+        // Convert checked positions to chart format
+        const positions = checkedPositions.map((position) => {
+          return {
+            symbol: position.symbol,
+            asset_class: "us_option",
+            side: position.qty > 0 ? "long" : "short",
+            qty: position.qty, // Keep the original signed quantity
+            strike_price: position.strike_price,
+            option_type:
+              position.option_type?.toUpperCase() ||
+              position.type?.toUpperCase(),
+            expiry_date: position.expiry_date || position.expiry,
+            current_price: position.current_price,
+            avg_entry_price: position.avg_entry_price,
+            cost_basis: position.avg_entry_price * Math.abs(position.qty) * 100,
+            market_value: position.current_price * position.qty * 100,
+            unrealized_pl: position.unrealized_pl || 0,
+            underlying_symbol: currentSymbol.value,
+            is_synthetic: !position.isExisting, // Existing positions are not synthetic
+          };
+        });
+
+        console.log("Converted positions for chart:", positions);
+
+        if (positions.length > 0) {
+          const payoffData = generateMultiLegPayoff(
+            positions,
+            currentPrice.value
+          );
+          console.log("Generated payoff data:", payoffData);
+          chartData.value = payoffData;
+        }
+      } catch (error) {
+        console.error("Error updating chart data from positions:", error);
+        console.error("Error details:", error.stack);
+      }
+    };
+
     // Additional quote data for the right panel
     const additionalQuoteData = computed(() => ({
       // Mock data - in real implementation, this would come from API
@@ -701,6 +751,7 @@ export default {
       onSymbolSelected,
       onTradeModeChanged,
       onRightPanelCollapsed,
+      onPositionsChanged,
       additionalQuoteData,
 
       // Order management

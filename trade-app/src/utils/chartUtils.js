@@ -373,6 +373,17 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
     return null;
   }
 
+  // console.log(
+  //   "generateMultiLegPayoff called with positions:",
+  //   optionPositions.map((pos) => ({
+  //     symbol: pos.symbol,
+  //     qty: pos.qty,
+  //     strike_price: pos.strike_price,
+  //     avg_entry_price: pos.avg_entry_price,
+  //     option_type: pos.option_type,
+  //   }))
+  // );
+
   // Find price range based on strikes
   const strikes = optionPositions.map((pos) => pos.strike_price);
   const minStrike = Math.min(...strikes);
@@ -428,9 +439,9 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
       const { strike_price, option_type, qty, avg_entry_price } = position;
 
       let intrinsicValue = 0;
-      if (option_type === "call") {
+      if (option_type === "call" || option_type === "CALL") {
         intrinsicValue = Math.max(price - strike_price, 0);
-      } else if (option_type === "put") {
+      } else if (option_type === "put" || option_type === "PUT") {
         intrinsicValue = Math.max(strike_price - price, 0);
       }
 

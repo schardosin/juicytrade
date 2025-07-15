@@ -167,6 +167,21 @@ export default {
     };
 
     const updateChart = async () => {
+      console.log("PayoffChart updateChart called with:", {
+        hasCanvas: !!chartCanvas.value,
+        hasChartData: !!props.chartData,
+        underlyingPrice: props.underlyingPrice,
+        chartDataKeys: props.chartData ? Object.keys(props.chartData) : null,
+        chartDataSample: props.chartData
+          ? {
+              pricesLength: props.chartData.prices?.length,
+              payoffsLength: props.chartData.payoffs?.length,
+              maxProfit: props.chartData.maxProfit,
+              maxLoss: props.chartData.maxLoss,
+            }
+          : null,
+      });
+
       if (
         !chartCanvas.value ||
         !props.chartData ||
@@ -192,6 +207,8 @@ export default {
           chart.value = null;
         }
 
+        console.log("PayoffChart: Creating chart context and config...");
+
         // Create new chart
         const ctx = chartCanvas.value.getContext("2d");
         const config = createMultiLegChartConfig(
@@ -199,8 +216,21 @@ export default {
           props.underlyingPrice
         );
 
+        console.log("PayoffChart: Chart context and config created:", {
+          hasCtx: !!ctx,
+          hasConfig: !!config,
+          configType: config?.type,
+          datasetsLength: config?.data?.datasets?.length,
+          firstDatasetLength: config?.data?.datasets?.[0]?.data?.length,
+        });
+
         if (ctx && config) {
+          console.log("PayoffChart: Creating Chart.js instance...");
           chart.value = new Chart(chartCanvas.value, config);
+          console.log(
+            "PayoffChart: Chart.js instance created successfully:",
+            !!chart.value
+          );
 
           // Restore zoom state after chart is created
           await nextTick();
@@ -216,6 +246,7 @@ export default {
         }
       } catch (err) {
         console.error("PayoffChart: Error updating chart:", err);
+        console.error("PayoffChart: Error stack:", err.stack);
       }
     };
 

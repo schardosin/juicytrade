@@ -152,33 +152,111 @@
             :defaultExpanded="true"
             @toggle="onSectionToggle"
           >
-            <div class="position-details">
-              <div class="position-summary">
-                <div class="summary-row">
-                  <span class="label">Qty</span>
-                  <span class="label">Description</span>
-                  <span class="label">Trade Price</span>
-                  <span class="label">Mark</span>
+            <div class="enhanced-position-details">
+              <!-- Header with Total P/L -->
+              <div class="position-header">
+                <div class="header-row">
+                  <span class="header-label">Qty</span>
+                  <span class="header-label">Description</span>
+                  <span class="header-label">Price</span>
                 </div>
-                <div v-if="selectedOptions.length === 0" class="no-positions">
-                  No items to show
+                <div
+                  class="total-pl"
+                  :class="{ negative: totalPL < 0, positive: totalPL > 0 }"
+                >
+                  {{ totalPL >= 0 ? "" : "-"
+                  }}{{ Math.abs(totalPL).toFixed(2) }}
+                </div>
+              </div>
+
+              <!-- Position Rows -->
+              <div class="position-list">
+                <div v-if="allPositions.length === 0" class="no-positions">
+                  No positions to show
                 </div>
                 <div v-else>
                   <div
-                    v-for="option in selectedOptions"
-                    :key="option.symbol"
-                    class="position-row"
+                    v-for="position in allPositions"
+                    :key="position.id"
+                    class="enhanced-position-row"
+                    :class="{
+                      'existing-position': position.isExisting,
+                      'selected-position': position.isSelected,
+                    }"
                   >
-                    <span class="qty">{{ option.quantity }}</span>
-                    <span class="description">{{
-                      formatOptionDescription(option)
-                    }}</span>
-                    <span class="trade-price"
-                      >${{ formatPrice(option.price) }}</span
-                    >
-                    <span class="mark"
-                      >${{ formatPrice(option.currentPrice) }}</span
-                    >
+                    <!-- Checkbox -->
+                    <div class="position-checkbox">
+                      <input
+                        type="checkbox"
+                        :id="`pos-${position.id}`"
+                        :checked="checkedPositions.has(position.id)"
+                        @change="togglePositionCheck(position.id)"
+                        class="custom-checkbox"
+                      />
+                      <label
+                        :for="`pos-${position.id}`"
+                        class="checkbox-label"
+                      ></label>
+                    </div>
+
+                    <!-- Position Icon -->
+                    <div class="position-icon">
+                      <i
+                        :class="
+                          formatEnhancedOptionDescription(position).type === 'P'
+                            ? 'pi pi-shield'
+                            : 'pi pi-circle'
+                        "
+                        class="option-type-icon"
+                        :title="
+                          formatEnhancedOptionDescription(position).type === 'P'
+                            ? 'Put'
+                            : 'Call'
+                        "
+                      ></i>
+                    </div>
+
+                    <!-- Quantity -->
+                    <div class="position-qty">
+                      {{ position.qty }}
+                    </div>
+
+                    <!-- Description -->
+                    <div class="position-description">
+                      <div class="description-main">
+                        <span class="expiry-date">{{
+                          formatEnhancedOptionDescription(position).expiry
+                        }}</span>
+                        <span class="day-indicator">1d</span>
+                        <span class="strike-price">{{
+                          formatEnhancedOptionDescription(position).strike
+                        }}</span>
+                        <span
+                          class="option-type"
+                          :class="{
+                            'call-type':
+                              formatEnhancedOptionDescription(position).type ===
+                              'C',
+                            'put-type':
+                              formatEnhancedOptionDescription(position).type ===
+                              'P',
+                          }"
+                        >
+                          {{ formatEnhancedOptionDescription(position).type }}
+                        </span>
+                        <span
+                          v-if="formatEnhancedOptionDescription(position).isITM"
+                          class="itm-indicator"
+                        >
+                          ITM
+                        </span>
+                      </div>
+                    </div>
+
+                    <!-- Price -->
+                    <div class="position-price">
+                      {{ (position.current_price || 0).toFixed(2) }}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -199,10 +277,11 @@
 </template>
 
 <script>
-import { ref, computed } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import RightPanelSection from "./RightPanelSection.vue";
 import QuoteDetailsSection from "./QuoteDetailsSection.vue";
 import PayoffChart from "./PayoffChart.vue";
+import api from "../services/api";
 
 export default {
   name: "RightPanel",
@@ -240,11 +319,17 @@ export default {
       type: Object,
       default: () => ({}),
     },
+    optionsChainData: {
+      type: Array,
+      default: () => [],
+    },
   },
-  emits: ["panel-collapsed"],
+  emits: ["panel-collapsed", "positions-changed"],
   setup(props, { emit }) {
     const activeSection = ref("overview");
     const isExpanded = ref(false);
+    const existingPositions = ref([]);
+    const checkedPositions = ref(new Set());
 
     const toggleSection = (section) => {
       if (activeSection.value === section && isExpanded.value) {
@@ -293,15 +378,437 @@ export default {
       return Number(price).toFixed(2);
     };
 
+    // Computed property to combine existing positions with selected options
+    const allPositions = computed(() => {
+      const positions = [];
+      const existingSymbols = new Set();
+
+      // Add existing positions for the current symbol
+      existingPositions.value.forEach((position) => {
+        if (position.underlying_symbol === props.currentSymbol) {
+          // Look up current market price from options chain data for existing positions
+          const chainOption = props.optionsChainData.find(
+            (opt) => opt.symbol === position.symbol
+          );
+
+          // Use entry price as fallback if current price is 0
+          let currentPrice =
+            position.current_price || position.avg_entry_price || 0;
+          let unrealizedPL = position.unrealized_pl || 0;
+
+          // If we don't have current P&L but have entry price, estimate it
+          if (
+            unrealizedPL === 0 &&
+            position.avg_entry_price &&
+            position.avg_entry_price > 0
+          ) {
+            // For now, assume current price equals entry price (no P&L change)
+            currentPrice = position.avg_entry_price;
+            unrealizedPL = 0; // No change assumed
+          }
+
+          // Update current price and P&L if we have chain data
+          if (
+            chainOption &&
+            position.avg_entry_price &&
+            chainOption.bid &&
+            chainOption.ask
+          ) {
+            // Use mid price for current market value
+            currentPrice = (chainOption.bid + chainOption.ask) / 2;
+
+            // Recalculate P&L with current market price
+            const qty = position.qty;
+            if (qty > 0) {
+              // Long position: (current_price - entry_price) * qty * 100
+              unrealizedPL =
+                (currentPrice - position.avg_entry_price) * qty * 100;
+            } else {
+              // Short position: (entry_price - current_price) * |qty| * 100
+              unrealizedPL =
+                (position.avg_entry_price - currentPrice) * Math.abs(qty) * 100;
+            }
+
+            console.log(`Updated existing position ${position.symbol}:`, {
+              newCurrentPrice: currentPrice,
+              newUnrealizedPL: unrealizedPL,
+              calculation: {
+                qty,
+                entryPrice: position.avg_entry_price,
+                priceDiff:
+                  qty > 0
+                    ? currentPrice - position.avg_entry_price
+                    : position.avg_entry_price - currentPrice,
+                multiplier: 100,
+              },
+            });
+          } else {
+            console.log(
+              `No chain data found for existing position ${position.symbol} - keeping fallback values: currentPrice=${currentPrice}, unrealizedPL=${unrealizedPL}`
+            );
+          }
+
+          const positionData = {
+            ...position,
+            id: position.symbol || position.id,
+            current_price: currentPrice,
+            unrealized_pl: unrealizedPL,
+            isExisting: true,
+            isSelected: false,
+          };
+
+          console.log(`FINAL POSITION DATA for ${position.symbol}:`, {
+            id: positionData.id,
+            current_price: positionData.current_price,
+            unrealized_pl: positionData.unrealized_pl,
+            avg_entry_price: positionData.avg_entry_price,
+          });
+
+          positions.push(positionData);
+          existingSymbols.add(position.symbol);
+        }
+      });
+
+      // Add selected options as new positions (only if they don't already exist)
+      props.selectedOptions.forEach((option) => {
+        // Skip if this option already exists as a position
+        if (!existingSymbols.has(option.symbol)) {
+          // Look up current market price from options chain data
+          const chainOption = props.optionsChainData.find(
+            (opt) => opt.symbol === option.symbol
+          );
+
+          let currentPrice = 0;
+          let avgEntryPrice = 0;
+          let unrealizedPL = 0;
+
+          if (chainOption) {
+            // Use ask price for long positions, bid price for short positions
+            const entryPrice =
+              option.side === "buy" ? chainOption.ask : chainOption.bid;
+            const marketPrice =
+              option.side === "buy" ? chainOption.bid : chainOption.ask; // Current market price for exit
+
+            currentPrice = marketPrice || entryPrice || 0;
+            avgEntryPrice = entryPrice || 0;
+
+            // Calculate unrealized P&L
+            if (avgEntryPrice > 0) {
+              const qty =
+                option.side === "buy" ? option.quantity : -option.quantity;
+              // For long positions: (current_price - entry_price) * qty * 100
+              // For short positions: (entry_price - current_price) * |qty| * 100
+              if (qty > 0) {
+                // Long position
+                unrealizedPL = (currentPrice - avgEntryPrice) * qty * 100;
+              } else {
+                // Short position
+                unrealizedPL =
+                  (avgEntryPrice - currentPrice) * Math.abs(qty) * 100;
+              }
+            }
+          }
+
+          console.log(`Creating position for ${option.symbol}:`, {
+            side: option.side,
+            quantity: option.quantity,
+            chainOption: chainOption
+              ? { bid: chainOption.bid, ask: chainOption.ask }
+              : null,
+            currentPrice,
+            avgEntryPrice,
+            unrealizedPL,
+            calculation:
+              avgEntryPrice > 0
+                ? {
+                    qty:
+                      option.side === "buy"
+                        ? option.quantity
+                        : -option.quantity,
+                    priceDiff:
+                      option.side === "buy"
+                        ? currentPrice - avgEntryPrice
+                        : avgEntryPrice - currentPrice,
+                    multiplier: 100,
+                    rawPL:
+                      option.side === "buy"
+                        ? (currentPrice - avgEntryPrice) * option.quantity * 100
+                        : (avgEntryPrice - currentPrice) *
+                          option.quantity *
+                          100,
+                  }
+                : null,
+          });
+
+          positions.push({
+            id: option.symbol,
+            symbol: option.symbol,
+            qty: option.side === "buy" ? option.quantity : -option.quantity,
+            strike_price: option.strike_price || option.strike,
+            option_type: option.type,
+            expiry_date: option.expiry,
+            current_price: currentPrice,
+            avg_entry_price: avgEntryPrice,
+            unrealized_pl: unrealizedPL,
+            isExisting: false,
+            isSelected: true,
+          });
+        }
+      });
+
+      return positions;
+    });
+
+    // Computed property for total P/L
+    const totalPL = computed(() => {
+      return allPositions.value
+        .filter((pos) => checkedPositions.value.has(pos.id))
+        .reduce((total, pos) => total + (pos.unrealized_pl || 0), 0);
+    });
+
+    // Method to toggle position checkbox
+    const togglePositionCheck = (positionId) => {
+      if (checkedPositions.value.has(positionId)) {
+        checkedPositions.value.delete(positionId);
+      } else {
+        checkedPositions.value.add(positionId);
+      }
+      // Emit event to update chart with checked positions
+      updateChartWithCheckedPositions();
+    };
+
+    // Method to update chart based on checked positions
+    const updateChartWithCheckedPositions = () => {
+      const checkedPositionsList = allPositions.value.filter((pos) =>
+        checkedPositions.value.has(pos.id)
+      );
+      emit("positions-changed", checkedPositionsList);
+    };
+
+    // Method to determine if option is ITM
+    const isInTheMoney = (position) => {
+      if (!position.strike_price || !props.currentPrice) return false;
+
+      if (position.option_type === "call" || position.option_type === "C") {
+        return props.currentPrice > position.strike_price;
+      } else if (
+        position.option_type === "put" ||
+        position.option_type === "P"
+      ) {
+        return props.currentPrice < position.strike_price;
+      }
+      return false;
+    };
+
+    // Method to format option description with visual indicators
+    const formatEnhancedOptionDescription = (position) => {
+      const type = position.option_type?.toUpperCase() || "CALL";
+      const strike = position.strike_price || 0;
+      const expiry = position.expiry_date || "";
+
+      // Format expiry date (e.g., "Jul 14")
+      let formattedExpiry = expiry;
+      if (expiry && expiry.includes("-")) {
+        const date = new Date(expiry);
+        formattedExpiry = date.toLocaleDateString("en-US", {
+          month: "short",
+          day: "numeric",
+        });
+      }
+
+      return {
+        type: type === "CALL" || type === "C" ? "C" : "P",
+        strike,
+        expiry: formattedExpiry,
+        isITM: isInTheMoney(position),
+      };
+    };
+
+    // Helper function to extract underlying symbol from option symbol
+    const extractUnderlyingFromOptionSymbol = (optionSymbol) => {
+      // Option symbols are like "SPY250714C00624000"
+      // Extract the underlying symbol (SPY) from the beginning
+      const match = optionSymbol.match(/^([A-Z]+)/);
+      return match ? match[1] : null;
+    };
+
+    // Helper function to parse option symbol for details
+    const parseOptionSymbol = (optionSymbol) => {
+      // Option symbols are like "SPY250714C00624000" or "SPY250801P00625000"
+      // Format: SYMBOL + YYMMDD + C/P + STRIKE (8 digits with 3 decimal places)
+      const match = optionSymbol.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
+      if (!match) return null;
+
+      const [, underlying, dateStr, type, strikeStr] = match;
+
+      // Parse date: YYMMDD -> YYYY-MM-DD
+      const year = 2000 + parseInt(dateStr.substring(0, 2));
+      const month = dateStr.substring(2, 4);
+      const day = dateStr.substring(4, 6);
+      const expiry = `${year}-${month}-${day}`;
+
+      // Parse strike: 8 digits with 3 decimal places (e.g., 00624000 = 624.000)
+      const strike = parseInt(strikeStr) / 1000;
+
+      return {
+        underlying_symbol: underlying,
+        option_type: type,
+        strike_price: strike,
+        expiry_date: expiry,
+      };
+    };
+
+    // Fetch existing positions from API
+    const fetchExistingPositions = async () => {
+      try {
+        console.log(
+          "Fetching existing positions from API for symbol:",
+          props.currentSymbol
+        );
+        const response = await api.getPositions();
+
+        console.log("Raw API response:", response);
+
+        // Handle the response structure
+        let positions = [];
+        if (
+          response &&
+          response.positions &&
+          Array.isArray(response.positions)
+        ) {
+          positions = response.positions;
+        } else if (response && response.data && response.data.positions) {
+          positions = response.data.positions;
+        } else if (response && Array.isArray(response)) {
+          positions = response;
+        }
+
+        console.log("Extracted positions:", positions);
+        console.log("Is array:", Array.isArray(positions));
+
+        if (positions && Array.isArray(positions)) {
+          console.log(`Total positions from API: ${positions.length}`);
+
+          // Filter and format positions for options only
+          const optionPositions = positions
+            .filter((pos) => {
+              const isOption = pos.asset_class === "us_option";
+
+              // Extract underlying symbol from option symbol since API returns null
+              const underlyingFromSymbol = extractUnderlyingFromOptionSymbol(
+                pos.symbol
+              );
+              const isCurrentSymbol =
+                underlyingFromSymbol === props.currentSymbol;
+
+              console.log(
+                `Position ${pos.symbol}: isOption=${isOption}, extractedUnderlying=${underlyingFromSymbol}, isCurrentSymbol=${isCurrentSymbol}`
+              );
+              return isOption && isCurrentSymbol;
+            })
+            .map((pos) => {
+              // Parse option symbol to get missing details
+              const parsedOption = parseOptionSymbol(pos.symbol);
+
+              return {
+                id: pos.symbol,
+                symbol: pos.symbol,
+                underlying_symbol:
+                  parsedOption?.underlying_symbol ||
+                  extractUnderlyingFromOptionSymbol(pos.symbol),
+                qty: pos.qty,
+                strike_price: parsedOption?.strike_price,
+                option_type: parsedOption?.option_type,
+                expiry_date: parsedOption?.expiry_date,
+                current_price: pos.current_price,
+                avg_entry_price: pos.avg_entry_price,
+                unrealized_pl: pos.unrealized_pl || 0,
+                isExisting: true,
+                isSelected: false,
+              };
+            });
+
+          console.log(`Filtered option positions: ${optionPositions.length}`);
+          optionPositions.forEach((pos, index) => {
+            console.log(`Filtered position ${index}:`, pos);
+          });
+
+          existingPositions.value = optionPositions;
+          console.log(
+            `Loaded ${optionPositions.length} existing positions for ${props.currentSymbol}`
+          );
+        } else {
+          existingPositions.value = [];
+          console.log("No existing positions found - API returned:", response);
+        }
+      } catch (error) {
+        console.error("Error fetching existing positions:", error);
+        console.error("Error details:", error.response?.data || error.message);
+        existingPositions.value = [];
+      }
+    };
+
+    // Initialize checked positions when component mounts or positions change
+    const initializeCheckedPositions = () => {
+      // Auto-check all positions initially
+      allPositions.value.forEach((pos) => {
+        checkedPositions.value.add(pos.id);
+      });
+    };
+
+    // Watch for changes in positions to update checked state
+    watch(
+      () => allPositions.value,
+      () => {
+        // Only auto-check selected options (not existing positions)
+        allPositions.value.forEach((pos) => {
+          if (!checkedPositions.value.has(pos.id) && pos.isSelected) {
+            checkedPositions.value.add(pos.id);
+          }
+        });
+        // Always emit positions-changed when we have checked positions
+        if (allPositions.value.length > 0 && checkedPositions.value.size > 0) {
+          updateChartWithCheckedPositions();
+        }
+      },
+      { deep: true }
+    );
+
+    // Watch for symbol changes to fetch new positions
+    watch(
+      () => props.currentSymbol,
+      (newSymbol) => {
+        if (newSymbol) {
+          fetchExistingPositions();
+        }
+      }
+    );
+
+    // Fetch positions when component mounts
+    onMounted(() => {
+      if (props.currentSymbol) {
+        fetchExistingPositions();
+      }
+    });
+
     return {
       activeSection,
       isExpanded,
+      existingPositions,
+      checkedPositions,
+      allPositions,
+      totalPL,
       toggleSection,
       collapsePanel,
       getSectionTitle,
       onSectionToggle,
       formatOptionDescription,
       formatPrice,
+      togglePositionCheck,
+      updateChartWithCheckedPositions,
+      isInTheMoney,
+      formatEnhancedOptionDescription,
+      initializeCheckedPositions,
     };
   },
 };
@@ -526,5 +1033,217 @@ export default {
 .mark {
   text-align: right;
   font-family: monospace;
+}
+
+/* Enhanced Position Details Styles */
+.enhanced-position-details {
+  background-color: var(--bg-primary, #0b0d10);
+}
+
+.position-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 16px;
+  background-color: var(--bg-secondary, #141519);
+  border-bottom: 1px solid var(--border-secondary, #2a2d33);
+}
+
+.header-row {
+  display: flex;
+  gap: 16px;
+  flex: 1;
+}
+
+.header-label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary, #cccccc);
+  text-transform: uppercase;
+}
+
+.total-pl {
+  font-size: 16px;
+  font-weight: 600;
+  font-family: monospace;
+}
+
+.total-pl.positive {
+  color: #00c851;
+}
+
+.total-pl.negative {
+  color: #ff4444;
+}
+
+.position-list {
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.enhanced-position-row {
+  display: flex;
+  align-items: center;
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--border-secondary, #2a2d33);
+  transition: background-color 0.2s ease;
+  gap: 12px;
+}
+
+.enhanced-position-row:hover {
+  background-color: var(--bg-tertiary, #1a1d23);
+}
+
+.enhanced-position-row.selected-position {
+  background-color: rgba(0, 123, 255, 0.1);
+  border-left: 3px solid #007bff;
+}
+
+.position-checkbox {
+  position: relative;
+  width: 20px;
+  height: 20px;
+}
+
+.custom-checkbox {
+  opacity: 0;
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
+}
+
+.checkbox-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-secondary, #2a2d33);
+  border-radius: 3px;
+  background-color: var(--bg-primary, #0b0d10);
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.custom-checkbox:checked + .checkbox-label {
+  background-color: #007bff;
+  border-color: #007bff;
+}
+
+.custom-checkbox:checked + .checkbox-label::after {
+  content: "✓";
+  position: absolute;
+  top: -2px;
+  left: 2px;
+  color: white;
+  font-size: 12px;
+  font-weight: bold;
+}
+
+.position-icon {
+  width: 20px;
+  display: flex;
+  justify-content: center;
+}
+
+.option-type-icon {
+  font-size: 14px;
+  color: var(--text-secondary, #cccccc);
+}
+
+.position-qty {
+  min-width: 30px;
+  text-align: center;
+  font-weight: 600;
+  color: var(--text-primary, #ffffff);
+}
+
+.position-description {
+  flex: 1;
+  min-width: 0;
+}
+
+.description-main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.expiry-date {
+  font-size: 12px;
+  color: var(--text-primary, #ffffff);
+  background-color: var(--bg-tertiary, #1a1d23);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.day-indicator {
+  font-size: 10px;
+  color: var(--text-tertiary, #888888);
+  background-color: var(--bg-secondary, #141519);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.strike-price {
+  font-size: 12px;
+  color: var(--text-primary, #ffffff);
+  font-weight: 600;
+}
+
+.option-type {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 4px;
+  border-radius: 2px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.option-type.call-type {
+  background-color: #28a745;
+  color: white;
+}
+
+.option-type.put-type {
+  background-color: #dc3545;
+  color: white;
+}
+
+.itm-indicator {
+  font-size: 9px;
+  font-weight: 600;
+  background-color: #ffc107;
+  color: #000;
+  padding: 1px 4px;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+
+.position-pl {
+  min-width: 60px;
+  text-align: right;
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.position-pl.positive {
+  color: #00c851;
+}
+
+.position-pl.negative {
+  color: #ff4444;
+}
+
+.position-price {
+  min-width: 60px;
+  text-align: right;
+  font-family: monospace;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-primary, #ffffff);
 }
 </style>

@@ -239,14 +239,6 @@ class WebSocketStreamingClient {
   handleMessage(message) {
     switch (message.type) {
       case "price_update":
-        // Log the raw streaming data for debugging (only for underlying symbols, not options)
-        if (!this.isOptionSymbol(message.symbol)) {
-          console.log(
-            `📡 Frontend received price update for ${message.symbol}:`,
-            message.data
-          );
-        }
-
         // For index symbols like SPX, prefer 'last' price over bid/ask
         let price;
         if (message.data.last && message.data.last > 0) {
