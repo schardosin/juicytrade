@@ -597,7 +597,20 @@ class TradierProvider(BaseProvider):
             
             result = []
             for order in orders:
-                if status == "all" or order.get("status") == status:
+                order_status = order.get("status")
+                
+                # Filter orders based on status
+                if status == "all":
+                    # Include all orders
+                    include_order = True
+                elif status == "canceled":
+                    # Include both canceled and rejected orders
+                    include_order = order_status in ["canceled", "cancelled", "rejected"]
+                else:
+                    # Exact status match for other statuses
+                    include_order = order_status == status
+                
+                if include_order:
                     transformed_order = self._transform_order(order)
                     if transformed_order:
                         result.append(transformed_order)

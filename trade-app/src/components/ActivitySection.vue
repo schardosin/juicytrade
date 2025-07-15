@@ -196,6 +196,7 @@ export default {
               "pending_new",
               "partially_filled",
               "held",
+              "pending",
             ].includes(status);
           case "filled":
             return status === "filled";
@@ -233,7 +234,7 @@ export default {
         let apiStatus = status || selectedStatus.value;
         switch (apiStatus) {
           case "working":
-            apiStatus = "open";
+            apiStatus = "pending";
             break;
           case "canceled":
             apiStatus = "canceled";
