@@ -166,7 +166,7 @@ export default {
       }
     };
 
-    const updateChart = async () => {
+    const createChart = async () => {
       if (
         !chartCanvas.value ||
         !props.chartData ||
@@ -185,7 +185,7 @@ export default {
       }
 
       try {
-        // Save zoom state before destroying chart
+        // Only destroy if chart exists
         if (chart.value) {
           saveZoomState();
           chart.value.destroy();
@@ -199,7 +199,17 @@ export default {
           props.underlyingPrice
         );
 
+        console.log("PayoffChart: Creating chart context and config...");
+        console.log("PayoffChart: Chart context and config created:", {
+          hasCtx: !!ctx,
+          hasConfig: !!config,
+          configType: config?.type,
+          datasetsLength: config?.data?.datasets?.length,
+          firstDatasetLength: config?.data?.datasets?.[0]?.data?.length,
+        });
+
         if (ctx && config) {
+          console.log("PayoffChart: Creating Chart.js instance...");
           chart.value = new Chart(chartCanvas.value, config);
           // Restore zoom state after chart is created
           await nextTick();
@@ -214,18 +224,65 @@ export default {
           );
         }
       } catch (err) {
-        console.error("PayoffChart: Error updating chart:", err);
+        console.error("PayoffChart: Error creating chart:", err);
         console.error("PayoffChart: Error stack:", err.stack);
+      }
+    };
+
+    const updateChartData = async () => {
+      if (!chart.value || !props.chartData || props.underlyingPrice === null) {
+        return;
+      }
+
+      try {
+        // Update chart data without destroying the chart
+        const config = createMultiLegChartConfig(
+          props.chartData,
+          props.underlyingPrice
+        );
+
+        if (config && config.data) {
+          // Update datasets
+          chart.value.data.datasets = config.data.datasets;
+
+          // Update the vertical line annotation for current price
+          if (config.options?.plugins?.annotation?.annotations) {
+            chart.value.options.plugins.annotation.annotations =
+              config.options.plugins.annotation.annotations;
+          }
+
+          // Update the chart without animation to avoid interrupting user interactions
+          chart.value.update("none");
+        }
+      } catch (err) {
+        console.error("PayoffChart: Error updating chart data:", err);
+        // If update fails, recreate the chart
+        await createChart();
       }
     };
 
     // Watch for changes in chart data or underlying price
     watch(
       [() => props.chartData, () => props.underlyingPrice],
-      async ([newChartData, newUnderlyingPrice]) => {
+      async (
+        [newChartData, newUnderlyingPrice],
+        [oldChartData, oldUnderlyingPrice]
+      ) => {
         if (newChartData && newUnderlyingPrice !== null) {
           await nextTick();
-          updateChart();
+
+          // If chart doesn't exist or chartData structure changed, create new chart
+          if (
+            !chart.value ||
+            !oldChartData ||
+            newChartData.prices?.length !== oldChartData.prices?.length ||
+            newChartData.payoffs?.length !== oldChartData.payoffs?.length
+          ) {
+            await createChart();
+          } else {
+            // Just update the data (for price changes)
+            await updateChartData();
+          }
         }
       },
       { deep: true }
@@ -235,7 +292,7 @@ export default {
     onMounted(async () => {
       if (props.chartData && props.underlyingPrice !== null) {
         await nextTick();
-        updateChart();
+        await createChart();
       }
     });
 

@@ -909,6 +909,7 @@ export default {
   display: flex;
   align-items: center;
   gap: 4px;
+  flex: 1;
 }
 
 .price-btn {
@@ -990,7 +991,8 @@ export default {
   text-align: center;
   font-size: 14px;
   font-weight: 600;
-  width: 80px;
+  flex: 1;
+  min-width: 80px;
 }
 
 .price-input:focus {

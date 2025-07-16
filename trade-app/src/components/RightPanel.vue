@@ -390,10 +390,11 @@ export default {
     const allPositions = computed(() => {
       const positions = [];
       const existingSymbols = new Set();
+      const symbolGroup = getSymbolGroup(props.currentSymbol);
 
-      // Add existing positions for the current symbol
+      // Add existing positions for the current symbol group
       existingPositions.value.forEach((position) => {
-        if (position.underlying_symbol === props.currentSymbol) {
+        if (symbolGroup.includes(position.underlying_symbol)) {
           // Look up current market price from options chain data for existing positions
           const chainOption = props.optionsChainData.find(
             (opt) => opt.symbol === position.symbol
@@ -632,6 +633,14 @@ export default {
       };
     };
 
+    // Helper function to get symbol group (handles SPX/SPXW grouping)
+    const getSymbolGroup = (symbol) => {
+      if (symbol === "SPX" || symbol === "SPXW") {
+        return ["SPX", "SPXW"];
+      }
+      return [symbol];
+    };
+
     // Helper function to extract underlying symbol from option symbol
     const extractUnderlyingFromOptionSymbol = (optionSymbol) => {
       // Option symbols are like "SPY250714C00624000"
@@ -686,6 +695,8 @@ export default {
         }
 
         if (positions && Array.isArray(positions)) {
+          const symbolGroup = getSymbolGroup(props.currentSymbol);
+
           // Filter and format positions for options only
           const optionPositions = positions
             .filter((pos) => {
@@ -695,10 +706,10 @@ export default {
               const underlyingFromSymbol = extractUnderlyingFromOptionSymbol(
                 pos.symbol
               );
-              const isCurrentSymbol =
-                underlyingFromSymbol === props.currentSymbol;
+              const isCurrentSymbolGroup =
+                symbolGroup.includes(underlyingFromSymbol);
 
-              return isOption && isCurrentSymbol;
+              return isOption && isCurrentSymbolGroup;
             })
             .map((pos) => {
               // Parse option symbol to get missing details

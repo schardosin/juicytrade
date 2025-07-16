@@ -179,9 +179,10 @@ export default {
 
       // Filter by symbol
       if (selectedSymbolFilter.value !== "All") {
+        const symbolGroup = getSymbolGroup(selectedSymbolFilter.value);
         filtered = filtered.filter((order) => {
           const orderSymbol = getOrderSymbol(order);
-          return orderSymbol === selectedSymbolFilter.value;
+          return symbolGroup.includes(orderSymbol);
         });
       }
 
@@ -469,6 +470,14 @@ export default {
 
     const isOptionSymbol = (symbol) => {
       return symbol && symbol.length > 10 && /[CP]\d{8}$/.test(symbol);
+    };
+
+    // Helper function to get symbol group (handles SPX/SPXW grouping)
+    const getSymbolGroup = (symbol) => {
+      if (symbol === "SPX" || symbol === "SPXW") {
+        return ["SPX", "SPXW"];
+      }
+      return [symbol];
     };
 
     const extractUnderlyingFromOptionSymbol = (symbol) => {
