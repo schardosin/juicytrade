@@ -65,6 +65,8 @@
         :chartData="chartData"
         :additionalQuoteData="additionalQuoteData"
         :optionsChainData="optionsChainData"
+        :forceExpanded="isRightPanelExpanded"
+        :forceSection="rightPanelSection"
         @panel-collapsed="onRightPanelCollapsed"
         @positions-changed="onPositionsChanged"
       />
@@ -213,6 +215,12 @@ export default {
       });
 
       return totalCost;
+    });
+
+    // Computed property to determine which section to show in right panel
+    const rightPanelSection = computed(() => {
+      // If options are selected, show analysis section, otherwise null (let user choose)
+      return selectedOptions.value.length > 0 ? "analysis" : null;
     });
 
     // Methods
@@ -711,6 +719,7 @@ export default {
       priceChangeClass,
       marketStatusClass,
       estimatedCost,
+      rightPanelSection,
 
       // Methods
       onExpiryChange,

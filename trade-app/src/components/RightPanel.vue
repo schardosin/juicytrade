@@ -323,6 +323,14 @@ export default {
       type: Array,
       default: () => [],
     },
+    forceExpanded: {
+      type: Boolean,
+      default: false,
+    },
+    forceSection: {
+      type: String,
+      default: null,
+    },
   },
   emits: ["panel-collapsed", "positions-changed"],
   setup(props, { emit }) {
@@ -760,6 +768,25 @@ export default {
           fetchExistingPositions();
         }
       }
+    );
+
+    // Watch for forced expansion and section changes
+    watch(
+      () => props.forceExpanded,
+      (newValue) => {
+        isExpanded.value = newValue;
+      },
+      { immediate: true }
+    );
+
+    watch(
+      () => props.forceSection,
+      (newSection) => {
+        if (newSection) {
+          activeSection.value = newSection;
+        }
+      },
+      { immediate: true }
     );
 
     // Fetch positions when component mounts
