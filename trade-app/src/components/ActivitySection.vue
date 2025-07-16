@@ -75,6 +75,7 @@
           v-for="order in filteredOrders"
           :key="order.id"
           class="order-group"
+          @contextmenu.prevent="showContextMenu($event, order)"
         >
           <!-- Order Header -->
           <div class="order-header">
@@ -151,11 +152,52 @@
         </div>
       </div>
     </div>
+
+    <!-- Context Menu -->
+    <div
+      v-if="contextMenu.visible"
+      class="context-menu"
+      :style="{
+        left: contextMenu.x + 'px',
+        top: contextMenu.y + 'px',
+      }"
+      @click.stop
+    >
+      <div
+        class="context-menu-item cancel-item"
+        :class="{ disabled: !isOrderCancellable(contextMenu.order) }"
+        @click="cancelOrder(contextMenu.order)"
+      >
+        <i class="pi pi-times"></i>
+        <span>Cancel</span>
+      </div>
+      <div
+        class="context-menu-item similar-item"
+        @click="createSimilarOrder(contextMenu.order)"
+      >
+        <i class="pi pi-arrow-down"></i>
+        <span>Similar</span>
+      </div>
+      <div
+        class="context-menu-item opposite-item"
+        @click="createOppositeOrder(contextMenu.order)"
+      >
+        <i class="pi pi-refresh"></i>
+        <span>Opposite</span>
+      </div>
+    </div>
+
+    <!-- Overlay to close context menu -->
+    <div
+      v-if="contextMenu.visible"
+      class="context-menu-overlay"
+      @click="hideContextMenu"
+    ></div>
   </div>
 </template>
 
 <script>
-import { ref, computed, onMounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import api from "../services/api";
 import { detectStrategy } from "../utils/optionsStrategies";
 
@@ -172,6 +214,14 @@ export default {
     const loading = ref(false);
     const selectedSymbolFilter = ref(props.currentSymbol);
     const selectedStatus = ref("filled");
+
+    // Context menu state
+    const contextMenu = ref({
+      visible: false,
+      x: 0,
+      y: 0,
+      order: null,
+    });
 
     // Computed property for filtered orders
     const filteredOrders = computed(() => {
@@ -532,6 +582,184 @@ export default {
       return `${formatDate(today)} - ${formatDate(tomorrow)}`;
     };
 
+    // Global context menu handler to prevent browser context menu
+    const handleGlobalContextMenu = (event) => {
+      if (contextMenu.value.visible) {
+        event.preventDefault();
+        return false;
+      }
+    };
+
+    // Context menu methods
+    const showContextMenu = (event, order) => {
+      // Always prevent the default browser context menu
+      event.preventDefault();
+
+      // If menu is already visible, hide it first
+      if (contextMenu.value.visible) {
+        contextMenu.value.visible = false;
+        // Use setTimeout to ensure the menu is hidden before showing the new one
+        setTimeout(() => {
+          contextMenu.value = {
+            visible: true,
+            x: event.clientX,
+            y: event.clientY,
+            order: order,
+          };
+        }, 0);
+      } else {
+        contextMenu.value = {
+          visible: true,
+          x: event.clientX,
+          y: event.clientY,
+          order: order,
+        };
+      }
+    };
+
+    const hideContextMenu = () => {
+      contextMenu.value.visible = false;
+    };
+
+    const isOrderCancellable = (order) => {
+      if (!order) return false;
+      const status = order.status.toLowerCase();
+      return [
+        "new",
+        "accepted",
+        "pending_new",
+        "partially_filled",
+        "held",
+        "pending",
+      ].includes(status);
+    };
+
+    const cancelOrder = async (order) => {
+      // Check if order is cancellable before proceeding
+      if (!isOrderCancellable(order)) {
+        hideContextMenu();
+        return;
+      }
+
+      try {
+        console.log("Cancelling order:", order.id);
+        // TODO: Implement order cancellation API call
+        // await api.cancelOrder(order.id);
+
+        // For now, just show a message
+        alert(`Order #${order.id} would be cancelled`);
+
+        // Refresh orders after cancellation
+        await fetchOrders();
+      } catch (error) {
+        console.error("Error cancelling order:", error);
+        alert("Failed to cancel order");
+      } finally {
+        hideContextMenu();
+      }
+    };
+
+    const createSimilarOrder = (order) => {
+      console.log("Creating similar order for:", order);
+
+      // Convert order to option selections
+      const selections = convertOrderToSelections(order, false);
+
+      // Emit event to parent to select these options and switch to analysis tab
+      emitOrderSelections(selections);
+
+      hideContextMenu();
+    };
+
+    const createOppositeOrder = (order) => {
+      console.log("Creating opposite order for:", order);
+
+      // Convert order to opposite option selections
+      const selections = convertOrderToSelections(order, true);
+
+      // Emit event to parent to select these options and switch to analysis tab
+      emitOrderSelections(selections);
+
+      hideContextMenu();
+    };
+
+    const convertOrderToSelections = (order, isOpposite = false) => {
+      const selections = [];
+
+      if (order.legs && order.legs.length > 0) {
+        // Multi-leg order
+        order.legs.forEach((leg) => {
+          const parsed = parseOptionSymbol(leg.symbol);
+          if (parsed) {
+            const originalSide = leg.side;
+            let newSide = originalSide;
+
+            if (isOpposite) {
+              // Flip the side for opposite order
+              if (originalSide.includes("buy")) {
+                newSide = originalSide.replace("buy", "sell");
+              } else if (originalSide.includes("sell")) {
+                newSide = originalSide.replace("sell", "buy");
+              }
+            }
+
+            selections.push({
+              symbol: leg.symbol,
+              strike_price: parsed.strike,
+              type: parsed.type,
+              expiry: parsed.expiry,
+              side: newSide.includes("buy") ? "buy" : "sell",
+              quantity: Math.abs(leg.qty),
+            });
+          }
+        });
+      } else if (isOptionOrder(order)) {
+        // Single leg option order
+        const parsed = parseOptionSymbol(order.symbol);
+        if (parsed) {
+          const originalSide = order.side;
+          let newSide = originalSide;
+
+          if (isOpposite) {
+            // Flip the side for opposite order
+            if (originalSide.includes("buy")) {
+              newSide = originalSide.replace("buy", "sell");
+            } else if (originalSide.includes("sell")) {
+              newSide = originalSide.replace("sell", "buy");
+            }
+          }
+
+          selections.push({
+            symbol: order.symbol,
+            strike_price: parsed.strike,
+            type: parsed.type,
+            expiry: parsed.expiry,
+            side: newSide.includes("buy") ? "buy" : "sell",
+            quantity: Math.abs(order.qty),
+          });
+        }
+      }
+
+      return selections;
+    };
+
+    const emitOrderSelections = (selections) => {
+      // TODO: Emit event to parent component to handle option selections
+      // This would typically involve:
+      // 1. Selecting the options in the options chain
+      // 2. Switching to the Analysis tab
+      // 3. Opening the order ticket
+
+      console.log("Would emit selections:", selections);
+
+      // For now, just show what would be selected
+      const selectionText = selections
+        .map((s) => `${s.quantity} ${s.symbol} ${s.side.toUpperCase()}`)
+        .join(", ");
+
+      alert(`Would select: ${selectionText}`);
+    };
+
     // Watch for symbol changes
     watch(
       () => props.currentSymbol,
@@ -552,6 +780,13 @@ export default {
     // Fetch orders on mount
     onMounted(() => {
       fetchOrders();
+      // Add global context menu handler
+      document.addEventListener("contextmenu", handleGlobalContextMenu);
+    });
+
+    // Clean up event listeners
+    onUnmounted(() => {
+      document.removeEventListener("contextmenu", handleGlobalContextMenu);
     });
 
     return {
@@ -560,6 +795,7 @@ export default {
       selectedSymbolFilter,
       selectedStatus,
       filteredOrders,
+      contextMenu,
       getOrderSymbol,
       formatOrderType,
       formatOrderTime,
@@ -579,6 +815,12 @@ export default {
       getLegSideClass,
       isOptionOrder,
       formatDateRange,
+      showContextMenu,
+      hideContextMenu,
+      isOrderCancellable,
+      cancelOrder,
+      createSimilarOrder,
+      createOppositeOrder,
     };
   },
 };
@@ -840,5 +1082,79 @@ export default {
 
 .leg-side.sell-side {
   color: var(--color-danger);
+}
+
+/* Context Menu Styles */
+.context-menu-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 999;
+}
+
+.context-menu {
+  position: fixed;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+  min-width: 120px;
+  overflow: hidden;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  cursor: pointer;
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+  transition: var(--transition-fast);
+  border-bottom: 1px solid var(--border-secondary);
+}
+
+.context-menu-item:last-child {
+  border-bottom: none;
+}
+
+.context-menu-item:hover {
+  background-color: var(--bg-quaternary);
+}
+
+.context-menu-item i {
+  font-size: var(--font-size-sm);
+  width: 16px;
+  text-align: center;
+}
+
+.context-menu-item.cancel-item {
+  color: var(--color-danger);
+}
+
+.context-menu-item.cancel-item:hover {
+  background-color: rgba(255, 68, 68, 0.1);
+}
+
+.context-menu-item.cancel-item.disabled {
+  color: var(--text-quaternary);
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.context-menu-item.cancel-item.disabled:hover {
+  background-color: transparent;
+  color: var(--text-quaternary);
+}
+
+.context-menu-item.similar-item i {
+  color: var(--color-info);
+}
+
+.context-menu-item.opposite-item i {
+  color: var(--color-warning);
 }
 </style>
