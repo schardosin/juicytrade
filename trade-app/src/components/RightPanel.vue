@@ -14,12 +14,12 @@
 
       <div
         class="menu-icon"
-        :class="{ active: activeSection === 'positions' }"
-        @click="toggleSection('positions')"
-        title="Positions"
+        :class="{ active: activeSection === 'analysis' }"
+        @click="toggleSection('analysis')"
+        title="Analysis"
       >
-        <i class="pi pi-briefcase"></i>
-        <span class="icon-label">POS</span>
+        <i class="pi pi-chart-bar"></i>
+        <span class="icon-label">ANL</span>
       </div>
 
       <div
@@ -81,16 +81,6 @@
         <i class="pi pi-file"></i>
         <span class="icon-label">NWS</span>
       </div>
-
-      <div
-        class="menu-icon"
-        :class="{ active: activeSection === 'analysis' }"
-        @click="toggleSection('analysis')"
-        title="Analysis"
-      >
-        <i class="pi pi-chart-bar"></i>
-        <span class="icon-label">ANYS</span>
-      </div>
     </div>
 
     <!-- Expandable Content Area -->
@@ -110,7 +100,24 @@
         <!-- Overview Section -->
         <div v-if="activeSection === 'overview'" class="section-content">
           <RightPanelSection
-            title="SPY Chart"
+            title="Quote Details"
+            icon="pi pi-list"
+            :defaultExpanded="true"
+            @toggle="onSectionToggle"
+          >
+            <QuoteDetailsSection
+              :symbol="currentSymbol"
+              :currentPrice="currentPrice"
+              :priceChange="priceChange"
+              :additionalQuoteData="additionalQuoteData"
+            />
+          </RightPanelSection>
+        </div>
+
+        <!-- Analysis Section -->
+        <div v-else-if="activeSection === 'analysis'" class="section-content">
+          <RightPanelSection
+            title="Payoff Chart"
             icon="pi pi-chart-line"
             :defaultExpanded="true"
             @toggle="onSectionToggle"
@@ -133,21 +140,7 @@
           </RightPanelSection>
 
           <RightPanelSection
-            title="SPY Quote Details"
-            icon="pi pi-list"
-            :defaultExpanded="true"
-            @toggle="onSectionToggle"
-          >
-            <QuoteDetailsSection
-              :symbol="currentSymbol"
-              :currentPrice="currentPrice"
-              :priceChange="priceChange"
-              :additionalQuoteData="additionalQuoteData"
-            />
-          </RightPanelSection>
-
-          <RightPanelSection
-            title="SPY Position Detail"
+            title="Position Detail"
             icon="pi pi-briefcase"
             :defaultExpanded="true"
             @toggle="onSectionToggle"
