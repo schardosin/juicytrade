@@ -107,6 +107,26 @@ class ProviderManager:
             return await provider.get_options_chain(symbol, expiry, option_type)
         return []
 
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
+        provider = self._get_provider("options_chain")
+        if provider:
+            return await provider.get_options_chain_basic(symbol, expiry, underlying_price, strike_count)
+        return []
+
+    async def get_options_greeks_batch(self, option_symbols: List[str]) -> Dict[str, Dict]:
+        provider = self._get_provider("options_chain")
+        if provider:
+            return await provider.get_options_greeks_batch(option_symbols)
+        return {}
+
+    async def get_options_chain_smart(self, symbol: str, expiry: str, underlying_price: float = None, 
+                                   atm_range: int = 20, include_greeks: bool = False, 
+                                   strikes_only: bool = False) -> List[OptionContract]:
+        provider = self._get_provider("options_chain")
+        if provider:
+            return await provider.get_options_chain_smart(symbol, expiry, underlying_price, atm_range, include_greeks, strikes_only)
+        return []
+
     async def get_positions(self) -> List[Position]:
         provider = self._get_provider("positions")
         if provider:

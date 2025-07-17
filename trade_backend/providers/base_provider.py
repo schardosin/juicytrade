@@ -82,6 +82,55 @@ class BaseProvider(ABC):
         pass
     
     @abstractmethod
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
+        """
+        Get basic options chain (no Greeks) for fast loading, ATM-focused.
+        
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date in YYYY-MM-DD format
+            underlying_price: Current underlying price for ATM filtering
+            strike_count: Number of strikes around ATM to include (default 20)
+            
+        Returns:
+            List of OptionContract objects without Greeks
+        """
+        pass
+    
+    @abstractmethod
+    async def get_options_greeks_batch(self, option_symbols: List[str]) -> Dict[str, Dict]:
+        """
+        Get Greeks for multiple option symbols in batch.
+        
+        Args:
+            option_symbols: List of option symbols
+            
+        Returns:
+            Dictionary mapping option symbols to Greeks data
+        """
+        pass
+    
+    @abstractmethod
+    async def get_options_chain_smart(self, symbol: str, expiry: str, underlying_price: float = None, 
+                                   atm_range: int = 20, include_greeks: bool = False, 
+                                   strikes_only: bool = False) -> List[OptionContract]:
+        """
+        Get smart options chain with configurable loading.
+        
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date in YYYY-MM-DD format
+            underlying_price: Current underlying price for ATM filtering
+            atm_range: Range around ATM to include
+            include_greeks: Whether to include Greeks calculation
+            strikes_only: Whether to return only strike information
+            
+        Returns:
+            List of OptionContract objects
+        """
+        pass
+    
+    @abstractmethod
     async def get_next_market_date(self) -> str:
         """
         Get the next trading date.

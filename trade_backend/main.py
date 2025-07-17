@@ -270,6 +270,82 @@ async def get_options_chain(symbol: str, expiry: str, strategy_type: Optional[st
         logger.error(f"Error getting options chain: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/options_chain_basic", response_model=ApiResponse)
+async def get_options_chain_basic(
+    symbol: str, 
+    expiry: str, 
+    underlying_price: Optional[float] = None,
+    strike_count: int = 20
+):
+    """Fast options chain loading - basic data only, ATM-focused by strike count."""
+    try:
+        contracts = await provider_manager.get_options_chain_basic(
+            symbol, expiry, underlying_price, strike_count
+        )
+        
+        # Convert to dict format for API response
+        contracts_data = [contract.dict() for contract in contracts]
+        
+        return ApiResponse(
+            success=True,
+            data=contracts_data,
+            message=f"Retrieved {len(contracts)} basic option contracts ({strike_count} strikes around ATM)"
+        )
+    except Exception as e:
+        logger.error(f"Error getting basic options chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/options_greeks", response_model=ApiResponse)
+async def get_options_greeks(symbols: str):
+    """Get Greeks for specific option symbols (comma-separated)."""
+    try:
+        symbol_list = [s.strip() for s in symbols.split(',') if s.strip()]
+        
+        if not symbol_list:
+            return ApiResponse(
+                success=True,
+                data={},
+                message="No symbols provided"
+            )
+        
+        greeks_data = await provider_manager.get_options_greeks_batch(symbol_list)
+        
+        return ApiResponse(
+            success=True,
+            data=greeks_data,
+            message=f"Retrieved Greeks for {len(symbol_list)} option symbols"
+        )
+    except Exception as e:
+        logger.error(f"Error getting options Greeks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/options_chain_smart", response_model=ApiResponse)
+async def get_options_chain_smart(
+    symbol: str,
+    expiry: str, 
+    underlying_price: Optional[float] = None,
+    atm_range: int = 20,
+    include_greeks: bool = False,
+    strikes_only: bool = False
+):
+    """Smart options chain with configurable loading."""
+    try:
+        contracts = await provider_manager.get_options_chain_smart(
+            symbol, expiry, underlying_price, atm_range, include_greeks, strikes_only
+        )
+        
+        # Convert to dict format for API response
+        contracts_data = [contract.dict() for contract in contracts]
+        
+        return ApiResponse(
+            success=True,
+            data=contracts_data,
+            message=f"Retrieved {len(contracts)} smart option contracts"
+        )
+    except Exception as e:
+        logger.error(f"Error getting smart options chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.get("/full_options_chain", response_model=ApiResponse)
 async def get_full_options_chain(symbol: str, expiry: str):
     """Get complete options chain (calls and puts) for a symbol and expiration."""

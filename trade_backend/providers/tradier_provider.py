@@ -466,6 +466,136 @@ class TradierProvider(BaseProvider):
             self._log_error(f"get_options_chain for {symbol} {expiry}", e)
             return []
 
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
+        """Fast loading - basic options data without Greeks, ATM-focused by strike count."""
+        try:
+            url = f"{self.base_url}/v1/markets/options/chains"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            params = {
+                "symbol": symbol,
+                "expiration": expiry,
+                "greeks": "false"  # Skip expensive Greeks calculation
+            }
+            
+            resp = requests.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            contracts = data.get("options", {}).get("option", [])
+            
+            # Get underlying price if not provided
+            if underlying_price is None:
+                try:
+                    quote = await self.get_stock_quote(symbol)
+                    underlying_price = (quote.bid + quote.ask) / 2 if quote and quote.bid and quote.ask else None
+                except:
+                    underlying_price = None
+            
+            # Smart filtering - focus on ATM strikes by count
+            filtered_contracts = []
+            if underlying_price and contracts:
+                # Get all unique strikes and sort them
+                strikes = sorted(list(set(float(contract.get("strike", 0)) for contract in contracts)))
+                
+                # Find the ATM strike (closest to underlying price)
+                atm_strike = min(strikes, key=lambda x: abs(x - underlying_price))
+                atm_index = strikes.index(atm_strike)
+                
+                # Calculate how many strikes to take on each side
+                strikes_per_side = strike_count // 2
+                
+                # Get the range of strikes around ATM
+                start_index = max(0, atm_index - strikes_per_side)
+                end_index = min(len(strikes), atm_index + strikes_per_side + 1)
+                
+                # Select strikes in the range
+                selected_strikes = set(strikes[start_index:end_index])
+                
+                # Filter contracts to only include selected strikes
+                for contract in contracts:
+                    strike = float(contract.get("strike", 0))
+                    if strike in selected_strikes:
+                        filtered_contracts.append(contract)
+                
+                contracts = filtered_contracts
+            
+            # Transform without Greeks (faster)
+            result = []
+            for contract in contracts:
+                transformed_contract = self._transform_option_contract_basic(contract)
+                if transformed_contract:
+                    result.append(transformed_contract)
+            
+            return result
+        except Exception as e:
+            self._log_error(f"get_options_chain_basic for {symbol} {expiry}", e)
+            return []
+
+    async def get_options_greeks_batch(self, option_symbols: List[str]) -> Dict[str, Dict]:
+        """Get Greeks for multiple option symbols in batch."""
+        try:
+            # Tradier doesn't have a dedicated Greeks endpoint, so we need to get full option data
+            # Group symbols by underlying and expiration for efficient API calls
+            symbol_groups = {}
+            
+            for option_symbol in option_symbols:
+                parsed = self._parse_option_symbol(option_symbol)
+                if parsed:
+                    key = f"{parsed['underlying']}_{parsed['expiry']}"
+                    if key not in symbol_groups:
+                        symbol_groups[key] = {
+                            'underlying': parsed['underlying'],
+                            'expiry': parsed['expiry'],
+                            'symbols': []
+                        }
+                    symbol_groups[key]['symbols'].append(option_symbol)
+            
+            # Fetch Greeks for each group
+            greeks_data = {}
+            for group in symbol_groups.values():
+                try:
+                    contracts = await self.get_options_chain(
+                        group['underlying'], 
+                        group['expiry']
+                    )
+                    
+                    # Extract Greeks for requested symbols
+                    for contract in contracts:
+                        if contract.symbol in group['symbols']:
+                            greeks_data[contract.symbol] = {
+                                'delta': contract.delta,
+                                'theta': contract.theta,
+                                'gamma': contract.gamma,
+                                'vega': contract.vega,
+                                'implied_volatility': contract.implied_volatility
+                            }
+                except Exception as e:
+                    self._log_error(f"get_options_greeks_batch for group {group['underlying']}", e)
+                    continue
+            
+            return greeks_data
+        except Exception as e:
+            self._log_error(f"get_options_greeks_batch", e)
+            return {}
+
+    async def get_options_chain_smart(self, symbol: str, expiry: str, underlying_price: float = None, 
+                                   atm_range: int = 20, include_greeks: bool = False, 
+                                   strikes_only: bool = False) -> List[OptionContract]:
+        """Smart options chain with configurable loading."""
+        try:
+            if include_greeks:
+                # Use full options chain with Greeks
+                return await self.get_options_chain(symbol, expiry)
+            else:
+                # Use basic fast loading
+                return await self.get_options_chain_basic(symbol, expiry, underlying_price, atm_range)
+        except Exception as e:
+            self._log_error(f"get_options_chain_smart for {symbol} {expiry}", e)
+            return []
+
     def _transform_option_contract(self, raw_contract: Dict[str, Any]) -> Optional[OptionContract]:
         """Transform Tradier option contract to our standard model."""
         try:
@@ -489,6 +619,31 @@ class TradierProvider(BaseProvider):
             )
         except Exception as e:
             self._log_error("transform_option_contract", e)
+            return None
+
+    def _transform_option_contract_basic(self, raw_contract: Dict[str, Any]) -> Optional[OptionContract]:
+        """Transform Tradier option contract to our standard model without Greeks (faster)."""
+        try:
+            return OptionContract(
+                symbol=raw_contract.get("symbol", ""),
+                underlying_symbol=raw_contract.get("underlying", ""),
+                expiration_date=raw_contract.get("expiration_date", ""),
+                strike_price=float(raw_contract.get("strike", 0)),
+                type=raw_contract.get("option_type", "").lower(),
+                bid=float(raw_contract.get("bid", 0)) if raw_contract.get("bid") else None,
+                ask=float(raw_contract.get("ask", 0)) if raw_contract.get("ask") else None,
+                close_price=float(raw_contract.get("close", 0)) if raw_contract.get("close") else None,
+                volume=int(raw_contract.get("volume", 0)) if raw_contract.get("volume") else None,
+                open_interest=int(raw_contract.get("open_interest", 0)) if raw_contract.get("open_interest") else None,
+                # Greeks are None for basic loading (will be loaded separately)
+                implied_volatility=None,
+                delta=None,
+                gamma=None,
+                theta=None,
+                vega=None,
+            )
+        except Exception as e:
+            self._log_error("transform_option_contract_basic", e)
             return None
 
     async def get_next_market_date(self) -> str:

@@ -97,6 +97,72 @@ export const api = {
     }
   },
 
+  // Get basic options chain (fast loading, no Greeks)
+  async getOptionsChainBasic(
+    symbol,
+    expiry,
+    underlyingPrice = null,
+    strikeCount = 20
+  ) {
+    try {
+      const params = {
+        symbol,
+        expiry,
+        strike_count: strikeCount,
+      };
+
+      if (underlyingPrice !== null) {
+        params.underlying_price = underlyingPrice;
+      }
+
+      const response = await axios.get(`${API_BASE_URL}/options_chain_basic`, {
+        params,
+      });
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching basic options chain:", error);
+      throw error;
+    }
+  },
+
+  // Get Greeks for multiple option symbols
+  async getOptionsGreeks(symbolsArray) {
+    try {
+      const symbols = Array.isArray(symbolsArray)
+        ? symbolsArray.join(",")
+        : symbolsArray;
+      const response = await axios.get(`${API_BASE_URL}/options_greeks`, {
+        params: { symbols },
+      });
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching options Greeks:", error);
+      throw error;
+    }
+  },
+
+  // Get smart options chain with configurable loading
+  async getOptionsChainSmart(symbol, expiry, options = {}) {
+    try {
+      const params = {
+        symbol,
+        expiry,
+        underlying_price: options.underlyingPrice,
+        atm_range: options.atmRange || 20,
+        include_greeks: options.includeGreeks || false,
+        strikes_only: options.strikesOnly || false,
+      };
+
+      const response = await axios.get(`${API_BASE_URL}/options_chain_smart`, {
+        params,
+      });
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching smart options chain:", error);
+      throw error;
+    }
+  },
+
   // Fetch option prices
   async fetchOptionPrices(symbols) {
     if (!symbols || symbols.length === 0) {

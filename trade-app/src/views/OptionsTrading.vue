@@ -28,24 +28,10 @@
 
         <!-- Options Chain Section -->
         <div class="options-section">
-          <!-- Expiration Selector -->
-          <div class="expiration-selector">
-            <label>Expiration:</label>
-            <Dropdown
-              v-model="selectedExpiry"
-              :options="expirationDates"
-              optionLabel="label"
-              optionValue="value"
-              @change="onExpiryChange"
-              class="expiry-dropdown"
-            />
-          </div>
-
-          <!-- Options Chain -->
+          <!-- Collapsible Options Chain -->
           <div class="options-chain-wrapper">
-            <OptionsChain
-              :key="selectedExpiry"
-              :optionsData="optionsChainData"
+            <CollapsibleOptionsChain
+              :symbol="currentSymbol"
               :underlyingPrice="currentPrice"
               :selectedOptions="selectedOptions"
               @option-selected="onOptionSelected"
@@ -113,6 +99,7 @@ import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
 import OptionsChain from "../components/OptionsChain.vue";
+import CollapsibleOptionsChain from "../components/CollapsibleOptionsChain.vue";
 import OrderTicket from "../components/OrderTicket.vue";
 import PayoffChart from "../components/PayoffChart.vue";
 import BottomTradingPanel from "../components/BottomTradingPanel.vue";
@@ -132,6 +119,7 @@ export default {
     SideNav,
     SymbolHeader,
     OptionsChain,
+    CollapsibleOptionsChain,
     OrderTicket,
     PayoffChart,
     BottomTradingPanel,
