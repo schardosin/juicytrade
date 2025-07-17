@@ -632,6 +632,9 @@ export default {
         "partially_filled",
         "held",
         "pending",
+        "open",
+        "submitted",
+        "pending_cancel",
       ].includes(status);
     };
 
@@ -644,17 +647,50 @@ export default {
 
       try {
         console.log("Cancelling order:", order.id);
-        // TODO: Implement order cancellation API call
-        // await api.cancelOrder(order.id);
 
-        // For now, just show a message
-        alert(`Order #${order.id} would be cancelled`);
+        // Show confirmation dialog
+        const confirmed = confirm(
+          `Are you sure you want to cancel order #${order.id}?`
+        );
 
-        // Refresh orders after cancellation
-        await fetchOrders();
+        if (!confirmed) {
+          hideContextMenu();
+          return;
+        }
+
+        // Call the API to cancel the order
+        const response = await api.cancelOrder(order.id);
+
+        if (response.success) {
+          console.log("Order cancelled successfully:", response);
+
+          // Show success message
+          alert(`Order #${order.id} has been cancelled successfully`);
+
+          // Refresh orders to show updated status
+          await fetchOrders();
+        } else {
+          console.error("Order cancellation failed:", response);
+          alert(
+            `Failed to cancel order: ${response.message || "Unknown error"}`
+          );
+        }
       } catch (error) {
         console.error("Error cancelling order:", error);
-        alert("Failed to cancel order");
+
+        // Show user-friendly error message
+        let errorMessage = "Failed to cancel order";
+        if (
+          error.response &&
+          error.response.data &&
+          error.response.data.message
+        ) {
+          errorMessage = error.response.data.message;
+        } else if (error.message) {
+          errorMessage = error.message;
+        }
+
+        alert(`Error: ${errorMessage}`);
       } finally {
         hideContextMenu();
       }

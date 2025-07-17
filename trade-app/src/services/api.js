@@ -265,6 +265,17 @@ export const api = {
       throw error;
     }
   },
+
+  // Cancel an order
+  async cancelOrder(orderId) {
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/orders/${orderId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error cancelling order:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;

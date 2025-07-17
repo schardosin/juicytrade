@@ -157,6 +157,12 @@ class ProviderManager:
             return await provider.place_multi_leg_order(order_data)
         return None
 
+    async def cancel_order(self, order_id: str) -> bool:
+        provider = self._get_provider("orders")
+        if provider:
+            return await provider.cancel_order(order_id)
+        return False
+
     async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
         provider = self._get_provider("symbol_lookup")
         if provider:

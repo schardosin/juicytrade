@@ -563,6 +563,25 @@ async def place_multi_leg_order(order_request: MultiLegOrderRequest):
         logger.error(f"Error placing multi-leg order: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.delete("/orders/{order_id}", response_model=ApiResponse)
+async def cancel_order(order_id: str):
+    """Cancel an existing order."""
+    try:
+        logger.info(f"Attempting to cancel order: {order_id}")
+        result = await provider_manager.cancel_order(order_id)
+        
+        if result:
+            return ApiResponse(
+                success=True,
+                data={"order_id": order_id, "status": "cancelled"},
+                message=f"Order {order_id} cancelled successfully"
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Failed to cancel order {order_id}")
+    except Exception as e:
+        logger.error(f"Error cancelling order {order_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # === Streaming Endpoints ===
 
 @app.post("/subscribe/stocks", response_model=ApiResponse)
