@@ -34,8 +34,15 @@
               :symbol="currentSymbol"
               :underlyingPrice="currentPrice"
               :selectedOptions="selectedOptions"
+              :expirationDates="expirationDates"
+              :optionsDataByExpiration="optionsDataByExpiration"
+              :loading="optionsChainLoading"
+              :error="optionsChainError"
               @option-selected="onOptionSelected"
               @option-deselected="onOptionDeselected"
+              @expiration-expanded="onExpirationExpanded"
+              @expiration-collapsed="onExpirationCollapsed"
+              @strike-count-changed="onStrikeCountChanged"
             />
           </div>
         </div>
@@ -149,11 +156,15 @@ export default {
     const selectedExpiry = ref(null);
     const expirationDates = ref([]);
     const optionsChainData = ref([]);
+    const optionsDataByExpiration = ref({});
+    const optionsChainLoading = ref(false);
+    const optionsChainError = ref(null);
     const selectedOptions = ref([]);
     const chartData = ref(null);
     const selectedTradeMode = ref("options");
     const isRightPanelExpanded = ref(false);
     const showBottomPanel = ref(false);
+    const currentStrikeCount = ref(20);
 
     // Trade modes
     const tradeModes = [
@@ -243,9 +254,16 @@ export default {
 
     const fetchExpirationDates = async (symbol) => {
       try {
+        optionsChainLoading.value = true;
+        optionsChainError.value = null;
+
         const response = await api.getAvailableExpirations(symbol);
 
         if (response && response.length > 0) {
+          // Store raw expiration dates for CollapsibleOptionsChain
+          expirationDates.value = response;
+
+          // Also create formatted dates for backward compatibility
           const dates = response.map((dateStr) => {
             const [year, month, day] = dateStr.split("-").map(Number);
             const date = new Date(Date.UTC(year, month - 1, day));
@@ -266,17 +284,20 @@ export default {
             };
           });
 
-          expirationDates.value = dates;
           if (dates.length > 0) {
             selectedExpiry.value = dates[0].value;
           }
         } else {
           console.warn("No expiration dates returned from API");
           expirationDates.value = [];
+          optionsChainError.value = "No expiration dates available";
         }
       } catch (error) {
         console.error("Error fetching expiration dates from API:", error);
         expirationDates.value = [];
+        optionsChainError.value = "Failed to load expiration dates";
+      } finally {
+        optionsChainLoading.value = false;
       }
     };
 
@@ -337,7 +358,7 @@ export default {
             }
             updateMarketStatus(status);
           } else {
-            // Handle option price updates - only for current symbol's options
+            // Handle option price updates - update both old and new data structures
             const optionIndex = optionsChainData.value.findIndex(
               (o) => o.symbol === data.symbol
             );
@@ -346,17 +367,46 @@ export default {
               const newBid = data.data.bid;
               const newAsk = data.data.ask;
 
-              // Create a new object to ensure reactivity
+              // Update old optionsChainData for backward compatibility
               const updatedOption = {
                 ...optionsChainData.value[optionIndex],
                 bid: newBid,
                 ask: newAsk,
               };
 
-              // Replace the old object with the new one
               const newOptionsData = [...optionsChainData.value];
               newOptionsData[optionIndex] = updatedOption;
               optionsChainData.value = newOptionsData;
+            }
+
+            // Also update optionsDataByExpiration for CollapsibleOptionsChain
+            for (const [expirationDate, optionsData] of Object.entries(
+              optionsDataByExpiration.value
+            )) {
+              const optionIndex = optionsData.findIndex(
+                (o) => o.symbol === data.symbol
+              );
+              if (optionIndex !== -1) {
+                const newBid = data.data.bid;
+                const newAsk = data.data.ask;
+
+                // Create updated option
+                const updatedOption = {
+                  ...optionsData[optionIndex],
+                  bid: newBid,
+                  ask: newAsk,
+                };
+
+                // Update the specific expiration's options data
+                const newExpirationData = [...optionsData];
+                newExpirationData[optionIndex] = updatedOption;
+
+                optionsDataByExpiration.value = {
+                  ...optionsDataByExpiration.value,
+                  [expirationDate]: newExpirationData,
+                };
+                break; // Option found, no need to check other expirations
+              }
             }
           }
         });
@@ -525,6 +575,7 @@ export default {
       // Clear existing data
       clearAllSelections();
       optionsChainData.value = [];
+      optionsDataByExpiration.value = {}; // Clear CollapsibleOptionsChain data
       expirationDates.value = [];
       selectedExpiry.value = null;
 
@@ -594,6 +645,89 @@ export default {
         console.error("Error updating chart data from positions:", error);
         console.error("Error details:", error.stack);
       }
+    };
+
+    // CollapsibleOptionsChain event handlers
+    const onExpirationExpanded = async (expirationDate) => {
+      console.log("Expiration expanded:", expirationDate);
+
+      // Load options data for this expiration if not already loaded
+      if (!optionsDataByExpiration.value[expirationDate]) {
+        try {
+          // Set loading state for this specific expiration
+          optionsDataByExpiration.value = {
+            ...optionsDataByExpiration.value,
+            [expirationDate]: [], // Empty array to indicate loading
+          };
+
+          const chain = await api.getOptionsChainBasic(
+            currentSymbol.value,
+            expirationDate,
+            currentPrice.value,
+            currentStrikeCount.value
+          );
+
+          if (chain && chain.length > 0) {
+            const processedChain = chain.map((option) => ({
+              ...option,
+              strike_price: parseFloat(option.strike_price),
+              bid: parseFloat(option.bid || option.close_price || 0),
+              ask: parseFloat(option.ask || option.close_price || 0),
+            }));
+
+            // Store the options data for this expiration
+            optionsDataByExpiration.value = {
+              ...optionsDataByExpiration.value,
+              [expirationDate]: processedChain,
+            };
+
+            // Subscribe to options for this expiration
+            const optionSymbols = processedChain.map((option) => option.symbol);
+            webSocketClient.replaceAllSubscriptions(
+              currentSymbol.value,
+              optionSymbols
+            );
+          } else {
+            // No options found, set empty array
+            optionsDataByExpiration.value = {
+              ...optionsDataByExpiration.value,
+              [expirationDate]: [],
+            };
+          }
+        } catch (error) {
+          console.error("Error loading options for expiration:", error);
+          // Set empty array on error
+          optionsDataByExpiration.value = {
+            ...optionsDataByExpiration.value,
+            [expirationDate]: [],
+          };
+        }
+      } else {
+        // Options already loaded, just subscribe to them
+        const optionSymbols = optionsDataByExpiration.value[expirationDate].map(
+          (option) => option.symbol
+        );
+        webSocketClient.replaceAllSubscriptions(
+          currentSymbol.value,
+          optionSymbols
+        );
+      }
+    };
+
+    const onExpirationCollapsed = (expirationDate) => {
+      console.log("Expiration collapsed:", expirationDate);
+
+      // Clear options subscriptions, keep only underlying
+      webSocketClient.replaceAllSubscriptions(currentSymbol.value, []);
+    };
+
+    const onStrikeCountChanged = (newStrikeCount) => {
+      console.log("Strike count changed:", newStrikeCount);
+      currentStrikeCount.value = newStrikeCount;
+
+      // Reload options data for all expanded expirations with new strike count
+      // For now, we'll clear the data and let it reload when expanded again
+      optionsDataByExpiration.value = {};
     };
 
     // Additional quote data for the right panel
@@ -723,7 +857,15 @@ export default {
       onTradeModeChanged,
       onRightPanelCollapsed,
       onPositionsChanged,
+      onExpirationExpanded,
+      onExpirationCollapsed,
+      onStrikeCountChanged,
       additionalQuoteData,
+
+      // New props for CollapsibleOptionsChain
+      optionsDataByExpiration,
+      optionsChainLoading,
+      optionsChainError,
 
       // Order management
       showOrderConfirmation,

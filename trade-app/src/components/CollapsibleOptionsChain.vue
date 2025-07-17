@@ -243,10 +243,7 @@
 </template>
 
 <script>
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
-import api from "../services/api";
-import webSocketClient from "../services/webSocketClient";
-import { greeksCache, performanceTracker } from "../services/greeksCache";
+import { ref, computed } from "vue";
 
 export default {
   name: "CollapsibleOptionsChain",
@@ -263,226 +260,97 @@ export default {
       type: Array,
       default: () => [],
     },
+    expirationDates: {
+      type: Array,
+      default: () => [],
+    },
+    optionsDataByExpiration: {
+      type: Object,
+      default: () => ({}),
+    },
+    loading: {
+      type: Boolean,
+      default: false,
+    },
+    error: {
+      type: String,
+      default: null,
+    },
   },
-  emits: ["option-selected", "option-deselected"],
+  emits: [
+    "option-selected",
+    "option-deselected",
+    "expiration-expanded",
+    "expiration-collapsed",
+    "strike-count-changed",
+  ],
   setup(props, { emit }) {
     // Reactive state
-    const loading = ref(false);
-    const error = ref(null);
-    const expirationGroups = ref([]);
     const strikeCount = ref(20); // Default to 20 strikes around ATM
+    const expandedExpirations = ref(new Set());
 
     // Computed properties
+    const expirationGroups = computed(() => {
+      return props.expirationDates.map((dateStr) => {
+        const [year, month, day] = dateStr.split("-").map(Number);
+        const date = new Date(Date.UTC(year, month - 1, day));
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+
+        // Calculate days to expiry
+        const timeDiff = date.getTime() - today.getTime();
+        const daysToExpiry = Math.max(
+          0,
+          Math.ceil(timeDiff / (1000 * 60 * 60 * 24))
+        );
+
+        const optionsData = props.optionsDataByExpiration[dateStr] || [];
+        const hasLoaded = optionsData.length > 0;
+        const isLoading = expandedExpirations.value.has(dateStr) && !hasLoaded;
+
+        return {
+          date: dateStr,
+          label: date.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+            year:
+              date.getUTCFullYear() !== today.getFullYear()
+                ? "numeric"
+                : undefined,
+            timeZone: "UTC",
+          }),
+          daysToExpiry,
+          isExpanded: expandedExpirations.value.has(dateStr),
+          isLoading,
+          hasLoaded,
+          optionsData,
+          // Static IV data to avoid unnecessary re-renders
+          ivData: {
+            rank: 45.2,
+            change: 2.1,
+            current: 18.7,
+          },
+        };
+      });
+    });
+
     const hasExpandedExpirations = computed(() => {
-      return expirationGroups.value.some((exp) => exp.isExpanded);
+      return expandedExpirations.value.size > 0;
     });
 
     // Methods
-    const loadExpirationDates = async () => {
-      if (!props.symbol) return;
-
-      try {
-        loading.value = true;
-        error.value = null;
-
-        const dates = await api.getAvailableExpirations(props.symbol);
-
-        if (dates && dates.length > 0) {
-          expirationGroups.value = dates.map((dateStr) => {
-            const [year, month, day] = dateStr.split("-").map(Number);
-            const date = new Date(Date.UTC(year, month - 1, day));
-            const today = new Date();
-            today.setHours(0, 0, 0, 0);
-
-            // Calculate days to expiry
-            const timeDiff = date.getTime() - today.getTime();
-            const daysToExpiry = Math.max(
-              0,
-              Math.ceil(timeDiff / (1000 * 60 * 60 * 24))
-            );
-
-            return {
-              date: dateStr,
-              label: date.toLocaleDateString("en-US", {
-                month: "short",
-                day: "numeric",
-                year:
-                  date.getUTCFullYear() !== today.getFullYear()
-                    ? "numeric"
-                    : undefined,
-                timeZone: "UTC",
-              }),
-              daysToExpiry,
-              isExpanded: false,
-              isLoading: false,
-              hasLoaded: false,
-              optionsData: [],
-              subscriptionActive: false,
-              // Mock IV data - will be replaced with real data later
-              ivData: {
-                rank: Math.random() * 100,
-                change: (Math.random() - 0.5) * 10,
-                current: Math.random() * 30 + 10,
-              },
-            };
-          });
-        } else {
-          error.value = "No expiration dates available";
-        }
-      } catch (err) {
-        console.error("Error loading expiration dates:", err);
-        error.value = "Failed to load expiration dates";
-      } finally {
-        loading.value = false;
-      }
-    };
-
-    const toggleExpiration = async (expiration) => {
+    const toggleExpiration = (expiration) => {
       const wasExpanded = expiration.isExpanded;
 
-      // Toggle the expanded state
-      expiration.isExpanded = !expiration.isExpanded;
-
-      if (expiration.isExpanded && !expiration.hasLoaded) {
-        // Load options data for this expiration
-        await loadOptionsForExpiration(expiration);
+      if (wasExpanded) {
+        // Collapse expiration
+        expandedExpirations.value.delete(expiration.date);
+        emit("expiration-collapsed", expiration.date);
+      } else {
+        // Expand expiration
+        expandedExpirations.value.add(expiration.date);
+        emit("expiration-expanded", expiration.date);
       }
-
-      // Manage WebSocket subscriptions
-      if (expiration.isExpanded && expiration.hasLoaded) {
-        await subscribeToExpiration(expiration);
-      } else if (wasExpanded) {
-        await unsubscribeFromExpiration(expiration);
-      }
-    };
-
-    const loadOptionsForExpiration = async (expiration) => {
-      try {
-        expiration.isLoading = true;
-        const totalTimer = performanceTracker.startTimer("total");
-
-        // Phase 1: Fast basic data load (no Greeks)
-        const basicTimer = performanceTracker.startTimer("basic");
-        const basicData = await api.getOptionsChainBasic(
-          props.symbol,
-          expiration.date,
-          props.underlyingPrice,
-          strikeCount.value // Use configurable strike count
-        );
-        performanceTracker.endTimer("basic", basicTimer);
-
-        if (basicData && basicData.length > 0) {
-          // Immediately show basic data
-          expiration.optionsData = basicData.map((option) => ({
-            ...option,
-            strike_price: parseFloat(option.strike_price),
-            bid: parseFloat(option.bid || option.close_price || 0),
-            ask: parseFloat(option.ask || option.close_price || 0),
-            // Greeks are null initially (will be loaded in background)
-            delta: null,
-            theta: null,
-            gamma: null,
-            vega: null,
-            greeksLoading: true,
-          }));
-
-          expiration.hasLoaded = true;
-          expiration.isLoading = false;
-          performanceTracker.endTimer("total", totalTimer);
-
-          // Phase 2: Load Greeks in background (non-blocking)
-          requestIdleCallback(async () => {
-            await loadGreeksForExpiration(expiration);
-          });
-        } else {
-          expiration.optionsData = [];
-          expiration.hasLoaded = true;
-          expiration.isLoading = false;
-          performanceTracker.endTimer("total", totalTimer);
-        }
-      } catch (err) {
-        console.error(`Error loading options for ${expiration.date}:`, err);
-        expiration.optionsData = [];
-        expiration.hasLoaded = true;
-        expiration.isLoading = false;
-      }
-    };
-
-    const loadGreeksForExpiration = async (expiration) => {
-      const visibleOptions = getVisibleOptions(expiration);
-      const optionSymbols = visibleOptions.map((opt) => opt.symbol);
-
-      if (optionSymbols.length === 0) return;
-
-      try {
-        const greeksTimer = performanceTracker.startTimer("greeks");
-
-        // Check cache first
-        const { cached, missing } = greeksCache.getBatch(optionSymbols);
-
-        // Apply cached Greeks
-        Object.entries(cached).forEach(([symbol, greeks]) => {
-          updateOptionGreeks(expiration, symbol, greeks);
-        });
-
-        // Load missing Greeks
-        if (missing.length > 0) {
-          const newGreeks = await api.getOptionsGreeks(missing);
-
-          // Cache and apply new Greeks
-          Object.entries(newGreeks).forEach(([symbol, greeks]) => {
-            greeksCache.set(symbol, greeks);
-            updateOptionGreeks(expiration, symbol, greeks);
-          });
-        }
-
-        performanceTracker.endTimer("greeks", greeksTimer);
-        console.log(
-          `✅ Greeks loaded for ${expiration.date}: ${
-            Object.keys(cached).length
-          } cached, ${missing.length} fetched`
-        );
-      } catch (err) {
-        console.error("Error loading Greeks:", err);
-      }
-    };
-
-    const getVisibleOptions = (expiration) => {
-      // For now, return all options. Later we can implement scroll-aware loading
-      return expiration.optionsData || [];
-    };
-
-    const updateOptionGreeks = (expiration, symbol, greeks) => {
-      const optionIndex = expiration.optionsData.findIndex(
-        (opt) => opt.symbol === symbol
-      );
-
-      if (optionIndex !== -1) {
-        // Create a new object to ensure reactivity
-        const updatedOption = {
-          ...expiration.optionsData[optionIndex],
-          delta: greeks.delta,
-          theta: greeks.theta,
-          gamma: greeks.gamma,
-          vega: greeks.vega,
-          implied_volatility: greeks.implied_volatility,
-          greeksLoading: false,
-        };
-
-        // Replace the old object with the new one
-        const newOptionsData = [...expiration.optionsData];
-        newOptionsData[optionIndex] = updatedOption;
-        expiration.optionsData = newOptionsData;
-      }
-    };
-
-    const unsubscribeFromExpiration = async (expiration) => {
-      if (!expiration.subscriptionActive) return;
-
-      // TODO: Implement expiration-specific unsubscription
-      // For now, we'll manage this in the enhanced WebSocket client
-      expiration.subscriptionActive = false;
-      console.log(`📊 Unsubscribed from options for ${expiration.date}`);
     };
 
     // Option data methods (similar to original OptionsChain)
@@ -675,141 +543,14 @@ export default {
     };
 
     // Strike count change handler
-    const onStrikeCountChange = async () => {
+    const onStrikeCountChange = () => {
       console.log(`🔄 Strike count changed to: ${strikeCount.value}`);
-
-      // Reload data for all expanded expirations with new strike count
-      for (const expiration of expirationGroups.value) {
-        if (expiration.isExpanded && expiration.hasLoaded) {
-          // Reset the expiration state
-          expiration.hasLoaded = false;
-          expiration.optionsData = [];
-
-          // Reload with new strike count
-          await loadOptionsForExpiration(expiration);
-
-          // Re-subscribe if needed
-          if (expiration.subscriptionActive) {
-            await subscribeToExpiration(expiration);
-          }
-        }
-      }
+      // Emit event to parent to handle strike count change
+      emit("strike-count-changed", strikeCount.value);
     };
-
-    // Watchers
-    watch(
-      () => props.symbol,
-      (newSymbol) => {
-        if (newSymbol) {
-          loadExpirationDates();
-        }
-      },
-      { immediate: true }
-    );
-
-    // Price update handling for WebSocket integration
-    const handleOptionPriceUpdate = (symbol, priceData) => {
-      // Find which expiration contains this option and update it
-      for (const expiration of expirationGroups.value) {
-        if (expiration.hasLoaded && expiration.optionsData.length > 0) {
-          const optionIndex = expiration.optionsData.findIndex(
-            (opt) => opt.symbol === symbol
-          );
-          if (optionIndex !== -1) {
-            // Update the option price while preserving other data
-            const updatedOption = {
-              ...expiration.optionsData[optionIndex],
-              bid: parseFloat(
-                priceData.bid || expiration.optionsData[optionIndex].bid || 0
-              ),
-              ask: parseFloat(
-                priceData.ask || expiration.optionsData[optionIndex].ask || 0
-              ),
-              // Preserve existing Greeks and other data
-            };
-
-            // Replace the option in the array to trigger reactivity
-            const newOptionsData = [...expiration.optionsData];
-            newOptionsData[optionIndex] = updatedOption;
-            expiration.optionsData = newOptionsData;
-
-            // Log price update for debugging (can be removed in production)
-            console.log(
-              `💰 Price update for ${symbol}: bid=${priceData.bid}, ask=${priceData.ask}`
-            );
-            break;
-          }
-        }
-      }
-    };
-
-    // WebSocket price update listener
-    const setupPriceUpdateListener = () => {
-      // Listen for price updates from the WebSocket client
-      if (webSocketClient.onPriceUpdate) {
-        const originalHandler = webSocketClient.onPriceUpdate;
-
-        // Enhance the existing price update handler
-        webSocketClient.onPriceUpdate = (data) => {
-          // Call the original handler first (for underlying price updates)
-          if (originalHandler) {
-            originalHandler(data);
-          }
-
-          // Handle option price updates for our component
-          if (data.symbol && data.symbol !== props.symbol) {
-            // This is likely an option symbol, not the underlying
-            handleOptionPriceUpdate(data.symbol, data.data || data);
-          }
-        };
-      }
-    };
-
-    // Enhanced subscription management
-    const subscribeToExpiration = async (expiration) => {
-      if (expiration.subscriptionActive || !expiration.optionsData.length)
-        return;
-
-      const optionSymbols = expiration.optionsData.map(
-        (option) => option.symbol
-      );
-
-      // Use existing WebSocket method
-      if (webSocketClient.isConnected) {
-        webSocketClient.replaceAllSubscriptions(props.symbol, optionSymbols);
-        expiration.subscriptionActive = true;
-        console.log(
-          `📊 Subscribed to ${optionSymbols.length} options for ${expiration.date}`
-        );
-
-        // Ensure price update listener is set up
-        setupPriceUpdateListener();
-      }
-    };
-
-    // Lifecycle
-    onMounted(() => {
-      if (props.symbol) {
-        loadExpirationDates();
-      }
-
-      // Set up price update listener
-      setupPriceUpdateListener();
-    });
-
-    onUnmounted(() => {
-      // Clean up any active subscriptions
-      expirationGroups.value.forEach((expiration) => {
-        if (expiration.subscriptionActive) {
-          unsubscribeFromExpiration(expiration);
-        }
-      });
-    });
 
     return {
       // State
-      loading,
-      error,
       expirationGroups,
       strikeCount,
 
@@ -1181,7 +922,7 @@ export default {
   padding: var(--spacing-md) var(--spacing-lg);
   width: 100%;
   cursor: pointer;
-  transition: var(--transition-normal);
+  transition: background-color 0.1s ease;
 }
 
 .option-data:hover:not(.empty) {
