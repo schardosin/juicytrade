@@ -77,15 +77,6 @@
       @clear-selections="clearAllSelections"
     />
 
-    <!-- Order Result Dialog -->
-    <OrderResultDialog
-      :visible="showOrderResult"
-      :orderResult="orderResult"
-      @hide="handleOrderResultClose"
-      @close="handleOrderResultClose"
-      @viewPositions="handleOrderResultClose"
-    />
-
     <!-- Bottom Trading Panel -->
     <BottomTradingPanel
       :visible="showBottomPanel"
@@ -105,13 +96,10 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
-import OptionsChain from "../components/OptionsChain.vue";
 import CollapsibleOptionsChain from "../components/CollapsibleOptionsChain.vue";
-import OrderTicket from "../components/OrderTicket.vue";
 import PayoffChart from "../components/PayoffChart.vue";
 import BottomTradingPanel from "../components/BottomTradingPanel.vue";
 import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
-import OrderResultDialog from "../components/OrderResultDialog.vue";
 import RightPanel from "../components/RightPanel.vue";
 import { useOrderManagement } from "../composables/useOrderManagement";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
@@ -126,13 +114,10 @@ export default {
     TopBar,
     SideNav,
     SymbolHeader,
-    OptionsChain,
     CollapsibleOptionsChain,
-    OrderTicket,
     PayoffChart,
     BottomTradingPanel,
     OrderConfirmationDialog,
-    OrderResultDialog,
     RightPanel,
   },
   setup() {

@@ -1,12 +1,19 @@
 <template>
   <div id="app">
     <router-view />
+    <!-- Global Notification Container -->
+    <NotificationContainer />
   </div>
 </template>
 
 <script>
+import NotificationContainer from "./components/notifications/NotificationContainer.vue";
+
 export default {
   name: "App",
+  components: {
+    NotificationContainer,
+  },
 };
 </script>
 

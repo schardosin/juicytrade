@@ -1,5 +1,6 @@
 import { ref, computed } from "vue";
 import orderService from "../services/orderService";
+import notificationService from "../services/notificationService";
 
 /**
  * Order Management Composable
@@ -41,28 +42,49 @@ export function useOrderManagement() {
       // Validate order before submission
       const validation = orderService.validateOrder(confirmedOrderData);
       if (!validation.isValid) {
-        orderResult.value = {
-          success: false,
-          error: "Validation failed",
-          message: `Order validation failed: ${validation.errors.join(", ")}`,
-          details: { validationErrors: validation.errors },
-        };
-        showOrderResult.value = true;
+        // Show validation error notification
+        notificationService.showError(
+          `Order validation failed: ${validation.errors.join(", ")}`,
+          "Validation Error"
+        );
         return;
       }
 
       // Place the order
       const result = await orderService.placeOrder(confirmedOrderData);
-      orderResult.value = result;
-      showOrderResult.value = true;
+
+      if (result.success) {
+        // Show success notification
+        notificationService.showSuccess(
+          result.message || "Order placed successfully!",
+          "Order Success"
+        );
+
+        // Store result for any components that might need it
+        orderResult.value = result;
+      } else {
+        // Show error notification
+        notificationService.showError(
+          result.message || "Order submission failed",
+          "Order Failed"
+        );
+
+        orderResult.value = result;
+      }
     } catch (error) {
       console.error("Error in order confirmation:", error);
+
+      // Show error notification
+      notificationService.showError(
+        `Order submission failed: ${error.message}`,
+        "Order Error"
+      );
+
       orderResult.value = {
         success: false,
         error: error.message,
         message: `Order submission failed: ${error.message}`,
       };
-      showOrderResult.value = true;
     } finally {
       isPlacingOrder.value = false;
     }

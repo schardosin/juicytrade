@@ -200,6 +200,7 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import api from "../services/api";
 import { detectStrategy } from "../utils/optionsStrategies";
+import notificationService from "../services/notificationService";
 
 export default {
   name: "ActivitySection",
@@ -647,16 +648,7 @@ export default {
 
       try {
         console.log("Cancelling order:", order.id);
-
-        // Show confirmation dialog
-        const confirmed = confirm(
-          `Are you sure you want to cancel order #${order.id}?`
-        );
-
-        if (!confirmed) {
-          hideContextMenu();
-          return;
-        }
+        hideContextMenu();
 
         // Call the API to cancel the order
         const response = await api.cancelOrder(order.id);
@@ -664,21 +656,27 @@ export default {
         if (response.success) {
           console.log("Order cancelled successfully:", response);
 
-          // Show success message
-          alert(`Order #${order.id} has been cancelled successfully`);
+          // Show success notification
+          notificationService.showSuccess(
+            `Order #${order.id} has been cancelled successfully`,
+            "Order Cancelled"
+          );
 
           // Refresh orders to show updated status
           await fetchOrders();
         } else {
           console.error("Order cancellation failed:", response);
-          alert(
-            `Failed to cancel order: ${response.message || "Unknown error"}`
+
+          // Show error notification
+          notificationService.showError(
+            response.message || "Unknown error occurred",
+            "Cancellation Failed"
           );
         }
       } catch (error) {
         console.error("Error cancelling order:", error);
 
-        // Show user-friendly error message
+        // Show user-friendly error notification
         let errorMessage = "Failed to cancel order";
         if (
           error.response &&
@@ -690,7 +688,7 @@ export default {
           errorMessage = error.message;
         }
 
-        alert(`Error: ${errorMessage}`);
+        notificationService.showError(errorMessage, "Cancellation Error");
       } finally {
         hideContextMenu();
       }
@@ -794,7 +792,10 @@ export default {
         .map((s) => `${s.quantity} ${s.symbol} ${s.side.toUpperCase()}`)
         .join(", ");
 
-      alert(`Would select: ${selectionText}`);
+      notificationService.showInfo(
+        `Would select: ${selectionText}`,
+        "Order Selection"
+      );
     };
 
     // Watch for symbol changes
