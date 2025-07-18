@@ -286,7 +286,7 @@ export default {
         let apiStatus = status || selectedStatus.value;
         switch (apiStatus) {
           case "working":
-            apiStatus = "open";
+            apiStatus = "pending";
             break;
           case "canceled":
             apiStatus = "canceled";

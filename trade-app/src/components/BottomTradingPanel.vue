@@ -271,17 +271,27 @@ export default {
     const priceLocked = ref(false);
 
     const getOptionPrice = (selection, priceType) => {
-      const option = optionsData.value.find(
+      // First try to find in the passed optionsData (for backward compatibility)
+      let option = optionsData.value.find(
         (opt) => opt.symbol === selection.symbol
       );
+
+      // If not found and we have access to the parent's flattened data, try that
+      if (!option && props.flattenedOptionsData) {
+        option = props.flattenedOptionsData.find(
+          (opt) => opt.symbol === selection.symbol
+        );
+      }
+
       if (!option) return 0;
 
-      if (priceType === "bid") return option.bid;
-      if (priceType === "ask") return option.ask;
-      if (priceType === "mid") return (option.bid + option.ask) / 2;
+      if (priceType === "bid") return option.bid || 0;
+      if (priceType === "ask") return option.ask || 0;
+      if (priceType === "mid")
+        return ((option.bid || 0) + (option.ask || 0)) / 2;
 
       // Default to natural price for the side
-      return selection.side === "buy" ? option.ask : option.bid;
+      return selection.side === "buy" ? option.ask || 0 : option.bid || 0;
     };
 
     const netPremium = computed(() => {

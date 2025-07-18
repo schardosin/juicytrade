@@ -87,6 +87,52 @@ class PublicProvider(BaseProvider):
 
     async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
         raise NotImplementedError("get_options_chain is not implemented for PublicProvider")
+    
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
+        """
+        Get basic options chain (no Greeks) for fast loading, ATM-focused.
+        
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date in YYYY-MM-DD format
+            underlying_price: Current underlying price for ATM filtering
+            strike_count: Number of strikes around ATM to include (default 20)
+            
+        Returns:
+            List of OptionContract objects without Greeks
+        """
+        raise NotImplementedError("get_options_chain_basic is not implemented for PublicProvider")
+    
+    async def get_options_chain_smart(self, symbol: str, expiry: str, underlying_price: float = None, 
+                                   atm_range: int = 20, include_greeks: bool = False, 
+                                   strikes_only: bool = False) -> List[OptionContract]:
+        """
+        Get smart options chain with configurable loading.
+        
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date in YYYY-MM-DD format
+            underlying_price: Current underlying price for ATM filtering
+            atm_range: Range around ATM to include
+            include_greeks: Whether to include Greeks calculation
+            strikes_only: Whether to return only strike information
+            
+        Returns:
+            List of OptionContract objects
+        """
+        raise NotImplementedError("get_options_chain_smart is not implemented for PublicProvider")
+    
+    async def get_options_greeks_batch(self, option_symbols: List[str]) -> Dict[str, Dict]:
+        """
+        Get Greeks for multiple option symbols in batch.
+        
+        Args:
+            option_symbols: List of option symbols
+            
+        Returns:
+            Dictionary mapping option symbols to Greeks data
+        """
+        raise NotImplementedError("get_options_greeks_batch is not implemented for PublicProvider")
 
     async def get_next_market_date(self) -> str:
         raise NotImplementedError("get_next_market_date is not implemented for PublicProvider")
@@ -96,6 +142,34 @@ class PublicProvider(BaseProvider):
 
     async def get_orders(self, status: str = "open") -> List[Order]:
         raise NotImplementedError("get_orders is not implemented for PublicProvider")
+    
+    async def get_account(self) -> Optional['Account']:
+        """
+        Get account information including balance and buying power.
+        
+        Returns:
+            Account object with account details or None if not available
+        """
+        raise NotImplementedError("get_account is not implemented for PublicProvider")
+    
+    async def get_historical_bars(self, symbol: str, timeframe: str, 
+                                start_date: str = None, end_date: str = None, 
+                                limit: int = 500) -> List[Dict[str, Any]]:
+        """
+        Get historical OHLCV bars for charting.
+        
+        Args:
+            symbol: Stock symbol (e.g., "AAPL")
+            timeframe: Time interval ("1m", "5m", "15m", "30m", "1h", "4h", "D", "W", "M")
+            start_date: Start date in YYYY-MM-DD format (optional)
+            end_date: End date in YYYY-MM-DD format (optional)
+            limit: Maximum number of bars to return (default 500)
+            
+        Returns:
+            List of OHLCV dictionaries in Lightweight Charts format:
+            [{"time": "2024-01-15", "open": 150.25, "high": 152.80, "low": 149.90, "close": 151.45, "volume": 1234567}]
+        """
+        raise NotImplementedError("get_historical_bars is not implemented for PublicProvider")
 
     async def place_order(self, order_data: Dict[str, Any]) -> Order:
         raise NotImplementedError("place_order is not implemented for PublicProvider")
@@ -117,7 +191,7 @@ class PublicProvider(BaseProvider):
         self._log_info("Streaming is not supported by PublicProvider.")
         return False
 
-    async def unsubscribe_from_symbols(self, symbols: List[str]) -> bool:
+    async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         return True
 
     async def get_streaming_data(self) -> Optional[MarketData]:

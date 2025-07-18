@@ -420,6 +420,198 @@ class AlpacaProvider(BaseProvider):
             self._log_error(f"get_options_chain for {symbol} {expiry}", e)
             return []
     
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
+        """
+        Get basic options chain (no Greeks) for fast loading, ATM-focused.
+        
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date in YYYY-MM-DD format
+            underlying_price: Current underlying price for ATM filtering
+            strike_count: Number of strikes around ATM to include (default 20)
+            
+        Returns:
+            List of OptionContract objects without Greeks
+        """
+        try:
+            # Get full options chain first
+            all_contracts = await self.get_options_chain(symbol, expiry)
+            
+            if not all_contracts:
+                return []
+            
+            # If no underlying price provided, try to get current stock quote
+            if underlying_price is None:
+                stock_quote = await self.get_stock_quote(symbol)
+                if stock_quote and stock_quote.bid and stock_quote.ask:
+                    underlying_price = (stock_quote.bid + stock_quote.ask) / 2
+                else:
+                    # Fallback: use middle strike as approximation
+                    strikes = [c.strike_price for c in all_contracts if c.strike_price]
+                    if strikes:
+                        underlying_price = sorted(strikes)[len(strikes) // 2]
+                    else:
+                        # Return all contracts if we can't determine ATM
+                        return all_contracts
+            
+            # Sort contracts by distance from ATM
+            def distance_from_atm(contract):
+                return abs(contract.strike_price - underlying_price)
+            
+            # Separate calls and puts
+            calls = [c for c in all_contracts if c.type.lower() == 'call']
+            puts = [c for c in all_contracts if c.type.lower() == 'put']
+            
+            # Sort each by distance from ATM
+            calls.sort(key=distance_from_atm)
+            puts.sort(key=distance_from_atm)
+            
+            # Take the closest strikes for each type
+            strikes_per_side = strike_count // 2
+            selected_calls = calls[:strikes_per_side]
+            selected_puts = puts[:strikes_per_side]
+            
+            # Combine and sort by strike price
+            result = selected_calls + selected_puts
+            result.sort(key=lambda x: x.strike_price)
+            
+            self._log_info(f"Basic options chain for {symbol} {expiry}: {len(result)} contracts around ATM ${underlying_price:.2f}")
+            return result
+            
+        except Exception as e:
+            self._log_error(f"get_options_chain_basic for {symbol} {expiry}", e)
+            return []
+    
+    async def get_options_chain_smart(self, symbol: str, expiry: str, underlying_price: float = None, 
+                                   atm_range: int = 20, include_greeks: bool = False, 
+                                   strikes_only: bool = False) -> List[OptionContract]:
+        """
+        Get smart options chain with configurable loading.
+        
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date in YYYY-MM-DD format
+            underlying_price: Current underlying price for ATM filtering
+            atm_range: Range around ATM to include
+            include_greeks: Whether to include Greeks calculation
+            strikes_only: Whether to return only strike information
+            
+        Returns:
+            List of OptionContract objects
+        """
+        try:
+            if strikes_only:
+                # For strikes only, we can use a more efficient approach
+                return await self.get_options_chain_basic(symbol, expiry, underlying_price, atm_range)
+            
+            # Get basic chain first
+            contracts = await self.get_options_chain_basic(symbol, expiry, underlying_price, atm_range)
+            
+            if not contracts:
+                return []
+            
+            # If Greeks are requested, fetch them in batch
+            if include_greeks:
+                option_symbols = [c.symbol for c in contracts if c.symbol]
+                if option_symbols:
+                    greeks_data = await self.get_options_greeks_batch(option_symbols)
+                    
+                    # Update contracts with Greeks data
+                    for contract in contracts:
+                        if contract.symbol in greeks_data:
+                            greeks = greeks_data[contract.symbol]
+                            contract.delta = greeks.get('delta')
+                            contract.gamma = greeks.get('gamma')
+                            contract.theta = greeks.get('theta')
+                            contract.vega = greeks.get('vega')
+                            contract.implied_volatility = greeks.get('implied_volatility')
+            
+            self._log_info(f"Smart options chain for {symbol} {expiry}: {len(contracts)} contracts, Greeks: {include_greeks}")
+            return contracts
+            
+        except Exception as e:
+            self._log_error(f"get_options_chain_smart for {symbol} {expiry}", e)
+            return []
+    
+    async def get_options_greeks_batch(self, option_symbols: List[str]) -> Dict[str, Dict]:
+        """
+        Get Greeks for multiple option symbols in batch.
+        
+        Args:
+            option_symbols: List of option symbols
+            
+        Returns:
+            Dictionary mapping option symbols to Greeks data
+        """
+        try:
+            if not option_symbols:
+                return {}
+            
+            # Alpaca doesn't have a dedicated Greeks endpoint, so we'll use the snapshots endpoint
+            # which sometimes includes Greeks data
+            url = f"{self.data_url}/v1beta1/options/snapshots"
+            api_key, api_secret = self._get_api_credentials()
+            
+            # Process in batches of 100 (API limit)
+            batch_size = 100
+            all_greeks = {}
+            
+            for i in range(0, len(option_symbols), batch_size):
+                batch_symbols = option_symbols[i:i + batch_size]
+                symbols_param = ",".join(batch_symbols)
+                
+                params = {
+                    "symbols": symbols_param
+                }
+                headers = {
+                    "APCA-API-KEY-ID": api_key,
+                    "APCA-API-SECRET-KEY": api_secret,
+                    "accept": "application/json"
+                }
+                
+                response = requests.get(url, headers=headers, params=params)
+                
+                if response.status_code == 200:
+                    data = response.json()
+                    snapshots = data.get("snapshots", {})
+                    
+                    for symbol, snapshot in snapshots.items():
+                        if snapshot:
+                            # Extract Greeks if available
+                            greeks_data = {}
+                            
+                            # Alpaca snapshot format may include Greeks
+                            if 'greeks' in snapshot:
+                                greeks = snapshot['greeks']
+                                greeks_data = {
+                                    'delta': float(greeks.get('delta', 0)) if greeks.get('delta') else None,
+                                    'gamma': float(greeks.get('gamma', 0)) if greeks.get('gamma') else None,
+                                    'theta': float(greeks.get('theta', 0)) if greeks.get('theta') else None,
+                                    'vega': float(greeks.get('vega', 0)) if greeks.get('vega') else None,
+                                    'implied_volatility': float(greeks.get('implied_volatility', 0)) if greeks.get('implied_volatility') else None
+                                }
+                            else:
+                                # If no Greeks in snapshot, return empty dict for this symbol
+                                greeks_data = {
+                                    'delta': None,
+                                    'gamma': None,
+                                    'theta': None,
+                                    'vega': None,
+                                    'implied_volatility': None
+                                }
+                            
+                            all_greeks[symbol] = greeks_data
+                else:
+                    self._log_error(f"get_options_greeks_batch API call", 
+                                  Exception(f"HTTP {response.status_code}: {response.text}"))
+            
+            self._log_info(f"Retrieved Greeks for {len(all_greeks)} option symbols")
+            return all_greeks
+            
+        except Exception as e:
+            self._log_error(f"get_options_greeks_batch for {len(option_symbols)} symbols", e)
+            return {}
+    
     async def get_next_market_date(self) -> str:
         """Get next market trading date."""
         try:

@@ -34,10 +34,10 @@
               :symbol="currentSymbol"
               :underlyingPrice="currentPrice"
               :selectedOptions="selectedOptions"
-              :expirationDates="expirationDates"
-              :optionsDataByExpiration="optionsDataByExpiration"
-              :loading="optionsChainLoading"
-              :error="optionsChainError"
+              :expirationDates="optionsManager.expirationDates.value"
+              :optionsDataByExpiration="optionsManager.dataByExpiration.value"
+              :loading="optionsManager.loading.value"
+              :error="optionsManager.error.value"
               @option-selected="onOptionSelected"
               @option-deselected="onOptionDeselected"
               @expiration-expanded="onExpirationExpanded"
@@ -57,7 +57,7 @@
         :selectedOptions="selectedOptions"
         :chartData="chartData"
         :additionalQuoteData="additionalQuoteData"
-        :optionsChainData="optionsChainData"
+        :optionsChainData="optionsManager.flattenedData.value"
         :forceExpanded="isRightPanelExpanded"
         :forceSection="rightPanelSection"
         @panel-collapsed="onRightPanelCollapsed"
@@ -90,7 +90,7 @@
     <BottomTradingPanel
       :visible="showBottomPanel"
       :selectedOptions="selectedOptions"
-      :optionsData="optionsChainData"
+      :optionsData="optionsManager.flattenedData.value"
       :symbol="currentSymbol"
       :underlyingPrice="currentPrice"
       @clear-trade="clearAllSelections"
@@ -115,6 +115,7 @@ import OrderResultDialog from "../components/OrderResultDialog.vue";
 import RightPanel from "../components/RightPanel.vue";
 import { useOrderManagement } from "../composables/useOrderManagement";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
+import { useOptionsChainManager } from "../composables/useOptionsChainManager";
 import api from "../services/api";
 import webSocketClient from "../services/webSocketClient";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
@@ -152,19 +153,28 @@ export default {
     const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
       useGlobalSymbol();
 
+    // Use centralized options chain manager
+    const optionsManager = useOptionsChainManager(
+      computed(() => globalSymbolState.currentSymbol),
+      computed(() => globalSymbolState.currentPrice),
+      20 // default strike count
+    );
+
     // Local reactive data (non-symbol related)
     const selectedExpiry = ref(null);
-    const expirationDates = ref([]);
-    const optionsChainData = ref([]);
-    const optionsDataByExpiration = ref({});
-    const optionsChainLoading = ref(false);
-    const optionsChainError = ref(null);
     const selectedOptions = ref([]);
     const chartData = ref(null);
     const selectedTradeMode = ref("options");
     const isRightPanelExpanded = ref(false);
     const showBottomPanel = ref(false);
     const currentStrikeCount = ref(20);
+
+    // Legacy data for backward compatibility (will be removed gradually)
+    const optionsChainData = ref([]);
+    const optionsDataByExpiration = ref({});
+    const expirationDates = ref([]);
+    const optionsChainLoading = ref(false);
+    const optionsChainError = ref(null);
 
     // Trade modes
     const tradeModes = [
@@ -358,56 +368,11 @@ export default {
             }
             updateMarketStatus(status);
           } else {
-            // Handle option price updates - update both old and new data structures
-            const optionIndex = optionsChainData.value.findIndex(
-              (o) => o.symbol === data.symbol
-            );
-            if (optionIndex !== -1) {
-              //console.log(`Updating price for ${data.symbol}:`, data.data);
-              const newBid = data.data.bid;
-              const newAsk = data.data.ask;
-
-              // Update old optionsChainData for backward compatibility
-              const updatedOption = {
-                ...optionsChainData.value[optionIndex],
-                bid: newBid,
-                ask: newAsk,
-              };
-
-              const newOptionsData = [...optionsChainData.value];
-              newOptionsData[optionIndex] = updatedOption;
-              optionsChainData.value = newOptionsData;
-            }
-
-            // Also update optionsDataByExpiration for CollapsibleOptionsChain
-            for (const [expirationDate, optionsData] of Object.entries(
-              optionsDataByExpiration.value
-            )) {
-              const optionIndex = optionsData.findIndex(
-                (o) => o.symbol === data.symbol
-              );
-              if (optionIndex !== -1) {
-                const newBid = data.data.bid;
-                const newAsk = data.data.ask;
-
-                // Create updated option
-                const updatedOption = {
-                  ...optionsData[optionIndex],
-                  bid: newBid,
-                  ask: newAsk,
-                };
-
-                // Update the specific expiration's options data
-                const newExpirationData = [...optionsData];
-                newExpirationData[optionIndex] = updatedOption;
-
-                optionsDataByExpiration.value = {
-                  ...optionsDataByExpiration.value,
-                  [expirationDate]: newExpirationData,
-                };
-                break; // Option found, no need to check other expirations
-              }
-            }
+            // Handle option price updates using centralized manager
+            optionsManager.updateOptionPrice(data.symbol, {
+              bid: data.data?.bid,
+              ask: data.data?.ask,
+            });
           }
         });
       } catch (error) {
@@ -443,10 +408,12 @@ export default {
         (sel) => sel.symbol === optionSelection.symbol
       );
 
-      // Add expiry date to the selection
+      // The optionSelection already contains the correct expiry from CollapsibleOptionsChain
+      // Don't override it with selectedExpiry.value which is from the old single-expiration system
       const selectionWithExpiry = {
         ...optionSelection,
-        expiry: selectedExpiry.value,
+        // Keep the expiry that came from the selection (from the correct expiration group)
+        expiry: optionSelection.expiry || optionSelection.expiration_date,
       };
 
       if (existingIndex >= 0) {
@@ -460,7 +427,6 @@ export default {
       // Force show bottom panel and expand right panel
       showBottomPanel.value = true;
       isRightPanelExpanded.value = true;
-      updateChartData();
     };
 
     const onOptionDeselected = (symbol) => {
@@ -469,7 +435,6 @@ export default {
       );
       if (index >= 0) {
         selectedOptions.value.splice(index, 1);
-        updateChartData();
 
         // Auto-hide panel if no options left
         if (selectedOptions.value.length === 0) {
@@ -486,55 +451,83 @@ export default {
       isRightPanelExpanded.value = false;
     };
 
-    const updateChartData = () => {
-      if (selectedOptions.value.length === 0) {
+    const updateChartData = (positions = null) => {
+      // If positions are provided (from RightPanel), use them directly
+      // Otherwise, use selectedOptions (from options chain selections)
+      let positionsToUse = positions;
+
+      if (!positionsToUse) {
+        if (selectedOptions.value.length === 0) {
+          chartData.value = null;
+          return;
+        }
+
+        try {
+          // Convert selected options to position format for chart using centralized manager
+          positionsToUse = selectedOptions.value
+            .map((selection) => {
+              // Use the centralized options manager to find option data
+              const option = optionsManager.getOptionBySymbol(selection.symbol);
+              if (!option) {
+                console.warn(
+                  `Option not found in manager: ${selection.symbol}`
+                );
+                return null;
+              }
+
+              const price = selection.side === "buy" ? option.ask : option.bid;
+              const quantity =
+                selection.side === "buy"
+                  ? selection.quantity
+                  : -selection.quantity;
+
+              return {
+                symbol: option.symbol,
+                asset_class: "us_option",
+                side: selection.side === "buy" ? "long" : "short",
+                qty: quantity,
+                strike_price: option.strike_price,
+                option_type: option.type,
+                expiry_date: selection.expiry, // Use the expiry from the selection
+                current_price: price,
+                avg_entry_price: price,
+                cost_basis: price * quantity * 100, // Keep the sign for proper cost calculation
+                market_value: price * quantity * 100,
+                unrealized_pl: 0,
+                underlying_symbol: currentSymbol.value,
+                is_synthetic: true,
+              };
+            })
+            .filter(Boolean);
+        } catch (error) {
+          console.error(
+            "Error converting selected options to positions:",
+            error
+          );
+          chartData.value = null;
+          return;
+        }
+      }
+
+      if (!positionsToUse || positionsToUse.length === 0) {
         chartData.value = null;
         return;
       }
 
       try {
-        // Convert selected options to position format for chart
-        const positions = selectedOptions.value
-          .map((selection) => {
-            const option = optionsChainData.value.find(
-              (opt) => opt.symbol === selection.symbol
-            );
-            if (!option) return null;
+        const payoffData = generateMultiLegPayoff(
+          positionsToUse,
+          currentPrice.value
+        );
 
-            const price = selection.side === "buy" ? option.ask : option.bid;
-            const quantity =
-              selection.side === "buy"
-                ? selection.quantity
-                : -selection.quantity;
-
-            return {
-              symbol: option.symbol,
-              asset_class: "us_option",
-              side: selection.side === "buy" ? "long" : "short",
-              qty: quantity,
-              strike_price: option.strike_price,
-              option_type: option.type,
-              expiry_date: selectedExpiry.value,
-              current_price: price,
-              avg_entry_price: price,
-              cost_basis: price * Math.abs(quantity) * 100,
-              market_value: price * quantity * 100,
-              unrealized_pl: 0,
-              underlying_symbol: currentSymbol.value,
-              is_synthetic: true,
-            };
-          })
-          .filter(Boolean);
-
-        if (positions.length > 0) {
-          const payoffData = generateMultiLegPayoff(
-            positions,
-            currentPrice.value
-          );
-          chartData.value = payoffData;
-        }
+        // Force reactivity by creating a new object reference
+        chartData.value = {
+          ...payoffData,
+          timestamp: Date.now(), // Add timestamp to ensure object reference changes
+        };
       } catch (error) {
-        console.error("Error updating chart data:", error);
+        console.error("Error generating payoff chart:", error);
+        chartData.value = null;
       }
     };
 
@@ -558,7 +551,6 @@ export default {
       );
       if (optionIndex >= 0) {
         selectedOptions.value[optionIndex].quantity = quantity;
-        updateChartData();
       }
     };
 
@@ -607,7 +599,7 @@ export default {
     const onPositionsChanged = (checkedPositions) => {
       // Update chart data based on checked positions
       if (checkedPositions.length === 0) {
-        chartData.value = null;
+        updateChartData([]); // Use unified function with empty array
         return;
       }
 
@@ -634,100 +626,31 @@ export default {
           };
         });
 
-        if (positions.length > 0) {
-          const payoffData = generateMultiLegPayoff(
-            positions,
-            currentPrice.value
-          );
-          chartData.value = payoffData;
-        }
+        // Use the unified updateChartData function
+        updateChartData(positions);
       } catch (error) {
         console.error("Error updating chart data from positions:", error);
         console.error("Error details:", error.stack);
+        // Ensure chart is cleared on error
+        updateChartData([]);
       }
     };
 
-    // CollapsibleOptionsChain event handlers
+    // CollapsibleOptionsChain event handlers - now using centralized manager
     const onExpirationExpanded = async (expirationDate) => {
       console.log("Expiration expanded:", expirationDate);
-
-      // Load options data for this expiration if not already loaded
-      if (!optionsDataByExpiration.value[expirationDate]) {
-        try {
-          // Set loading state for this specific expiration
-          optionsDataByExpiration.value = {
-            ...optionsDataByExpiration.value,
-            [expirationDate]: [], // Empty array to indicate loading
-          };
-
-          const chain = await api.getOptionsChainBasic(
-            currentSymbol.value,
-            expirationDate,
-            currentPrice.value,
-            currentStrikeCount.value
-          );
-
-          if (chain && chain.length > 0) {
-            const processedChain = chain.map((option) => ({
-              ...option,
-              strike_price: parseFloat(option.strike_price),
-              bid: parseFloat(option.bid || option.close_price || 0),
-              ask: parseFloat(option.ask || option.close_price || 0),
-            }));
-
-            // Store the options data for this expiration
-            optionsDataByExpiration.value = {
-              ...optionsDataByExpiration.value,
-              [expirationDate]: processedChain,
-            };
-
-            // Subscribe to options for this expiration
-            const optionSymbols = processedChain.map((option) => option.symbol);
-            webSocketClient.replaceAllSubscriptions(
-              currentSymbol.value,
-              optionSymbols
-            );
-          } else {
-            // No options found, set empty array
-            optionsDataByExpiration.value = {
-              ...optionsDataByExpiration.value,
-              [expirationDate]: [],
-            };
-          }
-        } catch (error) {
-          console.error("Error loading options for expiration:", error);
-          // Set empty array on error
-          optionsDataByExpiration.value = {
-            ...optionsDataByExpiration.value,
-            [expirationDate]: [],
-          };
-        }
-      } else {
-        // Options already loaded, just subscribe to them
-        const optionSymbols = optionsDataByExpiration.value[expirationDate].map(
-          (option) => option.symbol
-        );
-        webSocketClient.replaceAllSubscriptions(
-          currentSymbol.value,
-          optionSymbols
-        );
-      }
+      await optionsManager.expandExpiration(expirationDate);
     };
 
     const onExpirationCollapsed = (expirationDate) => {
       console.log("Expiration collapsed:", expirationDate);
-
-      // Clear options subscriptions, keep only underlying
-      webSocketClient.replaceAllSubscriptions(currentSymbol.value, []);
+      optionsManager.collapseExpiration(expirationDate);
     };
 
     const onStrikeCountChanged = (newStrikeCount) => {
       console.log("Strike count changed:", newStrikeCount);
       currentStrikeCount.value = newStrikeCount;
-
-      // Reload options data for all expanded expirations with new strike count
-      // For now, we'll clear the data and let it reload when expanded again
-      optionsDataByExpiration.value = {};
+      optionsManager.updateStrikeCount(newStrikeCount);
     };
 
     // Additional quote data for the right panel
@@ -794,6 +717,19 @@ export default {
     // Watchers
     watch(selectedOptions, updateChartData, { deep: true });
 
+    // Watch for underlying price changes to update chart
+    watch(currentPrice, (newPrice, oldPrice) => {
+      if (newPrice !== oldPrice && chartData.value) {
+        // Regenerate chart data with new underlying price
+        if (selectedOptions.value.length > 0) {
+          updateChartData(); // This will use selectedOptions
+        } else {
+          // If we have chart data from positions, we need to trigger a positions update
+          // The chart will automatically update via the PayoffChart watcher
+        }
+      }
+    });
+
     watch(selectedExpiry, (newExpiry, oldExpiry) => {
       if (newExpiry && newExpiry !== oldExpiry) {
         onExpiryChange();
@@ -836,6 +772,9 @@ export default {
       tradeModes,
       isRightPanelExpanded,
       showBottomPanel,
+
+      // Options Manager
+      optionsManager,
 
       // Computed
       priceChangeClass,

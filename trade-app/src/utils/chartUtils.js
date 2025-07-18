@@ -374,7 +374,7 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
   }
 
   // console.log(
-  //   "generateMultiLegPayoff called with positions:",
+  //   "🔍 generateMultiLegPayoff called with positions:",
   //   optionPositions.map((pos) => ({
   //     symbol: pos.symbol,
   //     qty: pos.qty,
@@ -382,7 +382,8 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
   //     avg_entry_price: pos.avg_entry_price,
   //     option_type: pos.option_type,
   //     current_price: pos.current_price,
-  //     isExisting: pos.is_synthetic === false,
+  //     cost_basis: pos.cost_basis,
+  //     side: pos.side,
   //   }))
   // );
 
@@ -419,16 +420,40 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
 
     lowerBound = Math.floor(minStrike - maxExtension);
     upperBound = Math.ceil(maxStrike + maxExtension);
-    step =
-      upperBound - lowerBound > 200 ? 5 : upperBound - lowerBound > 100 ? 2 : 1;
+
+    // CRITICAL FIX: Use finer step size for narrow strike ranges (1-wide strategies)
+    // But limit total data points to prevent Chart.js performance issues
+    if (strikeRange <= 2) {
+      // For 1-wide strategies, use 1.0 step but ensure we hit critical strike prices
+      step = 1;
+    } else if (strikeRange <= 5) {
+      // For narrow strategies (2-5 wide), use 1.0 step
+      step = 1;
+    } else {
+      // For wider strategies, use the original logic
+      step =
+        upperBound - lowerBound > 200
+          ? 5
+          : upperBound - lowerBound > 100
+          ? 2
+          : 1;
+    }
   }
 
   const prices = [];
   const payoffs = [];
 
-  // Calculate total cost basis (what we paid/received for the positions)
-  const totalCostBasis = optionPositions.reduce((sum, pos) => {
-    return sum + (pos.cost_basis || 0);
+  // Calculate net credit/debit for the strategy
+  // For Iron Butterfly: We receive premium for short positions, pay premium for long positions
+  const netCredit = optionPositions.reduce((sum, pos) => {
+    const premium = pos.avg_entry_price || 0;
+    if (pos.qty < 0) {
+      // Short position: we received premium
+      return sum + premium * Math.abs(pos.qty);
+    } else {
+      // Long position: we paid premium
+      return sum - premium * Math.abs(pos.qty);
+    }
   }, 0);
 
   for (let price = lowerBound; price <= upperBound; price += step) {
@@ -455,22 +480,35 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
         intrinsicValue = Math.max(strike_price - price, 0);
       }
 
-      // Calculate P&L for this position
-      // For long positions (qty > 0): (intrinsic_value - premium_paid) * qty * 100
-      // For short positions (qty < 0): (premium_received - intrinsic_value) * |qty| * 100
-      const premiumPaid = avg_entry_price || 0;
+      // Calculate P&L for this position at expiration
+      // The key insight: At expiration, option value = intrinsic value
+      // P&L = (final_value - initial_cost) * contracts * 100
+      const entryPrice = avg_entry_price || 0;
       let positionPayoff;
 
       if (qty > 0) {
-        // Long position
-        positionPayoff = (intrinsicValue - premiumPaid) * qty * 100;
+        // Long position: We paid premium to buy
+        // P&L = (intrinsic_value - premium_paid) * qty * 100
+        positionPayoff = (intrinsicValue - entryPrice) * qty * 100;
       } else {
-        // Short position
-        positionPayoff = (premiumPaid - intrinsicValue) * Math.abs(qty) * 100;
+        // Short position: We received premium when we sold
+        // P&L = (premium_received - intrinsic_value) * |qty| * 100
+        // Since qty is negative, we use Math.abs(qty) and entryPrice is what we received
+        positionPayoff = (entryPrice - intrinsicValue) * Math.abs(qty) * 100;
       }
+
+      // Debug calculations around strike prices
+      // if (price >= 625 && price <= 631) {
+      //   console.log(
+      //     `🔍 Price ${price}, ${position.symbol}: intrinsic=${intrinsicValue}, entry=${entryPrice}, qty=${qty}, payoff=${positionPayoff}`
+      //   );
+      // }
 
       totalPayoff += positionPayoff;
     }
+
+    // Note: Don't add netCredit here as it's already accounted for in individual position payoffs
+    // The netCredit calculation is kept for reference/debugging purposes
 
     payoffs.push(totalPayoff);
   }
@@ -511,19 +549,11 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
     maxProfit,
     maxLoss,
     currentUnrealizedPL,
-    totalCostBasis,
+    netCredit,
     positionCount: optionPositions.length,
   };
 
-  // console.log("generateMultiLegPayoff result:", {
-  //   pricesLength: prices.length,
-  //   payoffsLength: payoffs.length,
-  //   breakEvenPoints,
-  //   maxProfit,
-  //   maxLoss,
-  //   currentUnrealizedPL,
-  //   positionCount: optionPositions.length,
-  // });
+  // Debug logging removed for production
 
   return result;
 }
@@ -916,8 +946,10 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
           // Dynamically adjust Y-axis based on visible X-axis range
           min: function (context) {
             const chart = context.chart;
-            if (!chart || !chart.scales || !chart.scales.x) {
-              // Fallback to full range if chart not ready
+
+            // Safety check to prevent recursion
+            if (!chart || !chart.scales || !chart.scales.x || chart._updating) {
+              // Fallback to full range if chart not ready or updating
               const maxAbsValue = Math.max(
                 Math.abs(Math.max(...payoffs)),
                 Math.abs(Math.min(...payoffs))
@@ -925,40 +957,50 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
               return -maxAbsValue * 1.1;
             }
 
-            // Get visible X-axis range
-            const xScale = chart.scales.x;
-            const visibleMin = xScale.min || underlyingPrice - 15;
-            const visibleMax = xScale.max || underlyingPrice + 15;
+            // Set flag to prevent recursion
+            chart._updating = true;
 
-            // Find P&L values within visible price range
-            const visiblePayoffs = [];
-            for (let i = 0; i < prices.length; i++) {
-              if (prices[i] >= visibleMin && prices[i] <= visibleMax) {
-                visiblePayoffs.push(payoffs[i]);
+            try {
+              // Get visible X-axis range
+              const xScale = chart.scales.x;
+              const visibleMin = xScale.min || underlyingPrice - 15;
+              const visibleMax = xScale.max || underlyingPrice + 15;
+
+              // Find P&L values within visible price range
+              const visiblePayoffs = [];
+              for (let i = 0; i < prices.length; i++) {
+                if (prices[i] >= visibleMin && prices[i] <= visibleMax) {
+                  visiblePayoffs.push(payoffs[i]);
+                }
               }
+
+              if (visiblePayoffs.length === 0) {
+                // Fallback if no data in visible range
+                return -1000;
+              }
+
+              // Use symmetric scaling around zero for visible data
+              const maxAbsValue = Math.max(
+                Math.abs(Math.max(...visiblePayoffs)),
+                Math.abs(Math.min(...visiblePayoffs))
+              );
+
+              // Ensure minimum range for readability
+              const minRange = 100;
+              const finalRange = Math.max(maxAbsValue * 1.2, minRange);
+
+              return -finalRange;
+            } finally {
+              // Clear flag after calculation
+              chart._updating = false;
             }
-
-            if (visiblePayoffs.length === 0) {
-              // Fallback if no data in visible range
-              return -1000;
-            }
-
-            // Use symmetric scaling around zero for visible data
-            const maxAbsValue = Math.max(
-              Math.abs(Math.max(...visiblePayoffs)),
-              Math.abs(Math.min(...visiblePayoffs))
-            );
-
-            // Ensure minimum range for readability
-            const minRange = 100;
-            const finalRange = Math.max(maxAbsValue * 1.2, minRange);
-
-            return -finalRange;
           },
           max: function (context) {
             const chart = context.chart;
-            if (!chart || !chart.scales || !chart.scales.x) {
-              // Fallback to full range if chart not ready
+
+            // Safety check to prevent recursion
+            if (!chart || !chart.scales || !chart.scales.x || chart._updating) {
+              // Fallback to full range if chart not ready or updating
               const maxAbsValue = Math.max(
                 Math.abs(Math.max(...payoffs)),
                 Math.abs(Math.min(...payoffs))
@@ -966,35 +1008,43 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
               return maxAbsValue * 1.1;
             }
 
-            // Get visible X-axis range
-            const xScale = chart.scales.x;
-            const visibleMin = xScale.min || underlyingPrice - 15;
-            const visibleMax = xScale.max || underlyingPrice + 15;
+            // Set flag to prevent recursion
+            chart._updating = true;
 
-            // Find P&L values within visible price range
-            const visiblePayoffs = [];
-            for (let i = 0; i < prices.length; i++) {
-              if (prices[i] >= visibleMin && prices[i] <= visibleMax) {
-                visiblePayoffs.push(payoffs[i]);
+            try {
+              // Get visible X-axis range
+              const xScale = chart.scales.x;
+              const visibleMin = xScale.min || underlyingPrice - 15;
+              const visibleMax = xScale.max || underlyingPrice + 15;
+
+              // Find P&L values within visible price range
+              const visiblePayoffs = [];
+              for (let i = 0; i < prices.length; i++) {
+                if (prices[i] >= visibleMin && prices[i] <= visibleMax) {
+                  visiblePayoffs.push(payoffs[i]);
+                }
               }
+
+              if (visiblePayoffs.length === 0) {
+                // Fallback if no data in visible range
+                return 1000;
+              }
+
+              // Use symmetric scaling around zero for visible data
+              const maxAbsValue = Math.max(
+                Math.abs(Math.max(...visiblePayoffs)),
+                Math.abs(Math.min(...visiblePayoffs))
+              );
+
+              // Ensure minimum range for readability
+              const minRange = 100;
+              const finalRange = Math.max(maxAbsValue * 1.2, minRange);
+
+              return finalRange;
+            } finally {
+              // Clear flag after calculation
+              chart._updating = false;
             }
-
-            if (visiblePayoffs.length === 0) {
-              // Fallback if no data in visible range
-              return 1000;
-            }
-
-            // Use symmetric scaling around zero for visible data
-            const maxAbsValue = Math.max(
-              Math.abs(Math.max(...visiblePayoffs)),
-              Math.abs(Math.min(...visiblePayoffs))
-            );
-
-            // Ensure minimum range for readability
-            const minRange = 100;
-            const finalRange = Math.max(maxAbsValue * 1.2, minRange);
-
-            return finalRange;
           },
         },
       },

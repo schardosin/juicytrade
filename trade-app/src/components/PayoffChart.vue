@@ -199,17 +199,7 @@ export default {
           props.underlyingPrice
         );
 
-        console.log("PayoffChart: Creating chart context and config...");
-        console.log("PayoffChart: Chart context and config created:", {
-          hasCtx: !!ctx,
-          hasConfig: !!config,
-          configType: config?.type,
-          datasetsLength: config?.data?.datasets?.length,
-          firstDatasetLength: config?.data?.datasets?.[0]?.data?.length,
-        });
-
         if (ctx && config) {
-          console.log("PayoffChart: Creating Chart.js instance...");
           chart.value = new Chart(chartCanvas.value, config);
           // Restore zoom state after chart is created
           await nextTick();
@@ -271,21 +261,27 @@ export default {
         if (newChartData && newUnderlyingPrice !== null) {
           await nextTick();
 
-          // If chart doesn't exist or chartData structure changed, create new chart
+          // Always recreate chart when chartData changes to ensure proper updates
+          // This is more reliable than trying to update existing chart
           if (
             !chart.value ||
             !oldChartData ||
             newChartData.prices?.length !== oldChartData.prices?.length ||
-            newChartData.payoffs?.length !== oldChartData.payoffs?.length
+            newChartData.payoffs?.length !== oldChartData.payoffs?.length ||
+            newChartData.timestamp !== oldChartData.timestamp // Force update on timestamp change
           ) {
             await createChart();
           } else {
-            // Just update the data (for price changes)
             await updateChartData();
+          }
+        } else if (!newChartData) {
+          if (chart.value) {
+            chart.value.destroy();
+            chart.value = null;
           }
         }
       },
-      { deep: true }
+      { deep: true, immediate: true }
     );
 
     // Initial chart creation
