@@ -805,19 +805,19 @@ export default {
 }
 
 .connection-status.connected .status-dot {
-  background-color: var(--color-primary);
+  background-color: var(--color-connected);
 }
 
 .connection-status.disconnected .status-dot {
-  background-color: var(--color-danger);
+  background-color: var(--color-disconnected);
 }
 
 .connection-status.connected .status-text {
-  color: var(--color-primary);
+  color: var(--color-connected);
 }
 
 .connection-status.disconnected .status-text {
-  color: var(--color-danger);
+  color: var(--color-disconnected);
 }
 
 .user-menu,

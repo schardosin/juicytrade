@@ -37,6 +37,10 @@
   --color-brand: #ff6b35; /* Orange brand color */
   --color-brand-hover: #e55a2b;
 
+  /* === Connection Status Colors === */
+  --color-connected: #00c851; /* Green - connected status */
+  --color-disconnected: #ff4444; /* Red - disconnected status */
+
   /* === Component Specific === */
   --options-grid-bg: var(--bg-primary);
   --options-strike-bg: var(--bg-tertiary);
