@@ -894,16 +894,34 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
             },
             mode: "x", // Only allow horizontal zoom
             scaleMode: "x", // Only scale X-axis
+            onZoomStart: function (context) {
+              // Trigger zoom start callback if available
+              if (context.chart.config.options.onZoomStart) {
+                context.chart.config.options.onZoomStart();
+              }
+            },
             onZoomComplete: function (context) {
-              // Optional: Add any zoom completion logic here
+              // Trigger zoom end callback if available
+              if (context.chart.config.options.onZoomEnd) {
+                context.chart.config.options.onZoomEnd();
+              }
             },
           },
           pan: {
             enabled: true,
             mode: "x", // Only allow horizontal panning
             modifierKey: null, // Allow panning without modifier key
+            onPanStart: function (context) {
+              // Trigger pan start callback if available
+              if (context.chart.config.options.onPanStart) {
+                context.chart.config.options.onPanStart();
+              }
+            },
             onPanComplete: function (context) {
-              // Optional: Add any pan completion logic here
+              // Trigger pan end callback if available
+              if (context.chart.config.options.onPanEnd) {
+                context.chart.config.options.onPanEnd();
+              }
             },
           },
           limits: {

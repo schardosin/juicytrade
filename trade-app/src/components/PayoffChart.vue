@@ -131,38 +131,181 @@ export default {
   setup(props) {
     const chartCanvas = ref(null);
     const chart = ref(null);
-    const savedZoomState = ref(null);
 
-    const saveZoomState = () => {
-      if (chart.value && chart.value.scales) {
+    // Enhanced state management for interaction tracking
+    const chartState = ref({
+      isPanning: false,
+      isZooming: false,
+      frozenUpdates: false,
+      viewCenter: null, // Strike price at center of view
+      viewRange: null, // Price range width
+      lastInteraction: null,
+    });
+
+    const pendingUpdate = ref(null);
+    const updateDebounceTimer = ref(null);
+
+    // Strike-based view state management
+    const saveViewState = () => {
+      if (chart.value && chart.value.scales && chart.value.scales.x) {
         try {
           const xScale = chart.value.scales.x;
-          if (xScale) {
-            savedZoomState.value = {
-              min: xScale.min,
-              max: xScale.max,
-            };
+          const min = xScale.min;
+          const max = xScale.max;
+
+          if (min !== undefined && max !== undefined) {
+            chartState.value.viewCenter = (min + max) / 2;
+            chartState.value.viewRange = max - min;
+
+            console.log(
+              `📍 Saved view state: center=${chartState.value.viewCenter.toFixed(
+                2
+              )}, range=${chartState.value.viewRange.toFixed(2)}`
+            );
           }
         } catch (error) {
-          console.warn("Could not save zoom state:", error);
+          console.warn("Could not save view state:", error);
         }
       }
     };
 
-    const restoreZoomState = () => {
-      if (chart.value && savedZoomState.value) {
+    const restoreViewState = () => {
+      if (
+        chart.value &&
+        chartState.value.viewCenter !== null &&
+        chartState.value.viewRange !== null
+      ) {
         try {
-          chart.value.zoomScale(
-            "x",
-            {
-              min: savedZoomState.value.min,
-              max: savedZoomState.value.max,
-            },
-            "none"
+          const halfRange = chartState.value.viewRange / 2;
+          const min = chartState.value.viewCenter - halfRange;
+          const max = chartState.value.viewCenter + halfRange;
+
+          chart.value.zoomScale("x", { min, max }, "none");
+
+          console.log(
+            `🔄 Restored view state: center=${chartState.value.viewCenter.toFixed(
+              2
+            )}, range=${chartState.value.viewRange.toFixed(2)}`
           );
         } catch (error) {
-          console.warn("Could not restore zoom state:", error);
+          console.warn("Could not restore view state:", error);
         }
+      }
+    };
+
+    // Interaction event handlers
+    const onPanStart = () => {
+      chartState.value.isPanning = true;
+      chartState.value.frozenUpdates = true;
+      chartState.value.lastInteraction = Date.now();
+
+      console.log("🔒 Chart updates frozen - user is panning");
+    };
+
+    const onPanEnd = () => {
+      chartState.value.isPanning = false;
+      saveViewState(); // Save the new position
+
+      // Auto-resume updates after 1 second of inactivity
+      setTimeout(() => {
+        if (!chartState.value.isPanning && !chartState.value.isZooming) {
+          chartState.value.frozenUpdates = false;
+          console.log("🔓 Chart updates resumed - applying pending updates");
+
+          // Apply any pending updates
+          if (pendingUpdate.value) {
+            applyPendingUpdate();
+          }
+        }
+      }, 1000);
+    };
+
+    const onZoomStart = () => {
+      chartState.value.isZooming = true;
+      chartState.value.frozenUpdates = true;
+      chartState.value.lastInteraction = Date.now();
+
+      console.log("🔒 Chart updates frozen - user is zooming");
+    };
+
+    const onZoomEnd = () => {
+      chartState.value.isZooming = false;
+      saveViewState(); // Save the new zoom level
+
+      // Auto-resume updates after 1 second of inactivity
+      setTimeout(() => {
+        if (!chartState.value.isPanning && !chartState.value.isZooming) {
+          chartState.value.frozenUpdates = false;
+          console.log("🔓 Chart updates resumed - applying pending updates");
+
+          // Apply any pending updates
+          if (pendingUpdate.value) {
+            applyPendingUpdate();
+          }
+        }
+      }, 1000);
+    };
+
+    // Apply pending updates when chart is unfrozen
+    const applyPendingUpdate = async () => {
+      if (pendingUpdate.value && !chartState.value.frozenUpdates) {
+        const { chartData, underlyingPrice } = pendingUpdate.value;
+        pendingUpdate.value = null;
+
+        console.log("📊 Applying pending chart update");
+        await performChartUpdate(chartData, underlyingPrice);
+      }
+    };
+
+    // Debounced update function
+    const debouncedUpdate = (chartData, underlyingPrice) => {
+      if (updateDebounceTimer.value) {
+        clearTimeout(updateDebounceTimer.value);
+      }
+
+      updateDebounceTimer.value = setTimeout(() => {
+        if (chartState.value.frozenUpdates) {
+          // Store as pending update
+          pendingUpdate.value = { chartData, underlyingPrice };
+          console.log("⏸️ Chart update queued - user is interacting");
+        } else {
+          performChartUpdate(chartData, underlyingPrice);
+        }
+      }, 100); // 100ms debounce
+    };
+
+    // Unified chart update function
+    const performChartUpdate = async (chartData, underlyingPrice) => {
+      if (
+        !chartCanvas.value ||
+        !chartData ||
+        underlyingPrice === null ||
+        underlyingPrice === undefined
+      ) {
+        return;
+      }
+
+      try {
+        if (!chart.value) {
+          // Create new chart if it doesn't exist
+          await createChart();
+        } else {
+          // Update existing chart data
+          await updateChartData();
+        }
+
+        // Restore view state after update
+        if (
+          chartState.value.viewCenter !== null &&
+          chartState.value.viewRange !== null
+        ) {
+          await nextTick();
+          restoreViewState();
+        }
+      } catch (error) {
+        console.error("Error in performChartUpdate:", error);
+        // Fallback to chart recreation
+        await createChart();
       }
     };
 
@@ -187,7 +330,7 @@ export default {
       try {
         // Only destroy if chart exists
         if (chart.value) {
-          saveZoomState();
+          saveViewState();
           chart.value.destroy();
           chart.value = null;
         }
@@ -199,11 +342,19 @@ export default {
           props.underlyingPrice
         );
 
+        // Add interaction callbacks to the config
+        if (config && config.options) {
+          config.options.onPanStart = onPanStart;
+          config.options.onPanEnd = onPanEnd;
+          config.options.onZoomStart = onZoomStart;
+          config.options.onZoomEnd = onZoomEnd;
+        }
+
         if (ctx && config) {
           chart.value = new Chart(chartCanvas.value, config);
-          // Restore zoom state after chart is created
+          // Restore view state after chart is created
           await nextTick();
-          restoreZoomState();
+          restoreViewState();
         } else {
           console.error(
             "PayoffChart: Chart.js not created - missing ctx or config",
@@ -251,29 +402,12 @@ export default {
       }
     };
 
-    // Watch for changes in chart data or underlying price
+    // Watch for changes in chart data or underlying price - now using debounced updates
     watch(
       [() => props.chartData, () => props.underlyingPrice],
-      async (
-        [newChartData, newUnderlyingPrice],
-        [oldChartData, oldUnderlyingPrice]
-      ) => {
+      ([newChartData, newUnderlyingPrice]) => {
         if (newChartData && newUnderlyingPrice !== null) {
-          await nextTick();
-
-          // Always recreate chart when chartData changes to ensure proper updates
-          // This is more reliable than trying to update existing chart
-          if (
-            !chart.value ||
-            !oldChartData ||
-            newChartData.prices?.length !== oldChartData.prices?.length ||
-            newChartData.payoffs?.length !== oldChartData.payoffs?.length ||
-            newChartData.timestamp !== oldChartData.timestamp // Force update on timestamp change
-          ) {
-            await createChart();
-          } else {
-            await updateChartData();
-          }
+          debouncedUpdate(newChartData, newUnderlyingPrice);
         } else if (!newChartData) {
           if (chart.value) {
             chart.value.destroy();
@@ -309,8 +443,10 @@ export default {
     const resetZoom = () => {
       if (chart.value) {
         chart.value.resetZoom();
-        // Clear saved zoom state when user explicitly resets
-        savedZoomState.value = null;
+        // Clear saved view state when user explicitly resets
+        chartState.value.viewCenter = null;
+        chartState.value.viewRange = null;
+        console.log("🔄 View state cleared - chart reset to default view");
       }
     };
 
@@ -324,6 +460,7 @@ export default {
 
     return {
       chartCanvas,
+      chartState,
       zoomIn,
       zoomOut,
       resetZoom,
