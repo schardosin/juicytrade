@@ -704,8 +704,8 @@ export default {
   height: 100%;
   display: flex;
   flex-direction: column;
-  background-color: #1e1e1e;
-  border-radius: 8px;
+  background-color: var(--bg-primary);
+  border-radius: var(--radius-lg);
   overflow: hidden;
 }
 
@@ -721,9 +721,9 @@ export default {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 12px 16px;
-  background-color: #2a2a2a;
-  border-top: 1px solid #3a3a3a;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background-color: var(--bg-secondary);
+  border-top: 1px solid var(--border-primary);
   flex-shrink: 0;
   min-height: 60px;
 }
@@ -747,66 +747,66 @@ export default {
 }
 
 .range-label {
-  font-size: 12px;
-  font-weight: 500;
-  color: #d1d4dc;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
   white-space: nowrap;
 }
 
 .range-dropdown {
   padding: 6px 10px;
-  background-color: #3a3a3a;
-  color: #d1d4dc;
-  border: 1px solid #4a4a4a;
-  border-radius: 4px;
-  font-size: 12px;
-  font-weight: 500;
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
   cursor: pointer;
-  transition: all 0.2s ease;
+  transition: all var(--transition-normal);
   min-width: 100px;
 }
 
 .range-dropdown:hover {
-  background-color: #4a4a4a;
-  border-color: #5a5a5a;
+  background-color: var(--bg-quaternary);
+  border-color: var(--border-tertiary);
 }
 
 .range-dropdown:focus {
   outline: none;
-  border-color: #2962ff;
-  box-shadow: 0 0 0 2px rgba(41, 98, 255, 0.2);
+  border-color: var(--color-info);
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
 }
 
 .range-dropdown option {
-  background-color: #3a3a3a;
-  color: #d1d4dc;
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
 }
 
 .timeframe-btn {
-  padding: 8px 12px;
-  background-color: #3a3a3a;
-  color: #d1d4dc;
-  border: 1px solid #4a4a4a;
-  border-radius: 4px;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-sm);
   cursor: pointer;
-  font-size: 12px;
-  font-weight: 500;
-  transition: all 0.2s ease;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  transition: all var(--transition-normal);
   white-space: nowrap;
   min-width: 40px;
   text-align: center;
 }
 
 .timeframe-btn:hover {
-  background-color: #4a4a4a;
-  border-color: #5a5a5a;
+  background-color: var(--bg-quaternary);
+  border-color: var(--border-tertiary);
 }
 
 .timeframe-btn.active {
-  background-color: #2962ff;
-  border-color: #2962ff;
-  color: white;
-  box-shadow: 0 2px 4px rgba(41, 98, 255, 0.3);
+  background-color: var(--color-brand);
+  border-color: var(--color-brand);
+  color: var(--text-primary);
+  box-shadow: 0 2px 4px rgba(255, 107, 53, 0.3);
 }
 
 .chart-info {
@@ -816,20 +816,20 @@ export default {
 }
 
 .symbol-info {
-  font-weight: 600;
-  color: #d1d4dc;
-  font-size: 14px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
 }
 
 .loading-indicator {
-  color: #ffa726;
-  font-size: 12px;
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
   animation: pulse 1.5s ease-in-out infinite;
 }
 
 .error-indicator {
-  color: #ef5350;
-  font-size: 12px;
+  color: var(--color-danger);
+  font-size: var(--font-size-sm);
 }
 
 @keyframes pulse {

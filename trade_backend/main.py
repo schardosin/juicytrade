@@ -471,20 +471,28 @@ async def get_intraday_chart_data(symbol: str, interval: str = "5m"):
 
 @app.get("/positions", response_model=ApiResponse)
 async def get_positions():
-    """Get enhanced positions with order chain grouping and strategy detection."""
+    """Get enhanced positions with hierarchical grouping (Symbol -> Strategies -> Legs)."""
     try:
-        # Try to get enhanced positions first
+        # Try to get enhanced hierarchical positions first
         try:
-            position_groups = await provider_manager.get_positions_enhanced()
-            if position_groups:
+            result = await provider_manager.get_positions_enhanced()
+            if isinstance(result, dict) and result.get("enhanced"):
+                # New hierarchical structure
+                return ApiResponse(
+                    success=True,
+                    data=result,
+                    message=f"Retrieved {len(result.get('symbol_groups', []))} symbol groups with hierarchical structure"
+                )
+            elif isinstance(result, list):
+                # Old position groups structure - convert for backward compatibility
                 return ApiResponse(
                     success=True,
                     data={
-                        "position_groups": [group.dict() for group in position_groups],
-                        "total_groups": len(position_groups),
+                        "position_groups": [group.dict() for group in result],
+                        "total_groups": len(result),
                         "enhanced": True
                     },
-                    message=f"Retrieved {len(position_groups)} position groups with strategy detection"
+                    message=f"Retrieved {len(result)} position groups with strategy detection"
                 )
         except AttributeError:
             # Provider doesn't support enhanced positions, fall back to regular positions

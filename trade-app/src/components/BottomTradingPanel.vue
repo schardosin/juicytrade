@@ -1192,7 +1192,7 @@ export default {
 }
 
 .review-btn {
-  background-color: #82362a;
+  background-color: var(--color-brand);
   border: none;
   color: #fff;
   padding: 10px 20px;
@@ -1206,7 +1206,7 @@ export default {
 }
 
 .review-btn:hover:not(:disabled) {
-  background-color: #6e2f25;
+  background-color: var(--color-brand-hover);
   transform: translateY(-1px);
 }
 

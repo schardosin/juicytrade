@@ -1332,20 +1332,20 @@ class TradierProvider(BaseProvider):
 
     # === Enhanced Positions with History Integration ===
     
-    async def get_positions_enhanced(self) -> List[PositionGroup]:
-        """Get enhanced positions with order chain grouping and strategy detection."""
+    async def get_positions_enhanced(self) -> Dict[str, Any]:
+        """Get enhanced positions with Tasty Trade-style hierarchical grouping."""
         try:
-            logger.info("🔍 Getting enhanced positions with order chain grouping...")
+            logger.info("🔍 Getting enhanced positions with hierarchical grouping...")
             
             # 1. Get current positions
             current_positions = await self.get_positions()
             if not current_positions:
                 logger.info("No current positions found")
-                return []
+                return {"enhanced": True, "symbol_groups": []}
             
-            # 2. Get historical trades (d-1 and older) AND current day orders
+            # 2. Get historical trades and current orders
             historical_trades = await self._get_order_history(days_back=30)
-            current_orders = await self.get_orders(status="all")  # Get all orders including filled
+            current_orders = await self.get_orders(status="all")
             
             logger.info(f"📊 Retrieved {len(historical_trades)} historical trades and {len(current_orders)} current orders")
             
@@ -1353,21 +1353,17 @@ class TradierProvider(BaseProvider):
             symbols = list(set([pos.symbol for pos in current_positions]))
             current_prices = await self._get_current_prices(symbols)
             
-            # 4. Group positions by order chains using both historical trades and current orders
-            position_groups = self._group_positions_by_order_chains(
-                current_positions, historical_trades, current_orders
+            # 4. Create hierarchical grouping (Symbol -> Strategies -> Legs)
+            symbol_groups = self._create_hierarchical_groups(
+                current_positions, historical_trades, current_orders, current_prices
             )
             
-            # 5. Calculate real-time P&L for each group
-            for group in position_groups:
-                self._calculate_group_pnl(group, current_prices)
-            
-            logger.info(f"✅ Created {len(position_groups)} position groups")
-            return position_groups
+            logger.info(f"✅ Created {len(symbol_groups)} symbol groups")
+            return {"enhanced": True, "symbol_groups": symbol_groups}
             
         except Exception as e:
             self._log_error("get_positions_enhanced", e)
-            return []
+            return {"enhanced": True, "symbol_groups": []}
     
     async def _get_order_history(self, days_back: int = 30) -> List[HistoricalTrade]:
         """Get order history from Tradier history API."""
@@ -2057,6 +2053,114 @@ class TradierProvider(BaseProvider):
             self._log_error("_group_positions_by_order_chains", e)
             return []
     
+    def _create_hierarchical_groups(self, positions: List[Position], 
+                                  history: List[HistoricalTrade], 
+                                  current_orders: List[Order],
+                                  current_prices: Dict[str, float]) -> List[Dict[str, Any]]:
+        """Create Tasty Trade-style hierarchical grouping: Symbol -> Strategies -> Legs."""
+        try:
+            from ..utils.optionsStrategies import detectStrategy
+            from datetime import datetime
+            
+            logger.info("📊 Creating hierarchical symbol groups")
+            
+            # Step 1: Group positions by underlying symbol
+            symbol_groups = {}
+            
+            for position in positions:
+                # Determine underlying symbol
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    underlying = parsed["underlying"] if parsed else position.symbol
+                    asset_class = "options"
+                else:
+                    underlying = position.symbol
+                    asset_class = "stocks"
+                
+                if underlying not in symbol_groups:
+                    symbol_groups[underlying] = {
+                        "symbol": underlying,
+                        "asset_class": asset_class,
+                        "total_pl_day": 0,
+                        "total_pl_open": 0,
+                        "total_qty": 0,
+                        "total_cost_basis": 0,
+                        "total_market_value": 0,
+                        "strategies": []
+                    }
+                
+                # Add position to symbol group
+                symbol_groups[underlying]["total_qty"] += position.qty
+                symbol_groups[underlying]["total_cost_basis"] += position.cost_basis
+            
+            # Step 2: Within each symbol, group positions by strategy/order chains
+            for underlying, symbol_group in symbol_groups.items():
+                # Get positions for this underlying
+                underlying_positions = [
+                    pos for pos in positions 
+                    if (self._parse_option_symbol(pos.symbol)["underlying"] if self._is_option_symbol(pos.symbol) else pos.symbol) == underlying
+                ]
+                
+                # Group these positions by strategy using existing logic
+                strategy_groups = self._group_positions_by_order_chains(
+                    underlying_positions, history, current_orders
+                )
+                
+                # Convert strategy groups to the hierarchical format
+                for strategy_group in strategy_groups:
+                    # Calculate P&L for this strategy
+                    self._calculate_group_pnl(strategy_group, current_prices)
+                    
+                    strategy_data = {
+                        "name": strategy_group.strategy,
+                        "pl_day": strategy_group.pl_day,
+                        "pl_open": strategy_group.pl_open,
+                        "total_qty": strategy_group.total_qty,
+                        "cost_basis": strategy_group.total_cost_basis,
+                        "market_value": strategy_group.total_market_value,
+                        "dte": strategy_group.dte,
+                        "legs": []
+                    }
+                    
+                    # Add individual legs
+                    for leg in strategy_group.legs:
+                        # Update leg with current price
+                        current_price = current_prices.get(leg.symbol, 0)
+                        if current_price > 0:
+                            leg.current_price = current_price
+                            if self._is_option_symbol(leg.symbol):
+                                leg.market_value = current_price * leg.qty * 100
+                            else:
+                                leg.market_value = current_price * leg.qty
+                            leg.unrealized_pl = leg.market_value - leg.cost_basis
+                        
+                        leg_data = {
+                            "symbol": leg.symbol,
+                            "qty": leg.qty,
+                            "current_price": leg.current_price,
+                            "cost_basis": leg.cost_basis,
+                            "market_value": leg.market_value,
+                            "unrealized_pl": leg.unrealized_pl,
+                            "asset_class": leg.asset_class
+                        }
+                        strategy_data["legs"].append(leg_data)
+                    
+                    symbol_group["strategies"].append(strategy_data)
+                    
+                    # Aggregate to symbol level
+                    symbol_group["total_pl_day"] += strategy_group.pl_day
+                    symbol_group["total_pl_open"] += strategy_group.pl_open
+                    symbol_group["total_market_value"] += strategy_group.total_market_value
+            
+            # Convert to list format
+            result = list(symbol_groups.values())
+            logger.info(f"✅ Created {len(result)} hierarchical symbol groups")
+            return result
+            
+        except Exception as e:
+            self._log_error("_create_hierarchical_groups", e)
+            return []
+
     def _calculate_group_pnl(self, group: PositionGroup, current_prices: Dict[str, float]):
         """Calculate real-time P&L for a position group."""
         try:

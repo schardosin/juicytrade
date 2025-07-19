@@ -916,9 +916,9 @@ export default {
 }
 
 .symbol-filter-btn.active {
-  background-color: var(--color-primary);
+  background-color: var(--color-brand);
   color: var(--text-primary);
-  border-color: var(--color-primary);
+  border-color: var(--color-brand);
 }
 
 .date-range {
@@ -952,7 +952,7 @@ export default {
 }
 
 .status-tab.active {
-  background-color: var(--color-primary);
+  background-color: var(--color-brand);
   color: var(--text-primary);
 }
 

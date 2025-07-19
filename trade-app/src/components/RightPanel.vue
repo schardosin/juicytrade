@@ -510,6 +510,7 @@ export default {
           positions.push({
             id: option.symbol,
             symbol: option.symbol,
+            asset_class: "us_option", // Required for chart
             qty: option.side === "buy" ? option.quantity : -option.quantity,
             strike_price: option.strike_price || option.strike,
             option_type: option.type,
@@ -651,28 +652,90 @@ export default {
 
     // Helper function to parse option symbol for details
     const parseOptionSymbol = (optionSymbol) => {
-      // Option symbols are like "SPY250714C00624000" or "SPY250801P00625000"
-      // Format: SYMBOL + YYMMDD + C/P + STRIKE (8 digits with 3 decimal places)
-      const match = optionSymbol.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
-      if (!match) return null;
+      try {
+        // Handle multiple option symbol formats
+        // Format 1: SPY250714C00624000 (SYMBOL + YYMMDD + C/P + STRIKE with 8 digits)
+        let match = optionSymbol.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
+        if (match) {
+          const [, underlying, dateStr, type, strikeStr] = match;
 
-      const [, underlying, dateStr, type, strikeStr] = match;
+          // Parse date: YYMMDD -> YYYY-MM-DD
+          const year = 2000 + parseInt(dateStr.substring(0, 2));
+          const month = dateStr.substring(2, 4);
+          const day = dateStr.substring(4, 6);
+          const expiry = `${year}-${month}-${day}`;
 
-      // Parse date: YYMMDD -> YYYY-MM-DD
-      const year = 2000 + parseInt(dateStr.substring(0, 2));
-      const month = dateStr.substring(2, 4);
-      const day = dateStr.substring(4, 6);
-      const expiry = `${year}-${month}-${day}`;
+          // Parse strike: 8 digits with 3 decimal places (e.g., 00624000 = 624.000)
+          const strike = parseInt(strikeStr) / 1000;
 
-      // Parse strike: 8 digits with 3 decimal places (e.g., 00624000 = 624.000)
-      const strike = parseInt(strikeStr) / 1000;
+          return {
+            underlying_symbol: underlying,
+            option_type: type === "C" ? "call" : "put",
+            strike_price: strike,
+            expiry_date: expiry,
+          };
+        }
 
-      return {
-        underlying_symbol: underlying,
-        option_type: type,
-        strike_price: strike,
-        expiry_date: expiry,
-      };
+        // Format 2: SPY_250714_C_624 (SYMBOL_YYMMDD_C/P_STRIKE)
+        match = optionSymbol.match(/^([A-Z]+)_(\d{6})_([CP])_(\d+(?:\.\d+)?)$/);
+        if (match) {
+          const [, underlying, dateStr, type, strikeStr] = match;
+
+          // Parse date: YYMMDD -> YYYY-MM-DD
+          const year = 2000 + parseInt(dateStr.substring(0, 2));
+          const month = dateStr.substring(2, 4);
+          const day = dateStr.substring(4, 6);
+          const expiry = `${year}-${month}-${day}`;
+
+          const strike = parseFloat(strikeStr);
+
+          return {
+            underlying_symbol: underlying,
+            option_type: type === "C" ? "call" : "put",
+            strike_price: strike,
+            expiry_date: expiry,
+          };
+        }
+
+        // Format 3: Try to extract from any format with underscores or other separators
+        // Look for patterns like SYMBOL_anything_C/P_STRIKE or similar
+        const parts = optionSymbol.split(/[_\-]/);
+        if (parts.length >= 3) {
+          const underlying = parts[0];
+          let type = null;
+          let strike = null;
+
+          // Find C or P in the parts
+          for (let i = 1; i < parts.length; i++) {
+            if (parts[i] === "C" || parts[i] === "P") {
+              type = parts[i] === "C" ? "call" : "put";
+              // Look for strike in the next part
+              if (i + 1 < parts.length) {
+                const strikeCandidate = parseFloat(parts[i + 1]);
+                if (!isNaN(strikeCandidate)) {
+                  strike = strikeCandidate;
+                }
+              }
+              break;
+            }
+          }
+
+          if (type && strike) {
+            return {
+              underlying_symbol: underlying,
+              option_type: type,
+              strike_price: strike,
+              expiry_date: null, // Will be filled from position data if available
+            };
+          }
+        }
+
+        console.warn(`Could not parse option symbol: ${optionSymbol}`);
+        return null;
+      } catch (error) {
+        console.error("Error parsing option symbol:", optionSymbol, error);
+        return null;
+      }
     };
 
     // Fetch existing positions from API
@@ -682,8 +745,47 @@ export default {
 
         // Handle the new enhanced response structure
         let positions = [];
-        if (response && response.enhanced && response.position_groups) {
-          // New enhanced structure - extract individual positions from groups
+        if (response && response.enhanced && response.symbol_groups) {
+          // New hierarchical structure - extract individual positions from symbol groups
+          const symbolGroup = getSymbolGroup(props.currentSymbol);
+
+          response.symbol_groups.forEach((symbolGroupData) => {
+            // Check if this symbol group is for the current symbol
+            if (
+              symbolGroup.includes(symbolGroupData.symbol) &&
+              symbolGroupData.asset_class === "options"
+            ) {
+              // Extract positions from all strategies within this symbol group
+              symbolGroupData.strategies.forEach((strategy) => {
+                strategy.legs.forEach((leg) => {
+                  // Parse option symbol to get missing details
+                  const parsedOption = parseOptionSymbol(leg.symbol);
+
+                  positions.push({
+                    id: leg.symbol,
+                    symbol: leg.symbol,
+                    asset_class: "us_option", // Required for chart
+                    underlying_symbol: symbolGroupData.symbol,
+                    qty: leg.qty,
+                    strike_price: parsedOption?.strike_price,
+                    option_type: parsedOption?.option_type,
+                    expiry_date: parsedOption?.expiry_date,
+                    current_price: leg.current_price,
+                    avg_entry_price:
+                      leg.avg_entry_price ||
+                      (leg.cost_basis
+                        ? Math.abs(leg.cost_basis / (leg.qty * 100))
+                        : 0),
+                    unrealized_pl: leg.unrealized_pl || 0,
+                    isExisting: true,
+                    isSelected: false,
+                  });
+                });
+              });
+            }
+          });
+        } else if (response && response.enhanced && response.position_groups) {
+          // Old enhanced structure - extract individual positions from groups
           const symbolGroup = getSymbolGroup(props.currentSymbol);
 
           response.position_groups.forEach((group) => {
@@ -700,6 +802,7 @@ export default {
                 positions.push({
                   id: leg.symbol,
                   symbol: leg.symbol,
+                  asset_class: "us_option", // Required for chart
                   underlying_symbol: group.symbol,
                   qty: leg.qty,
                   strike_price: parsedOption?.strike_price,
@@ -737,6 +840,7 @@ export default {
               return {
                 id: pos.symbol,
                 symbol: pos.symbol,
+                asset_class: "us_option", // Required for chart
                 underlying_symbol:
                   parsedOption?.underlying_symbol ||
                   extractUnderlyingFromOptionSymbol(pos.symbol),

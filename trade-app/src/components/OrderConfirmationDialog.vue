@@ -745,7 +745,7 @@ export default {
 
 .submit-btn {
   flex: 2;
-  background-color: var(--color-primary);
+  background-color: var(--color-brand);
   border: none;
   color: var(--text-primary);
   padding: 10px 16px;
@@ -761,7 +761,7 @@ export default {
 }
 
 .submit-btn:hover:not(:disabled) {
-  background-color: var(--color-primary-hover);
+  background-color: var(--color-brand-hover);
 }
 
 .submit-btn:disabled {
