@@ -681,6 +681,27 @@ async def websocket_endpoint(websocket: WebSocket):
                     })
                     logger.info(f"✅ WebSocket: All subscriptions replaced - underlying: {underlying_symbol}, options: {len(option_symbols)} symbols")
             
+            elif data.get("type") == "subscribe_smart_replace_all":
+                # New message type from Smart Market Data Store
+                stock_symbols = data.get("stock_symbols", [])
+                option_symbols = data.get("option_symbols", [])
+                all_symbols = data.get("all_symbols", [])
+                
+                logger.info(f"🔄 WebSocket: Received smart subscription replacement - stocks: {len(stock_symbols)}, options: {len(option_symbols)}, total: {len(all_symbols)} symbols")
+                
+                # Use the new multi-stock subscription method
+                await streaming_manager.replace_all_subscriptions_multi_stock(stock_symbols, option_symbols)
+                
+                await websocket.send_json({
+                    "type": "subscription_confirmed",
+                    "subscription_type": "smart_replace_all",
+                    "stock_symbols": stock_symbols,
+                    "option_symbols": option_symbols,
+                    "all_symbols": all_symbols,
+                    "message": f"Smart subscriptions replaced - stocks: {len(stock_symbols)}, options: {len(option_symbols)} symbols"
+                })
+                logger.info(f"✅ WebSocket: Smart subscriptions replaced - stocks: {len(stock_symbols)}, options: {len(option_symbols)} symbols")
+            
             elif data.get("type") == "subscribe_replace_stock":
                 # Legacy support - deprecated
                 symbol = data.get("symbol")

@@ -44,7 +44,8 @@
 </template>
 
 <script>
-import { computed } from "vue";
+import { computed, watch } from "vue";
+import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 
 export default {
   name: "SymbolHeader",
@@ -61,6 +62,7 @@ export default {
       type: String,
       default: "",
     },
+    // Legacy props - kept for backward compatibility
     currentPrice: {
       type: Number,
       default: null,
@@ -97,14 +99,55 @@ export default {
       type: Boolean,
       default: true,
     },
+    // New prop to enable smart price fetching
+    enableSmartPricing: {
+      type: Boolean,
+      default: true,
+    },
   },
   emits: ["trade-mode-changed"],
   setup(props) {
-    // Computed properties
+    // Smart Market Data integration
+    const { getStockPrice, getDebugInfo } = useSmartMarketData();
+
+    // Get live price data when smart pricing is enabled and symbol is available
+    const livePrice = computed(() => {
+      if (!props.enableSmartPricing || !props.currentSymbol) {
+        return null;
+      }
+      return getStockPrice(props.currentSymbol);
+    });
+
+    // Use live price if available, otherwise fall back to props
+    const effectivePrice = computed(() => {
+      const livePriceData = livePrice.value?.value;
+      if (livePriceData?.price) {
+        return livePriceData.price;
+      }
+      return props.currentPrice;
+    });
+
+    // Calculate price change (simplified - in real implementation you'd track previous price)
+    const effectivePriceChange = computed(() => {
+      // For now, use prop value - in full implementation, calculate from price history
+      return props.priceChange;
+    });
+
+    const effectivePriceChangePercent = computed(() => {
+      // For now, use prop value - in full implementation, calculate from price history
+      return props.priceChangePercent;
+    });
+
+    // Determine if we're showing live data
+    const isShowingLiveData = computed(() => {
+      return props.enableSmartPricing && livePrice.value?.value?.price != null;
+    });
+
+    // Computed properties for styling
     const priceChangeClass = computed(() => ({
-      positive: props.priceChange > 0,
-      negative: props.priceChange < 0,
-      neutral: props.priceChange === 0,
+      positive: effectivePriceChange.value > 0,
+      negative: effectivePriceChange.value < 0,
+      neutral: effectivePriceChange.value === 0,
     }));
 
     const marketStatusClass = computed(() => ({
@@ -114,9 +157,56 @@ export default {
       "after-hours": props.marketStatus === "After Hours",
     }));
 
+    // Debug logging for development
+    watch(
+      () => props.currentSymbol,
+      (newSymbol, oldSymbol) => {
+        if (newSymbol && newSymbol !== oldSymbol && props.enableSmartPricing) {
+          console.log(
+            `🎯 SymbolHeader: Smart pricing enabled for ${newSymbol}`
+          );
+
+          // Log debug info after a short delay to see subscription status
+          setTimeout(() => {
+            const debugInfo = getDebugInfo();
+            console.log(`📊 Smart Market Data Debug:`, debugInfo);
+          }, 1000);
+        }
+      },
+      { immediate: true }
+    );
+
+    // Watch for live price updates
+    watch(
+      livePrice,
+      (newPrice) => {
+        if (newPrice?.value?.price) {
+          console.log(
+            `💰 Live price update for ${
+              props.currentSymbol
+            }: $${newPrice.value.price.toFixed(2)}`
+          );
+        }
+      },
+      { deep: true }
+    );
+
     return {
+      // Effective values (live or fallback)
+      currentPrice: effectivePrice,
+      priceChange: effectivePriceChange,
+      priceChangePercent: effectivePriceChangePercent,
+
+      // Status indicators
+      isLivePrice: isShowingLiveData,
+
+      // Styling
       priceChangeClass,
       marketStatusClass,
+
+      // Debug (for development)
+      livePrice,
+      getDebugInfo,
     };
   },
 };

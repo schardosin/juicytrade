@@ -355,6 +355,7 @@ import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import RightPanel from "../components/RightPanel.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
+import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { api } from "../services/api.js";
 
 export default {
@@ -366,15 +367,22 @@ export default {
     SymbolHeader,
   },
   setup() {
-    // Reactive state
-    const currentSymbol = ref("");
-    const companyName = ref("");
-    const exchange = ref("");
-    const currentPrice = ref(0);
-    const priceChange = ref(0);
-    const priceChangePercent = ref(0);
-    const isLivePrice = ref(false);
-    const marketStatus = ref("Market Closed");
+    // Use global symbol state instead of local refs
+    const { globalSymbolState } = useGlobalSymbol();
+
+    // Computed properties for global symbol state
+    const currentSymbol = computed(() => globalSymbolState.currentSymbol);
+    const companyName = computed(() => globalSymbolState.companyName);
+    const exchange = computed(() => globalSymbolState.exchange);
+    const currentPrice = computed(() => globalSymbolState.currentPrice);
+    const priceChange = computed(() => globalSymbolState.priceChange);
+    const priceChangePercent = computed(
+      () => globalSymbolState.priceChangePercent
+    );
+    const isLivePrice = computed(() => globalSymbolState.isLivePrice);
+    const marketStatus = computed(() => globalSymbolState.marketStatus);
+
+    // Other reactive state
     const selectedOptions = ref([]);
     const chartData = ref(null);
     const additionalQuoteData = ref({});
@@ -682,21 +690,9 @@ export default {
       // Not used in positions view
     };
 
-    // Initialize with default symbol data
-    const initializeSymbolData = () => {
-      currentSymbol.value = "SPY";
-      companyName.value = "SPDR S&P 500 ETF Trust";
-      exchange.value = "ARCA";
-      currentPrice.value = 623.62;
-      priceChange.value = -0.54;
-      priceChangePercent.value = -0.09;
-      isLivePrice.value = false;
-      marketStatus.value = "Market Closed";
-    };
-
     // Lifecycle
     onMounted(async () => {
-      initializeSymbolData();
+      // Global state is automatically initialized - no manual setup needed
       await fetchPositions();
     });
 

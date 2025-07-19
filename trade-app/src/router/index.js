@@ -2,6 +2,7 @@ import { createRouter, createWebHistory } from "vue-router";
 import OptionsTrading from "../views/OptionsTrading.vue";
 import ChartView from "../views/ChartView.vue";
 import PositionsView from "../views/PositionsView.vue";
+import SmartMarketDataTest from "../components/SmartMarketDataTest.vue";
 
 const routes = [
   {
@@ -34,6 +35,14 @@ const routes = [
     component: PositionsView,
     meta: {
       title: "Positions - Trading Platform",
+    },
+  },
+  {
+    path: "/test",
+    name: "SmartMarketDataTest",
+    component: SmartMarketDataTest,
+    meta: {
+      title: "Smart Market Data Test - Trading Platform",
     },
   },
 ];

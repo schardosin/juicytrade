@@ -3,6 +3,9 @@ import PrimeVue from "primevue/config";
 import App from "./App.vue";
 import router from "./router";
 
+// Smart Market Data Store
+import smartMarketDataStore from "./services/smartMarketDataStore.js";
+
 // PrimeVue components
 import Button from "primevue/button";
 import InputText from "primevue/inputtext";
@@ -33,6 +36,10 @@ const app = createApp(App);
 
 app.use(PrimeVue);
 app.use(router);
+
+// Initialize and provide Smart Market Data Store globally
+smartMarketDataStore.initialize();
+app.provide("smartMarketDataStore", smartMarketDataStore);
 
 // Register components globally
 app.component("Button", Button);

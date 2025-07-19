@@ -15,7 +15,7 @@ class StreamingManager:
         self._subscriptions: Dict[str, Set[str]] = {} # { "stock_quotes": {"AAPL", "SPY"}, ... }
         
         # Smart subscription tracking
-        self._stock_subscription: Optional[str] = None
+        self._stock_subscriptions: Set[str] = set()     # Multiple stocks
         self._options_subscriptions: Set[str] = set()
         self._persistent_subscriptions: Set[str] = set()
 
@@ -99,8 +99,7 @@ class StreamingManager:
         
         # Step 1: Unsubscribe from all current symbols
         all_current_symbols = []
-        if self._stock_subscription:
-            all_current_symbols.append(self._stock_subscription)
+        all_current_symbols.extend(list(self._stock_subscriptions))
         all_current_symbols.extend(list(self._options_subscriptions))
         
         if all_current_symbols:
@@ -114,12 +113,41 @@ class StreamingManager:
             await self._subscribe_symbols(all_new_symbols)
         
         # Step 3: Update tracking
-        old_stock = self._stock_subscription
+        old_stock_count = len(self._stock_subscriptions)
         old_options_count = len(self._options_subscriptions)
-        self._stock_subscription = underlying_symbol
+        self._stock_subscriptions = {underlying_symbol}
         self._options_subscriptions = set(option_symbols)
         
-        logger.info(f"✅ StreamingManager: All subscriptions replaced. Stock: {old_stock} -> {underlying_symbol}, Options: {old_options_count} -> {len(option_symbols)}")
+        logger.info(f"✅ StreamingManager: All subscriptions replaced. Stocks: {old_stock_count} -> 1 ({underlying_symbol}), Options: {old_options_count} -> {len(option_symbols)}")
+
+    async def replace_all_subscriptions_multi_stock(self, stock_symbols: List[str], option_symbols: List[str]):
+        """Replace ALL subscriptions with multiple stock symbols + options symbols"""
+        logger.info(f"🔄 StreamingManager: Replacing all subscriptions (multi-stock) - stocks: {len(stock_symbols)}, options: {len(option_symbols)} symbols")
+        
+        # Step 1: Unsubscribe from all current symbols
+        all_current_symbols = []
+        all_current_symbols.extend(list(self._stock_subscriptions))
+        all_current_symbols.extend(list(self._options_subscriptions))
+        
+        if all_current_symbols:
+            logger.info(f"🧹 StreamingManager: Unsubscribing from {len(all_current_symbols)} current symbols")
+            await self._unsubscribe_symbols(all_current_symbols)
+        
+        # Step 2: Subscribe to all new symbols
+        all_new_symbols = stock_symbols + option_symbols
+        if all_new_symbols:
+            logger.info(f"📡 StreamingManager: Subscribing to {len(all_new_symbols)} new symbols")
+            await self._subscribe_symbols(all_new_symbols)
+        
+        # Step 3: Update tracking
+        old_stock_count = len(self._stock_subscriptions)
+        old_options_count = len(self._options_subscriptions)
+        
+        # Update subscriptions
+        self._stock_subscriptions = set(stock_symbols)
+        self._options_subscriptions = set(option_symbols)
+        
+        logger.info(f"✅ StreamingManager: All subscriptions replaced (multi-stock). Stocks: {old_stock_count} -> {len(stock_symbols)}, Options: {old_options_count} -> {len(option_symbols)}")
 
     async def replace_stock_subscription(self, symbol: str):
         """Legacy method - use replace_all_subscriptions for new code"""
@@ -129,7 +157,8 @@ class StreamingManager:
     async def replace_options_subscriptions(self, symbols: List[str]):
         """Legacy method - use replace_all_subscriptions for new code"""
         logger.warning("replace_options_subscriptions is deprecated - use replace_all_subscriptions")
-        current_stock = self._stock_subscription or "SPY"  # fallback
+        # Use first current stock or SPY as fallback
+        current_stock = next(iter(self._stock_subscriptions), "SPY")
         await self.replace_all_subscriptions(current_stock, symbols)
 
     async def unsubscribe_all(self):
@@ -138,15 +167,14 @@ class StreamingManager:
         
         # Get all current symbols
         all_current_symbols = []
-        if self._stock_subscription:
-            all_current_symbols.append(self._stock_subscription)
+        all_current_symbols.extend(list(self._stock_subscriptions))
         all_current_symbols.extend(list(self._options_subscriptions))
         
         if all_current_symbols:
             await self._unsubscribe_symbols(all_current_symbols)
         
         # Clear tracking
-        self._stock_subscription = None
+        self._stock_subscriptions.clear()
         self._options_subscriptions.clear()
         
         logger.info("✅ StreamingManager: All subscriptions cleared")
@@ -170,7 +198,7 @@ class StreamingManager:
     def get_subscription_status(self) -> Dict[str, any]:
         """Get current subscription status for debugging"""
         return {
-            "stock_subscription": self._stock_subscription,
+            "stock_subscriptions": list(self._stock_subscriptions),
             "options_subscriptions": list(self._options_subscriptions),
             "persistent_subscriptions": list(self._persistent_subscriptions),
             "total_subscriptions": {
@@ -183,8 +211,7 @@ class StreamingManager:
         try:
             # Get all current symbols that should be subscribed
             all_current_symbols = []
-            if self._stock_subscription:
-                all_current_symbols.append(self._stock_subscription)
+            all_current_symbols.extend(list(self._stock_subscriptions))
             all_current_symbols.extend(list(self._options_subscriptions))
             
             if all_current_symbols:

@@ -243,7 +243,8 @@
 </template>
 
 <script>
-import { ref, computed } from "vue";
+import { ref, computed, reactive } from "vue";
+import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 
 export default {
   name: "CollapsibleOptionsChain",
@@ -285,9 +286,12 @@ export default {
     "strike-count-changed",
   ],
   setup(props, { emit }) {
+    const { getOptionPrice } = useSmartMarketData();
+
     // Reactive state
     const strikeCount = ref(20); // Default to 20 strikes around ATM
     const expandedExpirations = ref(new Set());
+    const liveOptionPrices = reactive(new Map());
 
     // Computed properties
     const expirationGroups = computed(() => {
@@ -377,24 +381,42 @@ export default {
       );
     };
 
+    const getLivePrice = (symbol) => {
+      if (!symbol) return null;
+
+      if (!liveOptionPrices.has(symbol)) {
+        // Call getOptionPrice only once to set up the subscription and heartbeat
+        liveOptionPrices.set(symbol, getOptionPrice(symbol));
+      }
+      return liveOptionPrices.get(symbol)?.value;
+    };
+
     const getCallBid = (expiration, strike) => {
       const option = getCallOption(expiration, strike);
-      return option ? option.bid : 0;
+      if (!option) return 0;
+      const livePrice = getLivePrice(option.symbol);
+      return livePrice?.bid ?? option.bid;
     };
 
     const getCallAsk = (expiration, strike) => {
       const option = getCallOption(expiration, strike);
-      return option ? option.ask : 0;
+      if (!option) return 0;
+      const livePrice = getLivePrice(option.symbol);
+      return livePrice?.ask ?? option.ask;
     };
 
     const getPutBid = (expiration, strike) => {
       const option = getPutOption(expiration, strike);
-      return option ? option.bid : 0;
+      if (!option) return 0;
+      const livePrice = getLivePrice(option.symbol);
+      return livePrice?.bid ?? option.bid;
     };
 
     const getPutAsk = (expiration, strike) => {
       const option = getPutOption(expiration, strike);
-      return option ? option.ask : 0;
+      if (!option) return 0;
+      const livePrice = getLivePrice(option.symbol);
+      return livePrice?.ask ?? option.ask;
     };
 
     const getCallDelta = (expiration, strike) => {

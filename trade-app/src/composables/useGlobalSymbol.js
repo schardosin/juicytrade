@@ -1,4 +1,5 @@
-import { ref, reactive } from "vue";
+import { ref, reactive, computed, watch } from "vue";
+import { useSmartMarketData } from "./useSmartMarketData.js";
 
 // Load persisted symbol data from localStorage
 const loadPersistedSymbolData = () => {
@@ -36,6 +37,44 @@ const loadPersistedSymbolData = () => {
 
 // Global symbol state - shared across all components with persistence
 const globalSymbolState = reactive(loadPersistedSymbolData());
+
+// Smart market data integration - automatically update global state with live prices
+const { getStockPrice } = useSmartMarketData();
+
+// Get live price for current symbol
+const liveStockPrice = computed(() => {
+  if (!globalSymbolState.currentSymbol) return null;
+  return getStockPrice(globalSymbolState.currentSymbol);
+});
+
+// Watch for live price updates and automatically update global state
+watch(
+  liveStockPrice,
+  (newPriceRef) => {
+    if (newPriceRef?.value?.price) {
+      const oldPrice = globalSymbolState.currentPrice;
+      const newPrice = newPriceRef.value.price;
+
+      // Update current price
+      globalSymbolState.currentPrice = newPrice;
+      globalSymbolState.isLivePrice = true;
+
+      // Calculate price change if we have a previous price
+      if (oldPrice !== null && oldPrice !== 0) {
+        globalSymbolState.priceChange = newPrice - oldPrice;
+        globalSymbolState.priceChangePercent =
+          (globalSymbolState.priceChange / oldPrice) * 100;
+      }
+
+      console.log(
+        `🌍 Global state updated with live price for ${
+          globalSymbolState.currentSymbol
+        }: $${newPrice.toFixed(2)}`
+      );
+    }
+  },
+  { deep: true, immediate: true }
+);
 
 // Save symbol data to localStorage (only symbol info, not price data)
 const persistSymbolData = () => {

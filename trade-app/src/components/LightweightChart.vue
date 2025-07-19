@@ -51,7 +51,8 @@ import {
   HistogramSeries,
 } from "lightweight-charts";
 import axios from "axios";
-import webSocketClient from "../services/webSocketClient";
+// webSocketClient no longer needed - price data comes from props
+// import webSocketClient from "../services/webSocketClient";
 
 export default {
   name: "LightweightChart",
@@ -452,19 +453,9 @@ export default {
       );
     };
 
-    const connectWebSocket = () => {
-      if (!props.enableRealtime) return;
-
-      console.log("Setting up real-time chart updates for", props.symbol);
-
-      // Use the shared WebSocket client instead of creating a new connection
-      webSocketClient.onPriceUpdate((data) => {
-        if (data.symbol === props.symbol) {
-          console.log("📈 Chart received price update for", props.symbol, data);
-          updateRealTimeData(data.data);
-        }
-      });
-    };
+    // Real-time updates are now handled by the parent component through the global state system
+    // The chart will receive price updates through props or other mechanisms
+    // No direct WebSocket connection needed in the chart component
 
     const updateRealTimeData = (priceData) => {
       if (!candlestickSeries || !priceData) return;
@@ -674,9 +665,8 @@ export default {
         await loadHistoricalData(props.symbol, selectedTimeframe.value);
       }
 
-      if (props.enableRealtime) {
-        connectWebSocket();
-      }
+      // Real-time updates are now handled by the parent component through global state
+      // No direct WebSocket connection needed here
     });
 
     onUnmounted(() => {

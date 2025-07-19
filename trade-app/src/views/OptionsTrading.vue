@@ -105,7 +105,8 @@ import { useOrderManagement } from "../composables/useOrderManagement";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { useOptionsChainManager } from "../composables/useOptionsChainManager";
 import api from "../services/api";
-import webSocketClient from "../services/webSocketClient";
+// webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
+// import webSocketClient from "../services/webSocketClient";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
 
 export default {
@@ -233,15 +234,9 @@ export default {
           );
         }
 
-        // Use unified subscription replacement
-        if (webSocketClient.isConnected) {
-          // Replace with new underlying symbol and clear options (will be set when expiration is selected)
-          webSocketClient.replaceAllSubscriptions(symbol, []);
-        } else {
-          console.log(
-            "⚠️ WebSocket not connected, will subscribe when connected"
-          );
-        }
+        // Subscriptions are now handled automatically by the SmartMarketDataStore.
+        // No need to manually call webSocketClient here. The SymbolHeader
+        // component will trigger the necessary stock subscription.
       } catch (error) {
         console.error("Error fetching symbol data:", error);
       }
@@ -315,76 +310,17 @@ export default {
       }
     };
 
-    const startStreaming = async (symbol) => {
-      try {
-        await webSocketClient.connect();
-
-        // Use unified subscription replacement
-        webSocketClient.replaceAllSubscriptions(symbol, []);
-
-        // Ensure persistent subscriptions for orders and positions
-        webSocketClient.ensurePersistentSubscriptions(["orders", "positions"]);
-
-        webSocketClient.onPriceUpdate((data) => {
-          // CRITICAL: Always check against current symbol, not the symbol from when callback was registered
-          if (data.symbol === currentSymbol.value) {
-            const newPrice =
-              data.price ||
-              data.data?.last ||
-              data.data?.mid ||
-              (data.data?.bid && data.data?.ask
-                ? (data.data?.bid + data.data?.ask) / 2
-                : null) ||
-              data.data?.bid ||
-              data.data?.ask;
-
-            updatePrice({ price: newPrice, isLive: true });
-
-            // Update market status based on time (simplified)
-            const now = new Date();
-            const hour = now.getHours();
-            let status;
-            if (hour >= 9 && hour < 16) {
-              status = "Market Open";
-            } else if (hour >= 4 && hour < 9) {
-              status = "Pre-Market";
-            } else {
-              status = "Market Closed";
-            }
-            updateMarketStatus(status);
-          } else {
-            // Handle option price updates using centralized manager
-            optionsManager.updateOptionPrice(data.symbol, {
-              bid: data.data?.bid,
-              ask: data.data?.ask,
-            });
-          }
-        });
-      } catch (error) {
-        console.error("Error starting streaming:", error);
-      }
-    };
+    // The startStreaming logic is now handled globally by the SmartMarketDataStore
+    // when it is initialized in main.js. We can remove this local function.
+    // The onPriceUpdate logic is also handled inside the store.
 
     const onExpiryChange = async () => {
       if (selectedExpiry.value) {
         await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
 
-        // Use unified subscription replacement with underlying + options
-        if (optionsChainData.value.length > 0) {
-          const optionSymbols = optionsChainData.value.map(
-            (option) => option.symbol
-          );
-          webSocketClient.replaceAllSubscriptions(
-            currentSymbol.value,
-            optionSymbols
-          );
-        } else {
-          // Clear options subscriptions if no options available, keep underlying
-          console.log(
-            "Clearing options subscriptions (no options available), keeping underlying"
-          );
-          webSocketClient.replaceAllSubscriptions(currentSymbol.value, []);
-        }
+        // The subscription logic is now handled automatically by the
+        // CollapsibleOptionsChain component via the SmartMarketDataStore.
+        // No need to manually subscribe here.
       }
     };
 
@@ -666,10 +602,8 @@ export default {
 
     // Lifecycle hooks
     onMounted(async () => {
-      // First, establish WebSocket connection and set up streaming
-      await startStreaming(currentSymbol.value);
-
-      // Then fetch symbol data (this will use replaceStockSubscription for subsequent changes)
+      // The SmartMarketDataStore is already connected via main.js.
+      // We just need to fetch the initial data for the default symbol.
       await fetchSymbolData(currentSymbol.value);
       await fetchExpirationDates(currentSymbol.value);
       if (selectedExpiry.value) {

@@ -66,7 +66,8 @@ import LightweightChart from "../components/LightweightChart.vue";
 import RightPanel from "../components/RightPanel.vue";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import api from "../services/api";
-import webSocketClient from "../services/webSocketClient";
+// webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
+// import webSocketClient from "../services/webSocketClient";
 
 export default {
   name: "ChartView",
@@ -150,58 +151,15 @@ export default {
           }
         }
 
-        // Start WebSocket streaming for the symbol
-        await startStreaming(symbol);
+        // WebSocket streaming is now handled automatically by SmartMarketDataStore
+        // via the global state integration - no manual streaming needed
       } catch (error) {
         console.error("Error fetching symbol data:", error);
       }
     };
 
-    const startStreaming = async (symbol) => {
-      try {
-        await webSocketClient.connect();
-
-        // Use smart stock subscription replacement
-        webSocketClient.replaceStockSubscription(symbol);
-
-        // Ensure persistent subscriptions for orders and positions
-        webSocketClient.ensurePersistentSubscriptions(["orders", "positions"]);
-
-        webSocketClient.onPriceUpdate((data) => {
-          // CRITICAL: Always check against current symbol, not the symbol from when callback was registered
-          if (data.symbol === currentSymbol.value) {
-            const newPrice =
-              data.price ||
-              data.data?.last ||
-              data.data?.mid ||
-              (data.data?.bid && data.data?.ask
-                ? (data.data?.bid + data.data?.ask) / 2
-                : null) ||
-              data.data?.bid ||
-              data.data?.ask;
-
-            updatePrice({ price: newPrice, isLive: true });
-
-            // Update market status based on time (simplified)
-            const now = new Date();
-            const hour = now.getHours();
-            let status;
-            if (hour >= 9 && hour < 16) {
-              status = "Market Open";
-            } else if (hour >= 4 && hour < 9) {
-              status = "Pre-Market";
-            } else if (hour >= 16 && hour < 20) {
-              status = "After Hours";
-            } else {
-              status = "Market Closed";
-            }
-            updateMarketStatus(status);
-          }
-        });
-      } catch (error) {
-        console.error("Error starting streaming:", error);
-      }
-    };
+    // Streaming is now handled automatically by SmartMarketDataStore via global state
+    // No manual WebSocket management needed
 
     const onSymbolSelected = async (symbol) => {
       console.log("Chart view - Symbol selected:", symbol);

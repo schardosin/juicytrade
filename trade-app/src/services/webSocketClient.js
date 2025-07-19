@@ -443,6 +443,13 @@ class WebSocketStreamingClient {
 
   // Unified subscription replacement method
   replaceAllSubscriptions(underlyingSymbol, optionSymbols = []) {
+    // Handle both old format (underlyingSymbol, optionSymbols) and new format (array of all symbols)
+    if (Array.isArray(underlyingSymbol)) {
+      // New format: single array of all symbols
+      return this.replaceAllSubscriptionsWithSymbols(underlyingSymbol);
+    }
+
+    // Old format: separate underlying and options
     if (!Array.isArray(optionSymbols)) {
       optionSymbols = [optionSymbols];
     }
@@ -475,6 +482,63 @@ class WebSocketStreamingClient {
         );
       }
     }, this.debounceDelay);
+  }
+
+  // New method for Smart Market Data Store - replaces all subscriptions with a simple array
+  replaceAllSubscriptionsWithSymbols(allSymbols = []) {
+    if (!Array.isArray(allSymbols)) {
+      allSymbols = [allSymbols];
+    }
+
+    // Separate stocks and options for backend compatibility
+    const stockSymbols = [];
+    const optionSymbols = [];
+
+    allSymbols.forEach((symbol) => {
+      if (this.isOptionSymbol(symbol)) {
+        optionSymbols.push(symbol);
+      } else {
+        stockSymbols.push(symbol);
+      }
+    });
+
+    // Store for recovery
+    this.currentStockSubscription = stockSymbols[0] || null; // Use first stock as primary
+    this.currentOptionsSubscriptions = [...optionSymbols];
+
+    // Clear existing debounce timers
+    if (this.stockSubscriptionDebounce) {
+      clearTimeout(this.stockSubscriptionDebounce);
+    }
+    if (this.optionsSubscriptionDebounce) {
+      clearTimeout(this.optionsSubscriptionDebounce);
+    }
+    if (this.unifiedSubscriptionDebounce) {
+      clearTimeout(this.unifiedSubscriptionDebounce);
+    }
+
+    // Use a single debounce timer for smart subscription
+    this.smartSubscriptionDebounce = setTimeout(() => {
+      if (this.isConnected && this.ws) {
+        const message = {
+          type: "subscribe_smart_replace_all",
+          stock_symbols: stockSymbols,
+          option_symbols: optionSymbols,
+          all_symbols: allSymbols, // Send all symbols for backend flexibility
+        };
+
+        console.log(
+          `📡 Smart subscription update: ${stockSymbols.length} stocks, ${optionSymbols.length} options`
+        );
+        this.ws.send(JSON.stringify(message));
+      } else {
+        console.warn(
+          "⚠️ WebSocket not connected, smart subscription will be applied on connection"
+        );
+      }
+    }, this.debounceDelay);
+
+    return Promise.resolve(); // Return promise for async compatibility
   }
 
   // Legacy methods - deprecated but kept for backward compatibility
