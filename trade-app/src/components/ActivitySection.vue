@@ -56,10 +56,10 @@
         </button>
         <button
           class="status-tab"
-          :class="{ active: selectedStatus === 'other' }"
-          @click="selectedStatus = 'other'"
+          :class="{ active: selectedStatus === 'all' }"
+          @click="selectedStatus = 'all'"
         >
-          Other
+          All
         </button>
       </div>
     </div>
@@ -198,9 +198,10 @@
 
 <script>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
-import api from "../services/api";
+import { useMarketData } from "../composables/useMarketData.js";
 import { detectStrategy } from "../utils/optionsStrategies";
 import notificationService from "../services/notificationService";
+import api from "../services/api"; // Keep for cancelOrder method
 
 export default {
   name: "ActivitySection",
@@ -211,10 +212,16 @@ export default {
     },
   },
   setup(props) {
+    // Use unified market data composable
+    const { getOrders } = useMarketData();
+
     const orders = ref([]);
     const loading = ref(false);
     const selectedSymbolFilter = ref(props.currentSymbol);
     const selectedStatus = ref("filled");
+
+    // Get reactive orders data (auto-updates every 15 seconds)
+    const reactiveOrders = getOrders();
 
     // Context menu state
     const contextMenu = ref({
@@ -295,8 +302,8 @@ export default {
           case "filled":
             apiStatus = "filled";
             break;
-          case "other":
-            apiStatus = "all"; // Get all and filter on frontend for "other"
+          case "all":
+            apiStatus = "all"; // Get all orders
             break;
           default:
             apiStatus = "all";
@@ -307,6 +314,9 @@ export default {
             status || selectedStatus.value
           })`
         );
+
+        // For ActivitySection, we need to call API directly with status parameter
+        // because the unified system doesn't support dynamic status filtering yet
         const response = await api.getOrders(apiStatus);
 
         console.log("Orders API response:", response);

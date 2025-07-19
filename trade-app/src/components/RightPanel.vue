@@ -280,7 +280,7 @@ import RightPanelSection from "./RightPanelSection.vue";
 import QuoteDetailsSection from "./QuoteDetailsSection.vue";
 import PayoffChart from "./PayoffChart.vue";
 import ActivitySection from "./ActivitySection.vue";
-import api from "../services/api";
+import { useMarketData } from "../composables/useMarketData.js";
 
 export default {
   name: "RightPanel",
@@ -334,6 +334,9 @@ export default {
   },
   emits: ["panel-collapsed", "positions-changed"],
   setup(props, { emit }) {
+    // Use unified market data composable
+    const { getPositions } = useMarketData();
+
     const activeSection = ref("overview");
     const isExpanded = ref(false);
     const existingPositions = ref([]);
@@ -738,10 +741,11 @@ export default {
       }
     };
 
-    // Fetch existing positions from API
+    // Fetch existing positions from unified data access
     const fetchExistingPositions = async () => {
       try {
-        const response = await api.getPositions();
+        // Use reactive positions data (auto-updates every 30 seconds)
+        const response = getPositions().value;
 
         // Handle the new enhanced response structure
         let positions = [];

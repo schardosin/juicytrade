@@ -1,29 +1,49 @@
-import { reactive, computed, onScopeDispose, getCurrentScope } from "vue";
+import {
+  reactive,
+  computed,
+  watch,
+  onScopeDispose,
+  getCurrentScope,
+} from "vue";
 import webSocketClient from "./webSocketClient.js";
+import api from "./api.js";
 
 /**
- * Smart Market Data Store
+ * Smart Market Data Store - Unified Data Management System
  *
- * Automatically manages WebSocket subscriptions based on component usage.
- * Components simply call getStockPrice() or getOptionPrice() and the system
- * handles all subscription management automatically.
+ * Manages all application data through different strategies:
+ * - WebSocket Strategy: Real-time prices (existing functionality)
+ * - Periodic Strategy: Auto-refreshing data (account balance, positions)
+ * - One-time Strategy: Static cached data (account info)
+ * - On-demand Strategy: Manual refresh with TTL (historical data, options chains)
  *
  * Key Features:
  * - Zero component logic required
- * - Automatic subscription/unsubscription
- * - Broker limit compliance
- * - Weekend persistence for displayed symbols
+ * - Automatic subscription/unsubscription for WebSocket data
+ * - Automatic periodic updates for account data
+ * - Smart caching for on-demand data
+ * - Unified interface for all data types
  * - Memory leak prevention
  */
 class SmartMarketDataStore {
   constructor() {
-    // Reactive data stores
+    // Reactive data stores - WebSocket data
     this.stockPrices = reactive(new Map());
     this.optionPrices = reactive(new Map());
 
-    // Access tracking
+    // Reactive data stores - REST API data
+    this.data = reactive(new Map()); // General data store for all REST API data
+
+    // Access tracking for WebSocket subscriptions
     this.lastAccess = new Map(); // symbol -> timestamp
     this.activeSubscriptions = new Set(); // currently subscribed symbols
+
+    // REST API data management
+    this.strategies = new Map(); // data source configurations
+    this.loading = reactive(new Map()); // loading states
+    this.errors = reactive(new Map()); // error states
+    this.timers = new Map(); // periodic update timers
+    this.cache = new Map(); // TTL cache for on-demand data
 
     // Configuration
     this.accessTimeout = 45000; // 45 seconds grace period
@@ -284,17 +304,259 @@ class SmartMarketDataStore {
     };
   }
 
+  // ===== REST API DATA MANAGEMENT METHODS =====
+
   /**
-   * Force cleanup of all subscriptions (for testing)
+   * Register a data source with its update strategy
+   */
+  registerDataSource(key, config) {
+    this.strategies.set(key, config);
+
+    // Auto-setup based on strategy
+    if (config.strategy === "periodic") {
+      this.setupPeriodicUpdate(key, config);
+    }
+
+    console.log(`📝 Registered data source: ${key} (${config.strategy})`);
+  }
+
+  /**
+   * Get reactive data for any key (unified interface)
+   */
+  getReactiveData(key) {
+    return computed(() => {
+      // Track access for on-demand strategies
+      this.trackDataAccess(key);
+      return this.data.get(key);
+    });
+  }
+
+  /**
+   * Get data with options (for on-demand and one-time strategies)
+   */
+  async getData(key, options = {}) {
+    let config = this.strategies.get(key);
+
+    // If exact key not found, try wildcard patterns
+    if (!config) {
+      config = this.findWildcardConfig(key);
+    }
+
+    if (!config) {
+      throw new Error(`Data source '${key}' not configured`);
+    }
+
+    switch (config.strategy) {
+      case "once":
+        return await this.fetchOnceData(key, config, options.forceRefresh);
+      case "on-demand":
+        return await this.fetchOnDemandData(key, config, options.forceRefresh);
+      case "periodic":
+        // For periodic data, just return current value
+        return this.data.get(key);
+      default:
+        throw new Error(`Unknown strategy: ${config.strategy}`);
+    }
+  }
+
+  /**
+   * Find configuration for wildcard patterns
+   */
+  findWildcardConfig(key) {
+    for (const [pattern, config] of this.strategies.entries()) {
+      if (pattern.includes("*")) {
+        // Convert wildcard pattern to regex
+        const regexPattern = pattern.replace(/\*/g, ".*");
+        const regex = new RegExp(`^${regexPattern}$`);
+        if (regex.test(key)) {
+          return config;
+        }
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Set up periodic updates for a data source
+   */
+  setupPeriodicUpdate(key, config) {
+    const fetchData = async () => {
+      try {
+        this.setLoading(key, true);
+        const data = await api[config.method](...(config.params || []));
+        this.updateData(key, data);
+      } catch (error) {
+        this.setError(key, error);
+      } finally {
+        this.setLoading(key, false);
+      }
+    };
+
+    // Initial fetch
+    fetchData();
+
+    // Set up periodic updates
+    const timer = setInterval(fetchData, config.interval);
+    this.timers.set(key, timer);
+
+    console.log(
+      `⏰ Periodic updates started for ${key} (${config.interval}ms)`
+    );
+  }
+
+  /**
+   * Fetch one-time data (cached permanently)
+   */
+  async fetchOnceData(key, config, forceRefresh = false) {
+    // Check if already fetched and not forcing refresh
+    if (!forceRefresh && this.data.has(key)) {
+      return this.data.get(key);
+    }
+
+    try {
+      this.setLoading(key, true);
+      const data = await api[config.method](...(config.params || []));
+      this.updateData(key, data);
+      return data;
+    } catch (error) {
+      this.setError(key, error);
+      throw error;
+    } finally {
+      this.setLoading(key, false);
+    }
+  }
+
+  /**
+   * Fetch on-demand data with TTL caching
+   */
+  async fetchOnDemandData(key, config, forceRefresh = false) {
+    const cached = this.cache.get(key);
+
+    // Check cache validity
+    if (!forceRefresh && cached && !this.isCacheExpired(cached, config.ttl)) {
+      return cached.data;
+    }
+
+    try {
+      this.setLoading(key, true);
+
+      // Handle dynamic parameters for on-demand strategies
+      let params = config.params || [];
+
+      // Extract parameters from key for dynamic methods
+      if (key.includes(".")) {
+        const keyParts = key.split(".");
+        if (keyParts.length > 1) {
+          // For keys like "optionsChain.AAPL.2025-01-17", extract symbol and expiry
+          params = keyParts.slice(1);
+        }
+      }
+
+      const data = await api[config.method](...params);
+
+      // Cache the data
+      this.cache.set(key, {
+        data,
+        timestamp: Date.now(),
+      });
+
+      this.updateData(key, data);
+      return data;
+    } catch (error) {
+      this.setError(key, error);
+      throw error;
+    } finally {
+      this.setLoading(key, false);
+    }
+  }
+
+  /**
+   * Check if cached data is expired
+   */
+  isCacheExpired(cached, ttl) {
+    return Date.now() - cached.timestamp > ttl;
+  }
+
+  /**
+   * Track access for on-demand strategies
+   */
+  trackDataAccess(key) {
+    let config = this.strategies.get(key);
+
+    // If exact key not found, try wildcard patterns
+    if (!config) {
+      config = this.findWildcardConfig(key);
+    }
+
+    if (config && config.strategy === "on-demand") {
+      // Trigger fetch if not cached or expired
+      this.getData(key).catch(console.error);
+    }
+  }
+
+  /**
+   * Update data (called by strategies)
+   */
+  updateData(key, newData) {
+    this.data.set(key, newData);
+    this.errors.delete(key);
+    console.log(`📊 Updated data: ${key}`);
+  }
+
+  /**
+   * Set error state
+   */
+  setError(key, error) {
+    this.errors.set(key, error);
+    console.error(`❌ Data error for ${key}:`, error);
+  }
+
+  /**
+   * Set loading state
+   */
+  setLoading(key, isLoading) {
+    if (isLoading) {
+      this.loading.set(key, true);
+    } else {
+      this.loading.delete(key);
+    }
+  }
+
+  /**
+   * Get loading state
+   */
+  isLoading(key) {
+    return computed(() => this.loading.has(key));
+  }
+
+  /**
+   * Get error state
+   */
+  getError(key) {
+    return computed(() => this.errors.get(key));
+  }
+
+  /**
+   * Force cleanup of all subscriptions and data (for testing)
    */
   forceCleanup() {
     console.log("🧹 Force cleanup initiated");
 
-    // Clear all subscriptions
+    // Clear WebSocket subscriptions
     this.activeSubscriptions.clear();
     this.lastAccess.clear();
     this.stockPrices.clear();
     this.optionPrices.clear();
+
+    // Clear REST API data
+    this.data.clear();
+    this.cache.clear();
+    this.loading.clear();
+    this.errors.clear();
+
+    // Clear timers
+    this.timers.forEach((timer) => clearInterval(timer));
+    this.timers.clear();
 
     // Update backend
     this.updateBackendSubscriptions();

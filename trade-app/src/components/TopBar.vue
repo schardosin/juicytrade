@@ -146,13 +146,16 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import webSocketClient from "../services/webSocketClient";
-import api from "../services/api";
+import { useMarketData } from "../composables/useMarketData.js";
 
 export default {
   name: "TopBar",
   setup() {
+    // Use unified market data composable
+    const { lookupSymbols, getBalance, getAccountInfo } = useMarketData();
+
     // Reactive data
     const searchInput = ref(null);
     const searchQuery = ref("");
@@ -168,9 +171,12 @@ export default {
     const accountLoading = ref(true);
     const accountError = ref(null);
 
+    // Get reactive account data (auto-updates every 60 seconds)
+    const reactiveBalance = getBalance();
+    const reactiveAccountInfo = getAccountInfo();
+
     let searchTimeout = null;
     let connectionStatusInterval = null;
-    let accountRefreshInterval = null;
 
     // Navigation links
     const navLinks = [
@@ -228,9 +234,8 @@ export default {
       if (searchQuery.value.trim()) {
         console.log(`Searching for: ${searchQuery.value}`);
         try {
-          // Import the API service
-          const { api } = await import("../services/api.js");
-          const results = await api.lookupSymbols(searchQuery.value);
+          // Use unified data access - cached for 10 minutes
+          const results = await lookupSymbols(searchQuery.value);
 
           if (results && results.length > 0) {
             // Take the first result and emit a symbol selection event
@@ -292,8 +297,8 @@ export default {
 
       searchTimeout = setTimeout(async () => {
         try {
-          const { api } = await import("../services/api.js");
-          const results = await api.lookupSymbols(searchQuery.value);
+          // Use unified data access - cached for 10 minutes
+          const results = await lookupSymbols(searchQuery.value);
           searchResults.value = results || [];
         } catch (error) {
           console.error("Error searching symbols:", error);
@@ -390,45 +395,51 @@ export default {
       }
     };
 
-    // Fetch account information
-    const fetchAccountInfo = async () => {
-      try {
-        accountLoading.value = true;
+    // Watch reactive account data and update local state
+    const updateAccountDisplay = () => {
+      const balanceData = reactiveBalance.value;
+      const accountData = reactiveAccountInfo.value;
+
+      if (balanceData || accountData) {
+        accountLoading.value = false;
         accountError.value = null;
 
-        const accountData = await api.getAccount();
+        // Use balance data first, fallback to account data
+        const data = balanceData || accountData;
 
-        if (accountData) {
-          // Update Net Liq (Portfolio Value/Equity)
-          netLiquidation.value =
-            accountData.portfolio_value || accountData.equity || 0;
+        // Update Net Liq (Portfolio Value/Equity)
+        netLiquidation.value =
+          data.portfolio_value || data.equity || data.net_liquidation || 0;
 
-          // Update Buying Power
-          buyingPower.value =
-            accountData.buying_power || accountData.options_buying_power || 0;
-        }
-      } catch (error) {
-        console.error("Error fetching account information:", error);
-        accountError.value = error.message || "Failed to load account data";
-
-        // Set default values on error
-        netLiquidation.value = 0;
-        buyingPower.value = 0;
-      } finally {
-        accountLoading.value = false;
+        // Update Buying Power
+        buyingPower.value =
+          data.buying_power ||
+          data.options_buying_power ||
+          data.day_trading_buying_power ||
+          0;
+      } else {
+        // Still loading or error state
+        accountLoading.value = true;
+        accountError.value = null;
       }
     };
 
     // Lifecycle hooks
     onMounted(() => {
       checkConnectionStatus();
-      fetchAccountInfo();
+
+      // Initial account display update
+      updateAccountDisplay();
 
       // Set up periodic connection status checks
       connectionStatusInterval = setInterval(checkConnectionStatus, 5000);
+    });
 
-      // Set up periodic account data refresh (every 30 seconds)
-      accountRefreshInterval = setInterval(fetchAccountInfo, 30000);
+    // Watch for reactive data changes and update display
+    // This replaces the old periodic API calls
+    watch([reactiveBalance, reactiveAccountInfo], updateAccountDisplay, {
+      immediate: true,
+      deep: true,
     });
 
     // Clean up intervals when component is unmounted
@@ -441,11 +452,6 @@ export default {
       if (connectionStatusInterval) {
         clearInterval(connectionStatusInterval);
         connectionStatusInterval = null;
-      }
-
-      if (accountRefreshInterval) {
-        clearInterval(accountRefreshInterval);
-        accountRefreshInterval = null;
       }
     });
 

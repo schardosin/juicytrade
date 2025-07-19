@@ -356,7 +356,7 @@ import SideNav from "../components/SideNav.vue";
 import RightPanel from "../components/RightPanel.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
-import { api } from "../services/api.js";
+import { useMarketData } from "../composables/useMarketData.js";
 
 export default {
   name: "PositionsView",
@@ -370,6 +370,9 @@ export default {
     // Use global symbol state instead of local refs
     const { globalSymbolState } = useGlobalSymbol();
 
+    // Use unified market data composable
+    const { getPositions, refreshPositions } = useMarketData();
+
     // Computed properties for global symbol state
     const currentSymbol = computed(() => globalSymbolState.currentSymbol);
     const companyName = computed(() => globalSymbolState.companyName);
@@ -381,6 +384,9 @@ export default {
     );
     const isLivePrice = computed(() => globalSymbolState.isLivePrice);
     const marketStatus = computed(() => globalSymbolState.marketStatus);
+
+    // Get reactive positions data (auto-updates every 30 seconds)
+    const reactivePositions = getPositions();
 
     // Other reactive state
     const selectedOptions = ref([]);
@@ -440,17 +446,21 @@ export default {
         loading.value = true;
         error.value = null;
 
-        const response = await api.getPositions();
+        // Use manual refresh for initial load and retry button
+        await refreshPositions();
 
-        if (response.enhanced && response.symbol_groups) {
+        // Get the current reactive data
+        const response = reactivePositions.value;
+
+        if (response && response.enhanced && response.symbol_groups) {
           // New hierarchical structure
           positionGroups.value = convertSymbolGroupsToDisplay(
             response.symbol_groups
           );
-        } else if (response.enhanced && response.position_groups) {
+        } else if (response && response.enhanced && response.position_groups) {
           // Old enhanced structure
           positionGroups.value = response.position_groups;
-        } else if (response.positions) {
+        } else if (response && response.positions) {
           // Fallback: convert regular positions to simple groups
           positionGroups.value = convertPositionsToGroups(response.positions);
         } else {

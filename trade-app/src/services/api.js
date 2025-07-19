@@ -257,7 +257,7 @@ export const api = {
   async getOrders(status = "all") {
     try {
       const response = await axios.get(`${API_BASE_URL}/orders`, {
-        params: status !== "all" ? { status } : {},
+        params: { status },
       });
       return response.data.data;
     } catch (error) {
@@ -273,6 +273,29 @@ export const api = {
       return response.data;
     } catch (error) {
       console.error("Error cancelling order:", error);
+      throw error;
+    }
+  },
+
+  // Get historical data (for LightweightChart and other components)
+  async getHistoricalData(symbol, timeframe, options = {}) {
+    try {
+      const params = {
+        timeframe,
+        limit: options.limit,
+        start_date: options.start_date,
+        end_date: options.end_date,
+      };
+
+      const response = await axios.get(
+        `${API_BASE_URL}/chart/historical/${symbol}`,
+        {
+          params,
+        }
+      );
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching historical data:", error);
       throw error;
     }
   },

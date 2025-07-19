@@ -50,9 +50,7 @@ import {
   CandlestickSeries,
   HistogramSeries,
 } from "lightweight-charts";
-import axios from "axios";
-// webSocketClient no longer needed - price data comes from props
-// import webSocketClient from "../services/webSocketClient";
+import { useMarketData } from "../composables/useMarketData.js";
 
 export default {
   name: "LightweightChart",
@@ -80,6 +78,9 @@ export default {
     const error = ref("");
     const selectedTimeframe = ref("D");
     const selectedDateRange = ref("6M");
+
+    // Use unified market data composable
+    const { getHistoricalData } = useMarketData();
 
     let chart = null;
     let candlestickSeries = null;
@@ -364,12 +365,14 @@ export default {
           start_date,
         };
 
-        const response = await axios.get(`/api/chart/historical/${symbol}`, {
-          params,
+        // Use unified data access instead of direct axios call
+        const data = await getHistoricalData(symbol, timeframe, {
+          limit,
+          start_date,
         });
 
-        if (response.data.success && response.data.data.bars) {
-          const bars = response.data.data.bars;
+        if (data && data.bars) {
+          const bars = data.bars;
           console.log(`Received ${bars.length} bars for ${symbol}`);
 
           if (bars.length === 0) {
@@ -425,7 +428,7 @@ export default {
 
           console.log(`Chart updated with ${bars.length} data points`);
         } else {
-          throw new Error(response.data.error || "Failed to load data");
+          throw new Error("Failed to load data");
         }
       } catch (err) {
         console.error("Error loading historical data:", err);
