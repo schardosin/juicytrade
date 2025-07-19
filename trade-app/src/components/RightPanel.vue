@@ -680,41 +680,60 @@ export default {
       try {
         const response = await api.getPositions();
 
-        // Handle the response structure
+        // Handle the new enhanced response structure
         let positions = [];
-        if (
+        if (response && response.enhanced && response.position_groups) {
+          // New enhanced structure - extract individual positions from groups
+          const symbolGroup = getSymbolGroup(props.currentSymbol);
+
+          response.position_groups.forEach((group) => {
+            // Check if this group is for the current symbol
+            if (
+              symbolGroup.includes(group.symbol) &&
+              group.asset_class === "options"
+            ) {
+              // Add each leg as an individual position
+              group.legs.forEach((leg) => {
+                // Parse option symbol to get missing details
+                const parsedOption = parseOptionSymbol(leg.symbol);
+
+                positions.push({
+                  id: leg.symbol,
+                  symbol: leg.symbol,
+                  underlying_symbol: group.symbol,
+                  qty: leg.qty,
+                  strike_price: parsedOption?.strike_price,
+                  option_type: parsedOption?.option_type,
+                  expiry_date: parsedOption?.expiry_date,
+                  current_price: leg.current_price,
+                  avg_entry_price: leg.avg_entry_price,
+                  unrealized_pl: leg.unrealized_pl || 0,
+                  isExisting: true,
+                  isSelected: false,
+                });
+              });
+            }
+          });
+        } else if (
           response &&
           response.positions &&
           Array.isArray(response.positions)
         ) {
-          positions = response.positions;
-        } else if (response && response.data && response.data.positions) {
-          positions = response.data.positions;
-        } else if (response && Array.isArray(response)) {
-          positions = response;
-        }
-
-        if (positions && Array.isArray(positions)) {
+          // Fallback to old structure
           const symbolGroup = getSymbolGroup(props.currentSymbol);
 
-          // Filter and format positions for options only
-          const optionPositions = positions
+          positions = response.positions
             .filter((pos) => {
               const isOption = pos.asset_class === "us_option";
-
-              // Extract underlying symbol from option symbol since API returns null
               const underlyingFromSymbol = extractUnderlyingFromOptionSymbol(
                 pos.symbol
               );
               const isCurrentSymbolGroup =
                 symbolGroup.includes(underlyingFromSymbol);
-
               return isOption && isCurrentSymbolGroup;
             })
             .map((pos) => {
-              // Parse option symbol to get missing details
               const parsedOption = parseOptionSymbol(pos.symbol);
-
               return {
                 id: pos.symbol,
                 symbol: pos.symbol,
@@ -732,12 +751,9 @@ export default {
                 isSelected: false,
               };
             });
-
-          existingPositions.value = optionPositions;
-        } else {
-          existingPositions.value = [];
-          console.log("No existing positions found - API returned:", response);
         }
+
+        existingPositions.value = positions;
       } catch (error) {
         console.error("Error fetching existing positions:", error);
         console.error("Error details:", error.response?.data || error.message);

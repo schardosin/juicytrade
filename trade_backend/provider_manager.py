@@ -7,7 +7,7 @@ from .providers.public_provider import PublicProvider
 from .providers.tradier_provider import TradierProvider
 from .provider_config import provider_config_manager
 from .config import settings
-from .models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult, Account
+from .models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult, Account, PositionGroup
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +131,13 @@ class ProviderManager:
         provider = self._get_provider("positions")
         if provider:
             return await provider.get_positions()
+        return []
+
+    async def get_positions_enhanced(self) -> List[PositionGroup]:
+        """Get enhanced positions with order chain grouping and strategy detection."""
+        provider = self._get_provider("positions")
+        if provider and hasattr(provider, 'get_positions_enhanced'):
+            return await provider.get_positions_enhanced()
         return []
 
     async def get_orders(self, status: str = "open") -> List[Order]:

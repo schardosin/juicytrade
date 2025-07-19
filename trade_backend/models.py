@@ -139,3 +139,34 @@ class MultiLegOrderRequest(BaseModel):
     order_type: str = "limit"
     time_in_force: str = "day"
     limit_price: Optional[float] = None
+
+class PositionGroup(BaseModel):
+    """Position group model for order chain grouping."""
+    id: str  # Order chain ID or group identifier
+    symbol: str  # Underlying symbol (e.g., SPY)
+    strategy: str  # Strategy name (e.g., "Iron Condor", "Call Spread")
+    asset_class: str  # "options" or "stocks"
+    total_qty: float
+    total_cost_basis: float
+    total_market_value: float
+    total_unrealized_pl: float
+    total_unrealized_plpc: float
+    pl_day: float  # P&L for the day
+    pl_open: float  # P&L since position opened
+    legs: List[Position]  # Individual position legs
+    order_date: Optional[str] = None
+    expiration_date: Optional[str] = None  # For options
+    dte: Optional[int] = None  # Days to expiration
+    order_chain_id: Optional[str] = None  # Original order ID that created this group
+    
+class HistoricalTrade(BaseModel):
+    """Historical trade data from broker history API."""
+    id: str
+    symbol: str
+    side: str  # "buy" or "sell"
+    qty: float
+    price: float
+    date: str
+    order_id: Optional[str] = None
+    commission: Optional[float] = None
+    asset_class: Optional[str] = None

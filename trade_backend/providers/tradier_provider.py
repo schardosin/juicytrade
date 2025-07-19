@@ -9,7 +9,7 @@ from datetime import datetime
 from collections import OrderedDict
 
 from .base_provider import BaseProvider
-from ..models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult, Account
+from ..models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult, Account, PositionGroup, HistoricalTrade
 from ..config import settings
 
 logger = logging.getLogger(__name__)
@@ -1329,3 +1329,780 @@ class TradierProvider(BaseProvider):
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""
         return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
+
+    # === Enhanced Positions with History Integration ===
+    
+    async def get_positions_enhanced(self) -> List[PositionGroup]:
+        """Get enhanced positions with order chain grouping and strategy detection."""
+        try:
+            logger.info("🔍 Getting enhanced positions with order chain grouping...")
+            
+            # 1. Get current positions
+            current_positions = await self.get_positions()
+            if not current_positions:
+                logger.info("No current positions found")
+                return []
+            
+            # 2. Get historical trades (d-1 and older) AND current day orders
+            historical_trades = await self._get_order_history(days_back=30)
+            current_orders = await self.get_orders(status="all")  # Get all orders including filled
+            
+            logger.info(f"📊 Retrieved {len(historical_trades)} historical trades and {len(current_orders)} current orders")
+            
+            # 3. Get current market prices for all symbols
+            symbols = list(set([pos.symbol for pos in current_positions]))
+            current_prices = await self._get_current_prices(symbols)
+            
+            # 4. Group positions by order chains using both historical trades and current orders
+            position_groups = self._group_positions_by_order_chains(
+                current_positions, historical_trades, current_orders
+            )
+            
+            # 5. Calculate real-time P&L for each group
+            for group in position_groups:
+                self._calculate_group_pnl(group, current_prices)
+            
+            logger.info(f"✅ Created {len(position_groups)} position groups")
+            return position_groups
+            
+        except Exception as e:
+            self._log_error("get_positions_enhanced", e)
+            return []
+    
+    async def _get_order_history(self, days_back: int = 30) -> List[HistoricalTrade]:
+        """Get order history from Tradier history API."""
+        try:
+            from datetime import datetime, timedelta
+            
+            url = f"{self.base_url}/v1/accounts/{self.account_id}/history"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+            
+            # Calculate date range
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days_back)
+            
+            params = {
+                "type": "trade",  # Only get trade transactions
+                "start": start_date.strftime('%Y-%m-%d'),
+                "end": end_date.strftime('%Y-%m-%d'),
+                "limit": 1000
+            }
+            
+            logger.info(f"🔍 Requesting history from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+            
+            resp = requests.get(url, headers=headers, params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            logger.info(f"📊 Raw history response keys: {list(data.keys())}")
+            
+            # Log the actual history structure for debugging
+            if "history" in data:
+                history_data = data["history"]
+                logger.info(f"📊 History data type: {type(history_data)}")
+                if isinstance(history_data, dict):
+                    logger.info(f"📊 History dict keys: {list(history_data.keys())}")
+                    if not history_data:
+                        logger.info("📊 History dict is empty - no trade data available")
+                elif isinstance(history_data, list):
+                    logger.info(f"📊 History list length: {len(history_data)}")
+                else:
+                    logger.info(f"📊 History data: {history_data}")
+            
+            # Extract history data - try different response structures
+            events = []
+            if "history" in data:
+                history = data["history"]
+                if isinstance(history, dict):
+                    events = history.get("event", [])
+                elif isinstance(history, list):
+                    events = history
+            elif "events" in data:
+                events = data["events"]
+            elif "event" in data:
+                events = data["event"]
+            
+            if isinstance(events, dict):
+                events = [events]
+            
+            logger.info(f"📊 Found {len(events)} raw events")
+            
+            # Transform to HistoricalTrade objects
+            trades = []
+            for event in events:
+                logger.debug(f"Processing event: {event.get('type', 'unknown')} - {event}")
+                trade = self._transform_historical_trade(event)
+                if trade:
+                    trades.append(trade)
+            
+            logger.info(f"📊 Retrieved {len(trades)} historical trades")
+            return trades
+            
+        except Exception as e:
+            self._log_error("_get_order_history", e)
+            return []
+    
+    def _transform_historical_trade(self, raw_event: Dict[str, Any]) -> Optional[HistoricalTrade]:
+        """Transform Tradier history event to HistoricalTrade."""
+        try:
+            # Only process trade events
+            if raw_event.get("type") != "trade":
+                return None
+            
+            trade = raw_event.get("trade", {})
+            if not trade:
+                return None
+            
+            return HistoricalTrade(
+                id=str(trade.get("id", "")),
+                symbol=trade.get("symbol", ""),
+                side="buy" if float(trade.get("quantity", 0)) > 0 else "sell",
+                qty=abs(float(trade.get("quantity", 0))),
+                price=float(trade.get("price", 0)),
+                date=trade.get("date", ""),
+                commission=float(trade.get("commission", 0)) if trade.get("commission") else None,
+                asset_class="us_option" if self._is_option_symbol(trade.get("symbol", "")) else "us_equity"
+            )
+        except Exception as e:
+            self._log_error("_transform_historical_trade", e)
+            return None
+    
+    async def _get_current_prices(self, symbols: List[str]) -> Dict[str, float]:
+        """Get current market prices for symbols."""
+        try:
+            if not symbols:
+                return {}
+            
+            # Separate stocks and options
+            stock_symbols = [s for s in symbols if not self._is_option_symbol(s)]
+            option_symbols = [s for s in symbols if self._is_option_symbol(s)]
+            
+            prices = {}
+            
+            # Get stock prices
+            if stock_symbols:
+                stock_quotes = await self.get_stock_quotes(stock_symbols)
+                for symbol, quote in stock_quotes.items():
+                    if quote and quote.bid and quote.ask:
+                        prices[symbol] = (quote.bid + quote.ask) / 2
+                    elif quote and quote.bid:
+                        prices[symbol] = quote.bid
+                    elif quote and quote.ask:
+                        prices[symbol] = quote.ask
+            
+            # Get option prices (simplified - would need options chain calls for full implementation)
+            # For now, we'll use the close price from positions or set to 0
+            for symbol in option_symbols:
+                prices[symbol] = 0  # Will be updated with actual option prices if available
+            
+            return prices
+            
+        except Exception as e:
+            self._log_error("_get_current_prices", e)
+            return {}
+    
+    def _group_positions_by_order_chains(self, positions: List[Position], 
+                                       history: List[HistoricalTrade], 
+                                       current_orders: List[Order]) -> List[PositionGroup]:
+        """Group positions by their originating orders using current orders and historical data."""
+        try:
+            from ..utils.optionsStrategies import detectStrategy
+            from datetime import datetime, timedelta
+            
+            logger.info("📊 Grouping positions by actual order chains")
+            logger.info(f"📊 Using {len(current_orders)} current orders and {len(history)} historical trades")
+            
+            # Create a mapping of symbols to orders for faster lookup
+            # For options orders, we need to map by the actual option symbols from legs
+            symbol_to_orders = {}
+            for order in current_orders:
+                # For multi-leg orders, map each leg's option symbol to the order
+                if order.legs and len(order.legs) > 0:
+                    for leg in order.legs:
+                        if leg.get("symbol"):  # This should be the option symbol
+                            option_symbol = leg["symbol"]
+                            if option_symbol not in symbol_to_orders:
+                                symbol_to_orders[option_symbol] = []
+                            symbol_to_orders[option_symbol].append(order)
+                else:
+                    # For single-leg orders, use the order symbol directly
+                    # This could be either underlying (for stocks) or option symbol
+                    if order.symbol not in symbol_to_orders:
+                        symbol_to_orders[order.symbol] = []
+                    symbol_to_orders[order.symbol].append(order)
+            
+            # Create a mapping of symbols to historical trades
+            symbol_to_trades = {}
+            for trade in history:
+                if trade.symbol not in symbol_to_trades:
+                    symbol_to_trades[trade.symbol] = []
+                symbol_to_trades[trade.symbol].append(trade)
+            
+            groups = {}
+            
+            # Group positions based on their associated orders
+            for position in positions:
+                # Find orders for this position's symbol
+                position_orders = symbol_to_orders.get(position.symbol, [])
+                position_trades = symbol_to_trades.get(position.symbol, [])
+                
+                # Determine underlying and asset class
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    underlying = parsed["underlying"] if parsed else position.symbol
+                    asset_class = "options"
+                    expiry = parsed["expiry"] if parsed else None
+                else:
+                    underlying = position.symbol
+                    asset_class = "stocks"
+                    expiry = None
+                
+                # Try to group by order relationships
+                group_key = self._find_or_create_group_key(
+                    position, position_orders, position_trades, underlying, asset_class, expiry
+                )
+                
+                if group_key not in groups:
+                    # Get the most recent order/trade date for this group
+                    order_date = None
+                    if position_orders:
+                        order_date = max(order.submitted_at for order in position_orders if order.submitted_at)
+                    elif position_trades:
+                        order_date = max(trade.date for trade in position_trades)
+                    
+                    groups[group_key] = {
+                        "underlying": underlying,
+                        "asset_class": asset_class,
+                        "expiry": expiry,
+                        "positions": [],
+                        "orders": [],
+                        "trades": [],
+                        "trade_date": order_date
+                    }
+                
+                groups[group_key]["positions"].append(position)
+                groups[group_key]["orders"].extend(position_orders)
+                groups[group_key]["trades"].extend(position_trades)
+            
+            logger.info(f"📊 Created {len(groups)} order-based position groups")
+            return self._convert_groups_to_position_groups(groups)
+                
+        except Exception as e:
+            self._log_error("_group_positions_by_order_chains", e)
+            return []
+    
+    def _find_or_create_group_key(self, position: Position, position_orders: List[Order], 
+                                position_trades: List[HistoricalTrade], underlying: str, 
+                                asset_class: str, expiry: Optional[str]) -> str:
+        """Find or create a group key for a position based on its orders and trades."""
+        try:
+            # If we have orders for this position, try to group by order timing/relationship
+            if position_orders:
+                # Sort orders by submission time to find the earliest
+                sorted_orders = sorted(position_orders, key=lambda o: o.submitted_at or "")
+                earliest_order = sorted_orders[0] if sorted_orders else None
+                
+                if earliest_order and earliest_order.submitted_at:
+                    # Use the date part of the earliest order as part of the group key
+                    order_date = earliest_order.submitted_at[:10]  # Extract YYYY-MM-DD
+                    
+                    # For multi-leg orders, group by the order ID or submission time
+                    if earliest_order.legs and len(earliest_order.legs) > 1:
+                        return f"{underlying}_{order_date}_multileg_{earliest_order.id}"
+                    else:
+                        # For single-leg orders, group by underlying, expiry, and date
+                        if asset_class == "options" and expiry:
+                            return f"{underlying}_{expiry}_{order_date}"
+                        else:
+                            return f"{underlying}_{order_date}"
+            
+            # If we have historical trades, use trade date for grouping
+            elif position_trades:
+                # Sort trades by date to find the earliest
+                sorted_trades = sorted(position_trades, key=lambda t: t.date)
+                earliest_trade = sorted_trades[0] if sorted_trades else None
+                
+                if earliest_trade:
+                    trade_date = earliest_trade.date[:10] if len(earliest_trade.date) >= 10 else earliest_trade.date
+                    
+                    if asset_class == "options" and expiry:
+                        return f"{underlying}_{expiry}_{trade_date}"
+                    else:
+                        return f"{underlying}_{trade_date}"
+            
+            # Fallback: group by underlying and expiry only
+            if asset_class == "options" and expiry:
+                return f"{underlying}_{expiry}_individual"
+            else:
+                return f"{underlying}_individual"
+                
+        except Exception as e:
+            self._log_error(f"_find_or_create_group_key for {position.symbol}", e)
+            # Fallback to simple grouping
+            return f"{underlying}_fallback_{position.symbol}"
+    
+    def _group_with_historical_data(self, positions: List[Position], 
+                                  history: List[HistoricalTrade]) -> List[PositionGroup]:
+        """Group positions using historical trade data."""
+        try:
+            from ..utils.optionsStrategies import detectStrategy
+            from datetime import datetime
+            
+            # Create groups based on underlying symbol and expiry, refined by historical data
+            groups = {}
+            
+            # Create a map of symbol to historical trades for faster lookup
+            symbol_to_trades = {}
+            for trade in history:
+                if trade.symbol not in symbol_to_trades:
+                    symbol_to_trades[trade.symbol] = []
+                symbol_to_trades[trade.symbol].append(trade)
+            
+            # Group positions by underlying and expiry, then refine by historical data
+            for position in positions:
+                # Determine underlying symbol for grouping
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    underlying = parsed["underlying"] if parsed else position.symbol
+                    asset_class = "options"
+                    expiry = parsed["expiry"] if parsed else None
+                else:
+                    underlying = position.symbol
+                    asset_class = "stocks"
+                    expiry = None
+                
+                # Get historical trades for this position
+                position_trades = symbol_to_trades.get(position.symbol, [])
+                
+                # Create group key - prioritize grouping by underlying and expiry for options
+                if asset_class == "options" and expiry:
+                    # For options, group by underlying and expiry first
+                    group_key = f"{underlying}_{expiry}"
+                else:
+                    # For stocks or options without expiry, group by underlying
+                    group_key = underlying
+                
+                # If we have historical trades, try to refine the grouping by date
+                if position_trades:
+                    # Find the most recent trade date
+                    most_recent_trade = max(position_trades, key=lambda t: t.date)
+                    trade_date = most_recent_trade.date
+                    # Add date to group key to separate orders from different days
+                    group_key = f"{group_key}_{trade_date}"
+                
+                if group_key not in groups:
+                    groups[group_key] = {
+                        "underlying": underlying,
+                        "asset_class": asset_class,
+                        "expiry": expiry,
+                        "positions": [],
+                        "trades": [],
+                        "trade_date": position_trades[0].date if position_trades else None
+                    }
+                
+                groups[group_key]["positions"].append(position)
+                groups[group_key]["trades"].extend(position_trades)
+            
+            return self._convert_groups_to_position_groups(groups)
+            
+        except Exception as e:
+            self._log_error("_group_with_historical_data", e)
+            return []
+    
+    def _group_without_historical_data(self, positions: List[Position]) -> List[PositionGroup]:
+        """Group positions intelligently without historical data using strategy detection."""
+        try:
+            from ..utils.optionsStrategies import detectStrategy
+            from datetime import datetime
+            
+            # Separate options and stocks
+            option_positions = [p for p in positions if self._is_option_symbol(p.symbol)]
+            stock_positions = [p for p in positions if not self._is_option_symbol(p.symbol)]
+            
+            groups = {}
+            
+            # Group stock positions individually
+            for position in stock_positions:
+                group_key = f"stock_{position.symbol}"
+                groups[group_key] = {
+                    "underlying": position.symbol,
+                    "asset_class": "stocks",
+                    "expiry": None,
+                    "positions": [position],
+                    "trades": [],
+                    "trade_date": None
+                }
+            
+            # Group option positions by underlying and expiration, then try to detect strategies
+            option_groups = {}
+            for position in option_positions:
+                parsed = self._parse_option_symbol(position.symbol)
+                if not parsed:
+                    continue
+                    
+                underlying = parsed["underlying"]
+                expiry = parsed["expiry"]
+                group_key = f"{underlying}_{expiry}"
+                
+                if group_key not in option_groups:
+                    option_groups[group_key] = {
+                        "underlying": underlying,
+                        "asset_class": "options",
+                        "expiry": expiry,
+                        "positions": [],
+                        "trades": [],
+                        "trade_date": None
+                    }
+                
+                option_groups[group_key]["positions"].append(position)
+            
+            # Now try to split large option groups into logical strategy groups
+            for group_key, group_data in option_groups.items():
+                if len(group_data["positions"]) <= 4:
+                    # Small group, keep as is
+                    groups[group_key] = group_data
+                else:
+                    # Large group, try to split into logical strategies
+                    split_groups = self._split_into_strategy_groups(group_key, group_data)
+                    groups.update(split_groups)
+            
+            return self._convert_groups_to_position_groups(groups)
+            
+        except Exception as e:
+            self._log_error("_group_without_historical_data", e)
+            return []
+    
+    def _split_into_strategy_groups(self, base_key: str, group_data: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        """Split a large position group into smaller strategy-based groups."""
+        try:
+            from ..utils.optionsStrategies import detectStrategy
+            
+            positions = group_data["positions"]
+            
+            # If we have exactly 6 positions, this is likely one Iron Condor (4 legs) + 2 other positions
+            # Let's try to detect the Iron Condor first and group the rest logically
+            if len(positions) == 6:
+                logger.info(f"📊 Analyzing 6-position group for {base_key}")
+                
+                # Try to identify Iron Condor (4 legs)
+                iron_condor_positions = self._identify_iron_condors(positions)
+                
+                if iron_condor_positions and len(iron_condor_positions) > 0:
+                    # We found an Iron Condor, create one group for it
+                    ic_positions = iron_condor_positions[0]  # Take the first (and likely only) Iron Condor
+                    
+                    # Find remaining positions
+                    used_symbols = set(p.symbol for p in ic_positions)
+                    remaining_positions = [p for p in positions if p.symbol not in used_symbols]
+                    
+                    logger.info(f"📊 Found Iron Condor with {len(ic_positions)} legs, {len(remaining_positions)} remaining")
+                    
+                    split_groups = {}
+                    
+                    # Create Iron Condor group
+                    split_groups[f"{base_key}_iron_condor"] = {
+                        **group_data,
+                        "positions": ic_positions
+                    }
+                    
+                    # Group remaining positions (likely a spread or individual positions)
+                    if len(remaining_positions) == 2:
+                        # Likely a spread
+                        split_groups[f"{base_key}_spread"] = {
+                            **group_data,
+                            "positions": remaining_positions
+                        }
+                    else:
+                        # Individual positions
+                        for i, pos in enumerate(remaining_positions):
+                            split_groups[f"{base_key}_single_{i}"] = {
+                                **group_data,
+                                "positions": [pos]
+                            }
+                    
+                    return split_groups
+            
+            # Fallback: if we can't identify clear patterns, split into logical chunks
+            # Try to keep it simple - group in pairs (common for spreads)
+            split_groups = {}
+            group_counter = 0
+            
+            for i in range(0, len(positions), 2):
+                chunk = positions[i:i+2]
+                split_groups[f"{base_key}_group_{group_counter}"] = {
+                    **group_data,
+                    "positions": chunk
+                }
+                group_counter += 1
+            
+            logger.info(f"📊 Split {len(positions)} positions into {len(split_groups)} groups")
+            return split_groups
+            
+        except Exception as e:
+            self._log_error(f"_split_into_strategy_groups for {base_key}", e)
+            # Fallback: return original group
+            return {base_key: group_data}
+    
+    def _identify_iron_condors(self, positions: List[Position]) -> List[List[Position]]:
+        """Try to identify Iron Condor patterns in positions."""
+        try:
+            # Parse all positions
+            parsed_positions = []
+            for pos in positions:
+                parsed = self._parse_option_symbol(pos.symbol)
+                if parsed:
+                    parsed_positions.append({
+                        "position": pos,
+                        "strike": parsed["strike"],
+                        "type": parsed["type"],
+                        "qty": pos.qty
+                    })
+            
+            # Group by type
+            calls = [p for p in parsed_positions if p["type"] == "call"]
+            puts = [p for p in parsed_positions if p["type"] == "put"]
+            
+            iron_condors = []
+            
+            # Look for Iron Condor patterns: 2 calls + 2 puts with specific strike relationships
+            if len(calls) >= 2 and len(puts) >= 2:
+                # Sort by strike
+                calls.sort(key=lambda x: x["strike"])
+                puts.sort(key=lambda x: x["strike"])
+                
+                # Try to match Iron Condor patterns
+                for i in range(len(calls) - 1):
+                    for j in range(len(puts) - 1):
+                        call1, call2 = calls[i], calls[i + 1]
+                        put1, put2 = puts[j], puts[j + 1]
+                        
+                        # Check if this could be an Iron Condor
+                        # Typical pattern: sell call at higher strike, buy call at even higher strike
+                        #                  sell put at lower strike, buy put at even lower strike
+                        if (call1["strike"] < call2["strike"] and 
+                            put1["strike"] < put2["strike"] and
+                            put2["strike"] < call1["strike"]):  # puts below calls
+                            
+                            ic_positions = [
+                                call1["position"], call2["position"],
+                                put1["position"], put2["position"]
+                            ]
+                            iron_condors.append(ic_positions)
+            
+            return iron_condors
+            
+        except Exception as e:
+            self._log_error("_identify_iron_condors", e)
+            return []
+    
+    def _convert_groups_to_position_groups(self, groups: Dict[str, Dict[str, Any]]) -> List[PositionGroup]:
+        """Convert group dictionaries to PositionGroup objects."""
+        try:
+            from ..utils.optionsStrategies import detectStrategy
+            from datetime import datetime
+            
+            position_groups = []
+            for group_key, group_data in groups.items():
+                try:
+                    # Calculate days to expiration
+                    dte = None
+                    if group_data["expiry"]:
+                        try:
+                            expiry_date = datetime.strptime(group_data["expiry"], "%Y-%m-%d")
+                            dte = (expiry_date - datetime.now()).days
+                        except:
+                            dte = None
+                    
+                    # Detect strategy for options
+                    strategy = "Single Position"
+                    if group_data["asset_class"] == "options" and len(group_data["positions"]) > 1:
+                        # Create legs for strategy detection
+                        legs = []
+                        for pos in group_data["positions"]:
+                            legs.append({
+                                "symbol": pos.symbol,
+                                "side": "buy_to_open" if pos.qty > 0 else "sell_to_open",
+                                "qty": abs(pos.qty)
+                            })
+                        
+                        try:
+                            # Import the strategy detection function
+                            from ..utils.optionsStrategies import detectStrategy
+                            strategy = detectStrategy(legs)
+                        except (ImportError, Exception) as e:
+                            logger.warning(f"Could not detect strategy: {e}")
+                            # Fallback if import fails
+                            strategy = f"{len(legs)}-Leg Strategy"
+                    elif group_data["asset_class"] == "options":
+                        strategy = "Single Option"
+                    elif group_data["asset_class"] == "stocks":
+                        strategy = "Stock Position"
+                    
+                    # Calculate totals (will be updated with real prices later)
+                    total_qty = sum(pos.qty for pos in group_data["positions"])
+                    total_cost_basis = sum(pos.cost_basis for pos in group_data["positions"])
+                    
+                    # Get order date from trades
+                    order_date = None
+                    if group_data["trades"]:
+                        order_date = min(trade.date for trade in group_data["trades"])
+                    
+                    position_group = PositionGroup(
+                        id=group_key,
+                        symbol=group_data["underlying"],
+                        strategy=strategy,
+                        asset_class=group_data["asset_class"],
+                        total_qty=total_qty,
+                        total_cost_basis=total_cost_basis,
+                        total_market_value=0,  # Will be calculated later
+                        total_unrealized_pl=0,  # Will be calculated later
+                        total_unrealized_plpc=0,  # Will be calculated later
+                        pl_day=0,  # Will be calculated later
+                        pl_open=0,  # Will be calculated later
+                        legs=group_data["positions"],
+                        order_date=order_date,
+                        expiration_date=group_data["expiry"],
+                        dte=dte
+                    )
+                    
+                    position_groups.append(position_group)
+                    
+                except Exception as e:
+                    self._log_error(f"Error creating position group for {group_key}", e)
+                    continue
+            
+            return position_groups
+            
+        except Exception as e:
+            self._log_error("_convert_groups_to_position_groups", e)
+            return []
+            
+            # Convert final groups to PositionGroup objects
+            position_groups = []
+            for group_key, group_data in final_groups.items():
+                try:
+                    # Calculate days to expiration
+                    dte = None
+                    if group_data["expiry"]:
+                        try:
+                            expiry_date = datetime.strptime(group_data["expiry"], "%Y-%m-%d")
+                            dte = (expiry_date - datetime.now()).days
+                        except:
+                            dte = None
+                    
+                    # Detect strategy for options
+                    strategy = "Single Position"
+                    if group_data["asset_class"] == "options" and len(group_data["positions"]) > 1:
+                        # Create legs for strategy detection
+                        legs = []
+                        for pos in group_data["positions"]:
+                            legs.append({
+                                "symbol": pos.symbol,
+                                "side": "buy_to_open" if pos.qty > 0 else "sell_to_open",
+                                "qty": abs(pos.qty)
+                            })
+                        
+                        try:
+                            # Import the strategy detection function
+                            from ..utils.optionsStrategies import detectStrategy
+                            strategy = detectStrategy(legs)
+                        except (ImportError, Exception) as e:
+                            logger.warning(f"Could not detect strategy: {e}")
+                            # Fallback if import fails
+                            strategy = f"{len(legs)}-Leg Strategy"
+                    elif group_data["asset_class"] == "options":
+                        strategy = "Single Option"
+                    elif group_data["asset_class"] == "stocks":
+                        strategy = "Stock Position"
+                    
+                    # Calculate totals (will be updated with real prices later)
+                    total_qty = sum(pos.qty for pos in group_data["positions"])
+                    total_cost_basis = sum(pos.cost_basis for pos in group_data["positions"])
+                    
+                    # Get order date from trades
+                    order_date = None
+                    if group_data["trades"]:
+                        order_date = min(trade.date for trade in group_data["trades"])
+                    
+                    position_group = PositionGroup(
+                        id=group_key,
+                        symbol=group_data["underlying"],
+                        strategy=strategy,
+                        asset_class=group_data["asset_class"],
+                        total_qty=total_qty,
+                        total_cost_basis=total_cost_basis,
+                        total_market_value=0,  # Will be calculated later
+                        total_unrealized_pl=0,  # Will be calculated later
+                        total_unrealized_plpc=0,  # Will be calculated later
+                        pl_day=0,  # Will be calculated later
+                        pl_open=0,  # Will be calculated later
+                        legs=group_data["positions"],
+                        order_date=order_date,
+                        expiration_date=group_data["expiry"],
+                        dte=dte
+                    )
+                    
+                    position_groups.append(position_group)
+                    
+                except Exception as e:
+                    self._log_error(f"Error creating position group for {group_key}", e)
+                    continue
+            
+            return position_groups
+            
+        except Exception as e:
+            self._log_error("_group_positions_by_order_chains", e)
+            return []
+    
+    def _calculate_group_pnl(self, group: PositionGroup, current_prices: Dict[str, float]):
+        """Calculate real-time P&L for a position group."""
+        try:
+            total_market_value = 0
+            total_unrealized_pl = 0
+            
+            for position in group.legs:
+                current_price = current_prices.get(position.symbol, 0)
+                
+                if current_price > 0:
+                    # Update position with current price
+                    position.current_price = current_price
+                    
+                    # Calculate market value
+                    if self._is_option_symbol(position.symbol):
+                        # Options: price per contract * quantity * 100
+                        market_value = current_price * position.qty * 100
+                    else:
+                        # Stocks: price per share * quantity
+                        market_value = current_price * position.qty
+                    
+                    position.market_value = market_value
+                    
+                    # Calculate unrealized P&L
+                    unrealized_pl = market_value - position.cost_basis
+                    position.unrealized_pl = unrealized_pl
+                    
+                    # Calculate unrealized P&L percentage
+                    if position.cost_basis != 0:
+                        position.unrealized_plpc = (unrealized_pl / abs(position.cost_basis)) * 100
+                    else:
+                        position.unrealized_plpc = 0
+                    
+                    total_market_value += market_value
+                    total_unrealized_pl += unrealized_pl
+            
+            # Update group totals
+            group.total_market_value = total_market_value
+            group.total_unrealized_pl = total_unrealized_pl
+            group.pl_open = total_unrealized_pl  # P&L since position opened
+            group.pl_day = 0  # Would need previous day's prices to calculate daily P&L
+            
+            if group.total_cost_basis != 0:
+                group.total_unrealized_plpc = (total_unrealized_pl / abs(group.total_cost_basis)) * 100
+            else:
+                group.total_unrealized_plpc = 0
+                
+        except Exception as e:
+            self._log_error(f"_calculate_group_pnl for group {group.id}", e)

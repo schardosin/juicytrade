@@ -471,8 +471,26 @@ async def get_intraday_chart_data(symbol: str, interval: str = "5m"):
 
 @app.get("/positions", response_model=ApiResponse)
 async def get_positions():
-    """Get all current positions."""
+    """Get enhanced positions with order chain grouping and strategy detection."""
     try:
+        # Try to get enhanced positions first
+        try:
+            position_groups = await provider_manager.get_positions_enhanced()
+            if position_groups:
+                return ApiResponse(
+                    success=True,
+                    data={
+                        "position_groups": [group.dict() for group in position_groups],
+                        "total_groups": len(position_groups),
+                        "enhanced": True
+                    },
+                    message=f"Retrieved {len(position_groups)} position groups with strategy detection"
+                )
+        except AttributeError:
+            # Provider doesn't support enhanced positions, fall back to regular positions
+            logger.info("Provider doesn't support enhanced positions, using regular positions")
+        
+        # Fallback to regular positions
         positions = await provider_manager.get_positions()
         positions_data = [position.dict() for position in positions]
         
@@ -480,7 +498,8 @@ async def get_positions():
             success=True,
             data={
                 "positions": positions_data,
-                "total_positions": len(positions)
+                "total_positions": len(positions),
+                "enhanced": False
             },
             message=f"Retrieved {len(positions)} positions"
         )

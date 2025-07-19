@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from "vue-router";
 import OptionsTrading from "../views/OptionsTrading.vue";
 import ChartView from "../views/ChartView.vue";
+import PositionsView from "../views/PositionsView.vue";
 
 const routes = [
   {
@@ -25,6 +26,14 @@ const routes = [
     component: ChartView,
     meta: {
       title: "Chart View - Trading Platform",
+    },
+  },
+  {
+    path: "/positions",
+    name: "Positions",
+    component: PositionsView,
+    meta: {
+      title: "Positions - Trading Platform",
     },
   },
 ];
