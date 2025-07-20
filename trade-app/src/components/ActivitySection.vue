@@ -213,15 +213,18 @@ export default {
   },
   setup(props) {
     // Use unified market data composable
-    const { getOrders } = useMarketData();
+    const { getOrdersByStatus, isLoading } = useMarketData();
 
     const orders = ref([]);
-    const loading = ref(false);
     const selectedSymbolFilter = ref(props.currentSymbol);
     const selectedStatus = ref("filled");
 
-    // Get reactive orders data (auto-updates every 15 seconds)
-    const reactiveOrders = getOrders();
+    // Get loading state from unified system
+    const loading = computed(() => {
+      const status =
+        selectedStatus.value === "working" ? "pending" : selectedStatus.value;
+      return isLoading(`orders.${status}`).value;
+    });
 
     // Context menu state
     const contextMenu = ref({
@@ -288,8 +291,6 @@ export default {
     // Methods
     const fetchOrders = async (status = null) => {
       try {
-        loading.value = true;
-
         // Map UI status to API status
         let apiStatus = status || selectedStatus.value;
         switch (apiStatus) {
@@ -303,23 +304,22 @@ export default {
             apiStatus = "filled";
             break;
           case "all":
-            apiStatus = "all"; // Get all orders
+            apiStatus = "all";
             break;
           default:
             apiStatus = "all";
         }
 
         console.log(
-          `Fetching orders with status: ${apiStatus} (UI status: ${
+          `🔄 Fetching orders with status: ${apiStatus} (UI status: ${
             status || selectedStatus.value
-          })`
+          }) via unified system`
         );
 
-        // For ActivitySection, we need to call API directly with status parameter
-        // because the unified system doesn't support dynamic status filtering yet
-        const response = await api.getOrders(apiStatus);
+        // Use unified system - always gets fresh data
+        const response = await getOrdersByStatus(apiStatus);
 
-        console.log("Orders API response:", response);
+        console.log("Orders unified response:", response);
 
         // Handle different response structures
         if (response && response.data && response.data.orders) {
@@ -336,12 +336,10 @@ export default {
           orders.value = [];
         }
 
-        console.log("Processed orders:", orders.value);
+        console.log("✅ Processed orders:", orders.value.length, "orders");
       } catch (error) {
-        console.error("Error fetching orders:", error);
+        console.error("❌ Error fetching orders via unified system:", error);
         orders.value = [];
-      } finally {
-        loading.value = false;
       }
     };
 

@@ -537,6 +537,33 @@ class SmartMarketDataStore {
   }
 
   /**
+   * Get orders by status (On-Demand Fresh strategy)
+   * Always fetches fresh data from API - no caching for orders
+   */
+  async getOrdersByStatus(status = "all") {
+    const key = `orders.${status}`;
+
+    try {
+      this.setLoading(key, true);
+
+      // Always fetch fresh data for orders
+      console.log(`🔄 Fetching fresh orders with status: ${status}`);
+      const data = await api.getOrders(status);
+
+      // Update the data store
+      this.updateData(key, data);
+
+      return data;
+    } catch (error) {
+      this.setError(key, error);
+      console.error(`❌ Error fetching orders with status ${status}:`, error);
+      throw error;
+    } finally {
+      this.setLoading(key, false);
+    }
+  }
+
+  /**
    * Force cleanup of all subscriptions and data (for testing)
    */
   forceCleanup() {

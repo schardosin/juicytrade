@@ -1,4 +1,4 @@
-import { computed, onMounted } from "vue";
+import { computed } from "vue";
 import smartMarketDataStore from "../services/smartMarketDataStore.js";
 
 /**
@@ -13,10 +13,8 @@ import smartMarketDataStore from "../services/smartMarketDataStore.js";
  * Components use identical patterns regardless of data source strategy.
  */
 export function useMarketData() {
-  // Configure data sources on first use
-  onMounted(() => {
-    configureDataSources();
-  });
+  // Data sources are now configured at app startup in main.js
+  // No need to configure here anymore
 
   // ===== WEBSOCKET DATA (Real-time) =====
 
@@ -53,10 +51,10 @@ export function useMarketData() {
   };
 
   /**
-   * Get orders (updates every 15 seconds)
+   * Get orders by status (On-Demand Fresh strategy - always fresh data)
    */
-  const getOrders = () => {
-    return smartMarketDataStore.getReactiveData("orders");
+  const getOrdersByStatus = async (status = "all") => {
+    return await smartMarketDataStore.getOrdersByStatus(status);
   };
 
   // ===== ONE-TIME DATA (Static cached) =====
@@ -143,7 +141,9 @@ export function useMarketData() {
     // Auto-updating data (Periodic)
     getBalance,
     getPositions,
-    getOrders,
+
+    // On-demand fresh data (Orders)
+    getOrdersByStatus,
 
     // Static data (One-time)
     getAccountInfo,
@@ -159,72 +159,8 @@ export function useMarketData() {
     getError,
     refreshBalance,
     refreshPositions,
-    refreshOrders,
     getDebugInfo,
   };
-}
-
-/**
- * Configure all data sources with their strategies
- * Called automatically on first use
- */
-function configureDataSources() {
-  // Skip if already configured
-  if (smartMarketDataStore.strategies.size > 0) {
-    return;
-  }
-
-  // Auto-updating data (Periodic strategy)
-  smartMarketDataStore.registerDataSource("balance", {
-    strategy: "periodic",
-    method: "getAccount",
-    interval: 60000, // 1 minute
-  });
-
-  smartMarketDataStore.registerDataSource("positions", {
-    strategy: "periodic",
-    method: "getPositions",
-    interval: 30000, // 30 seconds
-  });
-
-  smartMarketDataStore.registerDataSource("orders", {
-    strategy: "periodic",
-    method: "getOrders",
-    interval: 15000, // 15 seconds
-  });
-
-  // Static data (One-time strategy)
-  smartMarketDataStore.registerDataSource("accountInfo", {
-    strategy: "once",
-    method: "getAccount",
-  });
-
-  // On-demand data (Cached strategy)
-  smartMarketDataStore.registerDataSource("optionsChain.*", {
-    strategy: "on-demand",
-    method: "getOptionsChain",
-    ttl: 300000, // 5 minutes
-  });
-
-  smartMarketDataStore.registerDataSource("historicalData.*", {
-    strategy: "on-demand",
-    method: "getHistoricalData",
-    ttl: 300000, // 5 minutes
-  });
-
-  smartMarketDataStore.registerDataSource("symbolLookup.*", {
-    strategy: "on-demand",
-    method: "lookupSymbols",
-    ttl: 600000, // 10 minutes
-  });
-
-  smartMarketDataStore.registerDataSource("expirationDates.*", {
-    strategy: "on-demand",
-    method: "getAvailableExpirations",
-    ttl: 3600000, // 1 hour
-  });
-
-  console.log("📋 All data sources configured");
 }
 
 export default useMarketData;

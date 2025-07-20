@@ -741,12 +741,12 @@ export default {
       }
     };
 
-    // Fetch existing positions from unified data access
-    const fetchExistingPositions = async () => {
-      try {
-        // Use reactive positions data (auto-updates every 30 seconds)
-        const response = getPositions().value;
+    // Get reactive positions data (auto-updates every 30 seconds)
+    const reactivePositions = getPositions();
 
+    // Process positions data - defined before watcher to avoid hoisting issues
+    const processPositionsData = (response) => {
+      try {
         // Handle the new enhanced response structure
         let positions = [];
         if (response && response.enhanced && response.symbol_groups) {
@@ -869,6 +869,16 @@ export default {
       }
     };
 
+    // Watch for changes in reactive positions data - now after function is defined
+    watch(
+      reactivePositions,
+      (response) => {
+        console.log("🔄 RightPanel: Positions data updated:", response);
+        processPositionsData(response);
+      },
+      { immediate: true }
+    );
+
     // Initialize checked positions when component mounts or positions change
     const initializeCheckedPositions = () => {
       // Auto-check all positions initially
@@ -895,13 +905,12 @@ export default {
       { deep: true }
     );
 
-    // Watch for symbol changes to fetch new positions
+    // Watch for symbol changes - positions will be automatically updated via reactive data
     watch(
       () => props.currentSymbol,
       (newSymbol) => {
-        if (newSymbol) {
-          fetchExistingPositions();
-        }
+        console.log("🔄 RightPanel: Symbol changed to:", newSymbol);
+        // Positions will be automatically updated via the reactive positions watcher
       }
     );
 
@@ -924,11 +933,11 @@ export default {
       { immediate: true }
     );
 
-    // Fetch positions when component mounts
+    // Component mounted - positions will be automatically loaded via watcher
     onMounted(() => {
-      if (props.currentSymbol) {
-        fetchExistingPositions();
-      }
+      console.log(
+        "🔄 RightPanel: Component mounted, waiting for reactive data..."
+      );
     });
 
     return {

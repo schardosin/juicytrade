@@ -350,7 +350,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import RightPanel from "../components/RightPanel.vue";
@@ -395,7 +395,7 @@ export default {
     const optionsManager = ref({
       flattenedData: ref([]),
     });
-    const loading = ref(true);
+    const loading = ref(false); // Start with false since data loads automatically
     const error = ref(null);
     const positionGroups = ref([]);
     const selectedType = ref("options");
@@ -700,10 +700,55 @@ export default {
       // Not used in positions view
     };
 
+    // Watch for changes in reactive positions data
+    watch(
+      reactivePositions,
+      (newPositions) => {
+        console.log("🔄 Positions data updated:", newPositions);
+        if (newPositions) {
+          // Process the new data automatically
+          processPositionsData(newPositions);
+        }
+      },
+      { immediate: true }
+    );
+
+    // Helper function to process positions data
+    const processPositionsData = (response) => {
+      try {
+        if (response && response.enhanced && response.symbol_groups) {
+          // New hierarchical structure
+          positionGroups.value = convertSymbolGroupsToDisplay(
+            response.symbol_groups
+          );
+        } else if (response && response.enhanced && response.position_groups) {
+          // Old enhanced structure
+          positionGroups.value = response.position_groups;
+        } else if (response && response.positions) {
+          // Fallback: convert regular positions to simple groups
+          positionGroups.value = convertPositionsToGroups(response.positions);
+        } else {
+          positionGroups.value = [];
+        }
+
+        // Clear any previous errors since we got data
+        error.value = null;
+        console.log(
+          "✅ Positions processed:",
+          positionGroups.value.length,
+          "groups"
+        );
+      } catch (err) {
+        console.error("❌ Error processing positions data:", err);
+        error.value = "Failed to process positions data.";
+      }
+    };
+
     // Lifecycle
     onMounted(async () => {
       // Global state is automatically initialized - no manual setup needed
-      await fetchPositions();
+      // The watcher will handle initial data loading automatically
+      console.log("📍 PositionsView mounted, waiting for reactive data...");
     });
 
     onUnmounted(() => {

@@ -39,7 +39,68 @@ app.use(router);
 
 // Initialize and provide Smart Market Data Store globally
 smartMarketDataStore.initialize();
+
+// Configure all data sources immediately at app startup
+configureDataSources();
+
 app.provide("smartMarketDataStore", smartMarketDataStore);
+
+/**
+ * Configure all data sources with their strategies
+ * Called at app startup to ensure data is available on any route
+ */
+function configureDataSources() {
+  // Skip if already configured
+  if (smartMarketDataStore.strategies.size > 0) {
+    return;
+  }
+
+  // Auto-updating data (Periodic strategy)
+  smartMarketDataStore.registerDataSource("balance", {
+    strategy: "periodic",
+    method: "getAccount",
+    interval: 60000, // 1 minute
+  });
+
+  smartMarketDataStore.registerDataSource("positions", {
+    strategy: "periodic",
+    method: "getPositions",
+    interval: 30000, // 30 seconds
+  });
+
+  // Static data (One-time strategy)
+  smartMarketDataStore.registerDataSource("accountInfo", {
+    strategy: "once",
+    method: "getAccount",
+  });
+
+  // On-demand data (Cached strategy)
+  smartMarketDataStore.registerDataSource("optionsChain.*", {
+    strategy: "on-demand",
+    method: "getOptionsChain",
+    ttl: 300000, // 5 minutes
+  });
+
+  smartMarketDataStore.registerDataSource("historicalData.*", {
+    strategy: "on-demand",
+    method: "getHistoricalData",
+    ttl: 300000, // 5 minutes
+  });
+
+  smartMarketDataStore.registerDataSource("symbolLookup.*", {
+    strategy: "on-demand",
+    method: "lookupSymbols",
+    ttl: 600000, // 10 minutes
+  });
+
+  smartMarketDataStore.registerDataSource("expirationDates.*", {
+    strategy: "on-demand",
+    method: "getAvailableExpirations",
+    ttl: 3600000, // 1 hour
+  });
+
+  console.log("📋 All data sources configured at app startup");
+}
 
 // Register components globally
 app.component("Button", Button);
