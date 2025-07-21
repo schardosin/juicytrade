@@ -281,6 +281,7 @@ import QuoteDetailsSection from "./QuoteDetailsSection.vue";
 import PayoffChart from "./PayoffChart.vue";
 import ActivitySection from "./ActivitySection.vue";
 import { useMarketData } from "../composables/useMarketData.js";
+import { generateMultiLegPayoff } from "../utils/chartUtils";
 
 export default {
   name: "RightPanel",
@@ -341,6 +342,7 @@ export default {
     const isExpanded = ref(false);
     const existingPositions = ref([]);
     const checkedPositions = ref(new Set());
+    const internalChartData = ref(null); // Internal chart data state
 
     const toggleSection = (section) => {
       if (activeSection.value === section && isExpanded.value) {
@@ -541,11 +543,66 @@ export default {
       updateChartWithCheckedPositions();
     };
 
+    // Generate chart data internally for selected positions
+    const generateChartData = (positions) => {
+      if (!positions || positions.length === 0) {
+        internalChartData.value = null;
+        return;
+      }
+
+      try {
+        console.log(
+          "🔄 RightPanel: Generating chart data for positions:",
+          positions
+        );
+
+        // Convert positions to the format expected by generateMultiLegPayoff
+        const formattedPositions = positions.map((position) => ({
+          symbol: position.symbol,
+          asset_class: "us_option",
+          side: position.qty > 0 ? "long" : "short",
+          qty: position.qty,
+          strike_price: position.strike_price,
+          option_type:
+            position.option_type?.toUpperCase() || position.type?.toUpperCase(),
+          expiry_date: position.expiry_date || position.expiry,
+          current_price: position.current_price,
+          avg_entry_price: position.avg_entry_price,
+          cost_basis: position.avg_entry_price * Math.abs(position.qty) * 100,
+          market_value: position.current_price * position.qty * 100,
+          unrealized_pl: position.unrealized_pl || 0,
+          underlying_symbol: props.currentSymbol,
+          is_synthetic: !position.isExisting,
+        }));
+
+        const payoffData = generateMultiLegPayoff(
+          formattedPositions,
+          props.currentPrice
+        );
+
+        // Force reactivity by creating a new object reference
+        internalChartData.value = {
+          ...payoffData,
+          timestamp: Date.now(),
+        };
+
+        console.log("✅ RightPanel: Chart data generated successfully");
+      } catch (error) {
+        console.error("❌ RightPanel: Error generating chart data:", error);
+        internalChartData.value = null;
+      }
+    };
+
     // Method to update chart based on checked positions
     const updateChartWithCheckedPositions = () => {
       const checkedPositionsList = allPositions.value.filter((pos) =>
         checkedPositions.value.has(pos.id)
       );
+
+      // Generate chart data internally instead of relying on parent
+      generateChartData(checkedPositionsList);
+
+      // Still emit for backward compatibility
       emit("positions-changed", checkedPositionsList);
     };
 
@@ -940,6 +997,13 @@ export default {
       );
     });
 
+    // Computed property to use either internal chart data or prop
+    const chartData = computed(() => {
+      // Prioritize internal chart data (from selected positions)
+      // Fall back to prop chart data (from parent component like OptionsTrading)
+      return internalChartData.value || props.chartData;
+    });
+
     return {
       activeSection,
       isExpanded,
@@ -948,6 +1012,7 @@ export default {
       allPositions,
       isAllSelected,
       isIndeterminate,
+      chartData, // Use computed chartData instead of prop
       toggleSection,
       collapsePanel,
       getSectionTitle,

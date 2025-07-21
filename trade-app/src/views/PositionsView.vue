@@ -700,20 +700,7 @@ export default {
       // Not used in positions view
     };
 
-    // Watch for changes in reactive positions data
-    watch(
-      reactivePositions,
-      (newPositions) => {
-        console.log("🔄 Positions data updated:", newPositions);
-        if (newPositions) {
-          // Process the new data automatically
-          processPositionsData(newPositions);
-        }
-      },
-      { immediate: true }
-    );
-
-    // Helper function to process positions data
+    // Helper function to process positions data - defined before watcher to avoid hoisting issues
     const processPositionsData = (response) => {
       try {
         if (response && response.enhanced && response.symbol_groups) {
@@ -743,6 +730,19 @@ export default {
         error.value = "Failed to process positions data.";
       }
     };
+
+    // Watch for changes in reactive positions data - now after function is defined
+    watch(
+      reactivePositions,
+      (newPositions) => {
+        console.log("🔄 Positions data updated:", newPositions);
+        if (newPositions) {
+          // Process the new data automatically
+          processPositionsData(newPositions);
+        }
+      },
+      { immediate: true }
+    );
 
     // Lifecycle
     onMounted(async () => {
