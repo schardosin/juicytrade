@@ -65,12 +65,6 @@ watch(
         globalSymbolState.priceChangePercent =
           (globalSymbolState.priceChange / oldPrice) * 100;
       }
-
-      console.log(
-        `🌍 Global state updated with live price for ${
-          globalSymbolState.currentSymbol
-        }: $${newPrice.toFixed(2)}`
-      );
     }
   },
   { deep: true, immediate: true }

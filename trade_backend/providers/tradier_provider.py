@@ -1333,9 +1333,9 @@ class TradierProvider(BaseProvider):
     # === Enhanced Positions with History Integration ===
     
     async def get_positions_enhanced(self) -> Dict[str, Any]:
-        """Get enhanced positions with Tasty Trade-style hierarchical grouping."""
+        """Get enhanced positions with simplified static data structure."""
         try:
-            logger.info("🔍 Getting enhanced positions with hierarchical grouping...")
+            logger.info("🔍 Getting enhanced positions with static broker data...")
             
             # 1. Get current positions
             current_positions = await self.get_positions()
@@ -1343,22 +1343,18 @@ class TradierProvider(BaseProvider):
                 logger.info("No current positions found")
                 return {"enhanced": True, "symbol_groups": []}
             
-            # 2. Get historical trades and current orders
+            # 2. Get historical trades and current orders for grouping
             historical_trades = await self._get_order_history(days_back=30)
             current_orders = await self.get_orders(status="all")
             
             logger.info(f"📊 Retrieved {len(historical_trades)} historical trades and {len(current_orders)} current orders")
             
-            # 3. Get current market prices for all symbols
-            symbols = list(set([pos.symbol for pos in current_positions]))
-            current_prices = await self._get_current_prices(symbols)
-            
-            # 4. Create hierarchical grouping (Symbol -> Strategies -> Legs)
-            symbol_groups = self._create_hierarchical_groups(
-                current_positions, historical_trades, current_orders, current_prices
+            # 3. Create simplified hierarchical grouping (Symbol -> Strategies -> Legs)
+            symbol_groups = self._create_simplified_hierarchical_groups(
+                current_positions, historical_trades, current_orders
             )
             
-            logger.info(f"✅ Created {len(symbol_groups)} symbol groups")
+            logger.info(f"✅ Created {len(symbol_groups)} symbol groups with static data")
             return {"enhanced": True, "symbol_groups": symbol_groups}
             
         except Exception as e:
@@ -2161,52 +2157,127 @@ class TradierProvider(BaseProvider):
             self._log_error("_create_hierarchical_groups", e)
             return []
 
-    def _calculate_group_pnl(self, group: PositionGroup, current_prices: Dict[str, float]):
-        """Calculate real-time P&L for a position group."""
+    def _create_simplified_hierarchical_groups(self, positions: List[Position], 
+                                             history: List[HistoricalTrade], 
+                                             current_orders: List[Order]) -> List[Dict[str, Any]]:
+        """Create simplified hierarchical grouping with only static broker data."""
         try:
-            total_market_value = 0
-            total_unrealized_pl = 0
+            from ..utils.optionsStrategies import detectStrategy
+            from datetime import datetime
             
-            for position in group.legs:
-                current_price = current_prices.get(position.symbol, 0)
+            logger.info("📊 Creating simplified hierarchical symbol groups")
+            
+            # Step 1: Group positions by underlying symbol
+            symbol_groups = {}
+            
+            for position in positions:
+                # Determine underlying symbol
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    underlying = parsed["underlying"] if parsed else position.symbol
+                    asset_class = "options"
+                else:
+                    underlying = position.symbol
+                    asset_class = "stocks"
                 
-                if current_price > 0:
-                    # Update position with current price
-                    position.current_price = current_price
-                    
-                    # Calculate market value
-                    if self._is_option_symbol(position.symbol):
-                        # Options: price per contract * quantity * 100
-                        market_value = current_price * position.qty * 100
-                    else:
-                        # Stocks: price per share * quantity
-                        market_value = current_price * position.qty
-                    
-                    position.market_value = market_value
-                    
-                    # Calculate unrealized P&L
-                    unrealized_pl = market_value - position.cost_basis
-                    position.unrealized_pl = unrealized_pl
-                    
-                    # Calculate unrealized P&L percentage
-                    if position.cost_basis != 0:
-                        position.unrealized_plpc = (unrealized_pl / abs(position.cost_basis)) * 100
-                    else:
-                        position.unrealized_plpc = 0
-                    
-                    total_market_value += market_value
-                    total_unrealized_pl += unrealized_pl
-            
-            # Update group totals
-            group.total_market_value = total_market_value
-            group.total_unrealized_pl = total_unrealized_pl
-            group.pl_open = total_unrealized_pl  # P&L since position opened
-            group.pl_day = 0  # Would need previous day's prices to calculate daily P&L
-            
-            if group.total_cost_basis != 0:
-                group.total_unrealized_plpc = (total_unrealized_pl / abs(group.total_cost_basis)) * 100
-            else:
-                group.total_unrealized_plpc = 0
+                if underlying not in symbol_groups:
+                    symbol_groups[underlying] = {
+                        "symbol": underlying,
+                        "asset_class": asset_class,
+                        "positions_by_expiry": {}
+                    }
                 
+                # Group by expiry for options, or use "stock" for stocks
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    expiry_key = parsed["expiry"] if parsed else "unknown"
+                else:
+                    expiry_key = "stock"
+                
+                if expiry_key not in symbol_groups[underlying]["positions_by_expiry"]:
+                    symbol_groups[underlying]["positions_by_expiry"][expiry_key] = []
+                
+                symbol_groups[underlying]["positions_by_expiry"][expiry_key].append(position)
+            
+            # Step 2: Convert to final format with strategies
+            result = []
+            for underlying, symbol_group in symbol_groups.items():
+                strategies = []
+                
+                for expiry_key, expiry_positions in symbol_group["positions_by_expiry"].items():
+                    # Detect strategy for this group of positions
+                    strategy_name = self._detect_strategy_name(expiry_positions)
+                    
+                    # Calculate DTE for options
+                    dte = None
+                    if expiry_key != "stock":
+                        try:
+                            expiry_date = datetime.strptime(expiry_key, "%Y-%m-%d")
+                            dte = (expiry_date - datetime.now()).days
+                        except:
+                            dte = None
+                    
+                    # Calculate strategy totals (static data only)
+                    strategy_total_qty = sum(pos.qty for pos in expiry_positions)
+                    strategy_cost_basis = sum(pos.cost_basis for pos in expiry_positions)
+                    
+                    # Create legs with only static broker data
+                    legs = []
+                    for pos in expiry_positions:
+                        # Calculate avg_entry_price from cost_basis
+                        if self._is_option_symbol(pos.symbol):
+                            # For options: cost_basis / qty / 100 (Tradier specific calculation)
+                            avg_entry_price = abs(pos.cost_basis / pos.qty / 100) if pos.qty != 0 else 0
+                        else:
+                            # For stocks: cost_basis / qty
+                            avg_entry_price = abs(pos.cost_basis / pos.qty) if pos.qty != 0 else 0
+                        
+                        legs.append({
+                            "symbol": pos.symbol,
+                            "qty": pos.qty,
+                            "avg_entry_price": avg_entry_price,
+                            "cost_basis": pos.cost_basis,
+                            "asset_class": pos.asset_class
+                        })
+                    
+                    strategy = {
+                        "name": strategy_name,
+                        "total_qty": strategy_total_qty,
+                        "cost_basis": strategy_cost_basis,
+                        "dte": dte,
+                        "legs": legs
+                    }
+                    strategies.append(strategy)
+                
+                result.append({
+                    "symbol": underlying,
+                    "asset_class": symbol_group["asset_class"],
+                    "strategies": strategies
+                })
+            
+            logger.info(f"✅ Created {len(result)} simplified symbol groups")
+            return result
+            
         except Exception as e:
-            self._log_error(f"_calculate_group_pnl for group {group.id}", e)
+            self._log_error("_create_simplified_hierarchical_groups", e)
+            return []
+
+    def _detect_strategy_name(self, positions: List[Position]) -> str:
+        """Detect strategy name based on positions."""
+        try:
+            if len(positions) == 1:
+                if self._is_option_symbol(positions[0].symbol):
+                    return "Single Option"
+                else:
+                    return "Stock Position"
+            elif len(positions) == 2:
+                return "2-Leg Strategy"
+            elif len(positions) == 4:
+                return "4-Leg Strategy"
+            elif len(positions) == 6:
+                return "6-Leg Strategy"
+            else:
+                return f"{len(positions)}-Leg Strategy"
+        except Exception as e:
+            self._log_error("_detect_strategy_name", e)
+            return "Unknown Strategy"

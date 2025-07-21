@@ -233,29 +233,15 @@
                                 </span>
                               </div>
                             </td>
-                            <td
-                              class="pl-day-cell"
-                              :class="
-                                leg.unrealized_pl >= 0 ? 'profit' : 'loss'
-                              "
-                            >
-                              {{ formatCurrency(leg.unrealized_pl) }}
-                            </td>
-                            <td
-                              class="pl-open-cell"
-                              :class="
-                                leg.unrealized_pl >= 0 ? 'profit' : 'loss'
-                              "
-                            >
-                              {{ formatCurrency(leg.unrealized_pl) }}
-                            </td>
+                            <td class="pl-day-cell">--</td>
+                            <td class="pl-open-cell">--</td>
                             <td class="etf-delta-cell">
                               {{ formatNumber(leg.qty) }}
                             </td>
                             <td class="bid-cell">--</td>
                             <td class="ask-cell">--</td>
                             <td class="trd-prc-cell">
-                              {{ formatCurrency(leg.current_price) }}
+                              {{ formatCurrency(leg.avg_entry_price) }}
                             </td>
                             <td class="dsopn-cell">
                               {{ strategy.dte || "--" }}
@@ -287,25 +273,15 @@
                               }}</span>
                             </div>
                           </td>
-                          <td
-                            class="pl-day-cell"
-                            :class="leg.unrealized_pl >= 0 ? 'profit' : 'loss'"
-                          >
-                            {{ formatCurrency(leg.unrealized_pl) }}
-                          </td>
-                          <td
-                            class="pl-open-cell"
-                            :class="leg.unrealized_pl >= 0 ? 'profit' : 'loss'"
-                          >
-                            {{ formatCurrency(leg.unrealized_pl) }}
-                          </td>
+                          <td class="pl-day-cell">--</td>
+                          <td class="pl-open-cell">--</td>
                           <td class="etf-delta-cell">
                             {{ formatNumber(leg.qty) }}
                           </td>
                           <td class="bid-cell">--</td>
                           <td class="ask-cell">--</td>
                           <td class="trd-prc-cell">
-                            {{ formatCurrency(leg.current_price) }}
+                            {{ formatCurrency(leg.avg_entry_price) }}
                           </td>
                           <td class="dsopn-cell">{{ group.dte || "--" }}</td>
                           <td class="beta-delta-cell">--</td>
@@ -483,17 +459,17 @@ export default {
         const symbolDisplayGroup = {
           id: `symbol_${symbolGroup.symbol}`,
           symbol: symbolGroup.symbol,
-          strategy: `${symbolGroup.strategies.length} Strategies`,
+          strategy: `${symbolGroup.strategies?.length || 0} Strategies`,
           asset_class: symbolGroup.asset_class,
-          total_qty: symbolGroup.total_qty,
-          total_cost_basis: symbolGroup.total_cost_basis,
-          total_market_value: symbolGroup.total_market_value,
-          total_unrealized_pl: symbolGroup.total_pl_open,
+          total_qty: symbolGroup.total_qty || 0,
+          total_cost_basis: symbolGroup.total_cost_basis || 0,
+          total_market_value: symbolGroup.total_market_value || 0,
+          total_unrealized_pl: symbolGroup.total_pl_open || 0,
           total_unrealized_plpc: 0,
-          pl_day: symbolGroup.total_pl_day,
-          pl_open: symbolGroup.total_pl_open,
+          pl_day: symbolGroup.total_pl_day || 0,
+          pl_open: symbolGroup.total_pl_open || 0,
           legs: [], // Will be populated when expanded
-          strategies: symbolGroup.strategies, // Store strategies for expansion
+          strategies: symbolGroup.strategies || [], // Store strategies for expansion
           order_date: null,
           expiration_date: null,
           dte: null,
@@ -502,16 +478,20 @@ export default {
 
         // When expanded, we'll show strategy rows and leg rows
         // For now, flatten all legs into the symbol group for display
-        symbolGroup.strategies.forEach((strategy) => {
-          strategy.legs.forEach((leg) => {
-            symbolDisplayGroup.legs.push({
-              ...leg,
-              strategy_name: strategy.name,
-              strategy_pl_day: strategy.pl_day,
-              strategy_pl_open: strategy.pl_open,
-            });
+        if (symbolGroup.strategies) {
+          symbolGroup.strategies.forEach((strategy) => {
+            if (strategy.legs) {
+              strategy.legs.forEach((leg) => {
+                symbolDisplayGroup.legs.push({
+                  ...leg,
+                  strategy_name: strategy.name,
+                  strategy_pl_day: strategy.pl_day || 0,
+                  strategy_pl_open: strategy.pl_open || 0,
+                });
+              });
+            }
           });
-        });
+        }
 
         displayGroups.push(symbolDisplayGroup);
       });
@@ -703,18 +683,27 @@ export default {
     // Helper function to process positions data - defined before watcher to avoid hoisting issues
     const processPositionsData = (response) => {
       try {
-        if (response && response.enhanced && response.symbol_groups) {
+        console.log("🔍 Processing positions data:", response);
+
+        // The API returns data nested under response.data
+        const data = response?.data || response;
+
+        if (data && data.enhanced && data.symbol_groups) {
           // New hierarchical structure
+          console.log("📊 Using hierarchical symbol_groups structure");
           positionGroups.value = convertSymbolGroupsToDisplay(
-            response.symbol_groups
+            data.symbol_groups
           );
-        } else if (response && response.enhanced && response.position_groups) {
+        } else if (data && data.enhanced && data.position_groups) {
           // Old enhanced structure
-          positionGroups.value = response.position_groups;
-        } else if (response && response.positions) {
+          console.log("📊 Using enhanced position_groups structure");
+          positionGroups.value = data.position_groups;
+        } else if (data && data.positions) {
           // Fallback: convert regular positions to simple groups
-          positionGroups.value = convertPositionsToGroups(response.positions);
+          console.log("📊 Using fallback positions structure");
+          positionGroups.value = convertPositionsToGroups(data.positions);
         } else {
+          console.log("📊 No valid positions data found");
           positionGroups.value = [];
         }
 

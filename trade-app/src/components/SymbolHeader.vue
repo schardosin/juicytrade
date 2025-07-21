@@ -181,11 +181,11 @@ export default {
       livePrice,
       (newPrice) => {
         if (newPrice?.value?.price) {
-          console.log(
-            `💰 Live price update for ${
-              props.currentSymbol
-            }: $${newPrice.value.price.toFixed(2)}`
-          );
+          // console.log(
+          //   `💰 Live price update for ${
+          //     props.currentSymbol
+          //   }: $${newPrice.value.price.toFixed(2)}`
+          // );
         }
       },
       { deep: true }
