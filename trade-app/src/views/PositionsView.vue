@@ -98,7 +98,6 @@
                     <th class="symbol-header">Symbol</th>
                     <th class="pl-day-header">P/L Day</th>
                     <th class="pl-open-header">P/L Open</th>
-                    <th class="etf-delta-header">Etf Δ</th>
                     <th class="bid-header">Bid (Sell)</th>
                     <th class="ask-header">Ask (Buy)</th>
                     <th class="trd-prc-header">Trd Prc</th>
@@ -143,9 +142,6 @@
                       >
                         {{ formatCurrency(group.pl_open) }}
                       </td>
-                      <td class="etf-delta-cell">
-                        {{ formatNumber(group.total_qty) }}
-                      </td>
                       <td class="bid-cell">--</td>
                       <td class="ask-cell">--</td>
                       <td class="trd-prc-cell">--</td>
@@ -187,9 +183,6 @@
                               :class="strategy.pl_open >= 0 ? 'profit' : 'loss'"
                             >
                               {{ formatCurrency(strategy.pl_open) }}
-                            </td>
-                            <td class="etf-delta-cell">
-                              {{ formatNumber(strategy.total_qty) }}
                             </td>
                             <td class="bid-cell">--</td>
                             <td class="ask-cell">--</td>
@@ -242,12 +235,14 @@
                               </div>
                             </td>
                             <td class="pl-day-cell">--</td>
-                            <td class="pl-open-cell">--</td>
-                            <td class="etf-delta-cell">
-                              {{ formatNumber(leg.qty) }}
+                            <td
+                              class="pl-open-cell"
+                              :class="getLegPL(leg) >= 0 ? 'profit' : 'loss'"
+                            >
+                              {{ formatLegPL(leg) }}
                             </td>
-                            <td class="bid-cell">--</td>
-                            <td class="ask-cell">--</td>
+                            <td class="bid-cell">{{ getLegBid(leg) }}</td>
+                            <td class="ask-cell">{{ getLegAsk(leg) }}</td>
                             <td class="trd-prc-cell">
                               {{ formatCurrency(leg.avg_entry_price) }}
                             </td>
@@ -282,12 +277,14 @@
                             </div>
                           </td>
                           <td class="pl-day-cell">--</td>
-                          <td class="pl-open-cell">--</td>
-                          <td class="etf-delta-cell">
-                            {{ formatNumber(leg.qty) }}
+                          <td
+                            class="pl-open-cell"
+                            :class="getLegPL(leg) >= 0 ? 'profit' : 'loss'"
+                          >
+                            {{ formatLegPL(leg) }}
                           </td>
-                          <td class="bid-cell">--</td>
-                          <td class="ask-cell">--</td>
+                          <td class="bid-cell">{{ getLegBid(leg) }}</td>
+                          <td class="ask-cell">{{ getLegAsk(leg) }}</td>
                           <td class="trd-prc-cell">
                             {{ formatCurrency(leg.avg_entry_price) }}
                           </td>
@@ -334,13 +331,14 @@
 </template>
 
 <script>
-import { ref, computed, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, reactive } from "vue";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import RightPanel from "../components/RightPanel.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { useMarketData } from "../composables/useMarketData.js";
+import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 
 export default {
   name: "PositionsView",
@@ -356,6 +354,10 @@ export default {
 
     // Use unified market data composable
     const { getPositions, refreshPositions } = useMarketData();
+
+    // Smart Market Data integration - same pattern as other components
+    const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
+    const liveOptionPrices = reactive(new Map());
 
     // Computed properties for global symbol state
     const currentSymbol = computed(() => globalSymbolState.currentSymbol);
@@ -711,6 +713,76 @@ export default {
       return false;
     };
 
+    // Live price function - same pattern as CollapsibleOptionsChain
+    const getLivePrice = (symbol) => {
+      if (!symbol) return null;
+
+      if (!liveOptionPrices.has(symbol)) {
+        // Call getSmartOptionPrice only once to set up the subscription and heartbeat
+        liveOptionPrices.set(symbol, getSmartOptionPrice(symbol));
+      }
+      return liveOptionPrices.get(symbol)?.value;
+    };
+
+    // Get live bid price for a leg
+    const getLegBid = (leg) => {
+      if (leg.asset_class !== "us_option") return "--";
+      const livePrice = getLivePrice(leg.symbol);
+      // Use nullish coalescing to fall back to original bid price
+      const bidPrice = livePrice?.bid ?? leg.bid ?? 0;
+      return bidPrice > 0 ? formatCurrency(bidPrice) : "--";
+    };
+
+    // Get live ask price for a leg
+    const getLegAsk = (leg) => {
+      if (leg.asset_class !== "us_option") return "--";
+      const livePrice = getLivePrice(leg.symbol);
+      // Use nullish coalescing to fall back to original ask price
+      const askPrice = livePrice?.ask ?? leg.ask ?? 0;
+      return askPrice > 0 ? formatCurrency(askPrice) : "--";
+    };
+
+    // Get current market price (mid of bid/ask) for P/L calculation
+    const getLegCurrentPrice = (leg) => {
+      if (leg.asset_class !== "us_option") return leg.current_price || 0;
+      const livePrice = getLivePrice(leg.symbol);
+
+      // If we have live prices, use them
+      if (livePrice?.bid && livePrice?.ask) {
+        return (livePrice.bid + livePrice.ask) / 2;
+      }
+
+      // Fall back to original option data for mid price calculation
+      if (leg.bid && leg.ask) {
+        return (leg.bid + leg.ask) / 2;
+      }
+
+      // Final fallback to current_price or 0
+      return leg.current_price || 0;
+    };
+
+    // Calculate live P/L for individual leg
+    const getLegPL = (leg) => {
+      const currentPrice = getLegCurrentPrice(leg);
+      const entryPrice = leg.avg_entry_price || 0;
+
+      if (currentPrice === 0 || entryPrice === 0) return 0;
+
+      // For options: (current_price - entry_price) * quantity * 100 (contract multiplier)
+      // For stocks: (current_price - entry_price) * quantity
+      const multiplier = leg.asset_class === "us_option" ? 100 : 1;
+      const priceDiff = currentPrice - entryPrice;
+
+      // For short positions (negative quantity), P/L is inverted
+      return priceDiff * leg.qty * multiplier;
+    };
+
+    // Format P/L for display
+    const formatLegPL = (leg) => {
+      const pl = getLegPL(leg);
+      return formatCurrency(pl);
+    };
+
     const onTradeModeChanged = (mode) => {
       // Not used in positions view
     };
@@ -763,10 +835,71 @@ export default {
         if (newPositions) {
           // Process the new data automatically
           processPositionsData(newPositions);
+
+          // Subscribe to all position symbols for live price updates
+          subscribeToAllPositionSymbols(newPositions);
         }
       },
       { immediate: true }
     );
+
+    // Subscribe to all position symbols for live price updates
+    const subscribeToAllPositionSymbols = (positionsData) => {
+      const symbols = new Set();
+
+      try {
+        // Extract data from the response structure
+        const data = positionsData?.data || positionsData;
+
+        if (data && data.enhanced && data.symbol_groups) {
+          // New hierarchical structure - extract all leg symbols
+          data.symbol_groups.forEach((symbolGroup) => {
+            if (symbolGroup.strategies) {
+              symbolGroup.strategies.forEach((strategy) => {
+                if (strategy.legs) {
+                  strategy.legs.forEach((leg) => {
+                    if (leg.asset_class === "us_option" && leg.symbol) {
+                      symbols.add(leg.symbol);
+                    }
+                  });
+                }
+              });
+            }
+          });
+        } else if (data && data.enhanced && data.position_groups) {
+          // Old enhanced structure - extract all leg symbols
+          data.position_groups.forEach((group) => {
+            if (group.legs) {
+              group.legs.forEach((leg) => {
+                if (leg.asset_class === "us_option" && leg.symbol) {
+                  symbols.add(leg.symbol);
+                }
+              });
+            }
+          });
+        } else if (data && data.positions) {
+          // Fallback structure - extract all position symbols
+          data.positions.forEach((position) => {
+            if (position.asset_class === "us_option" && position.symbol) {
+              symbols.add(position.symbol);
+            }
+          });
+        }
+
+        // Subscribe to all option symbols for live price updates
+        if (symbols.size > 0) {
+          console.log(
+            `📊 Auto-subscribing to ${symbols.size} position symbols for live P/L updates`
+          );
+          symbols.forEach((symbol) => {
+            // This will trigger subscription in SmartMarketDataStore
+            getLivePrice(symbol);
+          });
+        }
+      } catch (error) {
+        console.error("❌ Error subscribing to position symbols:", error);
+      }
+    };
 
     // Lifecycle
     onMounted(async () => {
@@ -808,6 +941,10 @@ export default {
       getLegTypeClass,
       getLegActionClass,
       isLegITM,
+      getLegBid,
+      getLegAsk,
+      getLegPL,
+      formatLegPL,
       currentSymbol,
       currentPrice,
       priceChange,
@@ -1064,12 +1201,22 @@ export default {
 
 .pl-day-cell.profit,
 .pl-open-cell.profit {
-  color: var(--color-success);
+  color: #00c851 !important;
 }
 
 .pl-day-cell.loss,
 .pl-open-cell.loss {
-  color: var(--color-danger);
+  color: #ff4444 !important;
+}
+
+.total-pl-day.profit,
+.total-pl-open.profit {
+  color: #00c851 !important;
+}
+
+.total-pl-day.loss,
+.total-pl-open.loss {
+  color: #ff4444 !important;
 }
 
 .etf-delta-cell,

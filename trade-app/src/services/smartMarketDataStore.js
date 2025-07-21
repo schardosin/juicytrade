@@ -146,14 +146,13 @@ class SmartMarketDataStore {
   async unsubscribeFromSymbol(symbol) {
     this.activeSubscriptions.delete(symbol);
 
-    // Clean up data
-    if (this.isOptionSymbol(symbol)) {
-      this.optionPrices.delete(symbol);
-    } else {
-      this.stockPrices.delete(symbol);
-    }
+    // DON'T delete price data - keep last known prices for UI continuity
+    // The price data will remain available for components to use
+    // Only remove from active subscriptions to stop receiving new updates
 
-    console.log(`📉 Auto-unsubscribed from: ${symbol}`);
+    console.log(
+      `📉 Auto-unsubscribed from: ${symbol} (keeping last known price)`
+    );
 
     // Schedule backend update
     this.scheduleBackendUpdate();
