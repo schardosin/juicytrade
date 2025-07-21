@@ -227,7 +227,7 @@
 </template>
 
 <script>
-import { ref, computed, watch, toRefs } from "vue";
+import { ref, computed, watch, toRefs, reactive } from "vue";
 import {
   calculateMultiLegProfitLoss,
   calculateBuyingPowerEffect,
@@ -235,6 +235,7 @@ import {
   getCreditDebitInfo,
   calculateGreeks,
 } from "../services/optionsCalculator.js";
+import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 
 export default {
   name: "BottomTradingPanel",
@@ -264,24 +265,47 @@ export default {
   setup(props, { emit }) {
     const { selectedOptions, optionsData } = toRefs(props);
 
+    // Smart Market Data integration - same pattern as CollapsibleOptionsChain
+    const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
+    const liveOptionPrices = reactive(new Map());
+    const lockedPrices = ref(new Map());
+
     const limitPrice = ref(0);
     const selectedOrderType = ref("limit");
     const selectedTimeInForce = ref("day");
     const selectedLegs = ref([]);
     const priceLocked = ref(false);
 
-    const getOptionPrice = (selection, priceType) => {
-      // First try to find in the passed optionsData (for backward compatibility)
-      let option = optionsData.value.find(
+    // Live price function - same pattern as CollapsibleOptionsChain
+    const getLivePrice = (symbol) => {
+      if (!symbol) return null;
+
+      if (!liveOptionPrices.has(symbol)) {
+        // Call getSmartOptionPrice only once to set up the subscription and heartbeat
+        liveOptionPrices.set(symbol, getSmartOptionPrice(symbol));
+      }
+      return liveOptionPrices.get(symbol)?.value;
+    };
+
+    // Live price function for BID/MID/ASK display (always live, never locked)
+    const getOptionPriceLive = (selection, priceType) => {
+      if (!selection?.symbol) return 0;
+
+      // Always use live prices from SmartMarketDataStore
+      const livePrice = getLivePrice(selection.symbol);
+      if (livePrice) {
+        if (priceType === "bid") return livePrice.bid ?? 0;
+        if (priceType === "ask") return livePrice.ask ?? 0;
+        if (priceType === "mid") return livePrice.price ?? 0;
+        return selection.side === "buy"
+          ? livePrice.ask ?? 0
+          : livePrice.bid ?? 0;
+      }
+
+      // Fallback to static data from props (backward compatibility)
+      const option = optionsData.value.find(
         (opt) => opt.symbol === selection.symbol
       );
-
-      // If not found and we have access to the parent's flattened data, try that
-      if (!option && props.flattenedOptionsData) {
-        option = props.flattenedOptionsData.find(
-          (opt) => opt.symbol === selection.symbol
-        );
-      }
 
       if (!option) return 0;
 
@@ -294,36 +318,58 @@ export default {
       return selection.side === "buy" ? option.ask || 0 : option.bid || 0;
     };
 
+    // Price function for limit price calculation (can be locked)
+    const getOptionPriceForLimit = (selection, priceType) => {
+      if (!selection?.symbol) return 0;
+
+      // If price is locked, use cached prices for limit calculation
+      if (priceLocked.value && lockedPrices.value.has(selection.symbol)) {
+        const lockedData = lockedPrices.value.get(selection.symbol);
+        if (priceType === "bid") return lockedData?.bid ?? 0;
+        if (priceType === "ask") return lockedData?.ask ?? 0;
+        if (priceType === "mid") return lockedData?.price ?? 0;
+        return selection.side === "buy"
+          ? lockedData?.ask ?? 0
+          : lockedData?.bid ?? 0;
+      }
+
+      // Otherwise use live prices (same as getOptionPriceLive)
+      return getOptionPriceLive(selection, priceType);
+    };
+
+    // Net premium for limit price calculation (can be locked)
     const netPremium = computed(() => {
       let total = 0;
       selectedOptions.value.forEach((selection) => {
-        const price = getOptionPrice(selection, "mid"); // Use mid for a neutral estimate
+        const price = getOptionPriceForLimit(selection, "mid"); // Use mid for a neutral estimate
         const premium = selection.side === "buy" ? -price : price;
         total += premium * selection.quantity;
       });
       return total;
     });
 
+    // BID price display (always live, never locked)
     const bidPrice = computed(() => {
       let total = 0;
       selectedOptions.value.forEach((selection) => {
         const price =
           selection.side === "buy"
-            ? getOptionPrice(selection, "ask")
-            : getOptionPrice(selection, "bid");
+            ? getOptionPriceLive(selection, "ask")
+            : getOptionPriceLive(selection, "bid");
         const premium = selection.side === "buy" ? -price : price;
         total += premium * selection.quantity;
       });
       return total.toFixed(2);
     });
 
+    // ASK price display (always live, never locked)
     const askPrice = computed(() => {
       let total = 0;
       selectedOptions.value.forEach((selection) => {
         const price =
           selection.side === "buy"
-            ? getOptionPrice(selection, "bid")
-            : getOptionPrice(selection, "ask");
+            ? getOptionPriceLive(selection, "bid")
+            : getOptionPriceLive(selection, "ask");
         const premium = selection.side === "buy" ? -price : price;
         total += premium * selection.quantity;
       });
@@ -545,6 +591,25 @@ export default {
     };
 
     const togglePriceLock = () => {
+      if (!priceLocked.value) {
+        // Locking - cache current live prices for all selected options
+        console.log(
+          "🔒 Locking prices for",
+          selectedOptions.value.length,
+          "options"
+        );
+        selectedOptions.value.forEach((selection) => {
+          const livePrice = getLivePrice(selection.symbol);
+          if (livePrice) {
+            lockedPrices.value.set(selection.symbol, livePrice);
+            console.log(`📌 Cached price for ${selection.symbol}:`, livePrice);
+          }
+        });
+      } else {
+        // Unlocking - clear cached prices
+        console.log("🔓 Unlocking prices, clearing cache");
+        lockedPrices.value.clear();
+      }
       priceLocked.value = !priceLocked.value;
     };
 
