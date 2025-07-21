@@ -212,25 +212,33 @@
                             class="position-leg-row"
                           >
                             <td class="symbol-cell leg-symbol">
-                              <div class="leg-card">
+                              <div class="leg-description">
                                 <span class="leg-qty">{{
                                   formatLegQty(leg.qty)
                                 }}</span>
-                                <span class="leg-date">{{
-                                  formatLegDate(leg)
-                                }}</span>
-                                <span class="leg-days">{{
-                                  formatLegDays(leg)
-                                }}</span>
-                                <span class="leg-strike">{{
-                                  formatLegStrike(leg)
-                                }}</span>
-                                <span
-                                  class="leg-type"
-                                  :class="getLegTypeClass(leg)"
-                                >
-                                  {{ formatLegType(leg) }}
-                                </span>
+                                <div class="leg-details">
+                                  <span class="expiry-date">{{
+                                    formatLegDate(leg)
+                                  }}</span>
+                                  <span class="day-indicator">{{
+                                    formatLegDays(leg)
+                                  }}</span>
+                                  <span class="strike-price">{{
+                                    formatLegStrike(leg)
+                                  }}</span>
+                                  <span
+                                    class="option-type"
+                                    :class="getLegTypeClass(leg)"
+                                  >
+                                    {{ formatLegType(leg) }}
+                                  </span>
+                                  <span
+                                    v-if="isLegITM(leg)"
+                                    class="itm-indicator"
+                                  >
+                                    ITM
+                                  </span>
+                                </div>
                               </div>
                             </td>
                             <td class="pl-day-cell">--</td>
@@ -614,7 +622,20 @@ export default {
     const formatLegDate = (leg) => {
       if (leg.asset_class === "us_option") {
         const parts = parseOptionSymbol(leg.symbol);
-        return parts ? parts.expiry : "--";
+        if (parts) {
+          // Convert MM/DD format to "Aug 1" format
+          const [month, day] = parts.expiry.split("/");
+          const currentYear = new Date().getFullYear();
+          const date = new Date(
+            currentYear,
+            parseInt(month) - 1,
+            parseInt(day)
+          );
+          return date.toLocaleDateString("en-US", {
+            month: "short",
+            day: "numeric",
+          });
+        }
       }
       return "--";
     };
@@ -674,6 +695,20 @@ export default {
         "bto-action": action === "BTO",
         "sto-action": action === "STO",
       };
+    };
+
+    const isLegITM = (leg) => {
+      if (leg.asset_class !== "us_option" || !currentPrice.value) return false;
+
+      const parts = parseOptionSymbol(leg.symbol);
+      if (!parts) return false;
+
+      if (parts.type === "call") {
+        return currentPrice.value > parts.strike;
+      } else if (parts.type === "put") {
+        return currentPrice.value < parts.strike;
+      }
+      return false;
     };
 
     const onTradeModeChanged = (mode) => {
@@ -772,6 +807,7 @@ export default {
       formatLegAction,
       getLegTypeClass,
       getLegActionClass,
+      isLegITM,
       currentSymbol,
       currentPrice,
       priceChange,
@@ -1201,6 +1237,90 @@ export default {
 
 .leg-card .leg-type.sell-type {
   color: var(--color-danger);
+}
+
+/* New Leg Description Styling - exactly matching RightPanel Analysis */
+.leg-description {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-left: var(--spacing-lg);
+}
+
+.leg-description .leg-qty {
+  font-weight: 600;
+  min-width: 30px;
+  text-align: center;
+  color: var(--text-primary, #ffffff);
+}
+
+.leg-description .leg-details {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.leg-description .expiry-date {
+  font-size: 12px;
+  color: var(--text-primary, #ffffff);
+  background-color: var(--bg-tertiary, #1a1d23);
+  padding: 2px 6px;
+  border-radius: 3px;
+}
+
+.leg-description .day-indicator {
+  font-size: 10px;
+  color: var(--text-tertiary, #888888);
+  background-color: var(--bg-secondary, #141519);
+  padding: 1px 4px;
+  border-radius: 2px;
+}
+
+.leg-description .strike-price {
+  font-size: 12px;
+  color: var(--text-primary, #ffffff);
+  font-weight: 600;
+}
+
+.leg-description .option-type {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 4px;
+  border-radius: 2px;
+  min-width: 16px;
+  text-align: center;
+}
+
+.leg-description .option-type.call-type {
+  background-color: #28a745;
+  color: white;
+}
+
+.leg-description .option-type.put-type {
+  background-color: #dc3545;
+  color: white;
+}
+
+.leg-description .itm-indicator {
+  font-size: 9px;
+  font-weight: 600;
+  background-color: #ffc107;
+  color: #000;
+  padding: 1px 4px;
+  border-radius: 2px;
+  text-transform: uppercase;
+}
+
+/* Update option type classes to work with new structure */
+.option-type.buy-type {
+  background-color: #28a745;
+  color: white;
+}
+
+.option-type.sell-type {
+  background-color: #dc3545;
+  color: white;
 }
 
 /* Responsive design */
