@@ -787,63 +787,7 @@ export default {
       // Not used in positions view
     };
 
-    // Helper function to process positions data - defined before watcher to avoid hoisting issues
-    const processPositionsData = (response) => {
-      try {
-        console.log("🔍 Processing positions data:", response);
-
-        // The API returns data nested under response.data
-        const data = response?.data || response;
-
-        if (data && data.enhanced && data.symbol_groups) {
-          // New hierarchical structure
-          console.log("📊 Using hierarchical symbol_groups structure");
-          positionGroups.value = convertSymbolGroupsToDisplay(
-            data.symbol_groups
-          );
-        } else if (data && data.enhanced && data.position_groups) {
-          // Old enhanced structure
-          console.log("📊 Using enhanced position_groups structure");
-          positionGroups.value = data.position_groups;
-        } else if (data && data.positions) {
-          // Fallback: convert regular positions to simple groups
-          console.log("📊 Using fallback positions structure");
-          positionGroups.value = convertPositionsToGroups(data.positions);
-        } else {
-          console.log("📊 No valid positions data found");
-          positionGroups.value = [];
-        }
-
-        // Clear any previous errors since we got data
-        error.value = null;
-        console.log(
-          "✅ Positions processed:",
-          positionGroups.value.length,
-          "groups"
-        );
-      } catch (err) {
-        console.error("❌ Error processing positions data:", err);
-        error.value = "Failed to process positions data.";
-      }
-    };
-
-    // Watch for changes in reactive positions data - now after function is defined
-    watch(
-      reactivePositions,
-      (newPositions) => {
-        console.log("🔄 Positions data updated:", newPositions);
-        if (newPositions) {
-          // Process the new data automatically
-          processPositionsData(newPositions);
-
-          // Subscribe to all position symbols for live price updates
-          subscribeToAllPositionSymbols(newPositions);
-        }
-      },
-      { immediate: true }
-    );
-
-    // Subscribe to all position symbols for live price updates
+    // Subscribe to all position symbols for live price updates - DEFINED BEFORE WATCHER
     const subscribeToAllPositionSymbols = (positionsData) => {
       const symbols = new Set();
 
@@ -900,6 +844,62 @@ export default {
         console.error("❌ Error subscribing to position symbols:", error);
       }
     };
+
+    // Helper function to process positions data - defined before watcher to avoid hoisting issues
+    const processPositionsData = (response) => {
+      try {
+        console.log("🔍 Processing positions data:", response);
+
+        // The API returns data nested under response.data
+        const data = response?.data || response;
+
+        if (data && data.enhanced && data.symbol_groups) {
+          // New hierarchical structure
+          console.log("📊 Using hierarchical symbol_groups structure");
+          positionGroups.value = convertSymbolGroupsToDisplay(
+            data.symbol_groups
+          );
+        } else if (data && data.enhanced && data.position_groups) {
+          // Old enhanced structure
+          console.log("📊 Using enhanced position_groups structure");
+          positionGroups.value = data.position_groups;
+        } else if (data && data.positions) {
+          // Fallback: convert regular positions to simple groups
+          console.log("📊 Using fallback positions structure");
+          positionGroups.value = convertPositionsToGroups(data.positions);
+        } else {
+          console.log("📊 No valid positions data found");
+          positionGroups.value = [];
+        }
+
+        // Clear any previous errors since we got data
+        error.value = null;
+        console.log(
+          "✅ Positions processed:",
+          positionGroups.value.length,
+          "groups"
+        );
+      } catch (err) {
+        console.error("❌ Error processing positions data:", err);
+        error.value = "Failed to process positions data.";
+      }
+    };
+
+    // Watch for changes in reactive positions data - now after function is defined
+    watch(
+      reactivePositions,
+      (newPositions) => {
+        console.log("🔄 Positions data updated:", newPositions);
+        if (newPositions) {
+          // Process the new data automatically
+          processPositionsData(newPositions);
+
+          // Subscribe to all position symbols for live price updates
+          subscribeToAllPositionSymbols(newPositions);
+        }
+      },
+      { immediate: true }
+    );
 
     // Lifecycle
     onMounted(async () => {

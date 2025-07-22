@@ -886,6 +886,41 @@ class AlpacaProvider(BaseProvider):
         except Exception as e:
             self._log_error("get_positions", e)
             return []
+
+    async def get_positions_enhanced(self) -> Dict[str, Any]:
+        """Get enhanced positions with simplified static data structure."""
+        try:
+            logger.info("🔍 Getting enhanced positions with static broker data...")
+            
+            # 1. Get current positions
+            current_positions = await self.get_positions()
+            if not current_positions:
+                logger.info("No current positions found")
+                return {"enhanced": True, "symbol_groups": []}
+            
+            # 2. Extract symbols from positions for efficient order lookup
+            position_symbols = [pos.symbol for pos in current_positions]
+            logger.info(f"📊 Extracting orders for {len(position_symbols)} position symbols")
+            
+            # 3. Get closed orders for position symbols (much more efficient than full history)
+            closed_orders = await self.get_orders_by_symbols(position_symbols, status="closed")
+            
+            # 4. Get all current orders for additional context
+            current_orders = await self.get_orders(status="all")
+            
+            logger.info(f"📊 Retrieved {len(closed_orders)} closed orders for position symbols and {len(current_orders)} current orders")
+            
+            # 5. Create simplified hierarchical grouping (Symbol -> Strategies -> Legs)
+            symbol_groups = self._create_simplified_hierarchical_groups(
+                current_positions, closed_orders, current_orders
+            )
+            
+            logger.info(f"✅ Created {len(symbol_groups)} symbol groups with enhanced order data")
+            return {"enhanced": True, "symbol_groups": symbol_groups}
+            
+        except Exception as e:
+            self._log_error("get_positions_enhanced", e)
+            return {"enhanced": True, "symbol_groups": []}
     
     async def get_orders(self, status: str = "open") -> List[Order]:
         """Get orders with status filter."""
@@ -1758,3 +1793,256 @@ class AlpacaProvider(BaseProvider):
         except Exception as e:
             self._log_error("_stop_all_streams", e)
             return False
+
+    # === Enhanced Positions Helper Methods ===
+    
+    async def _get_order_history(self, days_back: int = 30) -> List:
+        """Get order history from Alpaca - simplified for now."""
+        try:
+            # For now, return empty list since Alpaca doesn't have a direct history API
+            # In a full implementation, we would use the orders API with date filtering
+            logger.info(f"📊 Alpaca order history not implemented - returning empty list")
+            return []
+        except Exception as e:
+            self._log_error("_get_order_history", e)
+            return []
+
+    async def get_orders_by_symbols(self, symbols: List[str], status: str = "closed") -> List[Order]:
+        """Get orders filtered by symbols and status - much more efficient than full history."""
+        try:
+            if not symbols:
+                logger.info("No symbols provided for order lookup")
+                return []
+            
+            logger.info(f"🔍 Getting {status} orders for {len(symbols)} symbols: {symbols}")
+            
+            # Use Alpaca's orders endpoint with symbol filtering
+            url = f"{self._get_base_url()}/v2/orders"
+            api_key, api_secret = self._get_api_credentials()
+            
+            # Join symbols with comma for the API call
+            symbols_param = ",".join(symbols)
+            
+            params = {
+                "status": status,
+                "symbols": symbols_param,
+                "limit": 1000,  # Get up to 1000 orders
+                "nested": "true"  # Include nested order details
+            }
+            
+            headers = {
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": api_secret,
+                "accept": "application/json"
+            }
+            
+            response = requests.get(url, headers=headers, params=params)
+            
+            if response.status_code == 200:
+                orders_data = response.json()
+                logger.info(f"📊 Retrieved {len(orders_data)} orders for symbols")
+                
+                # Transform to our Order model
+                result = []
+                for order_data in orders_data:
+                    try:
+                        # Create a mock Alpaca order object for transformation
+                        transformed_order = self._transform_order_from_dict(order_data)
+                        if transformed_order:
+                            result.append(transformed_order)
+                    except Exception as e:
+                        self._log_error(f"transform_order_from_dict for order {order_data.get('id')}", e)
+                        continue
+                
+                logger.info(f"✅ Successfully transformed {len(result)} orders")
+                return result
+            else:
+                self._log_error(f"get_orders_by_symbols API call", 
+                              Exception(f"HTTP {response.status_code}: {response.text}"))
+                return []
+                
+        except Exception as e:
+            self._log_error(f"get_orders_by_symbols for {len(symbols)} symbols", e)
+            return []
+
+    def _transform_order_from_dict(self, order_data: Dict[str, Any]) -> Optional[Order]:
+        """Transform Alpaca order dictionary to our standard Order model."""
+        try:
+            # Handle legs for multi-leg orders
+            legs = None
+            if order_data.get("legs"):
+                legs = []
+                for leg_data in order_data["legs"]:
+                    legs.append({
+                        "symbol": leg_data.get("symbol"),
+                        "side": leg_data.get("side"),
+                        "qty": float(leg_data.get("qty", 0))
+                    })
+            
+            return Order(
+                id=str(order_data.get("id", "")),
+                symbol=order_data.get("symbol", "Multi-leg" if legs else ""),
+                asset_class=order_data.get("asset_class", "unknown"),
+                side=order_data.get("side", ""),
+                order_type=order_data.get("order_type", ""),
+                qty=float(order_data.get("qty", 0)),
+                filled_qty=float(order_data.get("filled_qty", 0)),
+                limit_price=float(order_data.get("limit_price")) if order_data.get("limit_price") else None,
+                stop_price=float(order_data.get("stop_price")) if order_data.get("stop_price") else None,
+                avg_fill_price=float(order_data.get("filled_avg_price")) if order_data.get("filled_avg_price") else None,
+                status=order_data.get("status", ""),
+                time_in_force=order_data.get("time_in_force", ""),
+                submitted_at=order_data.get("submitted_at", ""),
+                filled_at=order_data.get("filled_at"),
+                legs=legs
+            )
+        except Exception as e:
+            self._log_error("_transform_order_from_dict", e)
+            return None
+    
+    def _create_simplified_hierarchical_groups(self, positions: List[Position], 
+                                             history: List, 
+                                             current_orders: List[Order]) -> List[Dict[str, Any]]:
+        """Create simplified hierarchical grouping with only static broker data."""
+        try:
+            from datetime import datetime
+            
+            logger.info("📊 Creating simplified hierarchical symbol groups")
+            
+            # Step 1: Group positions by underlying symbol
+            symbol_groups = {}
+            
+            for position in positions:
+                # Determine underlying symbol
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    underlying = parsed["underlying"] if parsed else position.symbol
+                    asset_class = "options"
+                else:
+                    underlying = position.symbol
+                    asset_class = "stocks"
+                
+                if underlying not in symbol_groups:
+                    symbol_groups[underlying] = {
+                        "symbol": underlying,
+                        "asset_class": asset_class,
+                        "positions_by_expiry": {}
+                    }
+                
+                # Group by expiry for options, or use "stock" for stocks
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    expiry_key = parsed["expiry"] if parsed else "unknown"
+                else:
+                    expiry_key = "stock"
+                
+                if expiry_key not in symbol_groups[underlying]["positions_by_expiry"]:
+                    symbol_groups[underlying]["positions_by_expiry"][expiry_key] = []
+                
+                symbol_groups[underlying]["positions_by_expiry"][expiry_key].append(position)
+            
+            # Step 2: Convert to final format with strategies
+            result = []
+            for underlying, symbol_group in symbol_groups.items():
+                strategies = []
+                
+                for expiry_key, expiry_positions in symbol_group["positions_by_expiry"].items():
+                    # Detect strategy for this group of positions
+                    strategy_name = self._detect_strategy_name(expiry_positions)
+                    
+                    # Calculate DTE for options
+                    dte = None
+                    if expiry_key != "stock":
+                        try:
+                            expiry_date = datetime.strptime(expiry_key, "%Y-%m-%d")
+                            dte = (expiry_date - datetime.now()).days
+                        except:
+                            dte = None
+                    
+                    # Calculate strategy totals (static data only)
+                    strategy_total_qty = sum(pos.qty for pos in expiry_positions)
+                    strategy_cost_basis = sum(pos.cost_basis for pos in expiry_positions)
+                    
+                    # Create legs with static broker data (Alpaca provides avg_entry_price directly)
+                    legs = []
+                    for pos in expiry_positions:
+                        legs.append({
+                            "symbol": pos.symbol,
+                            "qty": pos.qty,
+                            "avg_entry_price": pos.avg_entry_price,  # Alpaca provides this directly
+                            "cost_basis": pos.cost_basis,
+                            "asset_class": pos.asset_class,
+                            "current_price": pos.current_price,
+                            "bid": getattr(pos, 'bid', None),
+                            "ask": getattr(pos, 'ask', None)
+                        })
+                    
+                    strategy = {
+                        "name": strategy_name,
+                        "total_qty": strategy_total_qty,
+                        "cost_basis": strategy_cost_basis,
+                        "dte": dte,
+                        "legs": legs
+                    }
+                    strategies.append(strategy)
+                
+                result.append({
+                    "symbol": underlying,
+                    "asset_class": symbol_group["asset_class"],
+                    "strategies": strategies
+                })
+            
+            logger.info(f"✅ Created {len(result)} simplified symbol groups")
+            return result
+            
+        except Exception as e:
+            self._log_error("_create_simplified_hierarchical_groups", e)
+            return []
+
+    def _detect_strategy_name(self, positions: List[Position]) -> str:
+        """Detect strategy name based on positions using centralized strategy detection."""
+        try:
+            if len(positions) == 1:
+                if self._is_option_symbol(positions[0].symbol):
+                    return "Single Option"
+                else:
+                    return "Stock Position"
+            
+            # For multi-leg strategies, use the centralized strategy detection
+            option_positions = [pos for pos in positions if self._is_option_symbol(pos.symbol)]
+            
+            if len(option_positions) >= 2:
+                # Convert positions to legs format expected by detectStrategy
+                legs = []
+                for pos in option_positions:
+                    # Determine side based on quantity (positive = buy, negative = sell)
+                    side = "buy_to_open" if pos.qty > 0 else "sell_to_open"
+                    legs.append({
+                        "symbol": pos.symbol,
+                        "side": side,
+                        "qty": abs(pos.qty)
+                    })
+                
+                # Use centralized strategy detection
+                try:
+                    from ..utils.optionsStrategies import detectStrategy
+                    strategy = detectStrategy(legs)
+                    return strategy
+                except ImportError as e:
+                    logger.warning(f"Could not import detectStrategy: {e}")
+                    # Fallback to generic naming
+                    pass
+            
+            # Fallback to generic naming
+            if len(positions) == 2:
+                return "2-Leg Strategy"
+            elif len(positions) == 4:
+                return "4-Leg Strategy"
+            elif len(positions) == 6:
+                return "6-Leg Strategy"
+            else:
+                return f"{len(positions)}-Leg Strategy"
+                
+        except Exception as e:
+            self._log_error("_detect_strategy_name", e)
+            return "Unknown Strategy"

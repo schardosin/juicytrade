@@ -2263,14 +2263,41 @@ class TradierProvider(BaseProvider):
             return []
 
     def _detect_strategy_name(self, positions: List[Position]) -> str:
-        """Detect strategy name based on positions."""
+        """Detect strategy name based on positions using centralized strategy detection."""
         try:
             if len(positions) == 1:
                 if self._is_option_symbol(positions[0].symbol):
                     return "Single Option"
                 else:
                     return "Stock Position"
-            elif len(positions) == 2:
+            
+            # For multi-leg strategies, use the centralized strategy detection
+            option_positions = [pos for pos in positions if self._is_option_symbol(pos.symbol)]
+            
+            if len(option_positions) >= 2:
+                # Convert positions to legs format expected by detectStrategy
+                legs = []
+                for pos in option_positions:
+                    # Determine side based on quantity (positive = buy, negative = sell)
+                    side = "buy_to_open" if pos.qty > 0 else "sell_to_open"
+                    legs.append({
+                        "symbol": pos.symbol,
+                        "side": side,
+                        "qty": abs(pos.qty)
+                    })
+                
+                # Use centralized strategy detection
+                try:
+                    from ..utils.optionsStrategies import detectStrategy
+                    strategy = detectStrategy(legs)
+                    return strategy
+                except ImportError as e:
+                    logger.warning(f"Could not import detectStrategy: {e}")
+                    # Fallback to generic naming
+                    pass
+            
+            # Fallback to generic naming
+            if len(positions) == 2:
                 return "2-Leg Strategy"
             elif len(positions) == 4:
                 return "4-Leg Strategy"
@@ -2278,6 +2305,7 @@ class TradierProvider(BaseProvider):
                 return "6-Leg Strategy"
             else:
                 return f"{len(positions)}-Leg Strategy"
+                
         except Exception as e:
             self._log_error("_detect_strategy_name", e)
             return "Unknown Strategy"

@@ -34,6 +34,7 @@
             :theme="'dark'"
             :height="chartHeight"
             :enableRealtime="true"
+            :livePrice="livePrice"
           />
         </div>
       </div>
@@ -65,6 +66,7 @@ import SymbolHeader from "../components/SymbolHeader.vue";
 import LightweightChart from "../components/LightweightChart.vue";
 import RightPanel from "../components/RightPanel.vue";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
+import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 import api from "../services/api";
 // webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
 // import webSocketClient from "../services/webSocketClient";
@@ -82,6 +84,9 @@ export default {
     // Use global symbol state
     const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
       useGlobalSymbol();
+
+    // Use SmartMarketData for live price subscriptions
+    const { getStockPrice } = useSmartMarketData();
 
     // Local reactive data (non-symbol related)
     const selectedTradeMode = ref("chart");
@@ -104,6 +109,13 @@ export default {
     );
     const isLivePrice = computed(() => globalSymbolState.isLivePrice);
     const marketStatus = computed(() => globalSymbolState.marketStatus);
+
+    // Live price subscription for chart updates
+    const livePrice = computed(() => {
+      if (!currentSymbol.value) return null;
+      const priceData = getStockPrice(currentSymbol.value);
+      return priceData?.value || null;
+    });
 
     // Chart configuration
     const chartProvider = ref("lightweight");
@@ -298,6 +310,9 @@ export default {
       peRatio,
       chartProvider,
       chartHeight,
+
+      // Live price data for chart
+      livePrice,
 
       // Computed properties for RightPanel
       rightPanelSection,

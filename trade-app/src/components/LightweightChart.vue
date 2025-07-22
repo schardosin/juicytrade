@@ -71,6 +71,10 @@ export default {
       type: Boolean,
       default: true,
     },
+    livePrice: {
+      type: Object,
+      default: null,
+    },
   },
   setup(props) {
     const chartContainer = ref(null);
@@ -625,6 +629,18 @@ export default {
           console.log("Chart symbol changed to:", newSymbol);
         }
       }
+    );
+
+    // Watch for live price updates
+    watch(
+      () => props.livePrice,
+      (newPriceData) => {
+        if (newPriceData && props.enableRealtime && candlestickSeries) {
+          console.log(`📈 Live price update received for ${props.symbol}:`, newPriceData);
+          updateRealTimeData(newPriceData);
+        }
+      },
+      { deep: true }
     );
 
     // Watch for theme changes
