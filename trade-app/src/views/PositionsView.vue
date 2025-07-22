@@ -138,9 +138,9 @@
                       </td>
                       <td
                         class="pl-open-cell"
-                        :class="group.pl_open >= 0 ? 'profit' : 'loss'"
+                        :class="getSymbolPlOpen(group) >= 0 ? 'profit' : 'loss'"
                       >
-                        {{ formatCurrency(group.pl_open) }}
+                        {{ formatSymbolPL(group) }}
                       </td>
                       <td class="bid-cell">--</td>
                       <td class="ask-cell">--</td>
@@ -180,9 +180,9 @@
                             </td>
                             <td
                               class="pl-open-cell"
-                              :class="strategy.pl_open >= 0 ? 'profit' : 'loss'"
+                              :class="getStrategyPlOpen(strategy) >= 0 ? 'profit' : 'loss'"
                             >
-                              {{ formatCurrency(strategy.pl_open) }}
+                              {{ formatStrategyPL(strategy) }}
                             </td>
                             <td class="bid-cell">--</td>
                             <td class="ask-cell">--</td>
@@ -421,10 +421,56 @@ export default {
 
     const totalPlOpen = computed(() => {
       return filteredPositionGroups.value.reduce(
-        (sum, group) => sum + group.pl_open,
+        (sum, group) => sum + getSymbolPlOpen(group),
         0
       );
     });
+
+    // Live price function - same pattern as CollapsibleOptionsChain
+    const getLivePrice = (symbol) => {
+      if (!symbol) return null;
+
+      if (!liveOptionPrices.has(symbol)) {
+        // Call getSmartOptionPrice only once to set up the subscription and heartbeat
+        liveOptionPrices.set(symbol, getSmartOptionPrice(symbol));
+      }
+      return liveOptionPrices.get(symbol)?.value;
+    };
+
+    // Get current market price (mid of bid/ask) for P/L calculation
+    const getLegCurrentPrice = (leg) => {
+      if (leg.asset_class !== "us_option") return leg.current_price || 0;
+      const livePrice = getLivePrice(leg.symbol);
+
+      // If we have live prices, use them
+      if (livePrice?.bid && livePrice?.ask) {
+        return (livePrice.bid + livePrice.ask) / 2;
+      }
+
+      // Fall back to original option data for mid price calculation
+      if (leg.bid && leg.ask) {
+        return (leg.bid + leg.ask) / 2;
+      }
+
+      // Final fallback to current_price or 0
+      return leg.current_price || 0;
+    };
+
+    // Calculate live P/L for individual leg
+    const getLegPL = (leg) => {
+      const currentPrice = getLegCurrentPrice(leg);
+      const entryPrice = leg.avg_entry_price || 0;
+
+      if (currentPrice === 0 || entryPrice === 0) return 0;
+
+      // For options: (current_price - entry_price) * quantity * 100 (contract multiplier)
+      // For stocks: (current_price - entry_price) * quantity
+      const multiplier = leg.asset_class === "us_option" ? 100 : 1;
+      const priceDiff = currentPrice - entryPrice;
+
+      // For short positions (negative quantity), P/L is inverted
+      return priceDiff * leg.qty * multiplier;
+    };
 
     // Methods
     const fetchPositions = async () => {
@@ -462,10 +508,11 @@ export default {
 
     const convertSymbolGroupsToDisplay = (symbolGroups) => {
       // Convert hierarchical symbol groups to flat display format for the table
+      // NOTE: We no longer pre-calculate totals here - they will be computed reactively
       const displayGroups = [];
 
       symbolGroups.forEach((symbolGroup) => {
-        // Create a symbol-level group (collapsed by default)
+        // Create a symbol-level group with raw data (totals will be computed reactively)
         const symbolDisplayGroup = {
           id: `symbol_${symbolGroup.symbol}`,
           symbol: symbolGroup.symbol,
@@ -474,20 +521,19 @@ export default {
           total_qty: symbolGroup.total_qty || 0,
           total_cost_basis: symbolGroup.total_cost_basis || 0,
           total_market_value: symbolGroup.total_market_value || 0,
-          total_unrealized_pl: symbolGroup.total_pl_open || 0,
+          total_unrealized_pl: 0, // Will be computed reactively
           total_unrealized_plpc: 0,
-          pl_day: symbolGroup.total_pl_day || 0,
-          pl_open: symbolGroup.total_pl_open || 0,
+          pl_day: 0, // Will be computed reactively
+          pl_open: 0, // Will be computed reactively
           legs: [], // Will be populated when expanded
-          strategies: symbolGroup.strategies || [], // Store strategies for expansion
+          strategies: symbolGroup.strategies || [], // Store raw strategies
           order_date: null,
           expiration_date: null,
           dte: null,
           isSymbolGroup: true, // Flag to identify symbol-level groups
         };
 
-        // When expanded, we'll show strategy rows and leg rows
-        // For now, flatten all legs into the symbol group for display
+        // Flatten all legs into the symbol group for display
         if (symbolGroup.strategies) {
           symbolGroup.strategies.forEach((strategy) => {
             if (strategy.legs) {
@@ -495,8 +541,8 @@ export default {
                 symbolDisplayGroup.legs.push({
                   ...leg,
                   strategy_name: strategy.name,
-                  strategy_pl_day: strategy.pl_day || 0,
-                  strategy_pl_open: strategy.pl_open || 0,
+                  strategy_pl_day: 0, // Will be calculated from live prices
+                  strategy_pl_open: 0, // Will be calculated reactively
                 });
               });
             }
@@ -713,17 +759,6 @@ export default {
       return false;
     };
 
-    // Live price function - same pattern as CollapsibleOptionsChain
-    const getLivePrice = (symbol) => {
-      if (!symbol) return null;
-
-      if (!liveOptionPrices.has(symbol)) {
-        // Call getSmartOptionPrice only once to set up the subscription and heartbeat
-        liveOptionPrices.set(symbol, getSmartOptionPrice(symbol));
-      }
-      return liveOptionPrices.get(symbol)?.value;
-    };
-
     // Get live bid price for a leg
     const getLegBid = (leg) => {
       if (leg.asset_class !== "us_option") return "--";
@@ -742,44 +777,30 @@ export default {
       return askPrice > 0 ? formatCurrency(askPrice) : "--";
     };
 
-    // Get current market price (mid of bid/ask) for P/L calculation
-    const getLegCurrentPrice = (leg) => {
-      if (leg.asset_class !== "us_option") return leg.current_price || 0;
-      const livePrice = getLivePrice(leg.symbol);
-
-      // If we have live prices, use them
-      if (livePrice?.bid && livePrice?.ask) {
-        return (livePrice.bid + livePrice.ask) / 2;
-      }
-
-      // Fall back to original option data for mid price calculation
-      if (leg.bid && leg.ask) {
-        return (leg.bid + leg.ask) / 2;
-      }
-
-      // Final fallback to current_price or 0
-      return leg.current_price || 0;
-    };
-
-    // Calculate live P/L for individual leg
-    const getLegPL = (leg) => {
-      const currentPrice = getLegCurrentPrice(leg);
-      const entryPrice = leg.avg_entry_price || 0;
-
-      if (currentPrice === 0 || entryPrice === 0) return 0;
-
-      // For options: (current_price - entry_price) * quantity * 100 (contract multiplier)
-      // For stocks: (current_price - entry_price) * quantity
-      const multiplier = leg.asset_class === "us_option" ? 100 : 1;
-      const priceDiff = currentPrice - entryPrice;
-
-      // For short positions (negative quantity), P/L is inverted
-      return priceDiff * leg.qty * multiplier;
-    };
-
     // Format P/L for display
     const formatLegPL = (leg) => {
       const pl = getLegPL(leg);
+      return formatCurrency(pl);
+    };
+
+    // Reactive computed functions for strategy and symbol totals
+    const getStrategyPlOpen = (strategy) => {
+      if (!strategy.legs) return 0;
+      return strategy.legs.reduce((sum, leg) => sum + getLegPL(leg), 0);
+    };
+
+    const getSymbolPlOpen = (group) => {
+      if (!group.strategies) return 0;
+      return group.strategies.reduce((sum, strategy) => sum + getStrategyPlOpen(strategy), 0);
+    };
+
+    const formatStrategyPL = (strategy) => {
+      const pl = getStrategyPlOpen(strategy);
+      return formatCurrency(pl);
+    };
+
+    const formatSymbolPL = (group) => {
+      const pl = getSymbolPlOpen(group);
       return formatCurrency(pl);
     };
 
@@ -945,6 +966,10 @@ export default {
       getLegAsk,
       getLegPL,
       formatLegPL,
+      getStrategyPlOpen,
+      getSymbolPlOpen,
+      formatStrategyPL,
+      formatSymbolPL,
       currentSymbol,
       currentPrice,
       priceChange,
