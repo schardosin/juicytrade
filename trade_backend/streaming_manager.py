@@ -21,19 +21,27 @@ class StreamingManager:
 
     async def connect(self):
         """Connect to streaming providers and set up data flow."""
-        config = provider_config_manager.get_config().get("streaming", {})
-        for stream_type, provider_name in config.items():
-            if provider_name not in self._providers:
-                provider = provider_manager._providers.get(provider_name)
-                if provider:
-                    # Pass the streaming manager's queue to the provider
-                    provider.set_streaming_queue(self._streaming_queue)
-                    
-                    self._providers[provider_name] = provider
-                    await provider.connect_streaming()
-                    
-                    # No data aggregator needed - provider puts directly into our queue
-                    logger.info(f"Provider {provider_name} connected for {stream_type} streaming.")
+        config = provider_config_manager.get_config()
+        
+        # Connect streaming quotes provider
+        quotes_provider_name = config.get("streaming_quotes")
+        if quotes_provider_name and quotes_provider_name not in self._providers:
+            provider = provider_manager._providers.get(quotes_provider_name)
+            if provider:
+                provider.set_streaming_queue(self._streaming_queue)
+                self._providers[quotes_provider_name] = provider
+                await provider.connect_streaming()
+                logger.info(f"Provider {quotes_provider_name} connected for quotes streaming.")
+        
+        # Connect trade account provider for positions/orders streaming
+        trade_account_provider_name = config.get("trade_account")
+        if trade_account_provider_name and trade_account_provider_name not in self._providers:
+            provider = provider_manager._providers.get(trade_account_provider_name)
+            if provider:
+                provider.set_streaming_queue(self._streaming_queue)
+                self._providers[trade_account_provider_name] = provider
+                await provider.connect_streaming()
+                logger.info(f"Provider {trade_account_provider_name} connected for trade account streaming.")
 
     async def disconnect(self):
         for provider in self._providers.values():
@@ -60,9 +68,9 @@ class StreamingManager:
                     self._subscriptions[data_type].update(new_symbols)
 
     async def _subscribe_symbols(self, symbols: List[str]):
-        """Internal method to subscribe to symbols using unified quotes provider"""
-        config = provider_config_manager.get_config().get("streaming", {})
-        quotes_provider_name = config.get("quotes")
+        """Internal method to subscribe to symbols using streaming quotes provider"""
+        config = provider_config_manager.get_config()
+        quotes_provider_name = config.get("streaming_quotes")
         
         if quotes_provider_name and quotes_provider_name in self._providers:
             provider = self._providers[quotes_provider_name]
@@ -72,14 +80,14 @@ class StreamingManager:
             
             new_symbols = set(symbols) - self._subscriptions["quotes"]
             if new_symbols:
-                logger.info(f"Subscribing to {len(new_symbols)} symbols via {quotes_provider_name} quotes provider")
+                logger.info(f"Subscribing to {len(new_symbols)} symbols via {quotes_provider_name} streaming quotes provider")
                 await provider.subscribe_to_symbols(list(new_symbols))
                 self._subscriptions["quotes"].update(new_symbols)
 
     async def _unsubscribe_symbols(self, symbols: List[str]):
-        """Internal method to unsubscribe from symbols using unified quotes provider"""
-        config = provider_config_manager.get_config().get("streaming", {})
-        quotes_provider_name = config.get("quotes")
+        """Internal method to unsubscribe from symbols using streaming quotes provider"""
+        config = provider_config_manager.get_config()
+        quotes_provider_name = config.get("streaming_quotes")
         
         if quotes_provider_name and quotes_provider_name in self._providers:
             provider = self._providers[quotes_provider_name]
@@ -87,7 +95,7 @@ class StreamingManager:
             if "quotes" in self._subscriptions:
                 symbols_to_remove = set(symbols) & self._subscriptions["quotes"]
                 if symbols_to_remove:
-                    logger.info(f"Unsubscribing from {len(symbols_to_remove)} symbols via {quotes_provider_name} quotes provider")
+                    logger.info(f"Unsubscribing from {len(symbols_to_remove)} symbols via {quotes_provider_name} streaming quotes provider")
                     # Check if provider has unsubscribe method
                     if hasattr(provider, 'unsubscribe_from_symbols'):
                         await provider.unsubscribe_from_symbols(list(symbols_to_remove))
@@ -183,17 +191,20 @@ class StreamingManager:
         """Ensure persistent subscriptions are active (orders, positions)"""
         logger.info(f"Ensuring persistent subscriptions for: {data_types}")
         
-        for data_type in data_types:
-            if data_type not in self._persistent_subscriptions:
-                # For persistent subscriptions, we don't need specific symbols
-                # The provider will handle account-level subscriptions
-                config = provider_config_manager.get_config().get("streaming", {})
-                provider_name = config.get(data_type)
-                if provider_name and provider_name in self._providers:
-                    provider = self._providers[provider_name]
+        config = provider_config_manager.get_config()
+        trade_account_provider_name = config.get("trade_account")
+        
+        if trade_account_provider_name and trade_account_provider_name in self._providers:
+            provider = self._providers[trade_account_provider_name]
+            
+            for data_type in data_types:
+                if data_type not in self._persistent_subscriptions:
+                    # For persistent subscriptions, we don't need specific symbols
+                    # The trade account provider will handle account-level subscriptions
                     if hasattr(provider, 'subscribe_to_account_updates'):
                         await provider.subscribe_to_account_updates([data_type])
                     self._persistent_subscriptions.add(data_type)
+                    logger.info(f"Ensured persistent subscription for {data_type} via {trade_account_provider_name}")
 
     def get_subscription_status(self) -> Dict[str, any]:
         """Get current subscription status for debugging"""

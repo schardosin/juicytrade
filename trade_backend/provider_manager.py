@@ -128,44 +128,44 @@ class ProviderManager:
         return []
 
     async def get_positions(self) -> List[Position]:
-        provider = self._get_provider("positions")
+        provider = self._get_provider("trade_account")
         if provider:
             return await provider.get_positions()
         return []
 
     async def get_positions_enhanced(self) -> List[PositionGroup]:
         """Get enhanced positions with order chain grouping and strategy detection."""
-        provider = self._get_provider("positions")
+        provider = self._get_provider("trade_account")
         if provider and hasattr(provider, 'get_positions_enhanced'):
             return await provider.get_positions_enhanced()
         return []
 
     async def get_orders(self, status: str = "open") -> List[Order]:
-        provider = self._get_provider("orders")
+        provider = self._get_provider("trade_account")
         if provider:
             return await provider.get_orders(status)
         return []
 
     async def get_account(self) -> Optional[Account]:
-        provider = self._get_provider("account")
+        provider = self._get_provider("trade_account")
         if provider:
             return await provider.get_account()
         return None
 
     async def place_order(self, order_data: Dict[str, Any]) -> Optional[Order]:
-        provider = self._get_provider("orders")
+        provider = self._get_provider("trade_account")
         if provider:
             return await provider.place_order(order_data)
         return None
 
     async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Optional[Order]:
-        provider = self._get_provider("orders")
+        provider = self._get_provider("trade_account")
         if provider:
             return await provider.place_multi_leg_order(order_data)
         return None
 
     async def cancel_order(self, order_id: str) -> bool:
-        provider = self._get_provider("orders")
+        provider = self._get_provider("trade_account")
         if provider:
             return await provider.cancel_order(order_id)
         return False

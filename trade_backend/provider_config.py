@@ -12,39 +12,32 @@ DEFAULT_ROUTING = {
     "stock_quotes": "alpaca",
     "options_chain": "alpaca",
     "next_market_date": "alpaca",
-    "positions": "alpaca",
-    "orders": "alpaca",
-    "account": "alpaca",
+    "trade_account": "alpaca",  # Unified: account, positions, orders
     "symbol_lookup": "tradier",
     "historical_data": "tradier",
     "market_calendar": "tradier",
-    "streaming": {
-        "stock_quotes": "tradier",
-        "option_quotes": "tradier",
-        "positions": "alpaca",
-        "orders": "alpaca"
-    }
+    "streaming_quotes": "tradier"  # Dedicated streaming for market data
 }
 
 PROVIDER_CAPABILITIES = {
     "alpaca": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
-        "streaming": ["stock_quotes", "option_quotes", "positions", "orders"]
+        "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+        "streaming": ["streaming_quotes", "trade_account"]
     },
     "alpaca_paper": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "positions", "orders", "account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
-        "streaming": ["stock_quotes", "option_quotes", "positions", "orders"]
+        "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+        "streaming": ["streaming_quotes", "trade_account"]
     },
     "public": {
         "rest": ["expiration_dates"]
     },
     "tradier": {
-        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "account", "cancel_order", "symbol_lookup", "historical_data", "market_calendar"],
-        "streaming": ["stock_quotes", "option_quotes"]
+        "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
+        "streaming": ["streaming_quotes"]
     },
     "tradier_paper": {
-        "rest": ["orders", "expiration_dates", "options_chain", "next_market_date", "stock_quotes", "positions", "account", "cancel_order", "symbol_lookup", "historical_data", "market_calendar"],
-        "streaming": ["stock_quotes", "option_quotes"]
+        "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
+        "streaming": ["streaming_quotes"]
     }
 }
 
@@ -77,19 +70,22 @@ class ProviderConfigManager:
     def update_config(self, new_config: Dict[str, Any]) -> bool:
         validated_config = self._config.copy()
         for key, value in new_config.items():
-            if key == "streaming" and isinstance(value, dict):
-                if "streaming" not in validated_config:
-                    validated_config["streaming"] = {}
-                for stream_key, stream_value in value.items():
-                    if stream_value in PROVIDER_CAPABILITIES and "streaming" in PROVIDER_CAPABILITIES[stream_value] and stream_key in PROVIDER_CAPABILITIES[stream_value]["streaming"]:
-                        validated_config["streaming"][stream_key] = stream_value
+            if key in DEFAULT_ROUTING:
+                # Validate provider exists and supports the capability
+                if value in PROVIDER_CAPABILITIES:
+                    # Check if it's a streaming capability
+                    if key == "streaming_quotes":
+                        if "streaming" in PROVIDER_CAPABILITIES[value] and key in PROVIDER_CAPABILITIES[value]["streaming"]:
+                            validated_config[key] = value
+                        else:
+                            logger.warning(f"Invalid streaming provider/capability: {key}:{value}")
+                    # Check if it's a REST capability
+                    elif "rest" in PROVIDER_CAPABILITIES[value] and key in PROVIDER_CAPABILITIES[value]["rest"]:
+                        validated_config[key] = value
                     else:
-                        logger.warning(f"Invalid streaming provider/capability: {stream_key}:{stream_value}")
-            elif key in DEFAULT_ROUTING:
-                 if value in PROVIDER_CAPABILITIES and "rest" in PROVIDER_CAPABILITIES[value] and key in PROVIDER_CAPABILITIES[value]["rest"]:
-                    validated_config[key] = value
-                 else:
-                    logger.warning(f"Invalid REST provider/capability: {key}:{value}")
+                        logger.warning(f"Invalid REST provider/capability: {key}:{value}")
+                else:
+                    logger.warning(f"Unknown provider: {value}")
             else:
                 logger.warning(f"Invalid config key: {key}")
 
