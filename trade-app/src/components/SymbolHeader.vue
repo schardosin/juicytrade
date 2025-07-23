@@ -108,7 +108,7 @@ export default {
   emits: ["trade-mode-changed"],
   setup(props) {
     // Smart Market Data integration
-    const { getStockPrice, getDebugInfo } = useSmartMarketData();
+    const { getStockPrice, getPreviousClose, getDebugInfo } = useSmartMarketData();
 
     // Get live price data when smart pricing is enabled and symbol is available
     const livePrice = computed(() => {
@@ -116,6 +116,14 @@ export default {
         return null;
       }
       return getStockPrice(props.currentSymbol);
+    });
+
+    // Get previous close price (cached data - fetched once per symbol)
+    const previousClose = computed(() => {
+      if (!props.enableSmartPricing || !props.currentSymbol) {
+        return null;
+      }
+      return getPreviousClose(props.currentSymbol);
     });
 
     // Use live price if available, otherwise fall back to props
@@ -127,14 +135,28 @@ export default {
       return props.currentPrice;
     });
 
-    // Calculate price change (simplified - in real implementation you'd track previous price)
+    // Calculate price change using live price and cached previous close
     const effectivePriceChange = computed(() => {
-      // For now, use prop value - in full implementation, calculate from price history
+      const current = effectivePrice.value;
+      const prevClose = previousClose.value?.value;
+      
+      if (current && prevClose && typeof current === 'number' && typeof prevClose === 'number') {
+        return current - prevClose;
+      }
+      
+      // Fallback to prop value
       return props.priceChange;
     });
 
     const effectivePriceChangePercent = computed(() => {
-      // For now, use prop value - in full implementation, calculate from price history
+      const current = effectivePrice.value;
+      const prevClose = previousClose.value?.value;
+      
+      if (current && prevClose && typeof current === 'number' && typeof prevClose === 'number' && prevClose !== 0) {
+        return ((current - prevClose) / prevClose) * 100;
+      }
+      
+      // Fallback to prop value
       return props.priceChangePercent;
     });
 

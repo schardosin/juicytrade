@@ -64,6 +64,15 @@ export function useSmartMarketData() {
   };
 
   /**
+   * Get previous close price for a symbol
+   * @param {string} symbol - Stock symbol (e.g., 'AAPL', 'SPY')
+   * @returns {ComputedRef} Reactive previous close price or null
+   */
+  const getPreviousClose = (symbol) => {
+    return smartMarketDataStore.getPreviousClose(symbol);
+  };
+
+  /**
    * Force cleanup of all subscriptions (for testing)
    */
   const forceCleanup = () => {
@@ -75,6 +84,7 @@ export function useSmartMarketData() {
     getStockPrice,
     getOptionPrice,
     getPrice,
+    getPreviousClose,
 
     // Utility methods
     getDebugInfo,

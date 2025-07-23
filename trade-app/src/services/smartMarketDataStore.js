@@ -30,6 +30,7 @@ class SmartMarketDataStore {
     // Reactive data stores - WebSocket data
     this.stockPrices = reactive(new Map());
     this.optionPrices = reactive(new Map());
+    this.previousClosePrices = reactive(new Map()); // Previous close prices cache
 
     // Reactive data stores - REST API data
     this.data = reactive(new Map()); // General data store for all REST API data
@@ -115,6 +116,24 @@ class SmartMarketDataStore {
   }
 
   /**
+   * Get reactive previous close price for a symbol
+   * Automatically handles fetching and caching
+   */
+  getPreviousClose(symbol) {
+    if (!symbol) return computed(() => null);
+
+    // Ensure we have the previous close data
+    this.ensurePreviousClose(symbol);
+
+    // Create reactive price reference
+    const reactivePreviousClose = computed(() => {
+      return this.previousClosePrices.get(symbol) || null;
+    });
+
+    return reactivePreviousClose;
+  }
+
+  /**
    * Ensure subscription for a symbol
    */
   ensureSubscription(symbol) {
@@ -126,6 +145,25 @@ class SmartMarketDataStore {
     // Ensure we're subscribed to this symbol
     if (!this.activeSubscriptions.has(symbol)) {
       this.subscribeToSymbol(symbol);
+    }
+  }
+
+  /**
+   * Ensure previous close data for a symbol
+   */
+  async ensurePreviousClose(symbol) {
+    if (!symbol) return;
+
+    // If not cached, fetch it
+    if (!this.previousClosePrices.has(symbol)) {
+      try {
+        console.log(`🔄 Fetching previous close for ${symbol}...`);
+        const price = await api.getPreviousClose(symbol);
+        this.previousClosePrices.set(symbol, price);
+        console.log(`✅ Fetched previous close for ${symbol}: ${price}`);
+      } catch (error) {
+        console.error(`❌ Error fetching previous close for ${symbol}:`, error);
+      }
     }
   }
 

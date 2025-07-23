@@ -299,6 +299,29 @@ export const api = {
       throw error;
     }
   },
+
+  // Get previous day's close price
+  async getPreviousClose(symbol) {
+    try {
+      const today = new Date();
+      const previousDay = new Date(today);
+      previousDay.setDate(today.getDate() - 1);
+      const endDate = previousDay.toISOString().split('T')[0];
+      
+      const response = await axios.get(`${API_BASE_URL}/chart/historical/${symbol}`, {
+        params: {
+          timeframe: 'D',
+          limit: 1,
+          end_date: endDate
+        }
+      });
+      
+      return response.data.data.bars[0].close;
+    } catch (error) {
+      console.error("Error fetching previous close:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;
