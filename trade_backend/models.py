@@ -39,6 +39,7 @@ class Position(BaseModel):
     current_price: float
     avg_entry_price: float
     asset_class: str  # "us_equity", "us_option", etc.
+    lastday_price: Optional[float] = None  # Previous day's closing price for daily P/L calculation
     
     # Option-specific fields
     underlying_symbol: Optional[str] = None

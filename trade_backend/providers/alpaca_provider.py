@@ -1215,7 +1215,8 @@ class AlpacaProvider(BaseProvider):
                 unrealized_plpc=float(raw_position.unrealized_plpc) if raw_position.unrealized_plpc else None,
                 current_price=float(raw_position.current_price) if raw_position.current_price else 0,
                 avg_entry_price=float(raw_position.avg_entry_price) if raw_position.avg_entry_price else 0,
-                asset_class=raw_position.asset_class.value if raw_position.asset_class else "unknown"
+                asset_class=raw_position.asset_class.value if raw_position.asset_class else "unknown",
+                lastday_price=float(raw_position.lastday_price) if hasattr(raw_position, 'lastday_price') and raw_position.lastday_price else None
             )
             
             # Parse option-specific information if it's an option
@@ -1973,6 +1974,7 @@ class AlpacaProvider(BaseProvider):
                             "cost_basis": pos.cost_basis,
                             "asset_class": pos.asset_class,
                             "current_price": pos.current_price,
+                            "lastday_price": pos.lastday_price,  # Include lastday_price for daily P/L calculation
                             "bid": getattr(pos, 'bid', None),
                             "ask": getattr(pos, 'ask', None)
                         })
@@ -2046,3 +2048,4 @@ class AlpacaProvider(BaseProvider):
         except Exception as e:
             self._log_error("_detect_strategy_name", e)
             return "Unknown Strategy"
+
