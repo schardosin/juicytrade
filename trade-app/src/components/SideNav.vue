@@ -84,7 +84,6 @@ export default {
       activeItem.value = itemId;
       const item = navItems.find((nav) => nav.id === itemId);
       if (item) {
-        console.log(`Navigating to ${item.route}`);
         router.push(item.route);
       }
     };

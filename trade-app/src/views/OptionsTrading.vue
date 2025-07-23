@@ -227,13 +227,7 @@ export default {
           if (price !== null) {
             updatePrice({ price, isLive: false });
           }
-        } else {
-          console.log(
-            "Skipping API call - already have live price data for",
-            symbol
-          );
         }
-
         // Subscriptions are now handled automatically by the SmartMarketDataStore.
         // No need to manually call webSocketClient here. The SymbolHeader
         // component will trigger the necessary stock subscription.
@@ -559,17 +553,14 @@ export default {
 
     // CollapsibleOptionsChain event handlers - now using centralized manager
     const onExpirationExpanded = async (expirationDate) => {
-      console.log("Expiration expanded:", expirationDate);
       await optionsManager.expandExpiration(expirationDate);
     };
 
     const onExpirationCollapsed = (expirationDate) => {
-      console.log("Expiration collapsed:", expirationDate);
       optionsManager.collapseExpiration(expirationDate);
     };
 
     const onStrikeCountChanged = (newStrikeCount) => {
-      console.log("Strike count changed:", newStrikeCount);
       currentStrikeCount.value = newStrikeCount;
       optionsManager.updateStrikeCount(newStrikeCount);
     };

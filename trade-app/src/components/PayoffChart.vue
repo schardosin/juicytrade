@@ -156,12 +156,6 @@ export default {
           if (min !== undefined && max !== undefined) {
             chartState.value.viewCenter = (min + max) / 2;
             chartState.value.viewRange = max - min;
-
-            console.log(
-              `📍 Saved view state: center=${chartState.value.viewCenter.toFixed(
-                2
-              )}, range=${chartState.value.viewRange.toFixed(2)}`
-            );
           }
         } catch (error) {
           console.warn("Could not save view state:", error);
@@ -181,12 +175,6 @@ export default {
           const max = chartState.value.viewCenter + halfRange;
 
           chart.value.zoomScale("x", { min, max }, "none");
-
-          console.log(
-            `🔄 Restored view state: center=${chartState.value.viewCenter.toFixed(
-              2
-            )}, range=${chartState.value.viewRange.toFixed(2)}`
-          );
         } catch (error) {
           console.warn("Could not restore view state:", error);
         }

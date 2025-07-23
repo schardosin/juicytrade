@@ -551,11 +551,6 @@ export default {
       }
 
       try {
-        console.log(
-          "🔄 RightPanel: Generating chart data for positions:",
-          positions
-        );
-
         // Convert positions to the format expected by generateMultiLegPayoff
         const formattedPositions = positions.map((position) => ({
           symbol: position.symbol,
@@ -586,7 +581,6 @@ export default {
           timestamp: Date.now(),
         };
 
-        console.log("✅ RightPanel: Chart data generated successfully");
       } catch (error) {
         console.error("❌ RightPanel: Error generating chart data:", error);
         internalChartData.value = null;

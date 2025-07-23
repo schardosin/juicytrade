@@ -124,8 +124,6 @@ export function useOptionsChainManager(
     if (!symbol.value || !expiration) return;
 
     try {
-      console.log(`📊 Loading options for ${symbol.value} ${expiration}`);
-
       // Set loading state for this expiration
       dataByExpiration.value = {
         ...dataByExpiration.value,
@@ -154,9 +152,6 @@ export function useOptionsChainManager(
           [expiration]: processedChain,
         };
 
-        console.log(
-          `✅ Loaded ${processedChain.length} options for ${expiration}`
-        );
       } else {
         // No options found
         dataByExpiration.value = {
@@ -178,8 +173,6 @@ export function useOptionsChainManager(
    * Expand an expiration (load data and subscribe to prices)
    */
   const expandExpiration = async (expiration) => {
-    console.log(`🔽 Expanding expiration: ${expiration}`);
-
     // Add to expanded set
     expandedExpirations.value.add(expiration);
 
@@ -196,8 +189,6 @@ export function useOptionsChainManager(
    * Collapse an expiration (unsubscribe from prices, optionally keep data)
    */
   const collapseExpiration = async (expiration) => {
-    console.log(`🔼 Collapsing expiration: ${expiration}`);
-
     // Remove from expanded set
     expandedExpirations.value.delete(expiration);
 
@@ -212,14 +203,8 @@ export function useOptionsChainManager(
     const newSymbols = allSubscribedSymbols.value;
 
     if (newSymbols.length > 0) {
-      console.log(
-        `🔄 Updating subscriptions: ${newSymbols.length} option symbols`
-      );
       webSocketClient.replaceAllSubscriptions(symbol.value, newSymbols);
     } else {
-      console.log(
-        `🔄 Clearing option subscriptions, keeping underlying: ${symbol.value}`
-      );
       webSocketClient.replaceAllSubscriptions(symbol.value, []);
     }
 

@@ -179,14 +179,6 @@ export default {
       }
 
       try {
-        console.log("Initializing Lightweight Charts...");
-        console.log("Container dimensions:", {
-          width: chartContainer.value.clientWidth,
-          height: chartContainer.value.clientHeight,
-          offsetWidth: chartContainer.value.offsetWidth,
-          offsetHeight: chartContainer.value.offsetHeight,
-        });
-
         // Ensure container has dimensions
         const containerWidth = chartContainer.value.clientWidth || 800;
         const containerHeight = props.height || 400;
@@ -198,14 +190,11 @@ export default {
           height: containerHeight,
         });
 
-        console.log("Chart created successfully");
-
         // Create candlestick series
         candlestickSeries = chart.addSeries(
           CandlestickSeries,
           candlestickOptions
         );
-        console.log("Candlestick series added");
 
         // Create volume series
         volumeSeries = chart.addSeries(HistogramSeries, volumeOptions);
@@ -217,8 +206,6 @@ export default {
             bottom: 0,
           },
         });
-
-        console.log("Volume series added with proper scale margins");
 
         // Handle resize
         const resizeObserver = new ResizeObserver((entries) => {
@@ -239,8 +226,6 @@ export default {
         });
 
         resizeObserver.observe(chartContainer.value);
-
-        console.log("Lightweight Charts initialized successfully");
       } catch (err) {
         console.error("Error initializing chart:", err);
         error.value = "Failed to initialize chart: " + err.message;
@@ -355,10 +340,6 @@ export default {
       error.value = "";
 
       try {
-        console.log(
-          `Loading historical data for ${symbol} (${timeframe}, ${dateRange})`
-        );
-
         // Calculate start date and limit based on user selection
         const start_date = calculateStartDate(dateRange);
         const limit = calculateLimit(timeframe, dateRange);
@@ -377,7 +358,6 @@ export default {
 
         if (data && data.bars) {
           const bars = data.bars;
-          console.log(`Received ${bars.length} bars for ${symbol}`);
 
           if (bars.length === 0) {
             error.value = "No data available for this symbol/timeframe";
@@ -430,7 +410,6 @@ export default {
           // Fit content to show all data
           chart.timeScale().fitContent();
 
-          console.log(`Chart updated with ${bars.length} data points`);
         } else {
           throw new Error("Failed to load data");
         }
@@ -591,12 +570,6 @@ export default {
 
         // Update the chart with the current candle
         candlestickSeries.update(currentCandle);
-
-        console.log(
-          `📈 Chart updated: ${props.symbol} @ ${newPrice} (${new Date(
-            timeInSeconds * 1000
-          ).toISOString()})`
-        );
       } catch (err) {
         console.error("Error updating real-time data:", err);
       }
@@ -633,7 +606,6 @@ export default {
       () => props.livePrice,
       (newPriceData) => {
         if (newPriceData && props.enableRealtime && candlestickSeries) {
-          console.log(`📈 Live price update received for ${props.symbol}:`, newPriceData);
           updateRealTimeData(newPriceData);
         }
       },

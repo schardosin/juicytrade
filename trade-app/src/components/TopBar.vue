@@ -227,7 +227,6 @@ export default {
     const setActiveLink = (link) => {
       activeLink.value = link;
       // Here you would typically handle routing
-      console.log(`Navigating to ${link}`);
     };
 
     const performSearch = async () => {
