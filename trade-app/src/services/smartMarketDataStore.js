@@ -59,7 +59,6 @@ class SmartMarketDataStore {
     // Start automatic cleanup
     this.startCleanupTimer();
 
-    console.log("🚀 SmartMarketDataStore initialized");
   }
 
   /**
@@ -72,7 +71,6 @@ class SmartMarketDataStore {
     this.setupWebSocketIntegration();
     this.isInitialized = true;
 
-    console.log("📡 SmartMarketDataStore connected to WebSocket");
   }
 
   /**
@@ -157,10 +155,8 @@ class SmartMarketDataStore {
     // If not cached, fetch it
     if (!this.previousClosePrices.has(symbol)) {
       try {
-        console.log(`🔄 Fetching previous close for ${symbol}...`);
         const price = await api.getPreviousClose(symbol);
         this.previousClosePrices.set(symbol, price);
-        console.log(`✅ Fetched previous close for ${symbol}: ${price}`);
       } catch (error) {
         console.error(`❌ Error fetching previous close for ${symbol}:`, error);
       }
@@ -172,7 +168,6 @@ class SmartMarketDataStore {
    */
   async subscribeToSymbol(symbol) {
     this.activeSubscriptions.add(symbol);
-    console.log(`📈 Auto-subscribed to: ${symbol}`);
 
     // Schedule backend update
     this.scheduleBackendUpdate();
@@ -215,12 +210,6 @@ class SmartMarketDataStore {
   async updateBackendSubscriptions() {
     const allSymbols = Array.from(this.activeSubscriptions);
 
-    console.log(`🔄 Updating backend subscriptions:`, {
-      total: allSymbols.length,
-      symbols: allSymbols.slice(0, 10), // Show first 10 for logging
-      hasMore: allSymbols.length > 10,
-    });
-
     try {
       // Update WebSocket subscriptions
       await webSocketClient.replaceAllSubscriptions(allSymbols);
@@ -237,9 +226,6 @@ class SmartMarketDataStore {
       this.cleanupUnusedSymbols();
     }, this.cleanupInterval);
 
-    console.log(
-      `🧹 Cleanup timer started (${this.cleanupInterval}ms interval)`
-    );
   }
 
   /**
@@ -272,7 +258,6 @@ class SmartMarketDataStore {
     // Connect to WebSocket
     try {
       await webSocketClient.connect();
-      console.log("✅ WebSocket connected successfully");
     } catch (error) {
       console.error("❌ Failed to connect to WebSocket:", error);
     }
@@ -354,7 +339,6 @@ class SmartMarketDataStore {
       this.setupPeriodicUpdate(key, config);
     }
 
-    console.log(`📝 Registered data source: ${key} (${config.strategy})`);
   }
 
   /**
@@ -436,9 +420,6 @@ class SmartMarketDataStore {
     const timer = setInterval(fetchData, config.interval);
     this.timers.set(key, timer);
 
-    console.log(
-      `⏰ Periodic updates started for ${key} (${config.interval}ms)`
-    );
   }
 
   /**
@@ -537,7 +518,6 @@ class SmartMarketDataStore {
   updateData(key, newData) {
     this.data.set(key, newData);
     this.errors.delete(key);
-    console.log(`📊 Updated data: ${key}`);
   }
 
   /**

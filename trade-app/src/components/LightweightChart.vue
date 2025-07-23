@@ -618,9 +618,6 @@ export default {
         if (newSymbol && candlestickSeries) {
           // CRITICAL: Reset current candle when symbol changes to prevent price contamination
           if (newSymbol !== oldSymbol) {
-            console.log(
-              `🔄 Chart symbol changed from ${oldSymbol} to ${newSymbol} - resetting current candle`
-            );
             currentCandle = null;
           }
 

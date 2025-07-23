@@ -104,9 +104,6 @@ export function useOptionsChainManager(
       const dates = await api.getAvailableExpirations(symbol.value);
       if (dates && dates.length > 0) {
         expirationDates.value = dates;
-        console.log(
-          `📅 Loaded ${dates.length} expiration dates for ${symbol.value}`
-        );
       } else {
         expirationDates.value = [];
         error.value = "No expiration dates available";
@@ -280,7 +277,6 @@ export function useOptionsChainManager(
    * Clear all data (for symbol changes)
    */
   const clearAllData = () => {
-    console.log("🧹 Clearing all options data");
     dataByExpiration.value = {};
     expandedExpirations.value.clear();
     subscribedSymbols.value.clear();
@@ -312,7 +308,6 @@ export function useOptionsChainManager(
     symbol,
     async (newSymbol, oldSymbol) => {
       if (newSymbol !== oldSymbol) {
-        console.log(`🔄 Symbol changed from ${oldSymbol} to ${newSymbol}`);
         clearAllData();
         if (newSymbol) {
           await loadExpirationDates();

@@ -99,7 +99,6 @@ function configureDataSources() {
     ttl: 3600000, // 1 hour
   });
 
-  console.log("📋 All data sources configured at app startup");
 }
 
 // Register components globally

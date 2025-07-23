@@ -930,7 +930,6 @@ export default {
     watch(
       reactivePositions,
       (response) => {
-        console.log("🔄 RightPanel: Positions data updated:", response);
         processPositionsData(response);
       },
       { immediate: true }
@@ -992,9 +991,7 @@ export default {
 
     // Component mounted - positions will be automatically loaded via watcher
     onMounted(() => {
-      console.log(
-        "🔄 RightPanel: Component mounted, waiting for reactive data..."
-      );
+
     });
 
     // Computed property to use either internal chart data or prop

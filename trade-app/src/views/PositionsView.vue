@@ -132,9 +132,9 @@
                       </td>
                       <td
                         class="pl-day-cell"
-                        :class="group.pl_day >= 0 ? 'profit' : 'loss'"
+                        :class="getSymbolPlDay(group) >= 0 ? 'profit' : 'loss'"
                       >
-                        {{ formatCurrency(group.pl_day) }}
+                        {{ formatSymbolPlDay(group) }}
                       </td>
                       <td
                         class="pl-open-cell"
@@ -174,9 +174,9 @@
                             </td>
                             <td
                               class="pl-day-cell"
-                              :class="strategy.pl_day >= 0 ? 'profit' : 'loss'"
+                              :class="getStrategyPlDay(strategy) >= 0 ? 'profit' : 'loss'"
                             >
-                              {{ formatCurrency(strategy.pl_day) }}
+                              {{ formatStrategyPlDay(strategy) }}
                             </td>
                             <td
                               class="pl-open-cell"
@@ -234,7 +234,12 @@
                                 </div>
                               </div>
                             </td>
-                            <td class="pl-day-cell">--</td>
+                            <td
+                              class="pl-day-cell"
+                              :class="getLegPlDay(leg) >= 0 ? 'profit' : 'loss'"
+                            >
+                              {{ formatLegPlDay(leg) }}
+                            </td>
                             <td
                               class="pl-open-cell"
                               :class="getLegPL(leg) >= 0 ? 'profit' : 'loss'"
@@ -414,7 +419,7 @@ export default {
 
     const totalPlDay = computed(() => {
       return filteredPositionGroups.value.reduce(
-        (sum, group) => sum + group.pl_day,
+        (sum, group) => sum + getSymbolPlDay(group),
         0
       );
     });
@@ -467,6 +472,22 @@ export default {
       // For stocks: (current_price - entry_price) * quantity
       const multiplier = leg.asset_class === "us_option" ? 100 : 1;
       const priceDiff = currentPrice - entryPrice;
+
+      // For short positions (negative quantity), P/L is inverted
+      return priceDiff * leg.qty * multiplier;
+    };
+
+    // Calculate live daily P/L for individual leg (using lastday_price)
+    const getLegPlDay = (leg) => {
+      const currentPrice = getLegCurrentPrice(leg);
+      const lastdayPrice = leg.lastday_price || 0;
+
+      if (currentPrice === 0 || lastdayPrice === 0) return 0;
+
+      // For options: (current_price - lastday_price) * quantity * 100 (contract multiplier)
+      // For stocks: (current_price - lastday_price) * quantity
+      const multiplier = leg.asset_class === "us_option" ? 100 : 1;
+      const priceDiff = currentPrice - lastdayPrice;
 
       // For short positions (negative quantity), P/L is inverted
       return priceDiff * leg.qty * multiplier;
@@ -804,6 +825,33 @@ export default {
       return formatCurrency(pl);
     };
 
+    // Reactive computed functions for daily P/L (strategy and symbol totals)
+    const getStrategyPlDay = (strategy) => {
+      if (!strategy.legs) return 0;
+      return strategy.legs.reduce((sum, leg) => sum + getLegPlDay(leg), 0);
+    };
+
+    const getSymbolPlDay = (group) => {
+      if (!group.strategies) return 0;
+      return group.strategies.reduce((sum, strategy) => sum + getStrategyPlDay(strategy), 0);
+    };
+
+    const formatStrategyPlDay = (strategy) => {
+      const pl = getStrategyPlDay(strategy);
+      return formatCurrency(pl);
+    };
+
+    const formatSymbolPlDay = (group) => {
+      const pl = getSymbolPlDay(group);
+      return formatCurrency(pl);
+    };
+
+    // Format daily P/L for individual leg
+    const formatLegPlDay = (leg) => {
+      const pl = getLegPlDay(leg);
+      return formatCurrency(pl);
+    };
+
     const onTradeModeChanged = (mode) => {
       // Not used in positions view
     };
@@ -853,9 +901,6 @@ export default {
 
         // Subscribe to all option symbols for live price updates
         if (symbols.size > 0) {
-          console.log(
-            `📊 Auto-subscribing to ${symbols.size} position symbols for live P/L updates`
-          );
           symbols.forEach((symbol) => {
             // This will trigger subscription in SmartMarketDataStore
             getLivePrice(symbol);
@@ -869,37 +914,26 @@ export default {
     // Helper function to process positions data - defined before watcher to avoid hoisting issues
     const processPositionsData = (response) => {
       try {
-        console.log("🔍 Processing positions data:", response);
-
         // The API returns data nested under response.data
         const data = response?.data || response;
 
         if (data && data.enhanced && data.symbol_groups) {
           // New hierarchical structure
-          console.log("📊 Using hierarchical symbol_groups structure");
           positionGroups.value = convertSymbolGroupsToDisplay(
             data.symbol_groups
           );
         } else if (data && data.enhanced && data.position_groups) {
           // Old enhanced structure
-          console.log("📊 Using enhanced position_groups structure");
           positionGroups.value = data.position_groups;
         } else if (data && data.positions) {
           // Fallback: convert regular positions to simple groups
-          console.log("📊 Using fallback positions structure");
           positionGroups.value = convertPositionsToGroups(data.positions);
         } else {
-          console.log("📊 No valid positions data found");
           positionGroups.value = [];
         }
 
         // Clear any previous errors since we got data
         error.value = null;
-        console.log(
-          "✅ Positions processed:",
-          positionGroups.value.length,
-          "groups"
-        );
       } catch (err) {
         console.error("❌ Error processing positions data:", err);
         error.value = "Failed to process positions data.";
@@ -910,7 +944,6 @@ export default {
     watch(
       reactivePositions,
       (newPositions) => {
-        console.log("🔄 Positions data updated:", newPositions);
         if (newPositions) {
           // Process the new data automatically
           processPositionsData(newPositions);
@@ -924,9 +957,7 @@ export default {
 
     // Lifecycle
     onMounted(async () => {
-      // Global state is automatically initialized - no manual setup needed
-      // The watcher will handle initial data loading automatically
-      console.log("📍 PositionsView mounted, waiting for reactive data...");
+
     });
 
     onUnmounted(() => {
@@ -970,6 +1001,13 @@ export default {
       getSymbolPlOpen,
       formatStrategyPL,
       formatSymbolPL,
+      // Daily P/L functions
+      getLegPlDay,
+      getStrategyPlDay,
+      getSymbolPlDay,
+      formatLegPlDay,
+      formatStrategyPlDay,
+      formatSymbolPlDay,
       currentSymbol,
       currentPrice,
       priceChange,

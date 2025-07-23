@@ -527,9 +527,6 @@ class WebSocketStreamingClient {
           all_symbols: allSymbols, // Send all symbols for backend flexibility
         };
 
-        console.log(
-          `📡 Smart subscription update: ${stockSymbols.length} stocks, ${optionSymbols.length} options`
-        );
         this.ws.send(JSON.stringify(message));
       } else {
         console.warn(

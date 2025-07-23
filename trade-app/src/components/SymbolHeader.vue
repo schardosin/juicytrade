@@ -184,15 +184,7 @@ export default {
       () => props.currentSymbol,
       (newSymbol, oldSymbol) => {
         if (newSymbol && newSymbol !== oldSymbol && props.enableSmartPricing) {
-          console.log(
-            `🎯 SymbolHeader: Smart pricing enabled for ${newSymbol}`
-          );
 
-          // Log debug info after a short delay to see subscription status
-          setTimeout(() => {
-            const debugInfo = getDebugInfo();
-            console.log(`📊 Smart Market Data Debug:`, debugInfo);
-          }, 1000);
         }
       },
       { immediate: true }
