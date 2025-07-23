@@ -310,16 +310,8 @@ export default {
             apiStatus = "all";
         }
 
-        console.log(
-          `🔄 Fetching orders with status: ${apiStatus} (UI status: ${
-            status || selectedStatus.value
-          }) via unified system`
-        );
-
         // Use unified system - always gets fresh data
         const response = await getOrdersByStatus(apiStatus);
-
-        console.log("Orders unified response:", response);
 
         // Handle different response structures
         if (response && response.data && response.data.orders) {
@@ -336,7 +328,6 @@ export default {
           orders.value = [];
         }
 
-        console.log("✅ Processed orders:", orders.value.length, "orders");
       } catch (error) {
         console.error("❌ Error fetching orders via unified system:", error);
         orders.value = [];
@@ -818,7 +809,6 @@ export default {
     watch(
       () => selectedStatus.value,
       (newStatus) => {
-        console.log(`Status changed to: ${newStatus}, refetching orders...`);
         fetchOrders(newStatus);
       }
     );

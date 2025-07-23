@@ -564,7 +564,6 @@ class SmartMarketDataStore {
       this.setLoading(key, true);
 
       // Always fetch fresh data for orders
-      console.log(`🔄 Fetching fresh orders with status: ${status}`);
       const data = await api.getOrders(status);
 
       // Update the data store
