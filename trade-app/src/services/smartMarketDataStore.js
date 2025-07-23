@@ -183,10 +183,6 @@ class SmartMarketDataStore {
     // The price data will remain available for components to use
     // Only remove from active subscriptions to stop receiving new updates
 
-    console.log(
-      `📉 Auto-unsubscribed from: ${symbol} (keeping last known price)`
-    );
-
     // Schedule backend update
     this.scheduleBackendUpdate();
   }
@@ -242,8 +238,6 @@ class SmartMarketDataStore {
     });
 
     if (toUnsubscribe.length > 0) {
-      console.log(`🧹 Cleaning up unused symbols:`, toUnsubscribe);
-
       toUnsubscribe.forEach((symbol) => {
         this.lastAccess.delete(symbol);
         this.unsubscribeFromSymbol(symbol);
