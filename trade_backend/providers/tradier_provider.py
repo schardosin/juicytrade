@@ -5,7 +5,7 @@ import json
 import logging
 import time
 from typing import List, Dict, Optional, Any, Tuple
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import OrderedDict
 
 from .base_provider import BaseProvider
@@ -148,6 +148,8 @@ class TradierProvider(BaseProvider):
         self._stream_connection = None
         self._connection_ready = asyncio.Event()
         self._symbol_cache = SymbolLookupCache()
+        self._lastday_price_cache = {}
+        self._lastday_price_cache_date = None
 
     async def _create_session(self) -> bool:
         url = f"{self.base_url}/v1/markets/events/session"
@@ -1350,7 +1352,7 @@ class TradierProvider(BaseProvider):
             logger.info(f"📊 Retrieved {len(historical_trades)} historical trades and {len(current_orders)} current orders")
             
             # 3. Create simplified hierarchical grouping (Symbol -> Strategies -> Legs)
-            symbol_groups = self._create_simplified_hierarchical_groups(
+            symbol_groups = await self._create_simplified_hierarchical_groups(
                 current_positions, historical_trades, current_orders
             )
             
@@ -2157,7 +2159,7 @@ class TradierProvider(BaseProvider):
             self._log_error("_create_hierarchical_groups", e)
             return []
 
-    def _create_simplified_hierarchical_groups(self, positions: List[Position], 
+    async def _create_simplified_hierarchical_groups(self, positions: List[Position], 
                                              history: List[HistoricalTrade], 
                                              current_orders: List[Order]) -> List[Dict[str, Any]]:
         """Create simplified hierarchical grouping with only static broker data."""
@@ -2232,12 +2234,16 @@ class TradierProvider(BaseProvider):
                             # For stocks: cost_basis / qty
                             avg_entry_price = abs(pos.cost_basis / pos.qty) if pos.qty != 0 else 0
                         
+                        # Fetch lastday_price for each position
+                        lastday_price = await self._get_lastday_price(pos.symbol)
+                        
                         legs.append({
                             "symbol": pos.symbol,
                             "qty": pos.qty,
                             "avg_entry_price": avg_entry_price,
                             "cost_basis": pos.cost_basis,
-                            "asset_class": pos.asset_class
+                            "asset_class": pos.asset_class,
+                            "lastday_price": lastday_price
                         })
                     
                     strategy = {
@@ -2309,3 +2315,33 @@ class TradierProvider(BaseProvider):
         except Exception as e:
             self._log_error("_detect_strategy_name", e)
             return "Unknown Strategy"
+
+    async def _get_lastday_price(self, symbol: str) -> Optional[float]:
+        """Get the previous day's closing price for a given symbol with caching."""
+        try:
+            today = datetime.now().date()
+            
+            # Check if we need to refresh the cache
+            if self._lastday_price_cache_date != today:
+                self._lastday_price_cache = {}
+                self._lastday_price_cache_date = today
+            
+            # Check if the price is in the cache
+            if symbol in self._lastday_price_cache:
+                return self._lastday_price_cache[symbol]
+            
+            # If not in cache, fetch the price
+            previous_day = (today - timedelta(days=1)).strftime('%Y-%m-%d')
+            bars = await self.get_historical_bars(symbol, timeframe='D', end_date=previous_day, limit=1)
+            
+            if bars and len(bars) > 0:
+                price = bars[0]['close']
+                # Cache the result
+                self._lastday_price_cache[symbol] = price
+                return price
+            else:
+                logger.warning(f"No historical data found for {symbol} on {previous_day}")
+                return None
+        except Exception as e:
+            self._log_error(f"_get_lastday_price for {symbol}", e)
+            return None
