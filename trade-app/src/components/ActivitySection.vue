@@ -260,6 +260,7 @@ export default {
               "held",
               "pending",
               "open",
+              "submitted"
             ].includes(status);
           case "filled":
             return status === "filled";

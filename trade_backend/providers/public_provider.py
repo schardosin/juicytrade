@@ -341,7 +341,8 @@ class PublicProvider(BaseProvider):
                 
                 if status == "all":
                     include_order = True
-                elif status == "open":
+                elif status == "open" or status == "pending":
+                    # Both "open" and "pending" should include the same statuses
                     include_order = order_status in ["new", "partially_filled", "pending_replace", "pending_cancel"]
                 elif status == "filled":
                     include_order = order_status == "filled"
@@ -381,6 +382,19 @@ class PublicProvider(BaseProvider):
         order_side, open_close_indicator = self._map_order_side(order_data["side"])
         instrument_type = self._get_instrument_type(order_data["symbol"])
         
+        # Map time in force
+        time_in_force = self._map_time_in_force(order_data["time_in_force"])
+        
+        # Build expiration object
+        expiration = {"timeInForce": time_in_force}
+        
+        # If using GTD, we need to provide an expiration date
+        # Default to 90 days from now for GTD orders
+        if time_in_force == "GTD":
+            gtd_date = datetime.now() + timedelta(days=90)
+            # Format as ISO 8601 datetime with timezone
+            expiration["expirationTime"] = gtd_date.strftime("%Y-%m-%dT00:00:00.000Z")
+        
         payload = {
             "orderId": order_id,
             "instrument": {
@@ -389,9 +403,7 @@ class PublicProvider(BaseProvider):
             },
             "orderSide": order_side,
             "orderType": order_data["order_type"].upper(),
-            "expiration": {
-                "timeInForce": self._map_time_in_force(order_data["time_in_force"])
-            },
+            "expiration": expiration,
             "quantity": str(order_data["qty"])
         }
         
@@ -406,6 +418,11 @@ class PublicProvider(BaseProvider):
         # Add open/close indicator for options
         if open_close_indicator:
             payload["openCloseIndicator"] = open_close_indicator
+        
+        # Add amount field (may be required by Public API)
+        if order_data.get("limit_price") and order_data.get("qty"):
+            amount = float(order_data["limit_price"]) * float(order_data["qty"])
+            payload["amount"] = str(amount)
         
         try:
             response = requests.post(url, headers=headers, json=payload)
@@ -467,14 +484,25 @@ class PublicProvider(BaseProvider):
             
             legs.append(leg_data)
         
+        # Map time in force
+        time_in_force = self._map_time_in_force(order_data["time_in_force"])
+        
+        # Build expiration object
+        expiration = {"timeInForce": time_in_force}
+        
+        # If using GTD, we need to provide an expiration date
+        # Default to 90 days from now for GTD orders
+        if time_in_force == "GTD":
+            gtd_date = datetime.now() + timedelta(days=90)
+            # Format as ISO 8601 datetime with timezone
+            expiration["expirationTime"] = gtd_date.strftime("%Y-%m-%dT00:00:00.000Z")
+        
         payload = {
             "orderId": order_id,
-            "quantity": int(order_data.get("qty", 1)),
+            "quantity": str(order_data.get("qty", 1)),
             "type": order_data["order_type"].upper(),
             "limitPrice": str(order_data["limit_price"]),
-            "expiration": {
-                "timeInForce": self._map_time_in_force(order_data["time_in_force"])
-            },
+            "expiration": expiration,
             "legs": legs
         }
         
@@ -828,7 +856,7 @@ class PublicProvider(BaseProvider):
         """Map our time in force to Public's format."""
         tif_map = {
             "day": "DAY",
-            "gtc": "GTC",
+            "gtc": "GTD",  # Public uses GTD (Good Till Date) instead of GTC
             "ioc": "IOC",
             "fok": "FOK"
         }

@@ -2024,7 +2024,7 @@ class AlpacaProvider(BaseProvider):
                         "side": side,
                         "qty": abs(pos.qty)
                     })
-                
+
                 # Use centralized strategy detection
                 try:
                     from ..utils.optionsStrategies import detectStrategy
@@ -2034,7 +2034,7 @@ class AlpacaProvider(BaseProvider):
                     logger.warning(f"Could not import detectStrategy: {e}")
                     # Fallback to generic naming
                     pass
-            
+
             # Fallback to generic naming
             if len(positions) == 2:
                 return "2-Leg Strategy"
@@ -2044,7 +2044,7 @@ class AlpacaProvider(BaseProvider):
                 return "6-Leg Strategy"
             else:
                 return f"{len(positions)}-Leg Strategy"
-                
+
         except Exception as e:
             self._log_error("_detect_strategy_name", e)
             return "Unknown Strategy"

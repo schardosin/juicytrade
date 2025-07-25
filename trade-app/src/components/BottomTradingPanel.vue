@@ -143,12 +143,18 @@
 
           <div class="order-type-section">
             <span class="config-label">Order Type</span>
-            <div class="config-value">{{ selectedOrderType }} ></div>
+            <select v-model="selectedOrderType" class="config-select">
+              <option value="limit">Limit</option>
+              <option value="market">Market</option>
+            </select>
           </div>
 
           <div class="time-force-section">
             <span class="config-label">Time in Force</span>
-            <div class="config-value">{{ selectedTimeInForce }} ></div>
+            <select v-model="selectedTimeInForce" class="config-select">
+              <option value="day">Day</option>
+              <option value="gtc">GTC</option>
+            </select>
           </div>
         </div>
 
@@ -1112,6 +1118,41 @@ export default {
   border-radius: 4px;
   font-size: 12px;
   font-weight: 500;
+}
+
+.config-select {
+  background-color: #333;
+  border: 1px solid #444;
+  color: #fff;
+  padding: 6px 12px;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 500;
+  cursor: pointer;
+  width: 100%;
+  appearance: none;
+  background-image: url("data:image/svg+xml;charset=UTF-8,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23ccc' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3e%3cpolyline points='6,9 12,15 18,9'%3e%3c/polyline%3e%3c/svg%3e");
+  background-repeat: no-repeat;
+  background-position: right 8px center;
+  background-size: 16px;
+  padding-right: 32px;
+}
+
+.config-select:hover {
+  background-color: #444;
+  border-color: #555;
+}
+
+.config-select:focus {
+  outline: none;
+  border-color: #007bff;
+  box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.25);
+}
+
+.config-select option {
+  background-color: #333;
+  color: #fff;
+  padding: 8px;
 }
 
 /* New Price Controls Row Layout */
