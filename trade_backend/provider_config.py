@@ -29,7 +29,7 @@ PROVIDER_CAPABILITIES = {
         "streaming": ["streaming_quotes", "trade_account"]
     },
     "public": {
-        "rest": ["expiration_dates"]
+        "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date"]
     },
     "tradier": {
         "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
