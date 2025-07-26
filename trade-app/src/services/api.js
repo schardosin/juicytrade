@@ -322,6 +322,39 @@ export const api = {
       throw error;
     }
   },
+
+  // Get available providers and their capabilities
+  async getAvailableProviders() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/providers/available`);
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching available providers:", error);
+      throw error;
+    }
+  },
+
+  // Get current provider configuration
+  async getProviderConfig() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/providers/config`);
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching provider configuration:", error);
+      throw error;
+    }
+  },
+
+  // Update provider configuration
+  async updateProviderConfig(config) {
+    try {
+      const response = await axios.put(`${API_BASE_URL}/providers/config`, config);
+      return response.data;
+    } catch (error) {
+      console.error("Error updating provider configuration:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;

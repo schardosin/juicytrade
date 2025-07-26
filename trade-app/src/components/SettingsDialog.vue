@@ -1,0 +1,309 @@
+<template>
+  <Dialog
+    v-model:visible="isVisible"
+    modal
+    :closable="true"
+    :draggable="false"
+    class="settings-dialog"
+    header="Settings"
+    :style="{ width: '800px', height: '600px' }"
+    @hide="onClose"
+  >
+    <div class="settings-container">
+      <!-- Left Sidebar -->
+      <div class="settings-sidebar">
+        <div class="sidebar-header">
+          <h3>Settings</h3>
+        </div>
+        <nav class="sidebar-nav">
+          <button
+            v-for="tab in tabs"
+            :key="tab.key"
+            :class="['nav-item', { active: activeTab === tab.key }]"
+            @click="setActiveTab(tab.key)"
+          >
+            <i :class="tab.icon"></i>
+            <span>{{ tab.label }}</span>
+          </button>
+        </nav>
+      </div>
+
+      <!-- Main Content -->
+      <div class="settings-content">
+        <!-- Providers Tab -->
+        <div v-if="activeTab === 'providers'" class="tab-content">
+          <ProvidersTab />
+        </div>
+
+        <!-- General Tab (Placeholder) -->
+        <div v-else-if="activeTab === 'general'" class="tab-content">
+          <div class="placeholder-content">
+            <h3>General Settings</h3>
+            <p>General settings will be implemented here.</p>
+          </div>
+        </div>
+
+        <!-- Trading Tab (Placeholder) -->
+        <div v-else-if="activeTab === 'trading'" class="tab-content">
+          <div class="placeholder-content">
+            <h3>Trading Settings</h3>
+            <p>Trading preferences will be implemented here.</p>
+          </div>
+        </div>
+
+        <!-- Notifications Tab (Placeholder) -->
+        <div v-else-if="activeTab === 'notifications'" class="tab-content">
+          <div class="placeholder-content">
+            <h3>Notification Settings</h3>
+            <p>Notification preferences will be implemented here.</p>
+          </div>
+        </div>
+
+        <!-- About Tab (Placeholder) -->
+        <div v-else-if="activeTab === 'about'" class="tab-content">
+          <div class="placeholder-content">
+            <h3>About</h3>
+            <p>Application information and version details.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </Dialog>
+</template>
+
+<script>
+import { ref, computed } from "vue";
+import Dialog from "primevue/dialog";
+import ProvidersTab from "./settings/ProvidersTab.vue";
+
+export default {
+  name: "SettingsDialog",
+  components: {
+    Dialog,
+    ProvidersTab,
+  },
+  props: {
+    visible: {
+      type: Boolean,
+      default: false,
+    },
+  },
+  emits: ["update:visible"],
+  setup(props, { emit }) {
+    const activeTab = ref("providers");
+
+    // Available tabs
+    const tabs = [
+      {
+        key: "providers",
+        label: "Providers",
+        icon: "pi pi-server",
+      },
+      {
+        key: "general",
+        label: "General",
+        icon: "pi pi-cog",
+      },
+      {
+        key: "trading",
+        label: "Trading",
+        icon: "pi pi-chart-line",
+      },
+      {
+        key: "notifications",
+        label: "Notifications",
+        icon: "pi pi-bell",
+      },
+      {
+        key: "about",
+        label: "About",
+        icon: "pi pi-info-circle",
+      },
+    ];
+
+    // Computed visibility
+    const isVisible = computed({
+      get: () => props.visible,
+      set: (value) => emit("update:visible", value),
+    });
+
+    // Methods
+    const setActiveTab = (tabKey) => {
+      activeTab.value = tabKey;
+    };
+
+    const onClose = () => {
+      emit("update:visible", false);
+    };
+
+    return {
+      activeTab,
+      tabs,
+      isVisible,
+      setActiveTab,
+      onClose,
+    };
+  },
+};
+</script>
+
+<style scoped>
+.settings-dialog {
+  --dialog-bg: var(--bg-secondary);
+  --dialog-border: var(--border-primary);
+}
+
+:deep(.p-dialog) {
+  background-color: var(--dialog-bg) !important;
+  border: 1px solid var(--dialog-border) !important;
+  border-radius: var(--radius-lg) !important;
+  box-shadow: var(--shadow-lg) !important;
+}
+
+:deep(.p-dialog-header) {
+  background-color: var(--bg-primary) !important;
+  border-bottom: 1px solid var(--border-primary) !important;
+  color: var(--text-primary) !important;
+  padding: var(--spacing-lg) var(--spacing-xl) !important;
+}
+
+:deep(.p-dialog-title) {
+  font-size: var(--font-size-lg) !important;
+  font-weight: var(--font-weight-semibold) !important;
+  color: var(--text-primary) !important;
+}
+
+:deep(.p-dialog-header-icon) {
+  color: var(--text-secondary) !important;
+}
+
+:deep(.p-dialog-header-icon:hover) {
+  background-color: var(--bg-tertiary) !important;
+  color: var(--text-primary) !important;
+}
+
+:deep(.p-dialog-content) {
+  padding: 0 !important;
+  background-color: var(--dialog-bg) !important;
+  height: calc(600px - 80px) !important;
+  overflow: hidden !important;
+}
+
+.settings-container {
+  display: flex;
+  height: 100%;
+  background-color: var(--bg-secondary);
+}
+
+.settings-sidebar {
+  width: 200px;
+  background-color: var(--bg-primary);
+  border-right: 1px solid var(--border-primary);
+  display: flex;
+  flex-direction: column;
+}
+
+.sidebar-header {
+  padding: var(--spacing-lg) var(--spacing-md);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.sidebar-header h3 {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.sidebar-nav {
+  flex: 1;
+  padding: var(--spacing-md) 0;
+}
+
+.nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  width: 100%;
+  padding: var(--spacing-sm) var(--spacing-md);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: var(--transition-normal);
+  text-align: left;
+}
+
+.nav-item:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.nav-item.active {
+  background-color: var(--bg-quaternary);
+  color: var(--text-primary);
+  border-right: 2px solid var(--color-primary);
+}
+
+.nav-item i {
+  font-size: var(--font-size-md);
+  width: 16px;
+  text-align: center;
+}
+
+.settings-content {
+  flex: 1;
+  background-color: var(--bg-secondary);
+  overflow-y: auto;
+}
+
+.tab-content {
+  height: 100%;
+  padding: var(--spacing-xl);
+}
+
+.placeholder-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.placeholder-content h3 {
+  margin: 0 0 var(--spacing-md) 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.placeholder-content p {
+  margin: 0;
+  font-size: var(--font-size-md);
+  color: var(--text-tertiary);
+}
+
+/* Custom scrollbar for content area */
+.settings-content::-webkit-scrollbar {
+  width: 6px;
+}
+
+.settings-content::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+.settings-content::-webkit-scrollbar-thumb {
+  background: var(--border-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.settings-content::-webkit-scrollbar-thumb:hover {
+  background: var(--border-tertiary);
+}
+</style>

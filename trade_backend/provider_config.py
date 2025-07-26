@@ -21,23 +21,43 @@ DEFAULT_ROUTING = {
 
 PROVIDER_CAPABILITIES = {
     "alpaca": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
-        "streaming": ["streaming_quotes", "trade_account"]
+        "capabilities": {
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "streaming": ["streaming_quotes", "trade_account"]
+        },
+        "paper": False,
+        "display_name": "Alpaca"
     },
     "alpaca_paper": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
-        "streaming": ["streaming_quotes", "trade_account"]
+        "capabilities": {
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "streaming": ["streaming_quotes", "trade_account"]
+        },
+        "paper": True,
+        "display_name": "Alpaca"
     },
     "public": {
-        "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date"]
+        "capabilities": {
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date"]
+        },
+        "paper": False,
+        "display_name": "Public.com"
     },
     "tradier": {
-        "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
-        "streaming": ["streaming_quotes"]
+        "capabilities": {
+            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
+            "streaming": ["streaming_quotes"]
+        },
+        "paper": False,
+        "display_name": "Tradier"
     },
     "tradier_paper": {
-        "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
-        "streaming": ["streaming_quotes"]
+        "capabilities": {
+            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
+            "streaming": ["streaming_quotes"]
+        },
+        "paper": True,
+        "display_name": "Tradier"
     }
 }
 
@@ -75,12 +95,12 @@ class ProviderConfigManager:
                 if value in PROVIDER_CAPABILITIES:
                     # Check if it's a streaming capability
                     if key == "streaming_quotes":
-                        if "streaming" in PROVIDER_CAPABILITIES[value] and key in PROVIDER_CAPABILITIES[value]["streaming"]:
+                        if "streaming" in PROVIDER_CAPABILITIES[value]["capabilities"] and key in PROVIDER_CAPABILITIES[value]["capabilities"]["streaming"]:
                             validated_config[key] = value
                         else:
                             logger.warning(f"Invalid streaming provider/capability: {key}:{value}")
                     # Check if it's a REST capability
-                    elif "rest" in PROVIDER_CAPABILITIES[value] and key in PROVIDER_CAPABILITIES[value]["rest"]:
+                    elif "rest" in PROVIDER_CAPABILITIES[value]["capabilities"] and key in PROVIDER_CAPABILITIES[value]["capabilities"]["rest"]:
                         validated_config[key] = value
                     else:
                         logger.warning(f"Invalid REST provider/capability: {key}:{value}")
@@ -100,7 +120,11 @@ class ProviderConfigManager:
     def get_available_providers(self) -> Dict[str, Dict[str, any]]:
         # This can be enhanced to check provider health
         return {
-            provider: {"capabilities": caps}
+            provider: {
+                "capabilities": caps["capabilities"],
+                "paper": caps["paper"],
+                "display_name": caps["display_name"]
+            }
             for provider, caps in PROVIDER_CAPABILITIES.items()
         }
 

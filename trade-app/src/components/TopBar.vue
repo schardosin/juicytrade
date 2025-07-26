@@ -142,6 +142,9 @@
         />
       </div>
     </div>
+
+    <!-- Settings Dialog -->
+    <SettingsDialog v-model:visible="showSettingsDialog" />
   </div>
 </template>
 
@@ -149,9 +152,13 @@
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import webSocketClient from "../services/webSocketClient";
 import { useMarketData } from "../composables/useMarketData.js";
+import SettingsDialog from "./SettingsDialog.vue";
 
 export default {
   name: "TopBar",
+  components: {
+    SettingsDialog,
+  },
   setup() {
     // Use unified market data composable
     const { lookupSymbols, getBalance, getAccountInfo } = useMarketData();
@@ -170,6 +177,7 @@ export default {
     const userMenuRef = ref();
     const accountLoading = ref(true);
     const accountError = ref(null);
+    const showSettingsDialog = ref(false);
 
     // Get reactive account data (auto-updates every 60 seconds)
     const reactiveBalance = getBalance();
@@ -266,7 +274,7 @@ export default {
 
     const openSettings = () => {
       console.log("Settings clicked");
-      // Here you would open a settings dialog or navigate to settings
+      showSettingsDialog.value = true;
     };
 
     const checkConnectionStatus = () => {
@@ -468,6 +476,7 @@ export default {
       userMenuRef,
       accountLoading,
       accountError,
+      showSettingsDialog,
 
       // Static data
       navLinks,
