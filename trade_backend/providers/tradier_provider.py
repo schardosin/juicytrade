@@ -298,7 +298,7 @@ class TradierProvider(BaseProvider):
             logger.error(f"❌ Error in Tradier stream handler: {e}")
             self.is_connected = False
         finally:
-            logger.info(f"� Tradier stream handler stopped - processed {message_count} messages, {quote_count} quotes")
+            logger.info(f" Tradier stream handler stopped - processed {message_count} messages, {quote_count} quotes")
 
     async def subscribe_to_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         logger.info(f"🔔 Tradier: subscribe_to_symbols called with {len(symbols)} symbols")
@@ -718,18 +718,34 @@ class TradierProvider(BaseProvider):
                 # For stocks: cost_basis is total cost, divide by quantity to get per-share price
                 avg_entry_price = cost_basis / quantity if quantity != 0 else 0
             
+            date_acquired_str = raw_position.get("date_acquired")
+            lastday_price = raw_position.get("lastday_price") # Get the price from the enhanced data
+
+            if date_acquired_str:
+                try:
+                    # Check if the position was opened today. If so, lastday_price should be None.
+                    acquired_dt = datetime.fromisoformat(date_acquired_str.replace('Z', '+00:00'))
+                    is_same_day = acquired_dt.date() == datetime.now(acquired_dt.tzinfo).date()
+
+                    if is_same_day:
+                        lastday_price = None
+                        
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not parse date_acquired: {date_acquired_str}")
+
             return Position(
                 symbol=symbol,
                 qty=quantity,
                 side="long" if quantity > 0 else "short",
                 cost_basis=cost_basis,
-                # Tradier does not provide these fields directly in the positions endpoint
                 market_value=0,
                 unrealized_pl=0,
                 unrealized_plpc=0,
                 current_price=0,
                 avg_entry_price=avg_entry_price,
-                asset_class="us_equity" if not self._is_option_symbol(symbol) else "us_option"
+                asset_class="us_equity" if not self._is_option_symbol(symbol) else "us_option",
+                lastday_price=lastday_price,
+                date_acquired=date_acquired_str
             )
         except Exception as e:
             self._log_error("transform_position", e)
@@ -2243,7 +2259,8 @@ class TradierProvider(BaseProvider):
                             "avg_entry_price": avg_entry_price,
                             "cost_basis": pos.cost_basis,
                             "asset_class": pos.asset_class,
-                            "lastday_price": lastday_price
+                            "lastday_price": lastday_price,
+                            "date_acquired": getattr(pos, 'date_acquired', None)  # Add acquisition date for 0DTE detection
                         })
                     
                     strategy = {

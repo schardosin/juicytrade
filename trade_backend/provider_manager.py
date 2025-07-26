@@ -181,7 +181,12 @@ class ProviderManager:
                                 limit: int = 500) -> List[Dict[str, Any]]:
         provider = self._get_provider("historical_data")
         if provider:
-            return await provider.get_historical_bars(symbol, timeframe, start_date, end_date, limit)
+            # Map weekly symbols to their standard equivalents for historical data
+            # Brokers typically don't provide separate historical data for weekly symbols
+            chart_symbol = self._map_symbol_for_historical_data(symbol)
+            if chart_symbol != symbol:
+                logger.info(f"📊 Mapping symbol for historical data: {symbol} → {chart_symbol}")
+            return await provider.get_historical_bars(chart_symbol, timeframe, start_date, end_date, limit)
         return []
 
     async def get_next_market_date(self) -> str:
@@ -195,5 +200,19 @@ class ProviderManager:
         for name, provider in self._providers.items():
             health_status[name] = await provider.health_check()
         return health_status
+
+    def _map_symbol_for_historical_data(self, symbol: str) -> str:
+        """Map symbols to their standard equivalents for historical data."""
+        # Weekly symbols that need to be mapped to their standard equivalents
+        # Brokers typically don't provide separate historical data for weekly symbols
+        weekly_symbol_map = {
+            "SPXW": "SPX",  # SPX Weeklys → SPX
+            # Add other weekly symbols here if needed
+            # "NDXP": "NDX",  # Example: NDX Weeklys (if they exist)
+            # "RUTW": "RUT",  # Example: RUT Weeklys (if they exist)
+        }
+        
+        # Return mapped symbol or original if no mapping exists
+        return weekly_symbol_map.get(symbol, symbol)
 
 provider_manager = ProviderManager()

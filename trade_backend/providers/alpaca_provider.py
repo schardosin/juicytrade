@@ -1205,6 +1205,12 @@ class AlpacaProvider(BaseProvider):
     def _transform_position(self, raw_position) -> Optional[Position]:
         """Transform Alpaca position to our standard model."""
         try:
+            lastday_price = float(raw_position.lastday_price) if hasattr(raw_position, 'lastday_price') and raw_position.lastday_price else None
+
+            # If lastday_price is 0, it indicates a same-day trade, so we set it to None.
+            if lastday_price == 0:
+                lastday_price = None
+
             position = Position(
                 symbol=raw_position.symbol,
                 qty=float(raw_position.qty),
@@ -1216,7 +1222,8 @@ class AlpacaProvider(BaseProvider):
                 current_price=float(raw_position.current_price) if raw_position.current_price else 0,
                 avg_entry_price=float(raw_position.avg_entry_price) if raw_position.avg_entry_price else 0,
                 asset_class=raw_position.asset_class.value if raw_position.asset_class else "unknown",
-                lastday_price=float(raw_position.lastday_price) if hasattr(raw_position, 'lastday_price') and raw_position.lastday_price else None
+                lastday_price=lastday_price,
+                date_acquired=None  # Alpaca does not provide this field
             )
             
             # Parse option-specific information if it's an option
@@ -2048,4 +2055,3 @@ class AlpacaProvider(BaseProvider):
         except Exception as e:
             self._log_error("_detect_strategy_name", e)
             return "Unknown Strategy"
-

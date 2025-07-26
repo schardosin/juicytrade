@@ -442,9 +442,11 @@ export default {
       return liveOptionPrices.get(symbol)?.value;
     };
 
+
     // Get current market price (mid of bid/ask) for P/L calculation
     const getLegCurrentPrice = (leg) => {
       if (leg.asset_class !== "us_option") return leg.current_price || 0;
+      
       const livePrice = getLivePrice(leg.symbol);
 
       // If we have live prices, use them
@@ -479,10 +481,20 @@ export default {
 
     // Calculate live daily P/L for individual leg (using lastday_price)
     const getLegPlDay = (leg) => {
-      const currentPrice = getLegCurrentPrice(leg);
-      const lastdayPrice = leg.lastday_price || 0;
+      const lastdayPrice = leg.lastday_price;
 
-      if (currentPrice === 0 || lastdayPrice === 0) return 0;
+      // If lastday_price is null or undefined, it indicates a same-day trade or no historical data.
+      // In this case, P/L Day should be the same as P/L Open.
+      if (lastdayPrice === null || lastdayPrice === undefined) {
+        return getLegPL(leg);
+      }
+
+      const currentPrice = getLegCurrentPrice(leg);
+
+      // If we don't have a valid current price, we can't calculate P/L Day.
+      if (currentPrice === 0) {
+        return 0;
+      }
 
       // For options: (current_price - lastday_price) * quantity * 100 (contract multiplier)
       // For stocks: (current_price - lastday_price) * quantity

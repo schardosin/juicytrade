@@ -9,7 +9,7 @@ import os
 
 from .base_provider import BaseProvider
 from ..models import (
-    StockQuote, OptionContract, Position, Order, 
+    StockQuote, OptionContract, Position, Order,
     ExpirationDate, MarketData, ApiResponse, SymbolSearchResult, Account
 )
 from ..config import settings
@@ -316,6 +316,34 @@ class PublicProvider(BaseProvider):
             self._log_error("get_positions", e)
             return []
 
+    async def get_positions_enhanced(self) -> Dict[str, Any]:
+        """Get enhanced positions with simplified static data structure."""
+        try:
+            logger.info("🔍 Getting enhanced positions with static broker data...")
+            
+            # 1. Get current positions
+            current_positions = await self.get_positions()
+            if not current_positions:
+                logger.info("No current positions found")
+                return {"enhanced": True, "symbol_groups": []}
+            
+            # 2. Get current orders for additional context
+            current_orders = await self.get_orders(status="all")
+            
+            logger.info(f"📊 Retrieved {len(current_positions)} positions and {len(current_orders)} current orders")
+            
+            # 3. Create simplified hierarchical grouping (Symbol -> Strategies -> Legs)
+            symbol_groups = await self._create_simplified_hierarchical_groups(
+                current_positions, [], current_orders  # Empty history list since Public doesn't have history API
+            )
+            
+            logger.info(f"✅ Created {len(symbol_groups)} symbol groups with static data")
+            return {"enhanced": True, "symbol_groups": symbol_groups}
+            
+        except Exception as e:
+            self._log_error("get_positions_enhanced", e)
+            return {"enhanced": True, "symbol_groups": []}
+
     async def get_orders(self, status: str = "open") -> List[Order]:
         """Get orders with optional status filter."""
         token = await self._get_access_token()
@@ -555,8 +583,12 @@ class PublicProvider(BaseProvider):
                                 start_date: str = None, end_date: str = None, 
                                 limit: int = 500) -> List[Dict[str, Any]]:
         """Get historical OHLCV bars for charting."""
+        # Map weekly symbols to their standard equivalents for historical data
+        # Brokers typically don't provide separate historical data for weekly symbols
+        chart_symbol = self._map_symbol_for_historical_data(symbol)
+        
         # Public API may not have historical bars endpoint
-        self._log_info(f"Historical bars not available for Public provider")
+        self._log_info(f"Historical bars not available for Public provider (requested: {symbol}, mapped: {chart_symbol})")
         return []
 
     async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
@@ -636,27 +668,41 @@ class PublicProvider(BaseProvider):
             instrument = raw_position.get("instrument", {})
             symbol = instrument.get("symbol", "")
             quantity = float(raw_position.get("quantity", 0))
-            
-            # Determine asset class
-            asset_class = "us_equity"
-            if instrument.get("type") == "OPTION":
-                asset_class = "us_option"
-            
-            # Extract cost basis info
+
+            if symbol.endswith("-OPTION"):
+                symbol = symbol.replace("-OPTION", "")
+
+            asset_class = "us_option" if instrument.get("type") == "OPTION" else "us_equity"
+
             cost_basis_info = raw_position.get("costBasis", {})
             total_cost = float(cost_basis_info.get("totalCost", 0)) if cost_basis_info.get("totalCost") else 0
             unit_cost = float(cost_basis_info.get("unitCost", 0)) if cost_basis_info.get("unitCost") else 0
-            
-            # Extract current value and P&L
+
             current_value = float(raw_position.get("currentValue", 0)) if raw_position.get("currentValue") else 0
-            
-            # Extract gain info
             instrument_gain = raw_position.get("instrumentGain", {})
             gain_value = float(instrument_gain.get("gainValue", 0)) if instrument_gain.get("gainValue") else 0
-            
-            # Extract last price
+
             last_price_info = raw_position.get("lastPrice", {})
             current_price = float(last_price_info.get("lastPrice", 0)) if last_price_info.get("lastPrice") else 0
+
+            opened_at_str = raw_position.get("openedAt")
+            lastday_price = None  # Default to None
+
+            if opened_at_str:
+                try:
+                    # Check if the position was opened today. If so, lastday_price remains None.
+                    opened_at_dt = datetime.fromisoformat(opened_at_str.replace('Z', '+00:00'))
+                    is_same_day = opened_at_dt.date() == datetime.now(opened_at_dt.tzinfo).date()
+                    
+                    if is_same_day:
+                        lastday_price = None
+                    else:
+                        # This is a multi-day trade. Public.com does not provide lastday_price,
+                        # so we leave it as None to indicate to the UI that P/L Day can't be calculated.
+                        lastday_price = None
+                        
+                except (ValueError, TypeError):
+                    logger.warning(f"Could not parse openedAt date: {opened_at_str}")
             
             return Position(
                 symbol=symbol,
@@ -665,10 +711,12 @@ class PublicProvider(BaseProvider):
                 market_value=current_value,
                 cost_basis=total_cost,
                 unrealized_pl=gain_value,
-                unrealized_plpc=0,  # Would need to calculate
+                unrealized_plpc=0,
                 current_price=current_price,
                 avg_entry_price=unit_cost,
-                asset_class=asset_class
+                asset_class=asset_class,
+                lastday_price=lastday_price,
+                date_acquired=opened_at_str
             )
         except Exception as e:
             self._log_error("transform_position", e)
@@ -868,6 +916,9 @@ class PublicProvider(BaseProvider):
 
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""
+        # Check for Public's format: SPXW250725C06410000-OPTION
+        if symbol.endswith("-OPTION"):
+            return True
         # Basic check - option symbols are typically longer and contain specific patterns
         return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
 
@@ -916,3 +967,209 @@ class PublicProvider(BaseProvider):
         except Exception as e:
             self._log_error(f"extract_expiry_from_symbol {symbol}", e)
             return ""
+
+    # === Enhanced Positions Helper Methods ===
+    
+    async def _create_simplified_hierarchical_groups(self, positions: List[Position], 
+                                             history: List, 
+                                             current_orders: List[Order]) -> List[Dict[str, Any]]:
+        """Create simplified hierarchical grouping with only static broker data."""
+        try:
+            from datetime import datetime
+            
+            logger.info("📊 Creating simplified hierarchical symbol groups")
+            
+            # Step 1: Group positions by underlying symbol
+            symbol_groups = {}
+            
+            for position in positions:
+                # Determine underlying symbol
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    underlying = parsed["underlying"] if parsed else position.symbol
+                    asset_class = "options"
+                else:
+                    underlying = position.symbol
+                    asset_class = "stocks"
+                
+                if underlying not in symbol_groups:
+                    symbol_groups[underlying] = {
+                        "symbol": underlying,
+                        "asset_class": asset_class,
+                        "positions_by_expiry": {}
+                    }
+                
+                # Group by expiry for options, or use "stock" for stocks
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    expiry_key = parsed["expiry"] if parsed else "unknown"
+                else:
+                    expiry_key = "stock"
+                
+                if expiry_key not in symbol_groups[underlying]["positions_by_expiry"]:
+                    symbol_groups[underlying]["positions_by_expiry"][expiry_key] = []
+                
+                symbol_groups[underlying]["positions_by_expiry"][expiry_key].append(position)
+            
+            # Step 2: Convert to final format with strategies
+            result = []
+            for underlying, symbol_group in symbol_groups.items():
+                strategies = []
+                
+                for expiry_key, expiry_positions in symbol_group["positions_by_expiry"].items():
+                    # Detect strategy for this group of positions
+                    strategy_name = self._detect_strategy_name(expiry_positions)
+                    
+                    # Calculate DTE for options
+                    dte = None
+                    if expiry_key != "stock":
+                        try:
+                            expiry_date = datetime.strptime(expiry_key, "%Y-%m-%d")
+                            dte = (expiry_date - datetime.now()).days
+                        except:
+                            dte = None
+                    
+                    # Calculate strategy totals (static data only)
+                    strategy_total_qty = sum(pos.qty for pos in expiry_positions)
+                    strategy_cost_basis = sum(pos.cost_basis for pos in expiry_positions)
+                    
+                    # Create legs with static broker data
+                    legs = []
+                    for pos in expiry_positions:
+                        # For Public, use the avg_entry_price directly from the position
+                        # Public provides unit cost which should be the average entry price
+                        avg_entry_price = pos.avg_entry_price
+                        
+                        # Remove -OPTION suffix from symbol for API compatibility
+                        clean_symbol = pos.symbol.replace("-OPTION", "") if pos.symbol.endswith("-OPTION") else pos.symbol
+                        
+                        legs.append({
+                            "symbol": clean_symbol,
+                            "qty": pos.qty,
+                            "avg_entry_price": avg_entry_price,
+                            "cost_basis": pos.cost_basis,
+                            "asset_class": pos.asset_class,
+                            "current_price": pos.current_price,
+                            "market_value": pos.market_value,
+                            "unrealized_pl": pos.unrealized_pl,
+                            "lastday_price": pos.lastday_price,
+                            "date_acquired": pos.date_acquired
+                        })
+                    
+                    strategy = {
+                        "name": strategy_name,
+                        "total_qty": strategy_total_qty,
+                        "cost_basis": strategy_cost_basis,
+                        "dte": dte,
+                        "legs": legs
+                    }
+                    strategies.append(strategy)
+                
+                result.append({
+                    "symbol": underlying,
+                    "asset_class": symbol_group["asset_class"],
+                    "strategies": strategies
+                })
+            
+            logger.info(f"✅ Created {len(result)} simplified symbol groups")
+            return result
+            
+        except Exception as e:
+            self._log_error("_create_simplified_hierarchical_groups", e)
+            return []
+
+    def _detect_strategy_name(self, positions: List[Position]) -> str:
+        """Detect strategy name based on positions using centralized strategy detection."""
+        try:
+            if len(positions) == 1:
+                if self._is_option_symbol(positions[0].symbol):
+                    return "Single Option"
+                else:
+                    return "Stock Position"
+            
+            # For multi-leg strategies, use the centralized strategy detection
+            option_positions = [pos for pos in positions if self._is_option_symbol(pos.symbol)]
+            
+            if len(option_positions) >= 2:
+                # Convert positions to legs format expected by detectStrategy
+                legs = []
+                for pos in option_positions:
+                    # Determine side based on quantity (positive = buy, negative = sell)
+                    side = "buy_to_open" if pos.qty > 0 else "sell_to_open"
+                    legs.append({
+                        "symbol": pos.symbol,
+                        "side": side,
+                        "qty": abs(pos.qty)
+                    })
+                
+                # Use centralized strategy detection
+                try:
+                    from ..utils.optionsStrategies import detectStrategy
+                    strategy = detectStrategy(legs)
+                    return strategy
+                except ImportError as e:
+                    logger.warning(f"Could not import detectStrategy: {e}")
+                    # Fallback to generic naming
+                    pass
+            
+            # Fallback to generic naming
+            if len(positions) == 2:
+                return "2-Leg Strategy"
+            elif len(positions) == 4:
+                return "4-Leg Strategy"
+            elif len(positions) == 6:
+                return "6-Leg Strategy"
+            else:
+                return f"{len(positions)}-Leg Strategy"
+                
+        except Exception as e:
+            self._log_error("_detect_strategy_name", e)
+            return "Unknown Strategy"
+
+    def _parse_option_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Parse option symbol to extract components."""
+        try:
+            # Handle Public's format: SPXW250725C06410000-OPTION
+            # Remove the -OPTION suffix if present
+            clean_symbol = symbol.replace("-OPTION", "")
+            
+            # Find the start of the date part of the symbol
+            for i, char in enumerate(clean_symbol):
+                if char.isdigit():
+                    underlying = clean_symbol[:i]
+                    rest = clean_symbol[i:]
+                    
+                    if len(rest) >= 7:  # Need at least YYMMDD + C/P
+                        date_part = rest[:6]  # YYMMDD
+                        option_type = rest[6]  # C or P
+                        strike_part = rest[7:] if len(rest) > 7 else "0"
+                        
+                        # Parse expiry date
+                        year = 2000 + int(date_part[:2])
+                        month = int(date_part[2:4])
+                        day = int(date_part[4:6])
+                        expiry_date = f"{year}-{month:02d}-{day:02d}"
+                        
+                        # Parse strike price - Public format may be different
+                        strike_price = 0.0
+                        if strike_part:
+                            try:
+                                # Try different formats for strike price
+                                if len(strike_part) >= 8:
+                                    # Standard format: 06410000 = 6410.000
+                                    strike_price = float(strike_part) / 1000
+                                else:
+                                    strike_price = float(strike_part)
+                            except ValueError:
+                                strike_price = 0.0
+                        
+                        return {
+                            "underlying": underlying,
+                            "type": "call" if option_type.upper() == "C" else "put",
+                            "strike": strike_price,
+                            "expiry": expiry_date
+                        }
+            return None
+        except Exception as e:
+            self._log_error(f"parse_option_symbol {symbol}", e)
+        return None
