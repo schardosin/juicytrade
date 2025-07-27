@@ -244,7 +244,7 @@
 
 <script>
 import { ref, computed, reactive } from "vue";
-import { useSmartMarketData } from "../composables/useSmartMarketData.js";
+import { useMarketData } from "../composables/useMarketData.js";
 
 export default {
   name: "CollapsibleOptionsChain",
@@ -286,12 +286,13 @@ export default {
     "strike-count-changed",
   ],
   setup(props, { emit }) {
-    const { getOptionPrice } = useSmartMarketData();
+    const { getOptionPrice, getOptionGreeks } = useMarketData();
 
     // Reactive state
     const strikeCount = ref(20); // Default to 20 strikes around ATM
     const expandedExpirations = ref(new Set());
     const liveOptionPrices = reactive(new Map());
+    const liveOptionGreeks = reactive(new Map());
 
     // Computed properties
     const expirationGroups = computed(() => {
@@ -419,24 +420,54 @@ export default {
       return livePrice?.ask ?? option.ask;
     };
 
+    const getLiveGreeks = (symbol) => {
+      if (!symbol) return null;
+
+      if (!liveOptionGreeks.has(symbol)) {
+        // Call getOptionGreeks only once to set up the subscription
+        liveOptionGreeks.set(symbol, getOptionGreeks(symbol));
+      }
+      return liveOptionGreeks.get(symbol)?.value;
+    };
+
     const getCallDelta = (expiration, strike) => {
       const option = getCallOption(expiration, strike);
-      return option && option.delta ? option.delta.toFixed(2) : "-";
+      if (!option) return "-";
+      
+      // Use live Greeks if available, fallback to static data
+      const liveGreeks = getLiveGreeks(option.symbol);
+      const delta = liveGreeks?.delta ?? option.delta;
+      return delta ? delta.toFixed(2) : "-";
     };
 
     const getCallTheta = (expiration, strike) => {
       const option = getCallOption(expiration, strike);
-      return option && option.theta ? option.theta.toFixed(2) : "-";
+      if (!option) return "-";
+      
+      // Use live Greeks if available, fallback to static data
+      const liveGreeks = getLiveGreeks(option.symbol);
+      const theta = liveGreeks?.theta ?? option.theta;
+      return theta ? theta.toFixed(2) : "-";
     };
 
     const getPutDelta = (expiration, strike) => {
       const option = getPutOption(expiration, strike);
-      return option && option.delta ? option.delta.toFixed(2) : "-";
+      if (!option) return "-";
+      
+      // Use live Greeks if available, fallback to static data
+      const liveGreeks = getLiveGreeks(option.symbol);
+      const delta = liveGreeks?.delta ?? option.delta;
+      return delta ? delta.toFixed(2) : "-";
     };
 
     const getPutTheta = (expiration, strike) => {
       const option = getPutOption(expiration, strike);
-      return option && option.theta ? option.theta.toFixed(2) : "-";
+      if (!option) return "-";
+      
+      // Use live Greeks if available, fallback to static data
+      const liveGreeks = getLiveGreeks(option.symbol);
+      const theta = liveGreeks?.theta ?? option.theta;
+      return theta ? theta.toFixed(2) : "-";
     };
 
     const formatPrice = (price) => {

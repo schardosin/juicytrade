@@ -34,6 +34,14 @@ export function useMarketData() {
     return smartMarketDataStore.getOptionPrice(symbol);
   };
 
+  /**
+   * Get reactive option Greeks for a symbol
+   * Uses periodic updates (every 60 seconds)
+   */
+  const getOptionGreeks = (symbol) => {
+    return smartMarketDataStore.getOptionGreeks(symbol);
+  };
+
   // ===== PERIODIC DATA (Auto-refreshing) =====
 
   /**
@@ -168,6 +176,7 @@ export function useMarketData() {
     // Real-time data (WebSocket)
     getStockPrice,
     getOptionPrice,
+    getOptionGreeks,
 
     // Auto-updating data (Periodic)
     getBalance,

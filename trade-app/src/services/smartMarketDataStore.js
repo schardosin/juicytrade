@@ -32,12 +32,19 @@ class SmartMarketDataStore {
     this.optionPrices = reactive(new Map());
     this.previousClosePrices = reactive(new Map()); // Previous close prices cache
 
+    // Reactive data stores - Greeks data (periodic updates)
+    this.optionGreeks = reactive(new Map());
+
     // Reactive data stores - REST API data
     this.data = reactive(new Map()); // General data store for all REST API data
 
     // Access tracking for WebSocket subscriptions
     this.lastAccess = new Map(); // symbol -> timestamp
     this.activeSubscriptions = new Set(); // currently subscribed symbols
+
+    // Access tracking for Greeks subscriptions (same pattern)
+    this.lastGreeksAccess = new Map(); // symbol -> timestamp
+    this.activeGreeksSubscriptions = new Set(); // currently subscribed Greeks symbols
 
     // REST API data management
     this.strategies = new Map(); // data source configurations
@@ -54,10 +61,15 @@ class SmartMarketDataStore {
 
     // Internal state
     this.updateTimer = null;
+    this.greeksUpdateTimer = null; // Timer for Greeks periodic updates
+    this.greeksImmediateUpdateTimer = null; // Timer for immediate Greeks updates
     this.isInitialized = false;
 
     // Start automatic cleanup
     this.startCleanupTimer();
+
+    // Start Greeks periodic updates
+    this.startGreeksPeriodicUpdates();
 
     // Register provider configuration data sources
     this.setupProviderDataSources();
@@ -135,6 +147,26 @@ class SmartMarketDataStore {
   }
 
   /**
+   * Get reactive option Greeks for a symbol
+   * Automatically handles subscription management (same pattern as prices)
+   */
+  getOptionGreeks(symbol) {
+    if (!symbol) return computed(() => null);
+
+    // Ensure Greeks subscription (same pattern as price subscriptions)
+    this.ensureGreeksSubscription(symbol);
+
+    // Create reactive Greeks reference that tracks access
+    const reactiveGreeks = computed(() => {
+      // Update access timestamp every time this computed is evaluated
+      this.lastGreeksAccess.set(symbol, Date.now());
+      return this.optionGreeks.get(symbol) || null;
+    });
+
+    return reactiveGreeks;
+  }
+
+  /**
    * Get reactive previous close price for a symbol
    * Automatically handles fetching and caching
    */
@@ -164,6 +196,21 @@ class SmartMarketDataStore {
     // Ensure we're subscribed to this symbol
     if (!this.activeSubscriptions.has(symbol)) {
       this.subscribeToSymbol(symbol);
+    }
+  }
+
+  /**
+   * Ensure Greeks subscription for a symbol (same pattern as price subscriptions)
+   */
+  ensureGreeksSubscription(symbol) {
+    if (!symbol) return;
+
+    // Initialize access timestamp
+    this.lastGreeksAccess.set(symbol, Date.now());
+
+    // Ensure we're subscribed to Greeks for this symbol
+    if (!this.activeGreeksSubscriptions.has(symbol)) {
+      this.subscribeToGreeks(symbol);
     }
   }
 
@@ -236,13 +283,90 @@ class SmartMarketDataStore {
   }
 
   /**
+   * Subscribe to Greeks for a symbol (same pattern as price subscriptions)
+   */
+  subscribeToGreeks(symbol) {
+    const wasEmpty = this.activeGreeksSubscriptions.size === 0;
+    this.activeGreeksSubscriptions.add(symbol);
+    console.log(`📊 Greeks subscription added for: ${symbol}`);
+    
+    // Check if this symbol already has Greeks data
+    const hasExistingData = this.optionGreeks.has(symbol);
+    
+    // Trigger immediate update if:
+    // 1. This is the first subscription (wasEmpty), OR
+    // 2. This symbol doesn't have existing Greeks data
+    if (wasEmpty || !hasExistingData) {
+      console.log(`📊 Scheduling immediate Greeks update for new symbols`);
+      // Clear any existing timeout to avoid multiple rapid updates
+      if (this.greeksImmediateUpdateTimer) {
+        clearTimeout(this.greeksImmediateUpdateTimer);
+      }
+      // Use a small delay to allow all subscriptions to be added before updating
+      this.greeksImmediateUpdateTimer = setTimeout(() => {
+        this.updateGreeksData();
+        this.greeksImmediateUpdateTimer = null;
+      }, 100); // 100ms delay to batch subscriptions
+    }
+  }
+
+  /**
+   * Unsubscribe from Greeks for a symbol
+   */
+  unsubscribeFromGreeks(symbol) {
+    this.activeGreeksSubscriptions.delete(symbol);
+    // Keep Greeks data for UI continuity (same as prices)
+    console.log(`📊 Greeks subscription removed for: ${symbol}`);
+  }
+
+  /**
+   * Update Greeks data for all active subscriptions
+   */
+  async updateGreeksData() {
+    const symbols = Array.from(this.activeGreeksSubscriptions);
+    
+    if (symbols.length === 0) {
+      return; // No symbols to update
+    }
+
+    try {
+      console.log(`📊 Updating Greeks for ${symbols.length} symbols`);
+      const greeksData = await api.getOptionsGreeks(symbols);
+      
+      // Update Greeks data for each symbol
+      if (greeksData && typeof greeksData === 'object') {
+        Object.entries(greeksData).forEach(([symbol, greeks]) => {
+          this.optionGreeks.set(symbol, {
+            ...greeks,
+            timestamp: Date.now(),
+          });
+        });
+        console.log(`📊 Greeks updated successfully for ${Object.keys(greeksData).length} symbols`);
+      }
+    } catch (error) {
+      console.error("❌ Error updating Greeks:", error);
+    }
+  }
+
+  /**
+   * Start Greeks periodic updates (every 60 seconds)
+   */
+  startGreeksPeriodicUpdates() {
+    // Set up periodic updates every 60 seconds
+    this.greeksUpdateTimer = setInterval(() => {
+      this.updateGreeksData();
+    }, 60000);
+    console.log("📊 Greeks periodic updates started (60s interval)");
+  }
+
+  /**
    * Start automatic cleanup timer
    */
   startCleanupTimer() {
     setInterval(() => {
       this.cleanupUnusedSymbols();
+      this.cleanupUnusedGreeks(); // Also cleanup Greeks
     }, this.cleanupInterval);
-
   }
 
   /**
@@ -262,6 +386,28 @@ class SmartMarketDataStore {
       toUnsubscribe.forEach((symbol) => {
         this.lastAccess.delete(symbol);
         this.unsubscribeFromSymbol(symbol);
+      });
+    }
+  }
+
+  /**
+   * Clean up Greeks that haven't been accessed recently (same pattern as prices)
+   */
+  cleanupUnusedGreeks() {
+    const cutoff = Date.now() - this.accessTimeout;
+    const toUnsubscribe = [];
+
+    this.lastGreeksAccess.forEach((timestamp, symbol) => {
+      if (timestamp < cutoff) {
+        toUnsubscribe.push(symbol);
+      }
+    });
+
+    if (toUnsubscribe.length > 0) {
+      console.log(`📊 Cleaning up unused Greeks for ${toUnsubscribe.length} symbols`);
+      toUnsubscribe.forEach((symbol) => {
+        this.lastGreeksAccess.delete(symbol);
+        this.unsubscribeFromGreeks(symbol);
       });
     }
   }
