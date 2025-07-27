@@ -59,6 +59,27 @@ class SmartMarketDataStore {
     // Start automatic cleanup
     this.startCleanupTimer();
 
+    // Register provider configuration data sources
+    this.setupProviderDataSources();
+  }
+
+  /**
+   * Set up provider configuration data sources
+   */
+  setupProviderDataSources() {
+    // Available providers - cached for 5 minutes (providers don't change often)
+    this.registerDataSource("providers.available", {
+      strategy: "on-demand",
+      method: "getAvailableProviders",
+      ttl: 5 * 60 * 1000, // 5 minutes
+    });
+
+    // Current provider configuration - on-demand with 5 minute cache
+    this.registerDataSource("providers.config", {
+      strategy: "on-demand",
+      method: "getProviderConfig",
+      ttl: 5 * 60 * 1000, // 5 minutes cache
+    });
   }
 
   /**
@@ -398,7 +419,11 @@ class SmartMarketDataStore {
     const fetchData = async () => {
       try {
         this.setLoading(key, true);
-        const data = await api[config.method](...(config.params || []));
+        const response = await api[config.method](...(config.params || []));
+        
+        // Extract actual data from API response wrapper
+        const data = response.data !== undefined ? response.data : response;
+        
         this.updateData(key, data);
       } catch (error) {
         this.setError(key, error);
@@ -427,7 +452,11 @@ class SmartMarketDataStore {
 
     try {
       this.setLoading(key, true);
-      const data = await api[config.method](...(config.params || []));
+      const response = await api[config.method](...(config.params || []));
+      
+      // Extract actual data from API response wrapper
+      const data = response.data !== undefined ? response.data : response;
+      
       this.updateData(key, data);
       return data;
     } catch (error) {
@@ -464,7 +493,10 @@ class SmartMarketDataStore {
         }
       }
 
-      const data = await api[config.method](...params);
+      const response = await api[config.method](...params);
+      
+      // Extract actual data from API response wrapper
+      const data = response.data !== undefined ? response.data : response;
 
       // Cache the data
       this.cache.set(key, {
@@ -567,6 +599,43 @@ class SmartMarketDataStore {
     } catch (error) {
       this.setError(key, error);
       console.error(`❌ Error fetching orders with status ${status}:`, error);
+      throw error;
+    } finally {
+      this.setLoading(key, false);
+    }
+  }
+
+  /**
+   * Update provider configuration
+   * Updates the provider config and refreshes the data
+   */
+  async updateProviderConfig(newConfig) {
+    const key = "providers.config";
+
+    try {
+      this.setLoading(key, true);
+
+      // Send update to backend
+      const response = await api.updateProviderConfig(newConfig);
+      
+      // The backend returns success message but not the updated config
+      // So we use the config we sent, since the update was successful
+      if (response.success) {
+        // Use the config we sent since the update was successful
+        this.updateData(key, newConfig);
+      } else {
+        // If not successful, try to extract from response
+        const updatedConfig = response.data || response;
+        this.updateData(key, updatedConfig);
+      }
+
+      // Also refresh available providers in case capabilities changed
+      await this.getData("providers.available", { forceRefresh: true });
+
+      return newConfig;
+    } catch (error) {
+      this.setError(key, error);
+      console.error(`❌ Error updating provider config:`, error);
       throw error;
     } finally {
       this.setLoading(key, false);

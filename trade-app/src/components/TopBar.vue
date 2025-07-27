@@ -39,12 +39,12 @@
         <div
           v-if="
             showDropdown &&
-            (searchResults.length > 0 || isLoading || searchQuery.length > 0)
+            (searchResults.length > 0 || searchLoading || searchQuery.length > 0)
           "
           class="search-dropdown"
         >
           <!-- Loading State -->
-          <div v-if="isLoading" class="search-loading">
+          <div v-if="searchLoading" class="search-loading">
             <div class="loading-spinner"></div>
             <span>Searching...</span>
           </div>
@@ -111,6 +111,52 @@
         </div>
       </div>
 
+      <!-- Trade Account Indicator -->
+      <div class="trade-account-section">
+        <div 
+          class="trade-account-indicator"
+          :class="{ loading: providersLoading, error: providersError }"
+          @mouseenter="showProviderTooltip = true"
+          @mouseleave="showProviderTooltip = false"
+        >
+          <i class="pi pi-building account-icon"></i>
+          <span class="account-name">
+            <span v-if="providersLoading" class="loading-dots">...</span>
+            <span v-else-if="providersError" class="error-text">--</span>
+            <span v-else>{{ tradeAccountName }}</span>
+          </span>
+          <span class="account-type" :class="tradeAccountTypeClass">
+            {{ tradeAccountType }}
+          </span>
+        </div>
+
+        <!-- Provider Configuration Tooltip -->
+        <div 
+          v-if="showProviderTooltip && !providersLoading && !providersError"
+          class="provider-tooltip"
+        >
+          <div class="tooltip-header">
+            <h4>Provider Configuration</h4>
+          </div>
+          <div class="tooltip-content">
+            <div class="provider-category">
+              <h5>Trading Services</h5>
+              <div class="provider-item">
+                <span class="service-name">Trade Account</span>
+                <span class="provider-name">{{ formatProviderName('trade_account') }}</span>
+              </div>
+            </div>
+            <div class="provider-category">
+              <h5>Market Data</h5>
+              <div v-for="service in marketDataServices" :key="service.key" class="provider-item">
+                <span class="service-name">{{ service.label }}</span>
+                <span class="provider-name">{{ formatProviderName(service.key) }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Status Indicator -->
       <div class="status-section">
         <div class="connection-status" :class="connectionStatusClass">
@@ -161,14 +207,22 @@ export default {
   },
   setup() {
     // Use unified market data composable
-    const { lookupSymbols, getBalance, getAccountInfo } = useMarketData();
+    const { 
+      lookupSymbols, 
+      getBalance, 
+      getAccountInfo, 
+      getAvailableProviders, 
+      getProviderConfig,
+      isLoading,
+      getError
+    } = useMarketData();
 
     // Reactive data
     const searchInput = ref(null);
     const searchQuery = ref("");
     const searchResults = ref([]);
     const showDropdown = ref(false);
-    const isLoading = ref(false);
+    const searchLoading = ref(false);
     const highlightedIndex = ref(-1);
     const activeLink = ref("Trading");
     const netLiquidation = ref(0);
@@ -178,10 +232,23 @@ export default {
     const accountLoading = ref(true);
     const accountError = ref(null);
     const showSettingsDialog = ref(false);
+    
+    // Provider configuration data - now using smart data system
+    const showProviderTooltip = ref(false);
 
-    // Get reactive account data (auto-updates every 60 seconds)
+    // Get reactive data from smart data system
     const reactiveBalance = getBalance();
     const reactiveAccountInfo = getAccountInfo();
+    const reactiveAvailableProviders = getAvailableProviders();
+    const reactiveProviderConfig = getProviderConfig();
+
+    // Loading and error states from smart data system
+    const providersLoading = computed(() => 
+      isLoading("providers.available").value || isLoading("providers.config").value
+    );
+    const providersError = computed(() => 
+      getError("providers.available").value || getError("providers.config").value
+    );
 
     let searchTimeout = null;
     let connectionStatusInterval = null;
@@ -230,6 +297,67 @@ export default {
       connected: isConnected.value,
       disconnected: !isConnected.value,
     }));
+
+    // Trade account computed properties using smart data system
+    const tradeAccountName = computed(() => {
+      const config = reactiveProviderConfig.value;
+      const providers = reactiveAvailableProviders.value;
+      
+      if (!config || !providers) {
+        return "Unknown";
+      }
+      
+      const tradeProvider = config.trade_account;
+      
+      if (!tradeProvider || !providers[tradeProvider]) {
+        return "Unknown";
+      }
+      
+      const providerData = providers[tradeProvider];
+      return providerData.display_name || tradeProvider;
+    });
+
+    const tradeAccountType = computed(() => {
+      const config = reactiveProviderConfig.value;
+      const providers = reactiveAvailableProviders.value;
+      
+      if (!config || !providers) return "";
+      
+      const tradeProvider = config.trade_account;
+      if (!tradeProvider || !providers[tradeProvider]) {
+        return "";
+      }
+      
+      const providerData = providers[tradeProvider];
+      return providerData.paper ? "Paper" : "Live";
+    });
+
+    const tradeAccountTypeClass = computed(() => {
+      const config = reactiveProviderConfig.value;
+      const providers = reactiveAvailableProviders.value;
+      
+      if (!config || !providers) return "type-unknown";
+      
+      const tradeProvider = config.trade_account;
+      if (!tradeProvider || !providers[tradeProvider]) {
+        return "type-unknown";
+      }
+      
+      const providerData = providers[tradeProvider];
+      return providerData.paper ? "type-paper" : "type-live";
+    });
+
+    // Market data services for tooltip
+    const marketDataServices = [
+      { key: "stock_quotes", label: "Stock Quotes" },
+      { key: "options_chain", label: "Options Chain" },
+      { key: "expiration_dates", label: "Expiration Dates" },
+      { key: "historical_data", label: "Historical Data" },
+      { key: "symbol_lookup", label: "Symbol Lookup" },
+      { key: "next_market_date", label: "Next Market Date" },
+      { key: "market_calendar", label: "Market Calendar" },
+      { key: "streaming_quotes", label: "Streaming Quotes" },
+    ];
 
     // Methods
     const setActiveLink = (link) => {
@@ -291,7 +419,7 @@ export default {
 
       if (searchQuery.value.length === 0) {
         searchResults.value = [];
-        isLoading.value = false;
+        searchLoading.value = false;
         return;
       }
 
@@ -299,7 +427,7 @@ export default {
         return;
       }
 
-      isLoading.value = true;
+      searchLoading.value = true;
       highlightedIndex.value = -1;
 
       searchTimeout = setTimeout(async () => {
@@ -311,7 +439,7 @@ export default {
           console.error("Error searching symbols:", error);
           searchResults.value = [];
         } finally {
-          isLoading.value = false;
+          searchLoading.value = false;
         }
       }, 300); // 300ms debounce
     };
@@ -402,6 +530,24 @@ export default {
       }
     };
 
+    // Format provider name for display using smart data system
+    const formatProviderName = (serviceKey) => {
+      const config = reactiveProviderConfig.value;
+      const providers = reactiveAvailableProviders.value;
+      
+      if (!config || !providers) return "Unknown";
+      
+      const providerName = config[serviceKey];
+      if (!providerName || typeof providerName !== 'string' || !providers[providerName]) {
+        return "Unknown";
+      }
+      
+      const providerData = providers[providerName];
+      const displayName = providerData.display_name || providerName;
+      const accountType = providerData.paper ? "(Paper)" : "(Live)";
+      return `${displayName} ${accountType}`;
+    };
+
     // Watch reactive account data and update local state
     const updateAccountDisplay = () => {
       const balanceData = reactiveBalance.value;
@@ -468,7 +614,7 @@ export default {
       searchQuery,
       searchResults,
       showDropdown,
-      isLoading,
+      searchLoading,
       highlightedIndex,
       activeLink,
       netLiquidation,
@@ -477,14 +623,21 @@ export default {
       accountLoading,
       accountError,
       showSettingsDialog,
+      providersLoading,
+      providersError,
+      showProviderTooltip,
 
       // Static data
       navLinks,
       userMenuItems,
+      marketDataServices,
 
       // Computed
       connectionStatus,
       connectionStatusClass,
+      tradeAccountName,
+      tradeAccountType,
+      tradeAccountTypeClass,
 
       // Methods
       setActiveLink,
@@ -497,6 +650,7 @@ export default {
       selectSymbol,
       getTypeClass,
       getTypeLabel,
+      formatProviderName,
     };
   },
 };
@@ -851,5 +1005,165 @@ export default {
 .settings-button:hover {
   background-color: var(--bg-tertiary) !important;
   color: var(--text-primary) !important;
+}
+
+/* Trade Account Indicator Styles */
+.trade-account-section {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.trade-account-indicator {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-normal);
+  font-size: var(--font-size-base);
+}
+
+.trade-account-indicator:hover {
+  background-color: var(--bg-tertiary);
+  border-color: var(--border-tertiary);
+}
+
+.trade-account-indicator.loading {
+  opacity: 0.7;
+}
+
+.trade-account-indicator.error {
+  border-color: var(--color-danger);
+  background-color: rgba(239, 68, 68, 0.1);
+}
+
+.account-icon {
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+}
+
+.account-name {
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+}
+
+.account-type {
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.account-type.type-paper {
+  background-color: var(--color-info);
+  color: white;
+}
+
+.account-type.type-live {
+  background-color: var(--color-warning);
+  color: white;
+}
+
+.account-type.type-unknown {
+  background-color: var(--text-tertiary);
+  color: white;
+}
+
+/* Provider Tooltip Styles */
+.provider-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  min-width: 320px;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-lg);
+  z-index: 1000;
+  overflow: hidden;
+}
+
+.tooltip-header {
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: var(--bg-quaternary);
+  border-bottom: 1px solid var(--border-secondary);
+}
+
+.tooltip-header h4 {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.tooltip-content {
+  padding: var(--spacing-md);
+  max-height: 400px;
+  overflow-y: auto;
+}
+
+.provider-category {
+  margin-bottom: var(--spacing-lg);
+}
+
+.provider-category:last-child {
+  margin-bottom: 0;
+}
+
+.provider-category h5 {
+  margin: 0 0 var(--spacing-sm) 0;
+  font-size: var(--font-size-base);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  padding-bottom: var(--spacing-xs);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.provider-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-xs) 0;
+  font-size: var(--font-size-base);
+}
+
+.service-name {
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.provider-name {
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  text-align: right;
+  max-width: 150px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Custom scrollbar for tooltip */
+.tooltip-content::-webkit-scrollbar {
+  width: 4px;
+}
+
+.tooltip-content::-webkit-scrollbar-track {
+  background: var(--bg-secondary);
+}
+
+.tooltip-content::-webkit-scrollbar-thumb {
+  background: var(--border-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.tooltip-content::-webkit-scrollbar-thumb:hover {
+  background: var(--border-tertiary);
 }
 </style>

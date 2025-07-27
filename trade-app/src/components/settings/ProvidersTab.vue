@@ -90,7 +90,7 @@
 import { ref, onMounted, computed, watch } from "vue";
 import Dropdown from "primevue/dropdown";
 import Button from "primevue/button";
-import api from "../../services/api";
+import { useMarketData } from "../../composables/useMarketData";
 import { useNotifications } from "../../composables/useNotifications";
 
 export default {
@@ -101,15 +101,35 @@ export default {
   },
   setup() {
     const { showSuccess, showError, showWarning } = useNotifications();
+    const { 
+      getAvailableProviders, 
+      getProviderConfig, 
+      refreshProviderData,
+      updateProviderConfig,
+      isLoading,
+      getError
+    } = useMarketData();
 
-    // Reactive data
-    const availableProviders = ref({});
-    const currentConfig = ref({});
-    const loading = ref(true);
+    // Get reactive data from smart data system
+    const reactiveAvailableProviders = getAvailableProviders();
+    const reactiveProviderConfig = getProviderConfig();
+
+    // Local reactive data
     const updating = ref(false);
-    const error = ref(null);
     const validationWarnings = ref([]);
     const lastSaved = ref(null);
+
+    // Computed loading and error states from smart data system
+    const loading = computed(() => 
+      isLoading("providers.available").value || isLoading("providers.config").value
+    );
+    const error = computed(() => 
+      getError("providers.available").value || getError("providers.config").value
+    );
+
+    // Computed properties for easier access
+    const availableProviders = computed(() => reactiveAvailableProviders.value || {});
+    const currentConfig = computed(() => reactiveProviderConfig.value || {});
 
     // Service categories configuration
     const serviceCategories = [
@@ -174,32 +194,20 @@ export default {
       },
     ];
 
-    // Load provider data
+    // Load provider data using smart data system
     const loadProviderData = async () => {
       try {
-        loading.value = true;
-        error.value = null;
-        
-        // Load capabilities and current config in parallel
-        const [capabilities, config] = await Promise.all([
-          api.getAvailableProviders(),
-          api.getProviderConfig()
-        ]);
-        
-        availableProviders.value = capabilities;
-        currentConfig.value = { ...config };
+        // Force refresh provider data through smart data system
+        await refreshProviderData();
         
         // Validate current configuration
         validateConfiguration();
         
-        console.log("Provider data loaded:", { capabilities, config });
+        console.log("Provider data refreshed through smart data system");
         
       } catch (err) {
-        console.error("Error loading provider data:", err);
-        error.value = "Failed to load provider configuration. Please try again.";
-        showError("Failed to load provider configuration", "Configuration Error");
-      } finally {
-        loading.value = false;
+        console.error("Error refreshing provider data:", err);
+        showError("Failed to refresh provider configuration", "Configuration Error");
       }
     };
 
@@ -230,6 +238,11 @@ export default {
 
     // Format provider name for display using backend data
     const formatProviderName = (providerName) => {
+      // Ensure providerName is a string
+      if (!providerName || typeof providerName !== 'string') {
+        return "Unknown";
+      }
+      
       const providerData = availableProviders.value[providerName];
       if (providerData) {
         const displayName = providerData.display_name || providerName;
@@ -250,7 +263,7 @@ export default {
       return "Select provider...";
     };
 
-    // Handle provider change
+    // Handle provider change using smart data system
     const onProviderChange = async (serviceKey, newProvider) => {
       if (!newProvider || updating.value) return;
       
@@ -261,11 +274,10 @@ export default {
         const updatedConfig = { ...currentConfig.value };
         updatedConfig[serviceKey] = newProvider;
         
-        // Send to backend
-        await api.updateProviderConfig(updatedConfig);
+        // Send to backend through smart data system
+        await updateProviderConfig(updatedConfig);
         
-        // Update local state
-        currentConfig.value = updatedConfig;
+        // Set last saved timestamp
         lastSaved.value = new Date();
         
         // Validate new configuration
@@ -276,13 +288,11 @@ export default {
           "Provider Updated"
         );
         
-        console.log(`Provider updated: ${serviceKey} -> ${newProvider}`);
-        
       } catch (err) {
         console.error("Error updating provider:", err);
         showError("Failed to update provider configuration", "Update Error");
         
-        // Revert the change in UI
+        // Refresh data to revert any UI changes
         await loadProviderData();
       } finally {
         updating.value = false;
@@ -359,6 +369,11 @@ export default {
     onMounted(() => {
       loadProviderData();
     });
+
+    // Watch for changes in provider data and auto-validate
+    watch([reactiveAvailableProviders, reactiveProviderConfig], () => {
+      validateConfiguration();
+    }, { deep: true });
 
     return {
       // Reactive data

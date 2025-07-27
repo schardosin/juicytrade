@@ -100,6 +100,37 @@ export function useMarketData() {
     return await smartMarketDataStore.getData(key, { forceRefresh });
   };
 
+  // ===== PROVIDER CONFIGURATION DATA =====
+
+  /**
+   * Get available providers (cached for 5 minutes)
+   */
+  const getAvailableProviders = () => {
+    return smartMarketDataStore.getReactiveData("providers.available");
+  };
+
+  /**
+   * Get current provider configuration (updates every 30 seconds)
+   */
+  const getProviderConfig = () => {
+    return smartMarketDataStore.getReactiveData("providers.config");
+  };
+
+  /**
+   * Force refresh provider data
+   */
+  const refreshProviderData = async () => {
+    await smartMarketDataStore.getData("providers.available", { forceRefresh: true });
+    await smartMarketDataStore.getData("providers.config", { forceRefresh: true });
+  };
+
+  /**
+   * Update provider configuration
+   */
+  const updateProviderConfig = async (newConfig) => {
+    return await smartMarketDataStore.updateProviderConfig(newConfig);
+  };
+
   // ===== UTILITY METHODS =====
 
   /**
@@ -153,6 +184,12 @@ export function useMarketData() {
     getHistoricalData,
     lookupSymbols,
     getExpirationDates,
+
+    // Provider configuration data
+    getAvailableProviders,
+    getProviderConfig,
+    refreshProviderData,
+    updateProviderConfig,
 
     // Utility methods
     isLoading,
