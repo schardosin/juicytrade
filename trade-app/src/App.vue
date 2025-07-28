@@ -3,16 +3,20 @@
     <router-view />
     <!-- Global Notification Container -->
     <NotificationContainer />
+    <!-- System Recovery Indicator -->
+    <SystemRecoveryIndicator />
   </div>
 </template>
 
 <script>
 import NotificationContainer from "./components/notifications/NotificationContainer.vue";
+import SystemRecoveryIndicator from "./components/SystemRecoveryIndicator.vue";
 
 export default {
   name: "App",
   components: {
     NotificationContainer,
+    SystemRecoveryIndicator,
   },
 };
 </script>

@@ -277,6 +277,10 @@ export default {
       type: String,
       default: null,
     },
+    currentStrikeCount: {
+      type: Number,
+      default: 20,
+    },
   },
   emits: [
     "option-selected",
@@ -288,8 +292,8 @@ export default {
   setup(props, { emit }) {
     const { getOptionPrice, getOptionGreeks } = useMarketData();
 
-    // Reactive state
-    const strikeCount = ref(20); // Default to 20 strikes around ATM
+    // Reactive state - sync with parent's current strike count
+    const strikeCount = ref(props.currentStrikeCount || 20);
     const expandedExpirations = ref(new Set());
     const liveOptionPrices = reactive(new Map());
     const liveOptionGreeks = reactive(new Map());

@@ -144,7 +144,7 @@
                       </td>
                       <td class="bid-cell">--</td>
                       <td class="ask-cell">--</td>
-                      <td class="trd-prc-cell">--</td>
+                      <td class="trd-prc-cell">{{ formatSymbolTrdPrc(group) }}</td>
                       <td class="dsopn-cell">{{ group.dte || "--" }}</td>
                       <td class="beta-delta-cell">--</td>
                       <td class="dte-cell">
@@ -186,7 +186,7 @@
                             </td>
                             <td class="bid-cell">--</td>
                             <td class="ask-cell">--</td>
-                            <td class="trd-prc-cell">--</td>
+                            <td class="trd-prc-cell">{{ formatStrategyTrdPrc(strategy) }}</td>
                             <td class="dsopn-cell">
                               {{ strategy.dte || "--" }}
                             </td>
@@ -326,6 +326,7 @@
         :chartData="chartData"
         :additionalQuoteData="additionalQuoteData"
         :ChainData="optionsManager.flattenedData.value"
+        :adjustedNetCredit="null"
         :forceExpanded="isRightPanelExpanded"
         :forceSection="rightPanelSection"
         @panel-collapsed="onRightPanelCollapsed"
@@ -399,8 +400,35 @@ export default {
       isRightPanelExpanded.value = false;
     };
 
-    const onPositionsChanged = () => {
-      // Handle positions changed logic here
+    const onPositionsChanged = (positions) => {
+      console.log("🔍 PositionsView: Received positions for chart:", positions);
+      
+      if (positions && positions.length > 0) {
+        // Import the chart generation function
+        import("../utils/chartUtils").then(({ generateMultiLegPayoff }) => {
+          try {
+            const chartResult = generateMultiLegPayoff(positions, currentPrice.value, null);
+            console.log("🔍 PositionsView: Generated chart data:", chartResult);
+            
+            if (chartResult) {
+              chartData.value = chartResult;
+              
+              // Force expand the right panel to Analysis section
+              isRightPanelExpanded.value = true;
+              rightPanelSection.value = "analysis";
+            } else {
+              console.warn("⚠️ PositionsView: Chart generation returned null");
+              chartData.value = null;
+            }
+          } catch (error) {
+            console.error("❌ PositionsView: Error generating chart:", error);
+            chartData.value = null;
+          }
+        });
+      } else {
+        console.log("🔍 PositionsView: No positions provided, clearing chart");
+        chartData.value = null;
+      }
     };
 
     // Real-time update interval
@@ -449,18 +477,26 @@ export default {
       
       const livePrice = getLivePrice(leg.symbol);
 
-      // If we have live prices, use them
-      if (livePrice?.bid && livePrice?.ask) {
+      // If we have live prices with both bid and ask, use them
+      if (livePrice?.bid > 0 && livePrice?.ask > 0) {
         return (livePrice.bid + livePrice.ask) / 2;
       }
 
       // Fall back to original option data for mid price calculation
-      if (leg.bid && leg.ask) {
+      if (leg.bid > 0 && leg.ask > 0) {
         return (leg.bid + leg.ask) / 2;
       }
 
-      // Final fallback to current_price or 0
-      return leg.current_price || 0;
+      // If we have live price with only one side, use it
+      if (livePrice?.bid > 0) return livePrice.bid;
+      if (livePrice?.ask > 0) return livePrice.ask;
+
+      // Fall back to original data with only one side
+      if (leg.bid > 0) return leg.bid;
+      if (leg.ask > 0) return leg.ask;
+
+      // Final fallback to current_price, last_price, or entry price
+      return leg.current_price || leg.last_price || leg.avg_entry_price || 0;
     };
 
     // Calculate live P/L for individual leg
@@ -468,12 +504,16 @@ export default {
       const currentPrice = getLegCurrentPrice(leg);
       const entryPrice = leg.avg_entry_price || 0;
 
-      if (currentPrice === 0 || entryPrice === 0) return 0;
+      // If we don't have entry price, we can't calculate P/L
+      if (entryPrice === 0) return 0;
+
+      // If current price is 0, use entry price (no P/L change)
+      const priceToUse = currentPrice > 0 ? currentPrice : entryPrice;
 
       // For options: (current_price - entry_price) * quantity * 100 (contract multiplier)
       // For stocks: (current_price - entry_price) * quantity
       const multiplier = leg.asset_class === "us_option" ? 100 : 1;
-      const priceDiff = currentPrice - entryPrice;
+      const priceDiff = priceToUse - entryPrice;
 
       // For short positions (negative quantity), P/L is inverted
       return priceDiff * leg.qty * multiplier;
@@ -482,10 +522,13 @@ export default {
     // Calculate live daily P/L for individual leg (using lastday_price)
     const getLegPlDay = (leg) => {
       const lastdayPrice = leg.lastday_price;
-
-      // If lastday_price is null or undefined, it indicates a same-day trade or no historical data.
-      // In this case, P/L Day should be the same as P/L Open.
-      if (lastdayPrice === null || lastdayPrice === undefined) {
+      
+      // Check if this is a same-day trade by comparing date_acquired with today
+      const today = new Date().toISOString().split('T')[0];
+      const dateAcquired = leg.date_acquired ? leg.date_acquired.split('T')[0] : null;
+      
+      // If lastday_price is null/undefined OR if position was acquired today, treat as same-day trade
+      if (lastdayPrice === null || lastdayPrice === undefined || dateAcquired === today) {
         return getLegPL(leg);
       }
 
@@ -794,20 +837,20 @@ export default {
 
     // Get live bid price for a leg
     const getLegBid = (leg) => {
-      if (leg.asset_class !== "us_option") return "--";
+      if (leg.asset_class !== "us_option") return "$0.00";
       const livePrice = getLivePrice(leg.symbol);
       // Use nullish coalescing to fall back to original bid price
       const bidPrice = livePrice?.bid ?? leg.bid ?? 0;
-      return bidPrice > 0 ? formatCurrency(bidPrice) : "--";
+      return formatCurrency(bidPrice);
     };
 
     // Get live ask price for a leg
     const getLegAsk = (leg) => {
-      if (leg.asset_class !== "us_option") return "--";
+      if (leg.asset_class !== "us_option") return "$0.00";
       const livePrice = getLivePrice(leg.symbol);
       // Use nullish coalescing to fall back to original ask price
       const askPrice = livePrice?.ask ?? leg.ask ?? 0;
-      return askPrice > 0 ? formatCurrency(askPrice) : "--";
+      return formatCurrency(askPrice);
     };
 
     // Format P/L for display
@@ -862,6 +905,48 @@ export default {
     const formatLegPlDay = (leg) => {
       const pl = getLegPlDay(leg);
       return formatCurrency(pl);
+    };
+
+    // Calculate net trade price for strategy (total credit/debit, not weighted average)
+    const getStrategyTrdPrc = (strategy) => {
+      if (!strategy.legs || strategy.legs.length === 0) return 0;
+      
+      let totalValue = 0;
+      
+      strategy.legs.forEach((leg) => {
+        const entryPrice = leg.avg_entry_price || 0;
+        const quantity = leg.qty; // Use actual quantity (positive/negative) to determine credit/debit
+        const legValue = entryPrice * quantity;
+        
+        totalValue += legValue;
+      });
+      
+      // Return the net credit/debit for the strategy
+      return totalValue;
+    };
+
+    const formatStrategyTrdPrc = (strategy) => {
+      const trdPrc = getStrategyTrdPrc(strategy);
+      return formatCurrency(trdPrc);
+    };
+
+    // Calculate net trade price for symbol (sum of all strategy credits/debits)
+    const getSymbolTrdPrc = (group) => {
+      if (!group.strategies || group.strategies.length === 0) return 0;
+      
+      let totalValue = 0;
+      
+      group.strategies.forEach((strategy) => {
+        // Sum up the net credit/debit from each strategy
+        totalValue += getStrategyTrdPrc(strategy);
+      });
+      
+      return totalValue;
+    };
+
+    const formatSymbolTrdPrc = (group) => {
+      const trdPrc = getSymbolTrdPrc(group);
+      return formatCurrency(trdPrc);
     };
 
     const onTradeModeChanged = (mode) => {
@@ -1020,6 +1105,11 @@ export default {
       formatLegPlDay,
       formatStrategyPlDay,
       formatSymbolPlDay,
+      // Trade price functions
+      getStrategyTrdPrc,
+      formatStrategyTrdPrc,
+      getSymbolTrdPrc,
+      formatSymbolTrdPrc,
       currentSymbol,
       currentPrice,
       priceChange,

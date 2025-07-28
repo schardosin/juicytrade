@@ -1070,6 +1070,9 @@ class TradierProvider(BaseProvider):
             for i, char in enumerate(symbol):
                 if char.isdigit():
                     underlying = symbol[:i]
+                    # Tradier expects "SPX" as underlying for both SPX and SPXW options
+                    if underlying == "SPXW":
+                        underlying = "SPX"
                     rest = symbol[i:]
                     date_part = rest[:6]
                     option_type = rest[6]

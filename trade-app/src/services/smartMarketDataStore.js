@@ -9,6 +9,248 @@ import webSocketClient from "./webSocketClient.js";
 import api from "./api.js";
 
 /**
+ * Data Health Monitor - Monitors the health of all data sources
+ */
+class DataHealthMonitor {
+  constructor(store) {
+    this.store = store;
+    this.healthChecks = new Map();
+    this.healthCheckInterval = 60000; // Check every minute
+    this.healthTimer = null;
+  }
+
+  start() {
+    this.healthTimer = setInterval(() => {
+      this.performHealthChecks();
+    }, this.healthCheckInterval);
+    console.log("🏥 Data health monitoring started");
+    
+    // Perform initial health check after a delay to let system stabilize
+    setTimeout(() => {
+      this.performHealthChecks();
+    }, 5000);
+  }
+
+  stop() {
+    if (this.healthTimer) {
+      clearInterval(this.healthTimer);
+      this.healthTimer = null;
+    }
+  }
+
+  async performHealthChecks() {
+    const checks = [
+      this.checkWebSocketHealth(),
+      this.checkAPIHealth(),
+      this.checkGreeksHealth(),
+      this.checkDataFreshness()
+    ];
+
+    const results = await Promise.allSettled(checks);
+    const failedChecks = results.filter(result => result.status === 'rejected');
+
+    if (failedChecks.length > 0) {
+      console.warn(`⚠️ Health check failures: ${failedChecks.length}/${results.length}`);
+      this.store.systemState.isHealthy = false;
+      this.store.systemState.failedComponents.clear();
+      failedChecks.forEach((failure, index) => {
+        this.store.systemState.failedComponents.add(`check_${index}`);
+      });
+    } else {
+      this.store.systemState.isHealthy = true;
+      this.store.systemState.failedComponents.clear();
+    }
+
+    this.store.systemState.lastHealthCheck = Date.now();
+  }
+
+  async checkWebSocketHealth() {
+    const wsStatus = webSocketClient.getConnectionStatus();
+    if (!wsStatus.isConnected) {
+      throw new Error("WebSocket not connected");
+    }
+  }
+
+  async checkAPIHealth() {
+    try {
+      // Simple health check - try to get next market date
+      await api.getNextMarketDate();
+    } catch (error) {
+      throw new Error(`API health check failed: ${error.message}`);
+    }
+  }
+
+  async checkGreeksHealth() {
+    if (this.store.activeGreeksSubscriptions.size > 0) {
+      const oldestGreeks = Math.min(...Array.from(this.store.optionGreeks.values())
+        .map(g => g.timestamp || 0));
+      
+      // Greeks should be updated within 2 minutes
+      if (Date.now() - oldestGreeks > 120000) {
+        throw new Error("Greeks data is stale");
+      }
+    }
+  }
+
+  async checkDataFreshness() {
+    // Check if price data is fresh (within 5 minutes for active subscriptions)
+    const cutoff = Date.now() - 300000; // 5 minutes
+    let staleCount = 0;
+
+    this.store.activeSubscriptions.forEach(symbol => {
+      const priceData = this.store.stockPrices.get(symbol) || this.store.optionPrices.get(symbol);
+      if (priceData && priceData.timestamp < cutoff) {
+        staleCount++;
+      }
+    });
+
+    if (staleCount > this.store.activeSubscriptions.size * 0.5) {
+      throw new Error(`Too many stale prices: ${staleCount}/${this.store.activeSubscriptions.size}`);
+    }
+  }
+}
+
+/**
+ * Data Recovery Manager - Handles recovery from various failure scenarios
+ */
+class DataRecoveryManager {
+  constructor(store) {
+    this.store = store;
+    this.recoveryStrategies = new Map();
+    this.setupRecoveryStrategies();
+  }
+
+  setupRecoveryStrategies() {
+    this.recoveryStrategies.set('websocket_disconnected', this.recoverWebSocket.bind(this));
+    this.recoveryStrategies.set('api_failure', this.recoverAPI.bind(this));
+    this.recoveryStrategies.set('greeks_stale', this.recoverGreeks.bind(this));
+    this.recoveryStrategies.set('data_stale', this.recoverStaleData.bind(this));
+    this.recoveryStrategies.set('system_wakeup', this.recoverFromWakeup.bind(this));
+  }
+
+  async executeRecovery(scenario, context = {}) {
+    if (this.store.systemState.recoveryInProgress) {
+      console.log("🔄 Recovery already in progress, skipping");
+      return;
+    }
+
+    this.store.systemState.recoveryInProgress = true;
+    this.store.systemState.lastRecoveryAttempt = Date.now();
+
+    try {
+      console.log(`🚑 Starting recovery for scenario: ${scenario}`);
+      
+      const strategy = this.recoveryStrategies.get(scenario);
+      if (strategy) {
+        await strategy(context);
+        console.log(`✅ Recovery completed for scenario: ${scenario}`);
+      } else {
+        console.warn(`⚠️ No recovery strategy for scenario: ${scenario}`);
+      }
+    } catch (error) {
+      console.error(`❌ Recovery failed for scenario ${scenario}:`, error);
+    } finally {
+      this.store.systemState.recoveryInProgress = false;
+    }
+  }
+
+  async recoverWebSocket(context) {
+    console.log("🔌 Recovering WebSocket connection");
+    
+    try {
+      // Force disconnect and reconnect
+      webSocketClient.disconnect();
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      await webSocketClient.connect();
+      
+      // Restore subscriptions
+      const allSymbols = Array.from(this.store.activeSubscriptions);
+      if (allSymbols.length > 0) {
+        await webSocketClient.replaceAllSubscriptionsWithSymbols(allSymbols);
+      }
+    } catch (error) {
+      console.error("❌ WebSocket recovery failed:", error);
+      throw error;
+    }
+  }
+
+  async recoverAPI(context) {
+    console.log("🌐 Recovering API connection");
+    
+    // Clear any cached data that might be stale
+    this.store.cache.clear();
+    
+    // Retry critical data sources
+    const criticalSources = ['providers.config', 'providers.available'];
+    for (const source of criticalSources) {
+      try {
+        await this.store.getData(source, { forceRefresh: true });
+      } catch (error) {
+        console.warn(`⚠️ Failed to recover ${source}:`, error.message);
+      }
+    }
+  }
+
+  async recoverGreeks(context) {
+    console.log("📊 Recovering Greeks data");
+    
+    // Force immediate Greeks update
+    if (this.store.activeGreeksSubscriptions.size > 0) {
+      await this.store.updateGreeksData();
+    }
+  }
+
+  async recoverStaleData(context) {
+    console.log("🔄 Recovering stale data");
+    
+    // Trigger WebSocket health check
+    webSocketClient.checkConnectionHealth();
+    
+    // Force refresh of periodic data
+    this.store.timers.forEach((timer, key) => {
+      // Trigger immediate update for periodic data sources
+      const config = this.store.strategies.get(key);
+      if (config && config.strategy === 'periodic') {
+        this.store.setupPeriodicUpdate(key, config);
+      }
+    });
+  }
+
+  async recoverFromWakeup(context) {
+    console.log("😴 Recovering from system wakeup");
+    
+    // Comprehensive recovery after sleep/hibernate
+    await Promise.all([
+      this.recoverWebSocket(context),
+      this.recoverAPI(context),
+      this.recoverGreeks(context)
+    ]);
+    
+    // Refresh all cached data
+    this.store.cache.clear();
+    
+    // Trigger immediate health check
+    await this.store.healthMonitor.performHealthChecks();
+    
+    // Notify UI components about recovery completion
+    this.notifyUIRecovery('system_wakeup');
+  }
+
+  /**
+   * Notify UI components about recovery events
+   */
+  notifyUIRecovery(recoveryType) {
+    window.dispatchEvent(new CustomEvent('websocket-recovered', {
+      detail: {
+        timestamp: Date.now(),
+        recoveryType: recoveryType,
+        subscriptions: Array.from(this.store.activeSubscriptions)
+      }
+    }));
+  }
+}
+
+/**
  * Smart Market Data Store - Unified Data Management System
  *
  * Manages all application data through different strategies:
@@ -65,6 +307,17 @@ class SmartMarketDataStore {
     this.greeksImmediateUpdateTimer = null; // Timer for immediate Greeks updates
     this.isInitialized = false;
 
+    // Recovery and health monitoring
+    this.healthMonitor = new DataHealthMonitor(this);
+    this.recoveryManager = new DataRecoveryManager(this);
+    this.systemState = reactive({
+      isHealthy: true,
+      lastHealthCheck: Date.now(),
+      failedComponents: new Set(),
+      recoveryInProgress: false,
+      lastRecoveryAttempt: null
+    });
+
     // Start automatic cleanup
     this.startCleanupTimer();
 
@@ -73,6 +326,76 @@ class SmartMarketDataStore {
 
     // Register provider configuration data sources
     this.setupProviderDataSources();
+
+    // Start health monitoring
+    this.startHealthMonitoring();
+
+    // Listen for system recovery events
+    this.setupRecoveryListeners();
+  }
+
+  /**
+   * Start health monitoring system
+   */
+  startHealthMonitoring() {
+    this.healthMonitor.start();
+  }
+
+  /**
+   * Set up recovery event listeners
+   */
+  setupRecoveryListeners() {
+    // Listen for WebSocket recovery events
+    window.addEventListener('websocket-recovered', (event) => {
+      console.log('🎉 WebSocket recovery detected, performing data refresh');
+      this.recoveryManager.executeRecovery('websocket_disconnected', event.detail);
+    });
+
+    // Listen for page visibility changes (sleep/wake detection)
+    document.addEventListener('visibilitychange', () => {
+      if (!document.hidden) {
+        // Page became visible - might be waking from sleep
+        console.log('👁️ Page became visible, checking for recovery needs');
+        setTimeout(() => {
+          this.recoveryManager.executeRecovery('system_wakeup');
+        }, 1000); // Small delay to let system stabilize
+      }
+    });
+
+    // Listen for network status changes
+    if ('onLine' in navigator) {
+      window.addEventListener('online', () => {
+        console.log('🌐 Network came online, performing recovery');
+        this.recoveryManager.executeRecovery('api_failure');
+      });
+    }
+  }
+
+  /**
+   * Get system health status (for UI components)
+   */
+  getSystemHealth() {
+    return computed(() => ({
+      isHealthy: this.systemState.isHealthy,
+      lastHealthCheck: this.systemState.lastHealthCheck,
+      failedComponents: Array.from(this.systemState.failedComponents),
+      recoveryInProgress: this.systemState.recoveryInProgress,
+      lastRecoveryAttempt: this.systemState.lastRecoveryAttempt
+    }));
+  }
+
+  /**
+   * Manually trigger recovery for a specific scenario
+   */
+  async triggerRecovery(scenario, context = {}) {
+    return await this.recoveryManager.executeRecovery(scenario, context);
+  }
+
+  /**
+   * Manually trigger health check
+   */
+  async performHealthCheck() {
+    return await this.healthMonitor.performHealthChecks();
   }
 
   /**
@@ -288,7 +611,6 @@ class SmartMarketDataStore {
   subscribeToGreeks(symbol) {
     const wasEmpty = this.activeGreeksSubscriptions.size === 0;
     this.activeGreeksSubscriptions.add(symbol);
-    console.log(`📊 Greeks subscription added for: ${symbol}`);
     
     // Check if this symbol already has Greeks data
     const hasExistingData = this.optionGreeks.has(symbol);
@@ -297,7 +619,6 @@ class SmartMarketDataStore {
     // 1. This is the first subscription (wasEmpty), OR
     // 2. This symbol doesn't have existing Greeks data
     if (wasEmpty || !hasExistingData) {
-      console.log(`📊 Scheduling immediate Greeks update for new symbols`);
       // Clear any existing timeout to avoid multiple rapid updates
       if (this.greeksImmediateUpdateTimer) {
         clearTimeout(this.greeksImmediateUpdateTimer);
@@ -356,7 +677,6 @@ class SmartMarketDataStore {
     this.greeksUpdateTimer = setInterval(() => {
       this.updateGreeksData();
     }, 60000);
-    console.log("📊 Greeks periodic updates started (60s interval)");
   }
 
   /**
@@ -565,13 +885,19 @@ class SmartMarketDataStore {
     const fetchData = async () => {
       try {
         this.setLoading(key, true);
+        
+        // Check if the method exists
+        if (!api[config.method]) {
+          throw new Error(`API method '${config.method}' not found`);
+        }
+        
         const response = await api[config.method](...(config.params || []));
         
-        // Extract actual data from API response wrapper
-        const data = response.data !== undefined ? response.data : response;
-        
-        this.updateData(key, data);
+        // The API methods already return the extracted data, not the full response
+        // So we use the response directly
+        this.updateData(key, response);
       } catch (error) {
+        console.error(`❌ Error fetching periodic data for ${key}:`, error);
         this.setError(key, error);
       } finally {
         this.setLoading(key, false);
@@ -584,7 +910,6 @@ class SmartMarketDataStore {
     // Set up periodic updates
     const timer = setInterval(fetchData, config.interval);
     this.timers.set(key, timer);
-
   }
 
   /**

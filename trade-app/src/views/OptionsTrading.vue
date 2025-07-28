@@ -38,6 +38,7 @@
               :optionsDataByExpiration="optionsManager.dataByExpiration.value"
               :loading="optionsManager.loading.value"
               :error="optionsManager.error.value"
+              :currentStrikeCount="optionsManager.strikeCount.value"
               @option-selected="onOptionSelected"
               @option-deselected="onOptionDeselected"
               @expiration-expanded="onExpirationExpanded"
@@ -58,6 +59,7 @@
         :chartData="chartData"
         :additionalQuoteData="additionalQuoteData"
         :optionsChainData="optionsManager.flattenedData.value"
+        :adjustedNetCredit="adjustedNetCredit"
         :forceExpanded="isRightPanelExpanded"
         :forceSection="rightPanelSection"
         @panel-collapsed="onRightPanelCollapsed"
@@ -87,12 +89,14 @@
       @clear-trade="clearAllSelections"
       @review-send="onReviewAndSend"
       @update-leg-quantity="onUpdateLegQuantity"
+      @price-adjusted="onPriceAdjusted"
     />
   </div>
 </template>
 
 <script>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { DateTime } from "luxon";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
@@ -154,6 +158,8 @@ export default {
     const isRightPanelExpanded = ref(false);
     const showBottomPanel = ref(false);
     const currentStrikeCount = ref(20);
+    const adjustedNetCredit = ref(null);
+    const rightPanelControlsChart = ref(false); // Flag to indicate RightPanel is controlling chart
 
     // Legacy data for backward compatibility (will be removed gradually)
     const optionsChainData = ref([]);
@@ -432,7 +438,8 @@ export default {
       try {
         const payoffData = generateMultiLegPayoff(
           positionsToUse,
-          currentPrice.value
+          currentPrice.value,
+          adjustedNetCredit.value
         );
 
         // Force reactivity by creating a new object reference
@@ -538,16 +545,54 @@ export default {
             unrealized_pl: position.unrealized_pl || 0,
             underlying_symbol: currentSymbol.value,
             is_synthetic: !position.isExisting, // Existing positions are not synthetic
+            isExisting: position.isExisting, // Pass through the existing flag
           };
         });
 
-        // Use the unified updateChartData function
-        updateChartData(positions);
+        // Determine how to handle adjustedNetCredit based on position mix
+        const hasExistingPositions = positions.some(pos => pos.isExisting);
+        const hasNewPositions = positions.some(pos => !pos.isExisting);
+        
+        let effectiveAdjustedNetCredit = null;
+        
+        if (hasExistingPositions && hasNewPositions) {
+          // Mixed scenario: existing + new positions
+          // Use adjustedNetCredit only for the new positions
+          // The chart generation will handle this by applying adjustedNetCredit
+          // only to new positions while using actual prices for existing ones
+          effectiveAdjustedNetCredit = adjustedNetCredit.value;
+          console.log("🔄 Mixed positions detected: existing + new, using selective adjustedNetCredit");
+        } else if (hasExistingPositions && !hasNewPositions) {
+          // Only existing positions: use null to calculate from actual prices
+          effectiveAdjustedNetCredit = null;
+          console.log("📊 Only existing positions, using actual trade prices");
+        } else if (!hasExistingPositions && hasNewPositions) {
+          // Only new positions: use adjustedNetCredit for limit price functionality
+          effectiveAdjustedNetCredit = adjustedNetCredit.value;
+          console.log("🆕 Only new positions, using adjustedNetCredit for limit prices");
+        }
+
+        try {
+          const payoffData = generateMultiLegPayoff(
+            positions,
+            currentPrice.value,
+            effectiveAdjustedNetCredit
+          );
+
+          // Force reactivity by creating a new object reference
+          chartData.value = {
+            ...payoffData,
+            timestamp: Date.now(), // Add timestamp to ensure object reference changes
+          };
+        } catch (error) {
+          console.error("Error generating payoff chart:", error);
+          chartData.value = null;
+        }
       } catch (error) {
         console.error("Error updating chart data from positions:", error);
         console.error("Error details:", error.stack);
         // Ensure chart is cleared on error
-        updateChartData([]);
+        chartData.value = null;
       }
     };
 
@@ -563,6 +608,24 @@ export default {
     const onStrikeCountChanged = (newStrikeCount) => {
       currentStrikeCount.value = newStrikeCount;
       optionsManager.updateStrikeCount(newStrikeCount);
+    };
+
+    const onPriceAdjusted = (data) => {
+      // console.log("📊 OptionsTrading: Received price adjustment", {
+      //   data: data,
+      //   adjustedNetCredit: data.adjustedNetCredit,
+      //   previousValue: adjustedNetCredit.value
+      // });
+      
+      adjustedNetCredit.value = data.adjustedNetCredit;
+    };
+
+    // Helper function to check if we have existing positions for current symbol
+    const hasExistingPositionsForSymbol = () => {
+      // This would need to check if there are existing positions
+      // For now, return false to let selectedOptions watcher work
+      // In a real implementation, this would check the positions API
+      return false;
     };
 
     // Additional quote data for the right panel
@@ -607,14 +670,38 @@ export default {
         onSymbolSelected(event.detail);
       };
 
-      window.addEventListener("symbol-selected", handleSymbolSelection);
+      // Listen for system recovery events to refresh data
+      const handleSystemRecovery = async (event) => {
+        console.log('🔄 System recovery detected in OptionsTrading, refreshing data...');
+        try {
+          // Refresh all critical data after recovery
+          await fetchSymbolData(currentSymbol.value);
+          await fetchExpirationDates(currentSymbol.value);
+          
+          // If we had a selected expiry, refresh its options chain
+          if (selectedExpiry.value) {
+            await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
+          }
+          
+          // Refresh options manager data
+          await optionsManager.refreshAllData();
+          
+          console.log('✅ OptionsTrading data refresh completed after recovery');
+        } catch (error) {
+          console.error('❌ Error refreshing OptionsTrading data after recovery:', error);
+        }
+      };
 
-      // Store the handler for cleanup
+      window.addEventListener("symbol-selected", handleSymbolSelection);
+      window.addEventListener("websocket-recovered", handleSystemRecovery);
+
+      // Store the handlers for cleanup
       window._symbolSelectionHandler = handleSymbolSelection;
+      window._systemRecoveryHandler = handleSystemRecovery;
     });
 
     onUnmounted(() => {
-      // Clean up event listener
+      // Clean up event listeners
       if (window._symbolSelectionHandler) {
         window.removeEventListener(
           "symbol-selected",
@@ -622,10 +709,19 @@ export default {
         );
         delete window._symbolSelectionHandler;
       }
+      
+      if (window._systemRecoveryHandler) {
+        window.removeEventListener(
+          "websocket-recovered",
+          window._systemRecoveryHandler
+        );
+        delete window._systemRecoveryHandler;
+      }
     });
 
     // Watchers
-    watch(selectedOptions, updateChartData, { deep: true });
+    // Note: Chart generation is now handled entirely by RightPanel via onPositionsChanged
+    // The selectedOptions watcher has been removed to prevent conflicts
 
     // Watch for underlying price changes to update chart
     watch(currentPrice, (newPrice, oldPrice) => {
@@ -637,6 +733,14 @@ export default {
           // If we have chart data from positions, we need to trigger a positions update
           // The chart will automatically update via the PayoffChart watcher
         }
+      }
+    });
+
+    // Watch for adjusted net credit changes to update chart
+    watch(adjustedNetCredit, (newCredit, oldCredit) => {      
+      if (newCredit !== oldCredit && (chartData.value || selectedOptions.value.length > 0)) {
+        // Regenerate chart data with new adjusted net credit
+        updateChartData();
       }
     });
 
@@ -662,6 +766,23 @@ export default {
         clearAllSelections();
       }
     });
+
+    // Watch for time and update marketStatus accordingly (use US/Eastern time)
+    function updateMarketStatusNow() {
+      const now = DateTime.now().setZone("America/New_York");
+      const day = now.weekday; // 1=Monday, 7=Sunday
+      const hour = now.hour;
+      const minute = now.minute;
+      // US market open: Mon-Fri, 9:30am-4:00pm ET
+      const isWeekday = day >= 1 && day <= 5;
+      const isOpen = isWeekday && (
+        (hour > 9 || (hour === 9 && minute >= 30)) &&
+        (hour < 16)
+      );
+      updateMarketStatus(isOpen ? "Market Open" : "Market Closed");
+    }
+    updateMarketStatusNow(); // run immediately on load
+    setInterval(updateMarketStatusNow, 60000); // check every minute
 
     return {
       // Reactive data
@@ -709,6 +830,8 @@ export default {
       onExpirationExpanded,
       onExpirationCollapsed,
       onStrikeCountChanged,
+      onPriceAdjusted,
+      adjustedNetCredit,
       additionalQuoteData,
 
       // New props for CollapsibleOptionsChain

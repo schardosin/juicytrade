@@ -2,6 +2,31 @@ import { ref, computed, watch, nextTick } from "vue";
 import api from "../services/api";
 import webSocketClient from "../services/webSocketClient";
 
+// Load persisted strike count from localStorage
+const loadPersistedStrikeCount = () => {
+  try {
+    const saved = localStorage.getItem("globalStrikeCount");
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if (!isNaN(parsed) && parsed > 0) {
+        return parsed;
+      }
+    }
+  } catch (error) {
+    console.warn("Failed to load persisted strike count:", error);
+  }
+  return 20; // Default fallback
+};
+
+// Save strike count to localStorage
+const persistStrikeCount = (strikeCount) => {
+  try {
+    localStorage.setItem("globalStrikeCount", strikeCount.toString());
+  } catch (error) {
+    console.warn("Failed to persist strike count:", error);
+  }
+};
+
 /**
  * Centralized Options Chain Data Manager
  *
@@ -11,7 +36,7 @@ import webSocketClient from "../services/webSocketClient";
 export function useOptionsChainManager(
   symbol,
   underlyingPrice,
-  strikeCount = 20
+  initialStrikeCount = 20
 ) {
   // ===== Core State =====
 
@@ -30,6 +55,9 @@ export function useOptionsChainManager(
 
   // Available expiration dates
   const expirationDates = ref([]);
+
+  // Strike count as reactive ref - load from localStorage or use initial value
+  const strikeCount = ref(loadPersistedStrikeCount());
 
   // ===== Computed Properties =====
 
@@ -276,6 +304,9 @@ export function useOptionsChainManager(
     console.log(`🎯 Updating strike count to: ${newStrikeCount}`);
     strikeCount.value = newStrikeCount;
 
+    // Persist the new strike count to localStorage
+    persistStrikeCount(newStrikeCount);
+
     // Reload all expanded expirations with new strike count
     const expandedList = Array.from(expandedExpirations.value);
     for (const expiration of expandedList) {
@@ -284,6 +315,31 @@ export function useOptionsChainManager(
 
     // Update subscriptions
     await updateSubscriptions();
+  };
+
+  /**
+   * Refresh all data after system recovery
+   */
+  const refreshAllData = async () => {
+    console.log('🔄 Refreshing all options chain data after recovery...');
+    
+    try {
+      // Reload expiration dates
+      await loadExpirationDates();
+      
+      // Reload all expanded expirations
+      const expandedList = Array.from(expandedExpirations.value);
+      for (const expiration of expandedList) {
+        await loadOptionsForExpiration(expiration);
+      }
+      
+      // Update subscriptions
+      await updateSubscriptions();
+      
+      console.log('✅ Options chain data refresh completed');
+    } catch (error) {
+      console.error('❌ Error refreshing options chain data:', error);
+    }
   };
 
   // ===== Watchers =====
@@ -312,6 +368,7 @@ export function useOptionsChainManager(
     expirationDates,
     loading,
     error,
+    strikeCount, // Expose current strike count
 
     // Computed
     symbolToOption,
@@ -329,5 +386,6 @@ export function useOptionsChainManager(
     getOptionsForExpiration,
     clearAllData,
     updateStrikeCount,
+    refreshAllData,
   };
 }

@@ -50,11 +50,6 @@ app.provide("smartMarketDataStore", smartMarketDataStore);
  * Called at app startup to ensure data is available on any route
  */
 function configureDataSources() {
-  // Skip if already configured
-  if (smartMarketDataStore.strategies.size > 0) {
-    return;
-  }
-
   // Auto-updating data (Periodic strategy)
   smartMarketDataStore.registerDataSource("balance", {
     strategy: "periodic",

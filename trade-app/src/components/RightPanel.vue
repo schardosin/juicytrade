@@ -324,6 +324,10 @@ export default {
       type: Array,
       default: () => [],
     },
+    adjustedNetCredit: {
+      type: Number,
+      default: null,
+    },
     forceExpanded: {
       type: Boolean,
       default: false,
@@ -539,52 +543,8 @@ export default {
       } else {
         checkedPositions.value.add(positionId);
       }
-      // Emit event to update chart with checked positions
+      // Manually trigger chart update after user interaction
       updateChartWithCheckedPositions();
-    };
-
-    // Generate chart data internally for selected positions
-    const generateChartData = (positions) => {
-      if (!positions || positions.length === 0) {
-        internalChartData.value = null;
-        return;
-      }
-
-      try {
-        // Convert positions to the format expected by generateMultiLegPayoff
-        const formattedPositions = positions.map((position) => ({
-          symbol: position.symbol,
-          asset_class: "us_option",
-          side: position.qty > 0 ? "long" : "short",
-          qty: position.qty,
-          strike_price: position.strike_price,
-          option_type:
-            position.option_type?.toUpperCase() || position.type?.toUpperCase(),
-          expiry_date: position.expiry_date || position.expiry,
-          current_price: position.current_price,
-          avg_entry_price: position.avg_entry_price,
-          cost_basis: position.avg_entry_price * Math.abs(position.qty) * 100,
-          market_value: position.current_price * position.qty * 100,
-          unrealized_pl: position.unrealized_pl || 0,
-          underlying_symbol: props.currentSymbol,
-          is_synthetic: !position.isExisting,
-        }));
-
-        const payoffData = generateMultiLegPayoff(
-          formattedPositions,
-          props.currentPrice
-        );
-
-        // Force reactivity by creating a new object reference
-        internalChartData.value = {
-          ...payoffData,
-          timestamp: Date.now(),
-        };
-
-      } catch (error) {
-        console.error("❌ RightPanel: Error generating chart data:", error);
-        internalChartData.value = null;
-      }
     };
 
     // Method to update chart based on checked positions
@@ -593,10 +553,20 @@ export default {
         checkedPositions.value.has(pos.id)
       );
 
-      // Generate chart data internally instead of relying on parent
-      generateChartData(checkedPositionsList);
+      console.log("🔍 RightPanel: Updating chart with checked positions:", checkedPositionsList.map(pos => ({
+        id: pos.id,
+        symbol: pos.symbol,
+        qty: pos.qty,
+        strike_price: pos.strike_price,
+        option_type: pos.option_type,
+        avg_entry_price: pos.avg_entry_price,
+        current_price: pos.current_price,
+        asset_class: pos.asset_class,
+        isExisting: pos.isExisting,
+        isSelected: pos.isSelected
+      })));
 
-      // Still emit for backward compatibility
+      // Emit positions to parent for chart generation
       emit("positions-changed", checkedPositionsList);
     };
 
@@ -940,16 +910,36 @@ export default {
     // Watch for changes in positions to update checked state
     watch(
       () => allPositions.value,
-      () => {
-        // Only auto-check selected options (not existing positions)
-        allPositions.value.forEach((pos) => {
-          if (!checkedPositions.value.has(pos.id) && pos.isSelected) {
-            checkedPositions.value.add(pos.id);
-          }
-        });
-        // Always emit positions-changed when we have checked positions
-        if (allPositions.value.length > 0 && checkedPositions.value.size > 0) {
-          updateChartWithCheckedPositions();
+      (newPositions, oldPositions) => {
+        let hasNewPositions = false;
+        
+        // Only auto-check NEW positions that weren't there before
+        // Don't re-check positions that the user has manually unchecked
+        if (oldPositions) {
+          const oldIds = new Set(oldPositions.map(pos => pos.id));
+          newPositions.forEach((pos) => {
+            // Only auto-check if this is a completely new position
+            if (!oldIds.has(pos.id) && (pos.isSelected || pos.isExisting)) {
+              checkedPositions.value.add(pos.id);
+              hasNewPositions = true;
+            }
+          });
+        } else {
+          // Initial load - check all positions
+          newPositions.forEach((pos) => {
+            if (pos.isSelected || pos.isExisting) {
+              checkedPositions.value.add(pos.id);
+              hasNewPositions = true;
+            }
+          });
+        }
+        
+        // If we auto-checked new positions, update the chart to include all checked positions
+        if (hasNewPositions && checkedPositions.value.size > 0) {
+          // Use nextTick to ensure the DOM and reactive state are updated
+          setTimeout(() => {
+            updateChartWithCheckedPositions();
+          }, 0);
         }
       },
       { deep: true }

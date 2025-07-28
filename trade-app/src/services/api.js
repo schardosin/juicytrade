@@ -2,6 +2,132 @@ import axios from "axios";
 
 const API_BASE_URL = "/api";
 
+// Circuit Breaker implementation for API resilience
+class APICircuitBreaker {
+  constructor(failureThreshold = 5, recoveryTimeout = 30000) {
+    this.failureCount = 0;
+    this.failureThreshold = failureThreshold;
+    this.recoveryTimeout = recoveryTimeout;
+    this.state = 'CLOSED'; // CLOSED, OPEN, HALF_OPEN
+    this.nextAttempt = Date.now();
+    this.name = 'API_CIRCUIT_BREAKER';
+  }
+
+  async execute(apiCall) {
+    if (this.state === 'OPEN') {
+      if (Date.now() < this.nextAttempt) {
+        throw new Error(`Circuit breaker is OPEN. Next attempt in ${Math.ceil((this.nextAttempt - Date.now()) / 1000)}s`);
+      }
+      this.state = 'HALF_OPEN';
+    }
+
+    try {
+      const result = await apiCall();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  onSuccess() {
+    this.failureCount = 0;
+    this.state = 'CLOSED';
+  }
+
+  onFailure() {
+    this.failureCount++;
+    if (this.failureCount >= this.failureThreshold) {
+      this.state = 'OPEN';
+      this.nextAttempt = Date.now() + this.recoveryTimeout;
+      console.warn(`🔴 Circuit breaker opened after ${this.failureCount} failures. Recovery in ${this.recoveryTimeout/1000}s`);
+    }
+  }
+
+  getStatus() {
+    return {
+      state: this.state,
+      failureCount: this.failureCount,
+      nextAttempt: this.nextAttempt
+    };
+  }
+}
+
+// Retry wrapper with exponential backoff
+async function withRetry(apiCall, options = {}) {
+  const {
+    maxRetries = 3,
+    baseDelay = 1000,
+    maxDelay = 10000,
+    backoffFactor = 2,
+    retryCondition = (error) => error.code !== 'ECONNABORTED' && (!error.response || error.response.status >= 500)
+  } = options;
+
+  let lastError;
+  
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await apiCall();
+    } catch (error) {
+      lastError = error;
+      
+      // Don't retry if condition is not met
+      if (!retryCondition(error)) {
+        throw error;
+      }
+      
+      // Don't retry on last attempt
+      if (attempt === maxRetries) {
+        break;
+      }
+      
+      const delay = Math.min(baseDelay * Math.pow(backoffFactor, attempt - 1), maxDelay);
+      console.warn(`🔄 API call failed (attempt ${attempt}/${maxRetries}), retrying in ${delay}ms:`, error.message);
+      
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+  
+  throw lastError;
+}
+
+// Global circuit breaker instance
+const circuitBreaker = new APICircuitBreaker();
+
+// Enhanced axios instance with timeout and retry configuration
+const apiClient = axios.create({
+  timeout: 15000, // 15 second timeout
+  headers: {
+    'Content-Type': 'application/json',
+  }
+});
+
+// Request interceptor for logging and monitoring
+apiClient.interceptors.request.use(
+  (config) => {
+    config.metadata = { startTime: Date.now() };
+    return config;
+  },
+  (error) => Promise.reject(error)
+);
+
+// Response interceptor for error handling and monitoring
+apiClient.interceptors.response.use(
+  (response) => {
+    const duration = Date.now() - response.config.metadata.startTime;
+    if (duration > 5000) {
+      console.warn(`⚠️ Slow API response: ${response.config.url} took ${duration}ms`);
+    }
+    return response;
+  },
+  (error) => {
+    const duration = error.config?.metadata ? Date.now() - error.config.metadata.startTime : 0;
+    console.error(`❌ API Error: ${error.config?.url} (${duration}ms):`, error.message);
+    return Promise.reject(error);
+  }
+);
+
 export const api = {
   // Get next market date
   async getNextMarketDate() {
@@ -45,25 +171,34 @@ export const api = {
 
   // Get available expiration dates for a symbol from options contracts
   async getAvailableExpirations(symbol) {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/expiration_dates`, {
-        params: { symbol },
+    return await circuitBreaker.execute(async () => {
+      return await withRetry(async () => {
+        const response = await apiClient.get(`${API_BASE_URL}/expiration_dates`, {
+          params: { symbol },
+        });
+
+        if (
+          response.data &&
+          response.data.success &&
+          response.data.data &&
+          response.data.data.expiration_dates
+        ) {
+          return response.data.data.expiration_dates;
+        }
+
+        return null;
+      }, {
+        maxRetries: 3,
+        baseDelay: 1000,
+        retryCondition: (error) => {
+          // Retry on network errors and 5xx server errors
+          return !error.response || error.response.status >= 500 || error.code === 'ECONNRESET';
+        }
       });
-
-      if (
-        response.data &&
-        response.data.success &&
-        response.data.data &&
-        response.data.data.expiration_dates
-      ) {
-        return response.data.data.expiration_dates;
-      }
-
-      return null;
-    } catch (error) {
+    }).catch(error => {
       console.error("Error fetching available expirations:", error);
-      return null;
-    }
+      return null; // Return null to trigger fallback behavior
+    });
   },
 
   // Get expiration dates for a symbol (legacy method)
@@ -104,25 +239,30 @@ export const api = {
     underlyingPrice = null,
     strikeCount = 20
   ) {
-    try {
-      const params = {
-        symbol,
-        expiry,
-        strike_count: strikeCount,
-      };
+    return await circuitBreaker.execute(async () => {
+      return await withRetry(async () => {
+        const params = {
+          symbol,
+          expiry,
+          strike_count: strikeCount,
+        };
 
-      if (underlyingPrice !== null) {
-        params.underlying_price = underlyingPrice;
-      }
+        if (underlyingPrice !== null) {
+          params.underlying_price = underlyingPrice;
+        }
 
-      const response = await axios.get(`${API_BASE_URL}/options_chain_basic`, {
-        params,
+        const response = await apiClient.get(`${API_BASE_URL}/options_chain_basic`, {
+          params,
+        });
+        return response.data.data;
+      }, {
+        maxRetries: 2,
+        baseDelay: 1500,
+        retryCondition: (error) => {
+          return !error.response || error.response.status >= 500 || error.code === 'ECONNRESET';
+        }
       });
-      return response.data.data;
-    } catch (error) {
-      console.error("Error fetching basic options chain:", error);
-      throw error;
-    }
+    });
   },
 
   // Get Greeks for multiple option symbols

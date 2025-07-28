@@ -84,6 +84,8 @@ const persistSymbolData = () => {
   }
 };
 
+import { DateTime } from "luxon";
+
 // Global symbol management composable
 export function useGlobalSymbol() {
   // Update symbol information
@@ -131,6 +133,23 @@ export function useGlobalSymbol() {
       exchange: globalSymbolState.exchange,
     };
   };
+
+  // Global market status updater (runs always)
+  function updateMarketStatusNow() {
+    const now = DateTime.now().setZone("America/New_York");
+    const day = now.weekday; // 1=Monday, 7=Sunday
+    const hour = now.hour;
+    const minute = now.minute;
+    // US market open: Mon-Fri, 9:30am-4:00pm ET
+    const isWeekday = day >= 1 && day <= 5;
+    const isOpen = isWeekday && (
+      (hour > 9 || (hour === 9 && minute >= 30)) &&
+      (hour < 16)
+    );
+    globalSymbolState.marketStatus = isOpen ? "Market Open" : "Market Closed";
+  }
+  updateMarketStatusNow();
+  setInterval(updateMarketStatusNow, 60000);
 
   return {
     // Reactive state

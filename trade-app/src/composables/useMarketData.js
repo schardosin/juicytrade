@@ -93,11 +93,12 @@ export function useMarketData() {
   };
 
   /**
-   * Symbol lookup (cached for 10 minutes)
+   * Symbol lookup - call API directly (not through data store)
    */
   const lookupSymbols = async (query, forceRefresh = false) => {
-    const key = `symbolLookup.${query}`;
-    return await smartMarketDataStore.getData(key, { forceRefresh });
+    // Import API service dynamically to avoid circular dependencies
+    const api = await import('../services/api.js');
+    return await api.default.lookupSymbols(query);
   };
 
   /**

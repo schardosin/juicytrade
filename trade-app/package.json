@@ -16,6 +16,7 @@
     "chartjs-plugin-zoom": "^2.2.0",
     "date-fns": "^2.30.0",
     "lightweight-charts": "^5.0.8",
+    "luxon": "^3.7.1",
     "primeicons": "^6.0.1",
     "primevue": "^3.46.0",
     "vue": "^3.4.0",

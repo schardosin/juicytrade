@@ -267,7 +267,7 @@ export default {
       default: null,
     },
   },
-  emits: ["clear-trade", "review-send", "update-leg-quantity"],
+  emits: ["clear-trade", "review-send", "update-leg-quantity", "price-adjusted"],
   setup(props, { emit }) {
     const { selectedOptions, optionsData } = toRefs(props);
 
@@ -347,7 +347,17 @@ export default {
     const netPremium = computed(() => {
       let total = 0;
       selectedOptions.value.forEach((selection) => {
-        const price = getOptionPriceForLimit(selection, "mid"); // Use mid for a neutral estimate
+        // Use locked price if locked, otherwise use static data
+        let price;
+        if (priceLocked.value && lockedPrices.value.has(selection.symbol)) {
+          price = lockedPrices.value.get(selection.symbol)?.price ?? 0;
+        } else {
+          // Fallback to static data from props
+          const option = optionsData.value.find(
+            (opt) => opt.symbol === selection.symbol
+          );
+          price = option ? ((option.bid || 0) + (option.ask || 0)) / 2 : 0;
+        }
         const premium = selection.side === "buy" ? -price : price;
         total += premium * selection.quantity;
       });
@@ -672,14 +682,34 @@ export default {
     };
 
     watch(
-      netPremium,
+      limitPrice,
       (newValue) => {
         if (!priceLocked.value) {
           // Always display limit price as positive in UI
           limitPrice.value = parseFloat(Math.abs(newValue).toFixed(2));
         }
+        
+        // Emit the adjusted net credit to parent for chart synchronization
+        const adjustedNetCredit = parseFloat(midPrice.value) >= 0 
+          ? parseFloat(newValue)  // Credit: positive value
+          : -parseFloat(newValue); // Debit: negative value
+          
+        emit("price-adjusted", {
+          adjustedNetCredit: adjustedNetCredit,
+          displayPrice: newValue
+        });
       },
       { immediate: true }
+    );
+
+    // NEW: Watch midPrice and update limitPrice if lock is open
+    watch(
+      midPrice,
+      (newValue) => {
+        if (!priceLocked.value) {
+          limitPrice.value = parseFloat(Math.abs(newValue).toFixed(2));
+        }
+      }
     );
 
     watch(

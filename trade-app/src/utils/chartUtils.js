@@ -359,8 +359,24 @@ export function convertButterflyToPositions(
   return positions;
 }
 
-export function generateMultiLegPayoff(positions, underlyingPrice) {
+export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCredit = null) {
+  console.log("🔧 generateMultiLegPayoff called with:", {
+    positionCount: positions?.length || 0,
+    underlyingPrice,
+    adjustedNetCredit,
+    adjustedNetCreditType: typeof adjustedNetCredit,
+    positions: positions.map(pos => ({
+      symbol: pos.symbol,
+      qty: pos.qty,
+      strike_price: pos.strike_price,
+      option_type: pos.option_type,
+      avg_entry_price: pos.avg_entry_price,
+      asset_class: pos.asset_class
+    }))
+  });
+
   if (!positions || positions.length === 0) {
+    console.log("❌ generateMultiLegPayoff: No positions provided");
     return null;
   }
 
@@ -456,6 +472,55 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
     }
   }, 0);
 
+  console.log("💰 Net Credit Calculation:", {
+    netCredit,
+    adjustedNetCredit,
+    positions: optionPositions.map(pos => ({
+      symbol: pos.symbol,
+      qty: pos.qty,
+      avg_entry_price: pos.avg_entry_price,
+      contribution: pos.qty < 0 ? 
+        `+${pos.avg_entry_price * Math.abs(pos.qty)} (received)` : 
+        `-${pos.avg_entry_price * Math.abs(pos.qty)} (paid)`
+    }))
+  });
+
+  // Separate existing and new positions for mixed scenario handling
+  const existingPositions = optionPositions.filter(pos => pos.isExisting);
+  const newPositions = optionPositions.filter(pos => !pos.isExisting);
+  
+  // Calculate net credit for existing positions only (using actual trade prices)
+  const existingNetCredit = existingPositions.reduce((sum, pos) => {
+    const premium = pos.avg_entry_price || 0;
+    if (pos.qty < 0) {
+      return sum + premium * Math.abs(pos.qty);
+    } else {
+      return sum - premium * Math.abs(pos.qty);
+    }
+  }, 0);
+
+  // Calculate net credit for new positions only
+  const newNetCredit = newPositions.reduce((sum, pos) => {
+    const premium = pos.avg_entry_price || 0;
+    if (pos.qty < 0) {
+      return sum + premium * Math.abs(pos.qty);
+    } else {
+      return sum - premium * Math.abs(pos.qty);
+    }
+  }, 0);
+
+  console.log("💰 Mixed Position Credit Calculation:", {
+    totalNetCredit: netCredit,
+    existingNetCredit,
+    newNetCredit,
+    adjustedNetCredit,
+    hasExisting: existingPositions.length > 0,
+    hasNew: newPositions.length > 0,
+    effectiveStrategy: adjustedNetCredit !== null && newPositions.length > 0 ? 
+      "Using adjustedNetCredit for new positions, actual prices for existing" :
+      "Using calculated net credit from actual prices"
+  });
+
   for (let price = lowerBound; price <= upperBound; price += step) {
     prices.push(price);
 
@@ -463,7 +528,7 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
 
     // Calculate payoff for each position at this price
     for (const position of optionPositions) {
-      const { strike_price, option_type, qty, avg_entry_price } = position;
+      const { strike_price, option_type, qty } = position;
 
       let intrinsicValue = 0;
       if (
@@ -481,34 +546,29 @@ export function generateMultiLegPayoff(positions, underlyingPrice) {
       }
 
       // Calculate P&L for this position at expiration
-      // The key insight: At expiration, option value = intrinsic value
-      // P&L = (final_value - initial_cost) * contracts * 100
-      const entryPrice = avg_entry_price || 0;
       let positionPayoff;
-
+      const entryPrice = position.avg_entry_price || 0;
+      
       if (qty > 0) {
         // Long position: We paid premium to buy
-        // P&L = (intrinsic_value - premium_paid) * qty * 100
         positionPayoff = (intrinsicValue - entryPrice) * qty * 100;
       } else {
         // Short position: We received premium when we sold
-        // P&L = (premium_received - intrinsic_value) * |qty| * 100
-        // Since qty is negative, we use Math.abs(qty) and entryPrice is what we received
         positionPayoff = (entryPrice - intrinsicValue) * Math.abs(qty) * 100;
       }
-
-      // Debug calculations around strike prices
-      // if (price >= 625 && price <= 631) {
-      //   console.log(
-      //     `🔍 Price ${price}, ${position.symbol}: intrinsic=${intrinsicValue}, entry=${entryPrice}, qty=${qty}, payoff=${positionPayoff}`
-      //   );
-      // }
 
       totalPayoff += positionPayoff;
     }
 
-    // Note: Don't add netCredit here as it's already accounted for in individual position payoffs
-    // The netCredit calculation is kept for reference/debugging purposes
+    // Handle mixed scenario: apply adjustedNetCredit only to new positions
+    if (adjustedNetCredit !== null && newPositions.length > 0) {
+      // Calculate the difference between adjusted and original net credit for new positions only
+      const newCreditAdjustment = (adjustedNetCredit - newNetCredit) * 100;
+      totalPayoff += newCreditAdjustment;
+      
+      // Note: existing positions already use their actual entry prices in the calculation above
+      // so no additional adjustment is needed for them
+    }
 
     payoffs.push(totalPayoff);
   }

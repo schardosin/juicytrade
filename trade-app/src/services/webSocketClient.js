@@ -590,7 +590,7 @@ class WebSocketStreamingClient {
     };
   }
 
-  // Page visibility handling for sleep/wake scenarios
+  // Enhanced page visibility handling for sleep/wake scenarios
   setupPageVisibilityHandling() {
     const handleVisibilityChange = () => {
       const wasVisible = this.isPageVisible;
@@ -602,19 +602,128 @@ class WebSocketStreamingClient {
 
       if (!wasVisible && this.isPageVisible) {
         // Page became visible (wake up from sleep)
-        console.log("🌅 Page became visible - checking connection health");
-        this.checkConnectionHealth();
+        console.log("🌅 Page became visible - performing comprehensive recovery");
+        this.performWakeupRecovery();
       }
     };
 
     document.addEventListener("visibilitychange", handleVisibilityChange);
 
-    // Also handle focus events as backup
+    // Enhanced focus handling
     window.addEventListener("focus", () => {
       if (this.isPageVisible) {
+        console.log("🔍 Window focused - checking connection health");
         this.checkConnectionHealth();
       }
     });
+
+    // Network status monitoring
+    if ('onLine' in navigator) {
+      window.addEventListener('online', () => {
+        console.log("🌐 Network came online - performing recovery");
+        this.performNetworkRecovery();
+      });
+
+      window.addEventListener('offline', () => {
+        console.log("📴 Network went offline");
+        this.isConnected = false;
+      });
+    }
+
+    // Detect system resume from sleep (additional method)
+    let lastActivity = Date.now();
+    const checkForSleep = () => {
+      const now = Date.now();
+      const timeDiff = now - lastActivity;
+      
+      // If more than 2 minutes have passed since last check, likely resumed from sleep
+      if (timeDiff > 120000) {
+        console.log("😴 System likely resumed from sleep - performing recovery");
+        this.performWakeupRecovery();
+      }
+      
+      lastActivity = now;
+    };
+
+    // Check every 30 seconds
+    setInterval(checkForSleep, 30000);
+  }
+  // Comprehensive wakeup recovery
+  async performWakeupRecovery() {
+    console.log("🔄 Starting comprehensive wakeup recovery...");
+    
+    try {
+      // Step 1: Force disconnect if connection exists but is stale
+      if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
+        console.log("🔌 Closing stale WebSocket connection");
+        this.ws.close();
+        this.ws = null;
+      }
+
+      // Step 2: Reset connection state
+      this.isConnected = false;
+      this.connectionPromise = null;
+
+      // Step 3: Wait a moment for network to stabilize
+      await new Promise(resolve => setTimeout(resolve, 1000));
+
+      // Step 4: Attempt reconnection
+      console.log("🔄 Attempting to reconnect after wakeup...");
+      await this.connect();
+
+      // Step 5: Restore all subscriptions
+      await this.restoreSubscriptions();
+
+      console.log("✅ Wakeup recovery completed successfully");
+      
+      // Notify any listeners about successful recovery
+      this.notifyRecoverySuccess();
+
+    } catch (error) {
+      console.error("❌ Wakeup recovery failed:", error);
+      // Try again in a few seconds
+      setTimeout(() => this.performWakeupRecovery(), 5000);
+    }
+  }
+
+  // Network-specific recovery
+  async performNetworkRecovery() {
+    console.log("🌐 Starting network recovery...");
+    
+    try {
+      // Check if we think we're connected but actually aren't
+      if (this.isConnected && (!this.ws || this.ws.readyState !== WebSocket.OPEN)) {
+        console.log("🚨 Detected stale connection during network recovery");
+        this.isConnected = false;
+        this.connectionPromise = null;
+      }
+
+      // If not connected, attempt to reconnect
+      if (!this.isConnected) {
+        await this.connect();
+        await this.restoreSubscriptions();
+        console.log("✅ Network recovery completed");
+      } else {
+        // If we think we're connected, verify with a ping
+        this.sendPing();
+      }
+
+    } catch (error) {
+      console.error("❌ Network recovery failed:", error);
+      // Retry network recovery
+      setTimeout(() => this.performNetworkRecovery(), 3000);
+    }
+  }
+
+  // Notify recovery success (can be extended to update UI)
+  notifyRecoverySuccess() {
+    // Dispatch custom event for UI components to listen to
+    window.dispatchEvent(new CustomEvent('websocket-recovered', {
+      detail: {
+        timestamp: Date.now(),
+        subscriptions: Array.from(this.subscribedSymbols)
+      }
+    }));
   }
 
   // Check connection health and reconnect if needed
