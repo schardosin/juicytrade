@@ -640,11 +640,12 @@ export default {
       const analysis = profitLossAnalysis.value;
       const greeksData = greeks.value;
 
-      // Calculate broker limit price: negative for credits, positive for debits
-      const brokerLimitPrice =
-        analysis.netPremium >= 0
-          ? -Math.abs(limitPrice.value) // Credit: negative
-          : Math.abs(limitPrice.value); // Debit: positive
+      // ✅ Use the stored broker value if available, otherwise fall back to original logic
+      const brokerLimitPrice = limitPrice._brokerValue !== undefined 
+        ? limitPrice._brokerValue
+        : (analysis.netPremium >= 0
+            ? -Math.abs(limitPrice.value) // Credit: negative
+            : Math.abs(limitPrice.value)); // Debit: positive
 
       const orderData = {
         symbol: props.symbol,
@@ -684,9 +685,17 @@ export default {
     watch(
       limitPrice,
       (newValue) => {
+        // ✅ Always update broker value when user changes limit price, regardless of lock state
+        const isCredit = parseFloat(midPrice.value) >= 0;
+        const storedValue = isCredit ? -Math.abs(newValue) : Math.abs(newValue);
+        
+        // Always store the broker value when user changes the limit price
+        limitPrice._brokerValue = parseFloat(storedValue.toFixed(2));
+        
         if (!priceLocked.value) {
-          // Always display limit price as positive in UI
-          limitPrice.value = parseFloat(Math.abs(newValue).toFixed(2));
+          // Only update display value when not locked
+          const displayValue = Math.abs(newValue);
+          limitPrice.value = parseFloat(displayValue.toFixed(2));
         }
         
         // Emit the adjusted net credit to parent for chart synchronization
