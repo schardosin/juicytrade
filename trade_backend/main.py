@@ -1,6 +1,8 @@
 import asyncio
 import uvicorn
 import logging
+import signal
+import sys
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any
 
@@ -22,6 +24,33 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("trading_backend")
+
+# Global shutdown flag
+shutdown_event = asyncio.Event()
+
+def signal_handler(signum, frame):
+    """Handle shutdown signals gracefully"""
+    logger.info(f"🛑 Received signal {signum}, initiating graceful shutdown...")
+    shutdown_event.set()
+    
+    # Cancel all running tasks
+    try:
+        loop = asyncio.get_running_loop()
+        tasks = [task for task in asyncio.all_tasks(loop) if not task.done()]
+        logger.info(f"Cancelling {len(tasks)} running tasks...")
+        
+        for task in tasks:
+            task.cancel()
+            
+    except RuntimeError:
+        # No running loop, that's fine
+        pass
+    
+    logger.info("🏁 Graceful shutdown initiated")
+
+# Register signal handlers
+signal.signal(signal.SIGINT, signal_handler)
+signal.signal(signal.SIGTERM, signal_handler)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -122,7 +151,11 @@ class ConnectionManager:
         try:
             while self.is_streaming and len(self.active_connections) > 0:
                 try:
-                    market_data = await streaming_manager.get_data()
+                    # Add timeout to prevent infinite blocking
+                    market_data = await asyncio.wait_for(
+                        streaming_manager.get_data(), 
+                        timeout=10.0
+                    )
                     if market_data and self.active_connections:
                         # Only broadcast if we have active connections
                         await self.broadcast({
@@ -131,6 +164,12 @@ class ConnectionManager:
                             "data": market_data.data,
                             "timestamp": market_data.timestamp
                         })
+                    elif not market_data:
+                        # No data received within timeout, continue loop
+                        await asyncio.sleep(0.1)
+                except asyncio.TimeoutError:
+                    # Timeout is normal, just continue the loop
+                    await asyncio.sleep(0.1)
                 except Exception as e:
                     logger.error(f"Error in streaming data handler: {e}")
                     await asyncio.sleep(1)

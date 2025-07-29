@@ -4,6 +4,7 @@ import websockets
 import json
 import logging
 import time
+import httpx
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, timedelta
 from collections import OrderedDict
@@ -158,26 +159,32 @@ class TradierProvider(BaseProvider):
             "Accept": "application/json"
         }
         try:
-            response = requests.post(url, headers=headers)
-            response.raise_for_status()
-            if response.text:
-                try:
-                    data = response.json()
-                    self._session_id = data.get("stream", {}).get("sessionid")
-                except json.JSONDecodeError:
-                    logger.error(f"Failed to decode JSON from Tradier session response: {response.text}")
+            # Use async httpx with timeout to prevent hanging
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers)
+                response.raise_for_status()
+                
+                if response.text:
+                    try:
+                        data = response.json()
+                        self._session_id = data.get("stream", {}).get("sessionid")
+                    except json.JSONDecodeError:
+                        logger.error(f"Failed to decode JSON from Tradier session response: {response.text}")
+                        self._session_id = None
+                else:
                     self._session_id = None
-            else:
-                self._session_id = None
-            
-            if self._session_id:
-                logger.info("Tradier session created successfully.")
-                return True
-            else:
-                logger.error("Failed to create Tradier session: 'sessionid' not in response.")
-                return False
-        except requests.exceptions.RequestException as e:
+                
+                if self._session_id:
+                    logger.info("Tradier session created successfully.")
+                    return True
+                else:
+                    logger.error("Failed to create Tradier session: 'sessionid' not in response.")
+                    return False
+        except (httpx.RequestError, httpx.HTTPStatusError) as e:
             logger.error(f"Error creating Tradier session: {e}")
+            return False
+        except asyncio.TimeoutError:
+            logger.error("Timeout creating Tradier session")
             return False
 
     async def connect_streaming(self) -> bool:
@@ -1354,28 +1361,20 @@ class TradierProvider(BaseProvider):
     # === Enhanced Positions with History Integration ===
     
     async def get_positions_enhanced(self) -> Dict[str, Any]:
-        """Get enhanced positions with simplified static data structure."""
+        """Get enhanced positions grouped by date_acquired (same order timing)."""
         try:
-            logger.info("🔍 Getting enhanced positions with static broker data...")
+            logger.info("🔍 Getting enhanced positions grouped by acquisition date...")
             
-            # 1. Get current positions
+            # 1. Get current positions only (no additional API calls needed)
             current_positions = await self.get_positions()
             if not current_positions:
                 logger.info("No current positions found")
                 return {"enhanced": True, "symbol_groups": []}
             
-            # 2. Get historical trades and current orders for grouping
-            historical_trades = await self._get_order_history(days_back=30)
-            current_orders = await self.get_orders(status="all")
+            # 2. Group by date_acquired instead of expensive order chain analysis
+            symbol_groups = await self._create_date_based_hierarchical_groups(current_positions)
             
-            logger.info(f"📊 Retrieved {len(historical_trades)} historical trades and {len(current_orders)} current orders")
-            
-            # 3. Create simplified hierarchical grouping (Symbol -> Strategies -> Legs)
-            symbol_groups = await self._create_simplified_hierarchical_groups(
-                current_positions, historical_trades, current_orders
-            )
-            
-            logger.info(f"✅ Created {len(symbol_groups)} symbol groups with static data")
+            logger.info(f"✅ Created {len(symbol_groups)} symbol groups using date_acquired grouping")
             return {"enhanced": True, "symbol_groups": symbol_groups}
             
         except Exception as e:
@@ -2178,17 +2177,14 @@ class TradierProvider(BaseProvider):
             self._log_error("_create_hierarchical_groups", e)
             return []
 
-    async def _create_simplified_hierarchical_groups(self, positions: List[Position], 
-                                             history: List[HistoricalTrade], 
-                                             current_orders: List[Order]) -> List[Dict[str, Any]]:
-        """Create simplified hierarchical grouping with only static broker data."""
+    async def _create_date_based_hierarchical_groups(self, positions: List[Position]) -> List[Dict[str, Any]]:
+        """Create hierarchical groups based on date_acquired (same order timing)."""
         try:
-            from ..utils.optionsStrategies import detectStrategy
             from datetime import datetime
             
-            logger.info("📊 Creating simplified hierarchical symbol groups")
+            logger.info("📊 Creating date-based hierarchical symbol groups")
             
-            # Step 1: Group positions by underlying symbol
+            # Step 1: Group positions by underlying symbol first
             symbol_groups = {}
             
             for position in positions:
@@ -2205,75 +2201,15 @@ class TradierProvider(BaseProvider):
                     symbol_groups[underlying] = {
                         "symbol": underlying,
                         "asset_class": asset_class,
-                        "positions_by_expiry": {}
+                        "positions": []
                     }
                 
-                # Group by expiry for options, or use "stock" for stocks
-                if self._is_option_symbol(position.symbol):
-                    parsed = self._parse_option_symbol(position.symbol)
-                    expiry_key = parsed["expiry"] if parsed else "unknown"
-                else:
-                    expiry_key = "stock"
-                
-                if expiry_key not in symbol_groups[underlying]["positions_by_expiry"]:
-                    symbol_groups[underlying]["positions_by_expiry"][expiry_key] = []
-                
-                symbol_groups[underlying]["positions_by_expiry"][expiry_key].append(position)
+                symbol_groups[underlying]["positions"].append(position)
             
-            # Step 2: Convert to final format with strategies
+            # Step 2: Within each underlying, group by date_acquired
             result = []
             for underlying, symbol_group in symbol_groups.items():
-                strategies = []
-                
-                for expiry_key, expiry_positions in symbol_group["positions_by_expiry"].items():
-                    # Detect strategy for this group of positions
-                    strategy_name = self._detect_strategy_name(expiry_positions)
-                    
-                    # Calculate DTE for options
-                    dte = None
-                    if expiry_key != "stock":
-                        try:
-                            expiry_date = datetime.strptime(expiry_key, "%Y-%m-%d")
-                            dte = (expiry_date - datetime.now()).days
-                        except:
-                            dte = None
-                    
-                    # Calculate strategy totals (static data only)
-                    strategy_total_qty = sum(pos.qty for pos in expiry_positions)
-                    strategy_cost_basis = sum(pos.cost_basis for pos in expiry_positions)
-                    
-                    # Create legs with only static broker data
-                    legs = []
-                    for pos in expiry_positions:
-                        # Calculate avg_entry_price from cost_basis
-                        if self._is_option_symbol(pos.symbol):
-                            # For options: cost_basis / qty / 100 (Tradier specific calculation)
-                            avg_entry_price = abs(pos.cost_basis / pos.qty / 100) if pos.qty != 0 else 0
-                        else:
-                            # For stocks: cost_basis / qty
-                            avg_entry_price = abs(pos.cost_basis / pos.qty) if pos.qty != 0 else 0
-                        
-                        # Fetch lastday_price for each position
-                        lastday_price = await self._get_lastday_price(pos.symbol)
-                        
-                        legs.append({
-                            "symbol": pos.symbol,
-                            "qty": pos.qty,
-                            "avg_entry_price": avg_entry_price,
-                            "cost_basis": pos.cost_basis,
-                            "asset_class": pos.asset_class,
-                            "lastday_price": lastday_price,
-                            "date_acquired": getattr(pos, 'date_acquired', None)  # Add acquisition date for 0DTE detection
-                        })
-                    
-                    strategy = {
-                        "name": strategy_name,
-                        "total_qty": strategy_total_qty,
-                        "cost_basis": strategy_cost_basis,
-                        "dte": dte,
-                        "legs": legs
-                    }
-                    strategies.append(strategy)
+                strategies = await self._group_by_date_acquired(symbol_group["positions"])
                 
                 result.append({
                     "symbol": underlying,
@@ -2281,11 +2217,138 @@ class TradierProvider(BaseProvider):
                     "strategies": strategies
                 })
             
-            logger.info(f"✅ Created {len(result)} simplified symbol groups")
+            logger.info(f"✅ Created {len(result)} date-based symbol groups")
             return result
             
         except Exception as e:
-            self._log_error("_create_simplified_hierarchical_groups", e)
+            self._log_error("_create_date_based_hierarchical_groups", e)
+            return []
+
+    async def _group_by_date_acquired(self, positions: List[Position]) -> List[Dict[str, Any]]:
+        """Group positions by their date_acquired timestamp."""
+        try:
+            from datetime import datetime
+            
+            logger.info(f"📊 Grouping {len(positions)} positions by date_acquired")
+            
+            # Group by date_acquired
+            date_groups = {}
+            
+            for position in positions:
+                # Use date_acquired as the grouping key
+                date_key = position.date_acquired or "unknown"
+                
+                # For more precise grouping, we can truncate to minute precision
+                # This handles cases where positions from the same order might have slightly different timestamps
+                if date_key != "unknown":
+                    try:
+                        # Parse the date and truncate to minute precision for grouping
+                        dt = datetime.fromisoformat(date_key.replace('Z', '+00:00'))
+                        # Group by minute precision (same order should be within the same minute)
+                        date_key = dt.strftime('%Y-%m-%d %H:%M')
+                    except (ValueError, TypeError):
+                        logger.warning(f"Could not parse date_acquired: {date_key}")
+                        # Keep original value if parsing fails
+                        pass
+                
+                if date_key not in date_groups:
+                    date_groups[date_key] = []
+                
+                date_groups[date_key].append(position)
+            
+            logger.info(f"📊 Created {len(date_groups)} date-based groups")
+            
+            # Convert to strategy format
+            strategies = []
+            for date_key, date_positions in date_groups.items():
+                strategy_name = self._detect_strategy_name(date_positions)
+                
+                # Calculate DTE if options are present
+                dte = self._calculate_dte_for_positions(date_positions)
+                
+                # Calculate strategy totals (static data only)
+                strategy_total_qty = sum(pos.qty for pos in date_positions)
+                strategy_cost_basis = sum(pos.cost_basis for pos in date_positions)
+                
+                # Create legs with static broker data
+                legs = await self._convert_positions_to_legs(date_positions)
+                
+                strategy = {
+                    "name": strategy_name,
+                    "total_qty": strategy_total_qty,
+                    "cost_basis": strategy_cost_basis,
+                    "dte": dte,
+                    "legs": legs,
+                    "date_acquired": date_key  # Include the grouping date for reference
+                }
+                strategies.append(strategy)
+            
+            logger.info(f"📊 Created {len(strategies)} strategies from date grouping")
+            return strategies
+            
+        except Exception as e:
+            self._log_error("_group_by_date_acquired", e)
+            return []
+
+    def _calculate_dte_for_positions(self, positions: List[Position]) -> Optional[int]:
+        """Calculate days to expiration for a group of positions."""
+        try:
+            from datetime import datetime
+            
+            # Find the earliest expiration date among option positions
+            expiry_dates = []
+            for pos in positions:
+                if self._is_option_symbol(pos.symbol):
+                    parsed = self._parse_option_symbol(pos.symbol)
+                    if parsed and parsed.get("expiry"):
+                        expiry_dates.append(parsed["expiry"])
+            
+            if expiry_dates:
+                # Use the earliest expiration date
+                earliest_expiry = min(expiry_dates)
+                try:
+                    expiry_date = datetime.strptime(earliest_expiry, "%Y-%m-%d")
+                    dte = (expiry_date - datetime.now()).days
+                    return dte
+                except ValueError:
+                    return None
+            
+            return None
+            
+        except Exception as e:
+            self._log_error("_calculate_dte_for_positions", e)
+            return None
+
+    async def _convert_positions_to_legs(self, positions: List[Position]) -> List[Dict[str, Any]]:
+        """Convert positions to leg format with static broker data."""
+        try:
+            legs = []
+            for pos in positions:
+                # Calculate avg_entry_price from cost_basis
+                if self._is_option_symbol(pos.symbol):
+                    # For options: cost_basis / qty / 100 (Tradier specific calculation)
+                    avg_entry_price = abs(pos.cost_basis / pos.qty / 100) if pos.qty != 0 else 0
+                else:
+                    # For stocks: cost_basis / qty
+                    avg_entry_price = abs(pos.cost_basis / pos.qty) if pos.qty != 0 else 0
+                
+                # Fetch lastday_price for each position
+                lastday_price = await self._get_lastday_price(pos.symbol)
+                
+                legs.append({
+                    "symbol": pos.symbol,
+                    "qty": pos.qty,
+                    "avg_entry_price": avg_entry_price,
+                    "cost_basis": pos.cost_basis,
+                    "asset_class": pos.asset_class,
+                    "lastday_price": lastday_price,
+                    "date_acquired": pos.date_acquired  # Include for reference
+                })
+            
+            return legs
+            
+        except Exception as e:
+            self._log_error("_convert_positions_to_legs", e)
             return []
 
     def _detect_strategy_name(self, positions: List[Position]) -> str:

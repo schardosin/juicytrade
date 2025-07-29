@@ -242,6 +242,15 @@ class StreamingManager:
             logger.error(f"❌ Error re-subscribing to symbols after {provider.name} reconnection: {e}")
 
     async def get_data(self) -> Optional[MarketData]:
-        return await self._streaming_queue.get()
+        """Get streaming data with timeout to prevent deadlocks"""
+        try:
+            # Add timeout to prevent infinite blocking
+            return await asyncio.wait_for(self._streaming_queue.get(), timeout=5.0)
+        except asyncio.TimeoutError:
+            # Return None if no data available within timeout
+            return None
+        except Exception as e:
+            logger.error(f"Error getting streaming data: {e}")
+            return None
 
 streaming_manager = StreamingManager()
