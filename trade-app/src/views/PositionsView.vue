@@ -145,10 +145,10 @@
                       <td class="bid-cell">--</td>
                       <td class="ask-cell">--</td>
                       <td class="trd-prc-cell">{{ formatSymbolTrdPrc(group) }}</td>
-                      <td class="dsopn-cell">{{ group.dte || "--" }}</td>
+                      <td class="dsopn-cell">{{ formatDaysOpen(getSymbolDaysOpen(group)) }}</td>
                       <td class="beta-delta-cell">--</td>
                       <td class="dte-cell">
-                        {{ group.dte ? group.dte + "d" : "--" }}
+                        {{ formatDTE(getSymbolDTE(group)) }}
                       </td>
                       <td class="pop-cell">--</td>
                       <td class="indctr-cell">--</td>
@@ -188,11 +188,11 @@
                             <td class="ask-cell">--</td>
                             <td class="trd-prc-cell">{{ formatStrategyTrdPrc(strategy) }}</td>
                             <td class="dsopn-cell">
-                              {{ strategy.dte || "--" }}
+                              {{ formatDaysOpen(getStrategyDaysOpen(strategy)) }}
                             </td>
                             <td class="beta-delta-cell">--</td>
                             <td class="dte-cell">
-                              {{ strategy.dte ? strategy.dte + "d" : "--" }}
+                              {{ formatDTE(getStrategyDTE(strategy)) }}
                             </td>
                             <td class="pop-cell">--</td>
                             <td class="indctr-cell">--</td>
@@ -252,11 +252,11 @@
                               {{ formatCurrency(leg.avg_entry_price) }}
                             </td>
                             <td class="dsopn-cell">
-                              {{ strategy.dte || "--" }}
+                              {{ formatDaysOpen(getLegDaysOpen(leg)) }}
                             </td>
                             <td class="beta-delta-cell">--</td>
                             <td class="dte-cell">
-                              {{ strategy.dte ? strategy.dte + "d" : "--" }}
+                              {{ formatDTE(getStrategyDTE(strategy)) }}
                             </td>
                             <td class="pop-cell">--</td>
                             <td class="indctr-cell">--</td>
@@ -413,9 +413,10 @@ export default {
             if (chartResult) {
               chartData.value = chartResult;
               
-              // Force expand the right panel to Analysis section
-              isRightPanelExpanded.value = true;
-              rightPanelSection.value = "analysis";
+              // DON'T automatically expand the panel in PositionsView
+              // Let the user manually expand it if they want to see the chart
+              // isRightPanelExpanded.value = true;
+              // rightPanelSection.value = "analysis";
             } else {
               console.warn("⚠️ PositionsView: Chart generation returned null");
               chartData.value = null;
@@ -793,6 +794,11 @@ export default {
             parseInt(day)
           );
           const today = new Date();
+          
+          // Set both dates to midnight to get accurate day difference
+          expiryDate.setHours(0, 0, 0, 0);
+          today.setHours(0, 0, 0, 0);
+          
           const diffTime = expiryDate.getTime() - today.getTime();
           const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
           return `${Math.max(0, diffDays)}d`;
@@ -947,6 +953,120 @@ export default {
     const formatSymbolTrdPrc = (group) => {
       const trdPrc = getSymbolTrdPrc(group);
       return formatCurrency(trdPrc);
+    };
+
+    // Calculate DTE for a strategy (use the minimum DTE from all legs)
+    const getStrategyDTE = (strategy) => {
+      if (!strategy.legs || strategy.legs.length === 0) return null;
+      
+      let minDTE = Infinity;
+      
+      strategy.legs.forEach((leg) => {
+        if (leg.asset_class === "us_option") {
+          const parts = parseOptionSymbol(leg.symbol);
+          if (parts) {
+            const [month, day] = parts.expiry.split("/");
+            const currentYear = new Date().getFullYear();
+            const expiryDate = new Date(currentYear, parseInt(month) - 1, parseInt(day));
+            const today = new Date();
+            
+            // Set both dates to midnight to get accurate day difference
+            expiryDate.setHours(0, 0, 0, 0);
+            today.setHours(0, 0, 0, 0);
+            
+            const diffTime = expiryDate.getTime() - today.getTime();
+            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+            const dte = Math.max(0, diffDays);
+            
+            if (dte < minDTE) {
+              minDTE = dte;
+            }
+          }
+        }
+      });
+      
+      return minDTE === Infinity ? null : minDTE;
+    };
+
+    // Calculate DTE for a symbol group (use the minimum DTE from all strategies)
+    const getSymbolDTE = (group) => {
+      if (!group.strategies || group.strategies.length === 0) return null;
+      
+      let minDTE = Infinity;
+      
+      group.strategies.forEach((strategy) => {
+        const strategyDTE = getStrategyDTE(strategy);
+        if (strategyDTE !== null && strategyDTE < minDTE) {
+          minDTE = strategyDTE;
+        }
+      });
+      
+      return minDTE === Infinity ? null : minDTE;
+    };
+
+    // Format DTE for display
+    const formatDTE = (dte) => {
+      return dte !== null ? `${dte}d` : "--";
+    };
+
+    // Calculate Days Open for a strategy (use the maximum days open from all legs)
+    const getStrategyDaysOpen = (strategy) => {
+      if (!strategy.legs || strategy.legs.length === 0) return null;
+      
+      let maxDaysOpen = 0;
+      
+      strategy.legs.forEach((leg) => {
+        const legDaysOpen = getLegDaysOpen(leg);
+        if (legDaysOpen !== null && legDaysOpen > maxDaysOpen) {
+          maxDaysOpen = legDaysOpen;
+        }
+      });
+      
+      return maxDaysOpen;
+    };
+
+    // Calculate Days Open for a symbol group (use the maximum days open from all strategies)
+    const getSymbolDaysOpen = (group) => {
+      if (!group.strategies || group.strategies.length === 0) return null;
+      
+      let maxDaysOpen = 0;
+      
+      group.strategies.forEach((strategy) => {
+        const strategyDaysOpen = getStrategyDaysOpen(strategy);
+        if (strategyDaysOpen !== null && strategyDaysOpen > maxDaysOpen) {
+          maxDaysOpen = strategyDaysOpen;
+        }
+      });
+      
+      return maxDaysOpen;
+    };
+
+    // Calculate Days Open for individual leg
+    const getLegDaysOpen = (leg) => {
+      if (!leg.date_acquired) return null;
+      
+      try {
+        // Parse the date_acquired (usually in ISO format like "2024-07-28T14:30:00Z")
+        const acquiredDate = new Date(leg.date_acquired);
+        const today = new Date();
+        
+        // Set both dates to midnight to get accurate day difference
+        acquiredDate.setHours(0, 0, 0, 0);
+        today.setHours(0, 0, 0, 0);
+        
+        const diffTime = today.getTime() - acquiredDate.getTime();
+        const diffDays = Math.floor(diffTime / (1000 * 60 * 60 * 24));
+        
+        return Math.max(0, diffDays); // Ensure no negative values
+      } catch (error) {
+        console.error("Error calculating days open for leg:", leg.symbol, error);
+        return null;
+      }
+    };
+
+    // Format Days Open for display
+    const formatDaysOpen = (daysOpen) => {
+      return daysOpen !== null ? `${daysOpen}d` : "--";
     };
 
     const onTradeModeChanged = (mode) => {
@@ -1110,6 +1230,15 @@ export default {
       formatStrategyTrdPrc,
       getSymbolTrdPrc,
       formatSymbolTrdPrc,
+      // DTE functions
+      getStrategyDTE,
+      getSymbolDTE,
+      formatDTE,
+      // Days Open functions
+      getStrategyDaysOpen,
+      getSymbolDaysOpen,
+      getLegDaysOpen,
+      formatDaysOpen,
       currentSymbol,
       currentPrice,
       priceChange,
