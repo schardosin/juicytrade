@@ -19,16 +19,25 @@ class DataHealthMonitor {
     this.healthTimer = null;
   }
 
-  start() {
+  async start() {
+    // Wait for the initial WebSocket connection before starting health checks
+    try {
+      await webSocketClient.connect();
+      console.log("🏥 Initial WebSocket connection established, starting health monitoring");
+    } catch (error) {
+      console.warn("⚠️ Initial WebSocket connection failed, will retry via health monitoring");
+    }
+    
+    // Start periodic health checks
     this.healthTimer = setInterval(() => {
       this.performHealthChecks();
     }, this.healthCheckInterval);
     console.log("🏥 Data health monitoring started");
     
-    // Perform initial health check after a delay to let system stabilize
+    // Wait a bit before first health check to allow initial connection to stabilize
     setTimeout(() => {
       this.performHealthChecks();
-    }, 5000);
+    }, 5000); // 5 second delay for initial health check
   }
 
   stop() {
@@ -39,6 +48,9 @@ class DataHealthMonitor {
   }
 
   async performHealthChecks() {
+    // Don't try to connect during health checks - just check current status
+    // Connection attempts should be handled by recovery, not health checks
+
     const checks = [
       this.checkWebSocketHealth(),
       this.checkAPIHealth(),
@@ -56,6 +68,14 @@ class DataHealthMonitor {
       failedChecks.forEach((failure, index) => {
         this.store.systemState.failedComponents.add(`check_${index}`);
       });
+      
+      // If WebSocket is unhealthy, trigger recovery
+      if (failedChecks.some(f => f.reason?.message?.includes('WebSocket'))) {
+        console.log('🚑 WebSocket health check failed, triggering recovery');
+        setTimeout(() => {
+          this.store.recoveryManager.executeRecovery('websocket_disconnected');
+        }, 1000);
+      }
     } else {
       this.store.systemState.isHealthy = true;
       this.store.systemState.failedComponents.clear();
@@ -69,6 +89,8 @@ class DataHealthMonitor {
     if (!wsStatus.isConnected) {
       throw new Error("WebSocket not connected");
     }
+    // Don't try to connect during health checks - just check status
+    // Connection attempts should be handled by recovery, not health checks
   }
 
   async checkAPIHealth() {
@@ -160,14 +182,19 @@ class DataRecoveryManager {
     try {
       // Force disconnect and reconnect
       webSocketClient.disconnect();
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await new Promise(resolve => setTimeout(resolve, 2000)); // Increased delay for stability
+      
+      console.log("🔄 Attempting to reconnect WebSocket...");
       await webSocketClient.connect();
       
       // Restore subscriptions
       const allSymbols = Array.from(this.store.activeSubscriptions);
       if (allSymbols.length > 0) {
-        await webSocketClient.replaceAllSubscriptionsWithSymbols(allSymbols);
+        console.log(`🔄 Restoring ${allSymbols.length} subscriptions after recovery`);
+        await webSocketClient.replaceAllSubscriptions(allSymbols);
       }
+      
+      console.log("✅ WebSocket recovery completed successfully");
     } catch (error) {
       console.error("❌ WebSocket recovery failed:", error);
       throw error;
@@ -296,8 +323,8 @@ class SmartMarketDataStore {
     this.cache = new Map(); // TTL cache for on-demand data
 
     // Configuration
-    this.accessTimeout = 45000; // 45 seconds grace period
-    this.cleanupInterval = 30000; // Check every 30 seconds
+    this.accessTimeout = 300000; // 5 minutes grace period
+    this.cleanupInterval = 60000; // Check every minute
     this.heartbeatInterval = 20000; // Component heartbeat every 20 seconds
     this.debounceDelay = 100; // 100ms debounce for backend updates
 
@@ -345,6 +372,9 @@ class SmartMarketDataStore {
    * Set up recovery event listeners
    */
   setupRecoveryListeners() {
+    // Track when page becomes hidden to detect sleep
+    let pageHiddenTime = null;
+    
     // Listen for WebSocket recovery events
     window.addEventListener('websocket-recovered', (event) => {
       console.log('🎉 WebSocket recovery detected, performing data refresh');
@@ -353,12 +383,28 @@ class SmartMarketDataStore {
 
     // Listen for page visibility changes (sleep/wake detection)
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) {
-        // Page became visible - might be waking from sleep
-        console.log('👁️ Page became visible, checking for recovery needs');
-        setTimeout(() => {
-          this.recoveryManager.executeRecovery('system_wakeup');
-        }, 1000); // Small delay to let system stabilize
+      if (document.hidden) {
+        // Page became hidden - record time for sleep detection
+        pageHiddenTime = Date.now();
+        console.log('👁️ Page became hidden');
+      } else {
+        // Page became visible - check if we were asleep
+        const hiddenDuration = pageHiddenTime ? Date.now() - pageHiddenTime : 0;
+        console.log(`👁️ Page became visible after ${Math.round(hiddenDuration / 1000)}s`);
+        
+        // If hidden for more than 30 seconds, likely system sleep
+        if (hiddenDuration > 30000) {
+          console.log('😴 Detected potential system sleep/wake cycle, triggering recovery');
+          setTimeout(() => {
+            this.recoveryManager.executeRecovery('system_wakeup');
+          }, 2000); // Longer delay for system to stabilize after wake
+        } else {
+          // Short absence, just check connection health
+          setTimeout(() => {
+            this.performHealthCheck();
+          }, 1000);
+        }
+        pageHiddenTime = null;
       }
     });
 
@@ -368,7 +414,19 @@ class SmartMarketDataStore {
         console.log('🌐 Network came online, performing recovery');
         this.recoveryManager.executeRecovery('api_failure');
       });
+      
+      window.addEventListener('offline', () => {
+        console.log('📴 Network went offline');
+      });
     }
+
+    // Listen for focus/blur events as additional sleep detection
+    window.addEventListener('focus', () => {
+      console.log('🎯 Window gained focus, checking connection health');
+      setTimeout(() => {
+        this.performHealthCheck();
+      }, 500);
+    });
   }
 
   /**
@@ -598,7 +656,7 @@ class SmartMarketDataStore {
     const allSymbols = Array.from(this.activeSubscriptions);
 
     try {
-      // Update WebSocket subscriptions
+      // Use the correct method to replace all subscriptions
       await webSocketClient.replaceAllSubscriptions(allSymbols);
     } catch (error) {
       console.error("❌ Failed to update backend subscriptions:", error);
@@ -703,6 +761,7 @@ class SmartMarketDataStore {
     });
 
     if (toUnsubscribe.length > 0) {
+      // Correctly call unsubscribeFromSymbol for each symbol individually
       toUnsubscribe.forEach((symbol) => {
         this.lastAccess.delete(symbol);
         this.unsubscribeFromSymbol(symbol);
@@ -736,17 +795,28 @@ class SmartMarketDataStore {
    * Set up WebSocket integration to receive price updates
    */
   async setupWebSocketIntegration() {
-    // Connect to WebSocket
-    try {
-      await webSocketClient.connect();
-    } catch (error) {
-      console.error("❌ Failed to connect to WebSocket:", error);
-    }
-
-    // Route price updates to our store
+    // The new webSocketClient connects automatically via the worker
+    // We just need to set up the listeners
+    
     webSocketClient.onPriceUpdate((data) => {
       this.handlePriceUpdate(data);
     });
+
+    webSocketClient.onSubscriptionConfirmed((data) => {
+      console.log("Subscription confirmed by backend:", data);
+    });
+
+    webSocketClient.onPositionsUpdate((data) => {
+      this.updateData('positions', data);
+    });
+
+    // Connect and ensure persistent subscriptions
+    try {
+      await webSocketClient.connect();
+      webSocketClient.ensurePersistentSubscriptions(["orders", "positions"]);
+    } catch (error) {
+      console.error("❌ Failed to connect to WebSocket via worker:", error);
+    }
   }
 
   /**

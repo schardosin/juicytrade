@@ -1,5 +1,6 @@
 {
   "compilerOptions": {
+    "lib": ["ESNext", "DOM", "WebWorker"],
     // ... your other compiler options
     "baseUrl": ".",
     "paths": {

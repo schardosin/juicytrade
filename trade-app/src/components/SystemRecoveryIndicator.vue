@@ -125,10 +125,8 @@ export default {
       // Listen for WebSocket recovery events
       window.addEventListener('websocket-recovered', handleWebSocketRecovery);
       
-      // Perform initial health check
-      setTimeout(() => {
-        smartMarketDataStore.performHealthCheck();
-      }, 1000);
+      // Don't perform initial health check - let the health monitor handle it
+      // The health monitor already waits for initial connection and has proper delays
     });
 
     onUnmounted(() => {

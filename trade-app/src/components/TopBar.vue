@@ -405,11 +405,6 @@ export default {
       showSettingsDialog.value = true;
     };
 
-    const checkConnectionStatus = () => {
-      // Check WebSocket connection status
-      const status = webSocketClient.getConnectionStatus();
-      isConnected.value = status.isConnected;
-    };
 
     // Handle input with debouncing
     const handleInput = () => {
@@ -579,13 +574,8 @@ export default {
 
     // Lifecycle hooks
     onMounted(() => {
-      checkConnectionStatus();
-
       // Initial account display update
       updateAccountDisplay();
-
-      // Set up periodic connection status checks
-      connectionStatusInterval = setInterval(checkConnectionStatus, 5000);
     });
 
     // Watch for reactive data changes and update display
@@ -595,6 +585,15 @@ export default {
       deep: true,
     });
 
+    watch(
+      () => webSocketClient.isConnected.value,
+      (newStatus) => {
+        console.log(`TopBar: WebSocket connection status changed to: ${newStatus}`);
+        isConnected.value = newStatus;
+      },
+      { immediate: true }
+    );
+
     // Clean up intervals when component is unmounted
     onUnmounted(() => {
       if (searchTimeout) {
@@ -602,10 +601,6 @@ export default {
         searchTimeout = null;
       }
 
-      if (connectionStatusInterval) {
-        clearInterval(connectionStatusInterval);
-        connectionStatusInterval = null;
-      }
     });
 
     return {

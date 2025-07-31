@@ -230,10 +230,14 @@ export function useOptionsChainManager(
   const updateSubscriptions = async () => {
     const newSymbols = allSubscribedSymbols.value;
 
-    if (newSymbols.length > 0) {
-      webSocketClient.replaceAllSubscriptions(symbol.value, newSymbols);
+    // The first symbol should be the underlying
+    const allSymbols = [symbol.value, ...newSymbols];
+
+    if (allSymbols.length > 1) { // Only subscribe if we have more than just the underlying
+      webSocketClient.replaceAllSubscriptions(allSymbols);
     } else {
-      webSocketClient.replaceAllSubscriptions(symbol.value, []);
+      // If only the underlying is left, we can clear option subscriptions
+      webSocketClient.replaceAllSubscriptions([symbol.value]);
     }
 
     // Update our tracking set
