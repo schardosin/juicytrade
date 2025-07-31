@@ -761,6 +761,9 @@ class TradierProvider(BaseProvider):
     async def get_orders(self, status: str = "open") -> List[Order]:
         """Get orders with optional status filter."""
         try:
+            # Translate status from frontend to Tradier API format
+            tradier_status = self._translate_order_status(status)
+            
             url = f"{self.base_url}/v1/accounts/{self.account_id}/orders"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -779,16 +782,16 @@ class TradierProvider(BaseProvider):
             for order in orders:
                 order_status = order.get("status")
                 
-                # Filter orders based on status
-                if status == "all":
+                # Filter orders based on translated status
+                if tradier_status == "all":
                     # Include all orders
                     include_order = True
-                elif status == "canceled":
+                elif tradier_status == "canceled":
                     # Include both canceled and rejected orders
                     include_order = order_status in ["canceled", "cancelled", "rejected"]
                 else:
                     # Exact status match for other statuses
-                    include_order = order_status == status
+                    include_order = order_status == tradier_status
                 
                 if include_order:
                     transformed_order = self._transform_order(order)
@@ -1353,6 +1356,22 @@ class TradierProvider(BaseProvider):
         except Exception as e:
             self._log_error(f"_get_daily_bars for {symbol} {timeframe}", e)
             return []
+
+    def _translate_order_status(self, status: str) -> str:
+        """Translate frontend order status to Tradier API format."""
+        # Map frontend status values to Tradier API status values
+        status_mapping = {
+            "pending": "open",  # Frontend "pending" maps to Tradier "open"
+            "open": "open",
+            "filled": "filled",
+            "canceled": "canceled",
+            "cancelled": "canceled",  # Handle both spellings
+            "rejected": "rejected",
+            "all": "all"
+        }
+        
+        # Return mapped status or original if not found
+        return status_mapping.get(status.lower(), status)
 
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""

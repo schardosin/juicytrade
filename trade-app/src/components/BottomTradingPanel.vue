@@ -343,8 +343,8 @@ export default {
       return getOptionPriceLive(selection, priceType);
     };
 
-    // Net premium for limit price calculation (can be locked)
-    const netPremium = computed(() => {
+    // Net premium PER COMBINATION (not multiplied by quantity)
+    const netPremiumPerCombination = computed(() => {
       let total = 0;
       selectedOptions.value.forEach((selection) => {
         // Use locked price if locked, otherwise use static data
@@ -359,13 +359,21 @@ export default {
           price = option ? ((option.bid || 0) + (option.ask || 0)) / 2 : 0;
         }
         const premium = selection.side === "buy" ? -price : price;
-        total += premium * selection.quantity;
+        // Don't multiply by quantity - this is per combination
+        total += premium;
       });
       return total;
     });
 
-    // BID price display (always live, never locked)
-    const bidPrice = computed(() => {
+    // Total premium for all combinations (multiplied by quantity)
+    const totalPremium = computed(() => {
+      // Get the minimum quantity to determine how many combinations we have
+      const minQuantity = Math.min(...selectedOptions.value.map(opt => opt.quantity));
+      return netPremiumPerCombination.value * minQuantity;
+    });
+
+    // BID price display PER COMBINATION (always live, never locked)
+    const bidPricePerCombination = computed(() => {
       let total = 0;
       selectedOptions.value.forEach((selection) => {
         const price =
@@ -373,13 +381,14 @@ export default {
             ? getOptionPriceLive(selection, "ask")
             : getOptionPriceLive(selection, "bid");
         const premium = selection.side === "buy" ? -price : price;
-        total += premium * selection.quantity;
+        // Don't multiply by quantity - this is per combination
+        total += premium;
       });
       return total.toFixed(2);
     });
 
-    // ASK price display (always live, never locked)
-    const askPrice = computed(() => {
+    // ASK price display PER COMBINATION (always live, never locked)
+    const askPricePerCombination = computed(() => {
       let total = 0;
       selectedOptions.value.forEach((selection) => {
         const price =
@@ -387,17 +396,24 @@ export default {
             ? getOptionPriceLive(selection, "bid")
             : getOptionPriceLive(selection, "ask");
         const premium = selection.side === "buy" ? -price : price;
-        total += premium * selection.quantity;
+        // Don't multiply by quantity - this is per combination
+        total += premium;
       });
       return total.toFixed(2);
     });
 
-    const midPrice = computed(() => {
+    // MID price PER COMBINATION
+    const midPricePerCombination = computed(() => {
       return (
-        (parseFloat(bidPrice.value) + parseFloat(askPrice.value)) /
+        (parseFloat(bidPricePerCombination.value) + parseFloat(askPricePerCombination.value)) /
         2
       ).toFixed(2);
     });
+
+    // Legacy aliases for template compatibility
+    const bidPrice = bidPricePerCombination;
+    const askPrice = askPricePerCombination;
+    const midPrice = midPricePerCombination;
 
     // Calculate comprehensive P&L analysis using centralized calculator
     const profitLossAnalysis = computed(() => {
@@ -734,7 +750,7 @@ export default {
 
         if (!priceLocked.value) {
           // Always display limit price as positive in UI
-          limitPrice.value = parseFloat(Math.abs(netPremium.value).toFixed(2));
+          limitPrice.value = parseFloat(Math.abs(netPremiumPerCombination.value).toFixed(2));
         }
       },
       { deep: true, immediate: true }
@@ -755,7 +771,8 @@ export default {
       priceProgressPercent,
       leftProgressPercent,
       rightProgressPercent,
-      netPremium,
+      netPremiumPerCombination,
+      totalPremium,
       handleCancel,
       handleReviewSend,
       incrementPrice,
