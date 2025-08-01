@@ -108,6 +108,7 @@ import RightPanel from "../components/RightPanel.vue";
 import { useOrderManagement } from "../composables/useOrderManagement";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { useOptionsChainManager } from "../composables/useOptionsChainManager";
+import { useMarketData } from "../composables/useMarketData.js";
 import api from "../services/api";
 // webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
 // import webSocketClient from "../services/webSocketClient";
@@ -142,6 +143,9 @@ export default {
     // Use global symbol state
     const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
       useGlobalSymbol();
+
+    // Use market data composable for refreshing positions
+    const { refreshPositions } = useMarketData();
 
     // Use centralized options chain manager
     const optionsManager = useOptionsChainManager(
@@ -495,6 +499,9 @@ export default {
 
       // Update global symbol state
       updateSymbol(symbol);
+
+      // Force a refresh of the positions data from the backend
+      await refreshPositions();
 
       // Fetch new data for the selected symbol
       try {

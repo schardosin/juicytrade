@@ -57,12 +57,6 @@ function configureDataSources() {
     interval: 60000, // 1 minute
   });
 
-  smartMarketDataStore.registerDataSource("positions", {
-    strategy: "periodic",
-    method: "getPositions",
-    interval: 30000, // 30 seconds
-  });
-
   // Static data (One-time strategy)
   smartMarketDataStore.registerDataSource("accountInfo", {
     strategy: "once",

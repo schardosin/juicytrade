@@ -59,6 +59,26 @@ export function useMarketData() {
   };
 
   /**
+   * Get positions filtered by symbol (async method following ActivitySection pattern)
+   */
+  const getPositionsForSymbol = async (symbol) => {
+    // Get the reactive computed from the store
+    const reactivePositions = smartMarketDataStore.getFilteredPositions(symbol);
+    
+    // Return the current value (for async/await pattern)
+    // The reactive computed will automatically update when data changes
+    return reactivePositions.value;
+  };
+
+  /**
+   * Force refresh positions data
+   * Useful when switching symbols to ensure we have the latest data
+   */
+  const refreshPositionsData = async () => {
+    return await smartMarketDataStore.refreshPositions();
+  };
+
+  /**
    * Get orders by status (On-Demand Fresh strategy - always fresh data)
    */
   const getOrdersByStatus = async (status = "all") => {
@@ -182,6 +202,7 @@ export function useMarketData() {
     // Auto-updating data (Periodic)
     getBalance,
     getPositions,
+    getPositionsForSymbol,
 
     // On-demand fresh data (Orders)
     getOrdersByStatus,

@@ -354,6 +354,9 @@ class SmartMarketDataStore {
     // Register provider configuration data sources
     this.setupProviderDataSources();
 
+    // Register positions data source
+    this.setupPositionsDataSource();
+
     // Start health monitoring
     this.startHealthMonitoring();
 
@@ -472,6 +475,18 @@ class SmartMarketDataStore {
       strategy: "on-demand",
       method: "getProviderConfig",
       ttl: 5 * 60 * 1000, // 5 minutes cache
+    });
+  }
+
+  /**
+   * Set up positions data source
+   */
+  setupPositionsDataSource() {
+    // Positions - periodic updates every 30 seconds
+    this.registerDataSource("positions", {
+      strategy: "periodic",
+      method: "getPositions",
+      interval: 30 * 1000, // 30 seconds
     });
   }
 
@@ -904,6 +919,108 @@ class SmartMarketDataStore {
   }
 
   /**
+   * Get filtered positions for a specific symbol
+   * This automatically updates when positions data changes or symbol changes
+   */
+  getFilteredPositions(symbol) {
+    return computed(() => {
+      // Track access for positions data
+      this.trackDataAccess('positions');
+      
+      const allPositions = this.data.get('positions');
+      if (!allPositions || !symbol) {
+        return null;
+      }
+
+      // Helper function to get symbol group (handles SPX/SPXW grouping)
+      const getSymbolGroup = (sym) => {
+        if (sym === "SPX" || sym === "SPXW") {
+          return ["SPX", "SPXW"];
+        }
+        return [sym];
+      };
+
+      // Helper function to extract underlying symbol from option symbol
+      const extractUnderlyingFromOptionSymbol = (optionSymbol) => {
+        const match = optionSymbol.match(/^([A-Z]+)/);
+        return match ? match[1] : null;
+      };
+
+      const symbolGroup = getSymbolGroup(symbol);
+      let filteredPositions = [];
+
+      // Handle different response structures
+      if (allPositions.enhanced && allPositions.symbol_groups) {
+        // New hierarchical structure
+        allPositions.symbol_groups.forEach((symbolGroupData) => {
+          if (
+            symbolGroup.includes(symbolGroupData.symbol) &&
+            symbolGroupData.asset_class === "options"
+          ) {
+            symbolGroupData.strategies.forEach((strategy) => {
+              strategy.legs.forEach((leg) => {
+                filteredPositions.push({
+                  ...leg,
+                  underlying_symbol: symbolGroupData.symbol,
+                  asset_class: "us_option"
+                });
+              });
+            });
+          }
+        });
+      } else if (allPositions.enhanced && allPositions.position_groups) {
+        // Old enhanced structure
+        allPositions.position_groups.forEach((group) => {
+          if (
+            symbolGroup.includes(group.symbol) &&
+            group.asset_class === "options"
+          ) {
+            group.legs.forEach((leg) => {
+              filteredPositions.push({
+                ...leg,
+                underlying_symbol: group.symbol,
+                asset_class: "us_option"
+              });
+            });
+          }
+        });
+      } else if (allPositions.positions && Array.isArray(allPositions.positions)) {
+        // Fallback to old structure
+        filteredPositions = allPositions.positions.filter((pos) => {
+          const isOption = pos.asset_class === "us_option";
+          const underlyingFromSymbol = extractUnderlyingFromOptionSymbol(pos.symbol);
+          const isCurrentSymbolGroup = symbolGroup.includes(underlyingFromSymbol);
+
+          return isOption && isCurrentSymbolGroup;
+        });
+      }
+
+      return {
+        ...allPositions,
+        positions: filteredPositions,
+        filtered_for_symbol: symbol,
+        filtered_count: filteredPositions.length
+      };
+    });
+  }
+
+  /**
+   * Force refresh positions data
+   * Useful when switching symbols to ensure we have the latest data
+   */
+  async refreshPositions() {
+    const config = this.strategies.get("positions");
+    if (config && config.strategy === "periodic") {
+      // Clear any existing timer and restart
+      const existingTimer = this.timers.get("positions");
+      if (existingTimer) {
+        clearInterval(existingTimer);
+      }
+      this.setupPeriodicUpdate("positions", config);
+    }
+  }
+
+  /**
    * Get data with options (for on-demand and one-time strategies)
    */
   async getData(key, options = {}) {
@@ -952,8 +1069,11 @@ class SmartMarketDataStore {
    * Set up periodic updates for a data source
    */
   setupPeriodicUpdate(key, config) {
+    console.log(`🔄 Setting up periodic update for ${key} with ${config.interval}ms interval`);
+    
     const fetchData = async () => {
       try {
+        console.log(`📡 Fetching periodic data for ${key} using method ${config.method}`);
         this.setLoading(key, true);
         
         // Check if the method exists
@@ -962,6 +1082,7 @@ class SmartMarketDataStore {
         }
         
         const response = await api[config.method](...(config.params || []));
+        console.log(`✅ Successfully fetched ${key} data:`, response);
         
         // The API methods already return the extracted data, not the full response
         // So we use the response directly
@@ -975,11 +1096,13 @@ class SmartMarketDataStore {
     };
 
     // Initial fetch
+    console.log(`🚀 Starting initial fetch for ${key}`);
     fetchData();
 
     // Set up periodic updates
     const timer = setInterval(fetchData, config.interval);
     this.timers.set(key, timer);
+    console.log(`⏰ Periodic timer set for ${key}`);
   }
 
   /**

@@ -340,7 +340,7 @@ export default {
   emits: ["panel-collapsed", "positions-changed"],
   setup(props, { emit }) {
     // Use unified market data composable
-    const { getPositions } = useMarketData();
+    const { getPositionsForSymbol } = useMarketData();
 
     const activeSection = ref("overview");
     const isExpanded = ref(false);
@@ -762,149 +762,43 @@ export default {
       }
     };
 
-    // Get reactive positions data (auto-updates every 30 seconds)
-    const reactivePositions = getPositions();
-
-    // Process positions data - defined before watcher to avoid hoisting issues
-    const processPositionsData = (response) => {
+    // Fetch positions for current symbol (following ActivitySection pattern)
+    const fetchPositionsForSymbol = async (symbol) => {
       try {
-        // Handle the new enhanced response structure
+        // Get filtered positions data using the composable
+        const response = await getPositionsForSymbol(symbol);
+        
         let positions = [];
-        if (response && response.enhanced && response.symbol_groups) {
-          // New hierarchical structure - extract individual positions from symbol groups
-          const symbolGroup = getSymbolGroup(props.currentSymbol);
-
-          response.symbol_groups.forEach((symbolGroupData) => {
-            // Check if this symbol group is for the current symbol
-            if (
-              symbolGroup.includes(symbolGroupData.symbol) &&
-              symbolGroupData.asset_class === "options"
-            ) {
-              // Extract positions from all strategies within this symbol group
-              symbolGroupData.strategies.forEach((strategy) => {
-                strategy.legs.forEach((leg) => {
-                  // Parse option symbol to get missing details
-                  const parsedOption = parseOptionSymbol(leg.symbol);
-
-                  positions.push({
-                    id: leg.symbol,
-                    symbol: leg.symbol,
-                    asset_class: "us_option", // Required for chart
-                    underlying_symbol: symbolGroupData.symbol,
-                    qty: leg.qty,
-                    strike_price: parsedOption?.strike_price,
-                    option_type: parsedOption?.option_type,
-                    expiry_date: parsedOption?.expiry_date,
-                    current_price: leg.current_price,
-                    avg_entry_price:
-                      leg.avg_entry_price ||
-                      (leg.cost_basis
-                        ? Math.abs(leg.cost_basis / (leg.qty * 100))
-                        : 0),
-                    unrealized_pl: leg.unrealized_pl || 0,
-                    isExisting: true,
-                    isSelected: false,
-                  });
-                });
-              });
-            }
+        if (response && response.positions && Array.isArray(response.positions)) {
+          // The data store already filtered the positions for us!
+          positions = response.positions.map((pos) => {
+            // Parse option symbol to get missing details if needed
+            const parsedOption = parseOptionSymbol(pos.symbol);
+            
+            return {
+              id: pos.symbol,
+              symbol: pos.symbol,
+              asset_class: pos.asset_class || "us_option",
+              underlying_symbol: pos.underlying_symbol,
+              qty: pos.qty,
+              strike_price: parsedOption?.strike_price || pos.strike_price,
+              option_type: parsedOption?.option_type || pos.option_type,
+              expiry_date: parsedOption?.expiry_date || pos.expiry_date,
+              current_price: pos.current_price,
+              avg_entry_price: pos.avg_entry_price || 
+                (pos.cost_basis ? Math.abs(pos.cost_basis / (pos.qty * 100)) : 0),
+              unrealized_pl: pos.unrealized_pl || 0,
+              isExisting: true,
+              isSelected: false,
+            };
           });
-        } else if (response && response.enhanced && response.position_groups) {
-          // Old enhanced structure - extract individual positions from groups
-          const symbolGroup = getSymbolGroup(props.currentSymbol);
-
-          response.position_groups.forEach((group) => {
-            // Check if this group is for the current symbol
-            if (
-              symbolGroup.includes(group.symbol) &&
-              group.asset_class === "options"
-            ) {
-              // Add each leg as an individual position
-              group.legs.forEach((leg) => {
-                // Parse option symbol to get missing details
-                const parsedOption = parseOptionSymbol(leg.symbol);
-
-                positions.push({
-                  id: leg.symbol,
-                  symbol: leg.symbol,
-                  asset_class: "us_option", // Required for chart
-                  underlying_symbol: group.symbol,
-                  qty: leg.qty,
-                  strike_price: parsedOption?.strike_price,
-                  option_type: parsedOption?.option_type,
-                  expiry_date: parsedOption?.expiry_date,
-                  current_price: leg.current_price,
-                  avg_entry_price: leg.avg_entry_price,
-                  unrealized_pl: leg.unrealized_pl || 0,
-                  isExisting: true,
-                  isSelected: false,
-                });
-              });
-            }
-          });
-        } else if (
-          response &&
-          response.positions &&
-          Array.isArray(response.positions)
-        ) {
-          // Fallback to old structure
-          const symbolGroup = getSymbolGroup(props.currentSymbol);
-
-          positions = response.positions
-            .filter((pos) => {
-              const isOption = pos.asset_class === "us_option";
-              const underlyingFromSymbol = extractUnderlyingFromOptionSymbol(
-                pos.symbol
-              );
-              const isCurrentSymbolGroup =
-                symbolGroup.includes(underlyingFromSymbol);
-              return isOption && isCurrentSymbolGroup;
-            })
-            .map((pos) => {
-              const parsedOption = parseOptionSymbol(pos.symbol);
-              return {
-                id: pos.symbol,
-                symbol: pos.symbol,
-                asset_class: "us_option", // Required for chart
-                underlying_symbol:
-                  parsedOption?.underlying_symbol ||
-                  extractUnderlyingFromOptionSymbol(pos.symbol),
-                qty: pos.qty,
-                strike_price: parsedOption?.strike_price,
-                option_type: parsedOption?.option_type,
-                expiry_date: parsedOption?.expiry_date,
-                current_price: pos.current_price,
-                avg_entry_price: pos.avg_entry_price,
-                unrealized_pl: pos.unrealized_pl || 0,
-                isExisting: true,
-                isSelected: false,
-              };
-            });
         }
 
         existingPositions.value = positions;
       } catch (error) {
-        console.error("Error fetching existing positions:", error);
-        console.error("Error details:", error.response?.data || error.message);
+        console.error("Error fetching positions for symbol:", error);
         existingPositions.value = [];
       }
-    };
-
-    // Watch for changes in reactive positions data - now after function is defined
-    watch(
-      reactivePositions,
-      (response) => {
-        processPositionsData(response);
-      },
-      { immediate: true }
-    );
-
-    // Initialize checked positions when component mounts or positions change
-    const initializeCheckedPositions = () => {
-      // Auto-check all positions initially
-      allPositions.value.forEach((pos) => {
-        checkedPositions.value.add(pos.id);
-      });
     };
 
     // Watch for changes in positions to update checked state
@@ -945,13 +839,17 @@ export default {
       { deep: true }
     );
 
-    // Watch for symbol changes - positions will be automatically updated via reactive data
+    // Simple symbol watching (following ActivitySection pattern)
     watch(
       () => props.currentSymbol,
       (newSymbol) => {
-        console.log("🔄 RightPanel: Symbol changed to:", newSymbol);
-        // Positions will be automatically updated via the reactive positions watcher
-      }
+        // Clear previously checked positions when symbol changes
+        checkedPositions.value.clear();
+        
+        // Fetch positions for the new symbol
+        fetchPositionsForSymbol(newSymbol);
+      },
+      { immediate: true }
     );
 
     // Watch for forced expansion and section changes
@@ -1005,7 +903,6 @@ export default {
       updateChartWithCheckedPositions,
       isInTheMoney,
       formatEnhancedOptionDescription,
-      initializeCheckedPositions,
     };
   },
 };
