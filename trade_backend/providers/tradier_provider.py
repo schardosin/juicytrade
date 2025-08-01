@@ -188,124 +188,172 @@ class TradierProvider(BaseProvider):
             return False
 
     async def connect_streaming(self) -> bool:
-        """Enhanced connection with better error handling and recovery"""
+        """Enhanced connection with better error handling, recovery, and timeout protection"""
         try:
             # Clear previous connection state
             self.is_connected = False
             self._connection_ready.clear()
             
-            # Create new session
-            if not await self._create_session():
-                logger.error("Failed to create Tradier session")
+            # Create new session with timeout
+            logger.info("🔄 Creating Tradier session...")
+            session_created = await asyncio.wait_for(self._create_session(), timeout=30.0)
+            if not session_created:
+                logger.error("❌ Failed to create Tradier session")
                 return False
 
             # Close existing connection if any
             if self._stream_connection:
                 try:
-                    await self._stream_connection.close()
-                except:
-                    pass
+                    await asyncio.wait_for(self._stream_connection.close(), timeout=5.0)
+                except (asyncio.TimeoutError, Exception) as e:
+                    logger.warning(f"⚠️ Error closing existing connection: {e}")
                 self._stream_connection = None
 
-            # Establish new WebSocket connection
-            logger.info(f"Connecting to Tradier WebSocket: {self.stream_url}")
-            self._stream_connection = await websockets.connect(
-                self.stream_url,
-                ping_interval=30,  # Send ping every 30 seconds
-                ping_timeout=10,   # Wait 10 seconds for pong
-                close_timeout=10   # Wait 10 seconds for close
+            # Establish new WebSocket connection with timeout
+            logger.info(f"🔄 Connecting to Tradier WebSocket: {self.stream_url}")
+            
+            self._stream_connection = await asyncio.wait_for(
+                websockets.connect(
+                    self.stream_url,
+                    ping_interval=30,  # Send ping every 30 seconds
+                    ping_timeout=10,   # Wait 10 seconds for pong
+                    close_timeout=5,   # Wait 5 seconds for close
+                    max_size=2**20,    # 1MB max message size
+                    max_queue=32       # Limit queue size
+                ),
+                timeout=15.0
             )
             
             logger.info("✅ Connected to Tradier WebSocket successfully")
             self._connection_ready.set()
             
-            # Start stream handler
-            asyncio.create_task(self._stream_handler())
+            # Start stream handler with proper task management
+            self._stream_task = asyncio.create_task(self._stream_handler())
             
             self.is_connected = True
             return True
             
+        except asyncio.TimeoutError:
+            logger.error("❌ Timeout connecting to Tradier WebSocket")
+            self.is_connected = False
+            return False
         except Exception as e:
             logger.error(f"❌ Failed to connect to Tradier WebSocket: {e}")
             self.is_connected = False
             return False
 
     async def _stream_handler(self):
-        """Enhanced stream handler with better error handling and debugging"""
+        """Enhanced stream handler with better error handling, timeout protection, and shutdown awareness"""
         logger.info("🎯 Tradier stream handler started")
         message_count = 0
         quote_count = 0
+        error_count = 0
+        last_heartbeat = time.time()
         
         try:
-            async for message in self._stream_connection:
-                message_count += 1
+            while self.is_connected and self._stream_connection:
                 try:
-                    data = json.loads(message)
-                    message_type = data.get('type', 'unknown')
+                    # Use timeout to prevent hanging and allow shutdown checking
+                    message = await asyncio.wait_for(
+                        self._stream_connection.recv(), 
+                        timeout=5.0
+                    )
                     
-                    # Log every 100 messages to show activity
-                    if message_count % 100 == 0:
-                        logger.debug(f"📊 Tradier: Processed {message_count} messages, {quote_count} quotes")
+                    message_count += 1
                     
-                    if message_type == 'quote':
-                        quote_count += 1
-                        symbol = data.get('symbol')
+                    try:
+                        data = json.loads(message)
+                        message_type = data.get('type', 'unknown')
                         
-                        # Log first few quotes for debugging
-                        if quote_count <= 5:
-                            logger.debug(f"📈 Tradier quote #{quote_count}: {symbol} - bid: {data.get('bid')}, ask: {data.get('ask')}, last: {data.get('last')}")
+                        # Log every 100 messages to show activity
+                        if message_count % 100 == 0:
+                            logger.debug(f"📊 Tradier: Processed {message_count} messages, {quote_count} quotes, {error_count} errors")
                         
-                        # Validate that we're subscribed to this symbol
-                        if symbol not in self._subscribed_symbols:
-                            # Only warn for stock symbols, options are expected to have many symbols
-                            if not self._is_option_symbol(symbol):
-                                logger.debug(f"Received data for unsubscribed symbol: {symbol}")
-                            continue
+                        if message_type == 'quote':
+                            quote_count += 1
+                            symbol = data.get('symbol')
+                            
+                            # Log first few quotes for debugging
+                            if quote_count <= 5:
+                                logger.debug(f"📈 Tradier quote #{quote_count}: {symbol} - bid: {data.get('bid')}, ask: {data.get('ask')}, last: {data.get('last')}")
+                            
+                            # Validate that we're subscribed to this symbol
+                            if symbol not in self._subscribed_symbols:
+                                # Only warn for stock symbols, options are expected to have many symbols
+                                if not self._is_option_symbol(symbol):
+                                    logger.debug(f"Received data for unsubscribed symbol: {symbol}")
+                                continue
+                            
+                            # Create market data with proper price handling
+                            price_data = {
+                                'bid': data.get('bid'),
+                                'ask': data.get('ask'),
+                                'last': data.get('last'),
+                                'volume': data.get('volume'),
+                                'timestamp': data.get('biddate') or data.get('timestamp')
+                            }
+                            
+                            market_data = MarketData(
+                                symbol=symbol,
+                                data_type='quote',
+                                timestamp=str(data.get('biddate') or data.get('timestamp', '')),
+                                data=price_data
+                            )
+                            
+                            # Put data in queue with timeout to prevent blocking
+                            try:
+                                await asyncio.wait_for(
+                                    self._streaming_queue.put(market_data), 
+                                    timeout=1.0
+                                )
+                            except asyncio.TimeoutError:
+                                logger.warning("⚠️ Queue put timeout - queue may be full")
+                            
+                            # Log every 50th quote to show data flow
+                            if quote_count % 50 == 0:
+                                logger.debug(f"📡 Tradier: Queued quote #{quote_count} for {symbol}")
+                            
+                        elif message_type == 'heartbeat':
+                            # Handle heartbeat messages
+                            last_heartbeat = time.time()
+                            logger.debug("💓 Received heartbeat from Tradier")
+                        else:
+                            # Log unknown message types for first few
+                            if message_count <= 10:
+                                logger.debug(f"📨 Tradier message #{message_count}: type={message_type}")
+                            
+                    except json.JSONDecodeError as e:
+                        error_count += 1
+                        logger.warning(f"⚠️ Failed to decode JSON message: {e}")
+                        continue
+                    except Exception as e:
+                        error_count += 1
+                        logger.error(f"❌ Error processing message #{message_count}: {e}")
+                        continue
                         
-                        # Create market data with proper price handling
-                        price_data = {
-                            'bid': data.get('bid'),
-                            'ask': data.get('ask'),
-                            'last': data.get('last'),
-                            'volume': data.get('volume'),
-                            'timestamp': data.get('biddate') or data.get('timestamp')
-                        }
-                        
-                        market_data = MarketData(
-                            symbol=symbol,
-                            data_type='quote',
-                            timestamp=str(data.get('biddate') or data.get('timestamp', '')),
-                            data=price_data
-                        )
-                        await self._streaming_queue.put(market_data)
-                        
-                        # Log every 50th quote to show data flow
-                        if quote_count % 50 == 0:
-                            logger.debug(f"📡 Tradier: Queued quote #{quote_count} for {symbol}")
-                        
-                    elif message_type == 'heartbeat':
-                        # Handle heartbeat messages
-                        logger.debug("💓 Received heartbeat from Tradier")
-                    else:
-                        # Log unknown message types for first few
-                        if message_count <= 10:
-                            logger.debug(f"📨 Tradier message #{message_count}: type={message_type}")
-                        
-                except json.JSONDecodeError as e:
-                    logger.warning(f"Failed to decode JSON message: {e}")
+                except asyncio.TimeoutError:
+                    # Check for heartbeat timeout
+                    if time.time() - last_heartbeat > 120:  # 2 minutes without heartbeat
+                        logger.warning("⚠️ No heartbeat received for 2 minutes - connection may be stale")
+                        break
+                    # Timeout is normal, continue loop
                     continue
+                except websockets.exceptions.ConnectionClosed as e:
+                    logger.warning(f"🔌 Tradier WebSocket connection closed: {e}")
+                    break
                 except Exception as e:
-                    logger.error(f"Error processing message #{message_count}: {e}")
-                    continue
+                    error_count += 1
+                    logger.error(f"❌ Error in Tradier stream handler: {e}")
+                    if error_count > 10:
+                        logger.error("❌ Too many errors in stream handler, stopping")
+                        break
+                    await asyncio.sleep(1)  # Brief pause on error
                     
-        except websockets.exceptions.ConnectionClosed as e:
-            logger.warning(f"🔌 Tradier WebSocket connection closed: {e}")
-            self.is_connected = False
         except Exception as e:
-            logger.error(f"❌ Error in Tradier stream handler: {e}")
-            self.is_connected = False
+            logger.error(f"❌ Fatal error in Tradier stream handler: {e}")
         finally:
-            logger.info(f" Tradier stream handler stopped - processed {message_count} messages, {quote_count} quotes")
+            self.is_connected = False
+            logger.info(f"🏁 Tradier stream handler stopped - processed {message_count} messages, {quote_count} quotes, {error_count} errors")
 
     async def subscribe_to_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         logger.info(f"🔔 Tradier: subscribe_to_symbols called with {len(symbols)} symbols")
@@ -337,7 +385,7 @@ class TradierProvider(BaseProvider):
             return False
 
     def is_streaming_connected(self) -> bool:
-        """Check if streaming connection is active and healthy"""
+        """Enhanced check if streaming connection is active and healthy"""
         try:
             # Basic checks first
             if not self.is_connected or self._session_id is None:
@@ -347,16 +395,30 @@ class TradierProvider(BaseProvider):
             if self._stream_connection is None:
                 return False
             
-            # Check if WebSocket is in OPEN state (1)
-            # WebSocket states: CONNECTING=0, OPEN=1, CLOSING=2, CLOSED=3
-            if hasattr(self._stream_connection, 'state'):
-                return self._stream_connection.state == 1  # OPEN state
-            else:
-                # Fallback to closed property check
-                return not self._stream_connection.closed
+            # Check if WebSocket is in OPEN state
+            try:
+                # For websockets library, check the state property
+                if hasattr(self._stream_connection, 'state'):
+                    # WebSocket states: CONNECTING=0, OPEN=1, CLOSING=2, CLOSED=3
+                    is_open = self._stream_connection.state == 1  # OPEN state
+                else:
+                    # Fallback to closed property check
+                    is_open = not getattr(self._stream_connection, 'closed', True)
+                
+                # Additional health check - verify connection is responsive
+                if is_open and hasattr(self._stream_connection, 'ping'):
+                    # Connection appears open, return True
+                    # Note: We don't ping here as it's called frequently
+                    return True
+                
+                return is_open
+                
+            except Exception as e:
+                logger.debug(f"⚠️ Error checking WebSocket state: {e}")
+                return False
                 
         except Exception as e:
-            logger.debug(f"Exception in is_streaming_connected: {e}")
+            logger.debug(f"❌ Exception in is_streaming_connected: {e}")
             return False
 
     async def get_streaming_data(self) -> Optional[MarketData]:
@@ -1048,11 +1110,41 @@ class TradierProvider(BaseProvider):
             self._log_error(f"cancel_order {order_id}", e)
             return False
     async def disconnect_streaming(self) -> bool:
-        if self._stream_connection:
-            await self._stream_connection.close()
+        """Enhanced disconnect with proper cleanup and timeout protection"""
+        try:
+            logger.info("🛑 Disconnecting Tradier WebSocket...")
             self.is_connected = False
-            logger.info("Disconnected from Tradier WebSocket.")
-        return True
+            
+            # Cancel stream handler task if it exists
+            if hasattr(self, '_stream_task') and self._stream_task and not self._stream_task.done():
+                self._stream_task.cancel()
+                try:
+                    await asyncio.wait_for(self._stream_task, timeout=3.0)
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    pass
+            
+            # Close WebSocket connection with timeout
+            if self._stream_connection:
+                try:
+                    await asyncio.wait_for(self._stream_connection.close(), timeout=5.0)
+                    logger.info("✅ Tradier WebSocket connection closed")
+                except asyncio.TimeoutError:
+                    logger.warning("⚠️ Tradier WebSocket close timeout")
+                except Exception as e:
+                    logger.warning(f"⚠️ Error closing Tradier WebSocket: {e}")
+                finally:
+                    self._stream_connection = None
+            
+            # Clear connection state
+            self._connection_ready.clear()
+            self._subscribed_symbols.clear()
+            
+            logger.info("✅ Tradier streaming disconnected")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error disconnecting Tradier streaming: {e}")
+            return False
     async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         """
         Tradier doesn't support true unsubscribing, so we need to track what should be unsubscribed

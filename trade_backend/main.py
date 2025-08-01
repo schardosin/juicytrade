@@ -1,8 +1,6 @@
 import asyncio
 import uvicorn
 import logging
-import signal
-import sys
 from contextlib import asynccontextmanager
 from typing import Dict, List, Optional, Any
 
@@ -17,6 +15,8 @@ from .models import (
 from .provider_manager import provider_manager
 from .provider_config import provider_config_manager
 from .streaming_manager import streaming_manager
+from .connection_manager import ConnectionManager
+from .shutdown_manager import shutdown_manager
 
 # Configure logging
 logging.basicConfig(
@@ -25,56 +25,34 @@ logging.basicConfig(
 )
 logger = logging.getLogger("trading_backend")
 
-# Global shutdown flag
-shutdown_event = asyncio.Event()
-
-def signal_handler(signum, frame):
-    """Handle shutdown signals gracefully"""
-    logger.info(f"🛑 Received signal {signum}, initiating graceful shutdown...")
-    shutdown_event.set()
-    
-    # Cancel all running tasks
-    try:
-        loop = asyncio.get_running_loop()
-        tasks = [task for task in asyncio.all_tasks(loop) if not task.done()]
-        logger.info(f"Cancelling {len(tasks)} running tasks...")
-        
-        for task in tasks:
-            task.cancel()
-            
-    except RuntimeError:
-        # No running loop, that's fine
-        pass
-    
-    logger.info("🏁 Graceful shutdown initiated")
-
-# Register signal handlers
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
+# Setup shutdown manager
+shutdown_manager.setup_signal_handlers()
+shutdown_manager.set_streaming_manager(streaming_manager)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """
-    Application lifespan manager.
+    Enhanced application lifespan manager with proper cleanup.
     """
     # Startup
-    logger.info("Starting trading backend...")
+    logger.info("🚀 Starting enhanced trading backend...")
     try:
-        # Connect to streaming if needed
-        logger.info("Connecting to streaming...")
-        await streaming_manager.connect()
-        logger.info("Provider streaming connected")
+        # Connect to streaming manager
+        logger.info("🔄 Connecting to streaming...")
+        connected = await streaming_manager.connect()
+        if connected:
+            logger.info("✅ Streaming manager connected")
+        else:
+            logger.warning("⚠️ Streaming manager connection failed - continuing with limited functionality")
         
     except Exception as e:
-        logger.error(f"Failed to initialize providers: {e}")
-        raise
+        logger.error(f"❌ Failed to initialize streaming: {e}")
+        # Don't raise - allow server to start even if streaming fails
     
     yield
     
-    # Shutdown
-    logger.info("Shutting down trading backend...")
-    await streaming_manager.disconnect()
-    logger.info("Provider streaming disconnected")
+    # Shutdown - this will be handled by the shutdown manager
+    logger.info("🛑 Application lifespan shutdown - cleanup will be handled by shutdown manager")
 
 # Create FastAPI app
 app = FastAPI(
@@ -94,94 +72,8 @@ app.add_middleware(
 )
 
 # WebSocket connection manager
-class ConnectionManager:
-    def __init__(self):
-        self.active_connections: List[WebSocket] = []
-        self.streaming_task = None
-        self.is_streaming = False
-    
-    async def connect(self, websocket: WebSocket):
-        await websocket.accept()
-        self.active_connections.append(websocket)
-        logger.info(f"WebSocket connected. Total connections: {len(self.active_connections)}")
-        
-        # Start streaming task if this is the first connection
-        if len(self.active_connections) == 1 and not self.is_streaming:
-            logger.info("Starting streaming task for first WebSocket connection")
-            self.streaming_task = asyncio.create_task(self._handle_streaming_data())
-            self.is_streaming = True
-    
-    def disconnect(self, websocket: WebSocket):
-        if websocket in self.active_connections:
-            self.active_connections.remove(websocket)
-        logger.info(f"WebSocket disconnected. Total connections: {len(self.active_connections)}")
-        
-        # Stop streaming task if no connections remain
-        if len(self.active_connections) == 0 and self.is_streaming:
-            logger.info("Stopping streaming task - no active connections")
-            if self.streaming_task and not self.streaming_task.done():
-                self.streaming_task.cancel()
-            self.is_streaming = False
-            self.streaming_task = None
-    
-    async def broadcast(self, message: dict):
-        if not self.active_connections:
-            return
-            
-        disconnected = []
-        for connection in self.active_connections:
-            try:
-                # Check if connection is still alive
-                if connection.client_state.name != "CONNECTED":
-                    disconnected.append(connection)
-                    continue
-                    
-                await connection.send_json(message)
-            except Exception as e:
-                logger.warning(f"Failed to send message to WebSocket: {e}")
-                disconnected.append(connection)
-        
-        # Clean up disconnected clients
-        for conn in disconnected:
-            self.disconnect(conn)
-    
-    async def _handle_streaming_data(self):
-        """Internal streaming task - only one instance should run."""
-        logger.info("🚀 Starting streaming data handler...")
-        try:
-            while self.is_streaming and len(self.active_connections) > 0:
-                try:
-                    # Add timeout to prevent infinite blocking
-                    market_data = await asyncio.wait_for(
-                        streaming_manager.get_data(), 
-                        timeout=10.0
-                    )
-                    if market_data and self.active_connections:
-                        # Only broadcast if we have active connections
-                        await self.broadcast({
-                            "type": "price_update",
-                            "symbol": market_data.symbol,
-                            "data": market_data.data,
-                            "timestamp": market_data.timestamp
-                        })
-                    elif not market_data:
-                        # No data received within timeout, continue loop
-                        await asyncio.sleep(0.1)
-                except asyncio.TimeoutError:
-                    # Timeout is normal, just continue the loop
-                    await asyncio.sleep(0.1)
-                except Exception as e:
-                    logger.error(f"Error in streaming data handler: {e}")
-                    await asyncio.sleep(1)
-        except asyncio.CancelledError:
-            logger.info("🛑 Streaming data handler cancelled")
-        except Exception as e:
-            logger.error(f"Fatal error in streaming data handler: {e}")
-        finally:
-            logger.info("🏁 Streaming data handler stopped")
-            self.is_streaming = False
-
-manager = ConnectionManager()
+manager = ConnectionManager(streaming_manager, shutdown_manager)
+shutdown_manager.set_connection_manager(manager)
 
 # === API Endpoints ===
 
@@ -421,7 +313,7 @@ async def get_next_market_date():
 
 @app.get("/subscriptions/status", response_model=ApiResponse)
 async def get_subscription_status():
-    """Get current WebSocket subscription status."""
+    """Get current WebSocket subscription status with health information."""
     try:
         status = streaming_manager.get_subscription_status()
         return ApiResponse(
@@ -431,6 +323,26 @@ async def get_subscription_status():
         )
     except Exception as e:
         logger.error(f"Error getting subscription status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/health/streaming", response_model=ApiResponse)
+async def get_streaming_health():
+    """Get detailed streaming health statistics."""
+    try:
+        health_stats = streaming_manager.get_health_stats()
+        connection_stats = manager.get_stats()
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "streaming_health": health_stats,
+                "connection_health": connection_stats,
+                "shutdown_in_progress": shutdown_manager.is_shutting_down()
+            },
+            message="Retrieved streaming health statistics"
+        )
+    except Exception as e:
+        logger.error(f"Error getting streaming health: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/symbols/lookup", response_model=ApiResponse)
@@ -687,154 +599,44 @@ async def subscribe_options(request: SymbolRequest, background_tasks: Background
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time data streaming."""
+    """WebSocket endpoint with better error handling and shutdown awareness."""
     await manager.connect(websocket)
     try:
-        while True:
-            # Wait for client messages
-            data = await websocket.receive_json()
-            
-            if data.get("type") == "subscribe":
-                symbols = data.get("symbols", [])
-                if symbols:
-                    await streaming_manager.subscribe(symbols)
+        while not shutdown_manager.is_shutting_down():
+            try:
+                # Wait for client messages with timeout to allow shutdown checking
+                data = await asyncio.wait_for(websocket.receive_json(), timeout=1.0)
+                
+                # Handle message through enhanced connection manager
+                await manager.handle_websocket_message(websocket, data)
+                
+            except asyncio.TimeoutError:
+                # Timeout is normal - allows us to check shutdown status
+                continue
+            except WebSocketDisconnect:
+                logger.info("🔌 WebSocket client disconnected")
+                break
+            except Exception as e:
+                logger.error(f"❌ Error processing WebSocket message: {e}")
+                try:
                     await websocket.send_json({
-                        "type": "subscription_confirmed",
-                        "symbols": symbols,
-                        "message": f"Subscribed to {len(symbols)} symbols"
+                        "type": "error",
+                        "message": f"Error processing message: {str(e)}"
                     })
-            
-            elif data.get("type") == "subscribe_replace_all":
-                underlying_symbol = data.get("underlying_symbol")
-                option_symbols = data.get("option_symbols", [])
-                logger.info(f"🔄 WebSocket: Received unified subscription replacement - underlying: {underlying_symbol}, options: {len(option_symbols)} symbols")
-                
-                if underlying_symbol:
-                    await streaming_manager.replace_all_subscriptions(underlying_symbol, option_symbols)
-                    await websocket.send_json({
-                        "type": "subscription_confirmed",
-                        "subscription_type": "all_replace",
-                        "underlying_symbol": underlying_symbol,
-                        "option_symbols": option_symbols,
-                        "message": f"All subscriptions replaced - underlying: {underlying_symbol}, options: {len(option_symbols)} symbols"
-                    })
-                    logger.info(f"✅ WebSocket: All subscriptions replaced - underlying: {underlying_symbol}, options: {len(option_symbols)} symbols")
-            
-            elif data.get("type") == "subscribe_smart_replace_all":
-                # New message type from Smart Market Data Store
-                stock_symbols = data.get("stock_symbols", [])
-                option_symbols = data.get("option_symbols", [])
-                all_symbols = data.get("all_symbols", [])
-                
-                logger.info(f"🔄 WebSocket: Received smart subscription replacement - stocks: {len(stock_symbols)}, options: {len(option_symbols)}, total: {len(all_symbols)} symbols")
-                
-                # Use the new multi-stock subscription method
-                await streaming_manager.replace_all_subscriptions_multi_stock(stock_symbols, option_symbols)
-                
-                await websocket.send_json({
-                    "type": "subscription_confirmed",
-                    "subscription_type": "smart_replace_all",
-                    "stock_symbols": stock_symbols,
-                    "option_symbols": option_symbols,
-                    "all_symbols": all_symbols,
-                    "message": f"Smart subscriptions replaced - stocks: {len(stock_symbols)}, options: {len(option_symbols)} symbols"
-                })
-                logger.info(f"✅ WebSocket: Smart subscriptions replaced - stocks: {len(stock_symbols)}, options: {len(option_symbols)} symbols")
-            
-            elif data.get("type") == "subscribe_replace_stock":
-                # Legacy support - deprecated
-                symbol = data.get("symbol")
-                logger.warning(f"🔄 WebSocket: Received deprecated stock subscription replacement request for {symbol}")
-                if symbol:
-                    await streaming_manager.replace_stock_subscription(symbol)
-                    await websocket.send_json({
-                        "type": "subscription_confirmed",
-                        "subscription_type": "stock_replace",
-                        "symbol": symbol,
-                        "message": f"Stock subscription replaced with {symbol} (deprecated - use subscribe_replace_all)"
-                    })
-                    logger.info(f"✅ WebSocket: Stock subscription replaced with {symbol} (deprecated)")
-            
-            elif data.get("type") == "subscribe_replace_options":
-                # Legacy support - deprecated
-                symbols = data.get("symbols", [])
-                logger.warning(f"🔄 WebSocket: Received deprecated options subscription replacement request for {len(symbols)} symbols")
-                await streaming_manager.replace_options_subscriptions(symbols)
-                await websocket.send_json({
-                    "type": "subscription_confirmed",
-                    "subscription_type": "options_replace",
-                    "symbols": symbols,
-                    "message": f"Options subscriptions replaced with {len(symbols)} symbols (deprecated - use subscribe_replace_all)"
-                })
-                logger.info(f"✅ WebSocket: Options subscriptions replaced with {len(symbols)} symbols (deprecated)")
-            
-            elif data.get("type") == "subscribe_persistent":
-                data_types = data.get("data_types", ["orders", "positions"])
-                await streaming_manager.ensure_persistent_subscriptions(data_types)
-                await websocket.send_json({
-                    "type": "subscription_confirmed",
-                    "subscription_type": "persistent",
-                    "data_types": data_types,
-                    "message": f"Persistent subscriptions ensured for {data_types}"
-                })
-            
-            elif data.get("type") == "get_subscription_status":
-                status = streaming_manager.get_subscription_status()
-                await websocket.send_json({
-                    "type": "subscription_status",
-                    "data": status
-                })
-            
-            elif data.get("type") == "get_positions":
-                positions = await provider_manager.get_positions()
-                await websocket.send_json({
-                    "type": "positions_update",
-                        "data": {
-                            "success": True,
-                            "positions": [pos.dict() for pos in positions],
-                            "total_positions": len(positions)
-                        }
-                    })
-            
-            elif data.get("type") == "get_orders":
-                status_filter = data.get("filter", "open")
-                orders = await provider_manager.get_orders(status_filter)
-                await websocket.send_json({
-                    "type": "orders_update",
-                        "data": {
-                            "success": True,
-                            "orders": [order.dict() for order in orders],
-                            "total_orders": len(orders)
-                        },
-                        "filter": status_filter
-                    })
+                except:
+                    # If we can't send error message, connection is probably dead
+                    break
                     
     except WebSocketDisconnect:
-        manager.disconnect(websocket)
+        logger.info("🔌 WebSocket disconnected")
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
+        logger.error(f"❌ WebSocket error: {e}")
+    finally:
         manager.disconnect(websocket)
 
 # === Background Tasks ===
-
-async def handle_streaming_data():
-    """Background task to handle streaming data and broadcast to WebSocket clients."""
-    logger.info("Starting to handle streaming data...")
-    while True:
-        try:
-            market_data = await streaming_manager.get_data()
-            if market_data:
-                #logger.info(f"Broadcasting price update for {market_data.symbol}")
-                # Broadcast to all connected WebSocket clients
-                await manager.broadcast({
-                    "type": "price_update",
-                    "symbol": market_data.symbol,
-                    "data": market_data.data,
-                    "timestamp": market_data.timestamp
-                })
-        except Exception as e:
-            logger.error(f"Error handling streaming data: {e}")
-            await asyncio.sleep(1)
+# Note: Background streaming is now handled by the ConnectionManager
+# This eliminates the need for separate background tasks and prevents hanging issues
 
 # === Main Execution ===
 
