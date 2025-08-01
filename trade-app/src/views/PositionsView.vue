@@ -913,7 +913,7 @@ export default {
       return formatCurrency(pl);
     };
 
-    // Calculate net trade price for strategy (total credit/debit, not weighted average)
+    // Calculate net trade price for strategy (total credit/debit for symbol totals)
     const getStrategyTrdPrc = (strategy) => {
       if (!strategy.legs || strategy.legs.length === 0) return 0;
       
@@ -921,33 +921,56 @@ export default {
       
       strategy.legs.forEach((leg) => {
         const entryPrice = leg.avg_entry_price || 0;
-        const quantity = leg.qty; // Use actual quantity (positive/negative) to determine credit/debit
+        const quantity = leg.qty; // Keep sign for credit/debit calculation
         const legValue = entryPrice * quantity;
         
         totalValue += legValue;
       });
       
-      // Return the net credit/debit for the strategy
+      // Return the net credit/debit for the strategy (used for symbol totals)
       return totalValue;
     };
 
+    // Calculate average trade price per leg for display (new function)
+    const getStrategyDisplayTrdPrc = (strategy) => {
+      if (!strategy.legs || strategy.legs.length === 0) return 0;
+      
+      let totalValue = 0;
+      let legCount = 0;
+      
+      strategy.legs.forEach((leg) => {
+        const entryPrice = leg.avg_entry_price || 0;
+        const quantity = leg.qty; // Keep sign for credit/debit
+        const legValue = entryPrice * quantity; // Total value with sign
+        
+        totalValue += legValue;
+        legCount += 1; // Count legs, not contracts
+      });
+      
+      // Return the net credit/debit per leg (average price per leg)
+      return legCount > 0 ? totalValue / legCount : 0;
+    };
+
     const formatStrategyTrdPrc = (strategy) => {
-      const trdPrc = getStrategyTrdPrc(strategy);
+      const trdPrc = getStrategyDisplayTrdPrc(strategy); // Use new display function
       return formatCurrency(trdPrc);
     };
 
-    // Calculate net trade price for symbol (sum of all strategy credits/debits)
+    // Calculate average trade price for symbol (average of all strategy display prices)
     const getSymbolTrdPrc = (group) => {
       if (!group.strategies || group.strategies.length === 0) return 0;
       
       let totalValue = 0;
+      let strategyCount = 0;
       
       group.strategies.forEach((strategy) => {
-        // Sum up the net credit/debit from each strategy
-        totalValue += getStrategyTrdPrc(strategy);
+        // Sum up the display trade price from each strategy
+        totalValue += getStrategyDisplayTrdPrc(strategy);
+        strategyCount += 1;
       });
       
-      return totalValue;
+      // Return the average trade price across all strategies
+      return strategyCount > 0 ? totalValue / strategyCount : 0;
     };
 
     const formatSymbolTrdPrc = (group) => {
@@ -1172,13 +1195,35 @@ export default {
       { immediate: true }
     );
 
+    // Handle symbol selection from TopBar
+    const onSymbolSelected = async (symbol) => {
+      console.log("PositionsView: Symbol selected:", symbol);
+      // The global symbol state will be updated automatically by TopBar
+      // No need to manually update it here
+    };
+
     // Lifecycle
     onMounted(async () => {
+      // Listen for symbol selection events from TopBar
+      const handleSymbolSelection = (event) => {
+        onSymbolSelected(event.detail);
+      };
 
+      window.addEventListener("symbol-selected", handleSymbolSelection);
+
+      // Store the handler for cleanup
+      window._positionsSymbolSelectionHandler = handleSymbolSelection;
     });
 
     onUnmounted(() => {
-      // Cleanup if needed
+      // Clean up event listeners
+      if (window._positionsSymbolSelectionHandler) {
+        window.removeEventListener(
+          "symbol-selected",
+          window._positionsSymbolSelectionHandler
+        );
+        delete window._positionsSymbolSelectionHandler;
+      }
     });
 
     return {
@@ -1227,6 +1272,7 @@ export default {
       formatSymbolPlDay,
       // Trade price functions
       getStrategyTrdPrc,
+      getStrategyDisplayTrdPrc,
       formatStrategyTrdPrc,
       getSymbolTrdPrc,
       formatSymbolTrdPrc,
