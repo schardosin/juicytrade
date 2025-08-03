@@ -889,6 +889,10 @@ class TradierProvider(BaseProvider):
     def _transform_order(self, raw_order: Dict[str, Any]) -> Optional[Order]:
         """Transform Tradier order to our standard model."""
         try:
+            limit_price = float(raw_order.get("price", 0)) if raw_order.get("price") else None
+            # If order_type is credit, make limit_price negative
+            if raw_order.get("type", "").lower() == "credit" and limit_price is not None:
+                limit_price = -abs(limit_price)
             return Order(
                 id=str(raw_order.get("id")),
                 symbol=raw_order.get("symbol"),
@@ -897,7 +901,7 @@ class TradierProvider(BaseProvider):
                 order_type=raw_order.get("type"),
                 qty=float(raw_order.get("quantity", 0)),
                 filled_qty=float(raw_order.get("exec_quantity", 0)),
-                limit_price=float(raw_order.get("price", 0)) if raw_order.get("price") else None,
+                limit_price=limit_price,
                 stop_price=None,
                 avg_fill_price=float(raw_order.get("avg_fill_price", 0)) if raw_order.get("avg_fill_price") else None,
                 status=raw_order.get("status"),
@@ -1453,7 +1457,7 @@ class TradierProvider(BaseProvider):
         """Translate frontend order status to Tradier API format."""
         # Map frontend status values to Tradier API status values
         status_mapping = {
-            "pending": "open",  # Frontend "pending" maps to Tradier "open"
+            "pending": "pending",  # Frontend "pending" maps to Tradier "pending"
             "open": "open",
             "filled": "filled",
             "canceled": "canceled",
