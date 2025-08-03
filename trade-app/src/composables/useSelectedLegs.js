@@ -70,6 +70,10 @@ export function useSelectedLegs() {
     },
     
     addFromPosition: (positionData) => {
+      // For closing trades, use current market price as entry price
+      // This treats the closing trade as a new trade at current market prices
+      const currentMarketPrice = positionData.current_price || 0;
+      
       return selectedLegsStore.addLeg({
         symbol: positionData.symbol,
         side: positionData.qty > 0 ? 'sell' : 'buy', // Opposite for closing
@@ -77,11 +81,14 @@ export function useSelectedLegs() {
         strike_price: positionData.strike_price,
         type: positionData.option_type,
         expiry: positionData.expiry_date,
-        current_price: positionData.current_price,
+        current_price: currentMarketPrice,
         bid: positionData.bid || 0,
         ask: positionData.ask || 0,
+        // 🔑 KEY FIX: Use current market price as entry price for chart calculation
+        avg_entry_price: currentMarketPrice,
+        // Keep original data for reference
         original_quantity: Math.abs(positionData.qty),
-        avg_entry_price: positionData.avg_entry_price,
+        original_avg_entry_price: positionData.avg_entry_price,
         unrealized_pl: positionData.unrealized_pl
       }, 'positions');
     },

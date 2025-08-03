@@ -371,7 +371,11 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
       strike_price: pos.strike_price,
       option_type: pos.option_type,
       avg_entry_price: pos.avg_entry_price,
-      asset_class: pos.asset_class
+      current_price: pos.current_price,
+      asset_class: pos.asset_class,
+      isExisting: pos.isExisting,
+      isSelected: pos.isSelected,
+      source: pos.source
     }))
   });
 

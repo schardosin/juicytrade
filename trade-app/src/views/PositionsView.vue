@@ -328,13 +328,25 @@
         :chartData="chartData"
         :additionalQuoteData="additionalQuoteData"
         :ChainData="optionsManager.flattenedData.value"
-        :adjustedNetCredit="null"
+        :adjustedNetCredit="adjustedNetCredit"
         :forceExpanded="isRightPanelExpanded"
         :forceSection="rightPanelSection"
         @panel-collapsed="onRightPanelCollapsed"
         @positions-changed="onPositionsChanged"
       />
     </div>
+
+    <!-- Order Confirmation Dialog -->
+    <OrderConfirmationDialog
+      :visible="showOrderConfirmation"
+      :orderData="orderData"
+      :loading="isPlacingOrder"
+      @hide="handleOrderCancellation"
+      @confirm="handleOrderConfirmation"
+      @cancel="handleOrderCancellation"
+      @edit="handleOrderEdit"
+      @clear-selections="clearAllSelections"
+    />
 
     <!-- Bottom Trading Panel -->
     <BottomTradingPanel
@@ -354,10 +366,12 @@ import SideNav from "../components/SideNav.vue";
 import RightPanel from "../components/RightPanel.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
 import BottomTradingPanel from "../components/BottomTradingPanel.vue";
+import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
+import { useOrderManagement } from "../composables/useOrderManagement";
 
 export default {
   name: "PositionsView",
@@ -367,6 +381,7 @@ export default {
     RightPanel,
     SymbolHeader,
     BottomTradingPanel,
+    OrderConfirmationDialog,
   },
   setup() {
     // Use global symbol state instead of local refs
@@ -381,6 +396,19 @@ export default {
 
     // Selected legs integration - same pattern as OptionsTrading
     const { selectedLegs, hasSelectedLegs, addLeg, removeLeg, clearAll } = useSelectedLegs();
+
+    // Use centralized order management
+    const {
+      showOrderConfirmation,
+      showOrderResult,
+      orderData,
+      orderResult,
+      isPlacingOrder,
+      initializeOrder,
+      handleOrderConfirmation,
+      handleOrderCancellation,
+      handleOrderResultClose,
+    } = useOrderManagement();
 
     // Computed properties for global symbol state
     const currentSymbol = computed(() => globalSymbolState.currentSymbol);
@@ -412,6 +440,7 @@ export default {
     const expandedGroups = ref([]);
     const isRightPanelExpanded = ref(false);
     const rightPanelSection = ref(null);
+    const adjustedNetCredit = ref(null); // Add adjustedNetCredit for limit price functionality
 
     const onRightPanelCollapsed = () => {
       isRightPanelExpanded.value = false;
@@ -421,11 +450,18 @@ export default {
       console.log("🔍 PositionsView: Received positions for chart:", positions);
       
       if (positions && positions.length > 0) {
+        // 🔑 KEY FIX: Store positions for chart regeneration when adjustedNetCredit changes
+        lastChartPositions.value = positions;
+        
         // Import the chart generation function
         import("../utils/chartUtils").then(({ generateMultiLegPayoff }) => {
           try {
-            const chartResult = generateMultiLegPayoff(positions, currentPrice.value, null);
-            console.log("🔍 PositionsView: Generated chart data:", chartResult);
+            // 🔑 KEY FIX: Pass adjustedNetCredit.value instead of null
+            const chartResult = generateMultiLegPayoff(positions, currentPrice.value, adjustedNetCredit.value);
+            console.log("🔍 PositionsView: Generated chart data with adjustedNetCredit:", {
+              adjustedNetCredit: adjustedNetCredit.value,
+              chartResult
+            });
             
             if (chartResult) {
               chartData.value = chartResult;
@@ -446,6 +482,7 @@ export default {
       } else {
         console.log("🔍 PositionsView: No positions provided, clearing chart");
         chartData.value = null;
+        lastChartPositions.value = null; // Clear stored positions
       }
     };
 
@@ -1116,14 +1153,28 @@ export default {
     // Bottom Trading Panel event handlers
     const onReviewSend = (orderData) => {
       console.log("🔍 PositionsView: Review & Send order:", orderData);
-      // TODO: Implement order confirmation dialog
-      // For now, just log the order data
+      // Initialize the order confirmation dialog
+      initializeOrder(orderData);
+    };
+
+    // Additional order management functions
+    const clearAllSelections = () => {
+      clearAll();
+      chartData.value = null;
+      isRightPanelExpanded.value = false;
+    };
+
+    const handleOrderEdit = () => {
+      // Hide confirmation dialog and show bottom trading panel
+      // The bottom trading panel visibility is controlled by hasSelectedLegs
+      // So we just need to hide the confirmation dialog
+      handleOrderCancellation();
     };
 
     const onPriceAdjusted = (priceData) => {
       console.log("🔍 PositionsView: Price adjusted:", priceData);
-      // The price adjustment is handled by the BottomTradingPanel internally
-      // This is just for logging/debugging purposes
+      // Update the adjustedNetCredit to affect chart calculation
+      adjustedNetCredit.value = priceData.adjustedNetCredit;
     };
 
     // Position leg selection functions
@@ -1151,6 +1202,14 @@ export default {
           formattedExpiry = `${currentYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
         }
         
+        // Get current market price for the closing trade
+        const currentMarketPrice = getLegCurrentPrice(leg);
+        
+        // Get live bid/ask prices for proper chart calculation
+        const livePrice = getLivePrice(leg.symbol);
+        const bidPrice = livePrice?.bid || leg.bid || currentMarketPrice;
+        const askPrice = livePrice?.ask || leg.ask || currentMarketPrice;
+        
         // Add to selection with opposite side for closing
         const closingLeg = {
           symbol: leg.symbol,
@@ -1159,12 +1218,17 @@ export default {
           strike_price: parsedOption?.strike || 0,
           type: parsedOption?.type || 'call',
           expiry: formattedExpiry,
-          current_price: getLegCurrentPrice(leg),
-          bid: leg.bid || 0,
-          ask: leg.ask || 0,
-          // Position-specific data
+          current_price: currentMarketPrice,
+          // 🔑 KEY FIX: Provide proper bid/ask for RightPanel chart calculation
+          bid: bidPrice,
+          ask: askPrice,
+          // For closing trades, the "entry price" should be the price we'd get for the closing trade
+          // For sell orders (closing long positions), use bid price
+          // For buy orders (closing short positions), use ask price  
+          avg_entry_price: leg.qty > 0 ? bidPrice : askPrice,
+          // Position-specific data (for reference only)
           original_quantity: Math.abs(leg.qty),
-          avg_entry_price: leg.avg_entry_price,
+          original_avg_entry_price: leg.avg_entry_price,
           unrealized_pl: leg.unrealized_pl
         };
         
@@ -1280,6 +1344,43 @@ export default {
       { immediate: true }
     );
 
+    // Store the last positions used for chart generation so we can regenerate when adjustedNetCredit changes
+    const lastChartPositions = ref(null);
+
+    // Watch for adjusted net credit changes to update chart
+    watch(adjustedNetCredit, (newCredit, oldCredit) => {
+      console.log("🔍 PositionsView: adjustedNetCredit changed:", { newCredit, oldCredit });
+      
+      if (newCredit !== oldCredit && lastChartPositions.value) {
+        // 🔑 KEY FIX: Regenerate chart data with new adjusted net credit
+        console.log("🔄 PositionsView: Regenerating chart with new adjustedNetCredit");
+        
+        // Import the chart generation function and regenerate with stored positions
+        import("../utils/chartUtils").then(({ generateMultiLegPayoff }) => {
+          try {
+            const chartResult = generateMultiLegPayoff(
+              lastChartPositions.value, 
+              currentPrice.value, 
+              adjustedNetCredit.value
+            );
+            
+            console.log("🔍 PositionsView: Regenerated chart data with adjustedNetCredit:", {
+              adjustedNetCredit: adjustedNetCredit.value,
+              chartResult
+            });
+            
+            if (chartResult) {
+              chartData.value = chartResult;
+            } else {
+              console.warn("⚠️ PositionsView: Chart regeneration returned null");
+            }
+          } catch (error) {
+            console.error("❌ PositionsView: Error regenerating chart:", error);
+          }
+        });
+      }
+    });
+
     // Handle symbol selection from TopBar
     const onSymbolSelected = async (symbol) => {
       console.log("PositionsView: Symbol selected:", symbol);
@@ -1394,6 +1495,19 @@ export default {
       hasSelectedLegs,
       onReviewSend,
       onPriceAdjusted,
+      adjustedNetCredit,
+      
+      // Order management
+      showOrderConfirmation,
+      showOrderResult,
+      orderData,
+      orderResult,
+      isPlacingOrder,
+      handleOrderConfirmation,
+      handleOrderCancellation,
+      handleOrderResultClose,
+      clearAllSelections,
+      handleOrderEdit,
     };
   },
 };
