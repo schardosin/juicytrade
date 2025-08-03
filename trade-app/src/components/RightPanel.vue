@@ -552,19 +552,6 @@ export default {
         checkedPositions.value.has(pos.id)
       );
 
-      console.log("🔍 RightPanel: Updating chart with checked positions:", checkedPositionsList.map(pos => ({
-        id: pos.id,
-        symbol: pos.symbol,
-        qty: pos.qty,
-        strike_price: pos.strike_price,
-        option_type: pos.option_type,
-        avg_entry_price: pos.avg_entry_price,
-        current_price: pos.current_price,
-        asset_class: pos.asset_class,
-        isExisting: pos.isExisting,
-        isSelected: pos.isSelected
-      })));
-
       // Emit positions to parent for chart generation
       emit("positions-changed", checkedPositionsList);
     };
@@ -808,14 +795,10 @@ export default {
         return positionsComputed.value; // Get the actual value from the computed
       },
       (positionsData) => {
-        console.log("🔍 RightPanel: Position data changed for", props.currentSymbol, positionsData);
-        
         // Only clear checked positions on symbol change, not on data refresh
         // We'll let the allPositions watcher handle the checkbox state properly
         
-        if (positionsData?.positions && Array.isArray(positionsData.positions)) {
-          console.log("📊 RightPanel: Processing", positionsData.positions.length, "positions");
-          
+        if (positionsData?.positions && Array.isArray(positionsData.positions)) {          
           existingPositions.value = positionsData.positions.map((pos) => {
             // Parse option symbol to get missing details if needed
             const parsedOption = parseOptionSymbol(pos.symbol);
@@ -838,9 +821,7 @@ export default {
             };
           });
           
-          console.log("✅ RightPanel: Processed positions:", existingPositions.value);
         } else {
-          console.log("📭 RightPanel: No positions found for", props.currentSymbol);
           existingPositions.value = [];
         }
       },

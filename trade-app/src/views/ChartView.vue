@@ -174,8 +174,6 @@ export default {
     // No manual WebSocket management needed
 
     const onSymbolSelected = async (symbol) => {
-      console.log("Chart view - Symbol selected:", symbol);
-
       // Update global symbol state
       updateSymbol(symbol);
 
@@ -219,12 +217,10 @@ export default {
 
     // RightPanel event handlers
     const onRightPanelCollapsed = () => {
-      console.log("Right panel collapsed");
       isRightPanelExpanded.value = false;
     };
 
     const onPositionsChanged = (checkedPositions) => {
-      console.log("Positions changed:", checkedPositions);
       // Chart view doesn't need to handle position changes for payoff chart
       // since it's primarily for price charts, not options analysis
     };

@@ -447,8 +447,6 @@ export default {
     };
 
     const onPositionsChanged = (positions) => {
-      console.log("🔍 PositionsView: Received positions for chart:", positions);
-      
       if (positions && positions.length > 0) {
         // 🔑 KEY FIX: Store positions for chart regeneration when adjustedNetCredit changes
         lastChartPositions.value = positions;
@@ -458,10 +456,6 @@ export default {
           try {
             // 🔑 KEY FIX: Pass adjustedNetCredit.value instead of null
             const chartResult = generateMultiLegPayoff(positions, currentPrice.value, adjustedNetCredit.value);
-            console.log("🔍 PositionsView: Generated chart data with adjustedNetCredit:", {
-              adjustedNetCredit: adjustedNetCredit.value,
-              chartResult
-            });
             
             if (chartResult) {
               chartData.value = chartResult;
@@ -480,7 +474,6 @@ export default {
           }
         });
       } else {
-        console.log("🔍 PositionsView: No positions provided, clearing chart");
         chartData.value = null;
         lastChartPositions.value = null; // Clear stored positions
       }
@@ -1152,7 +1145,6 @@ export default {
 
     // Bottom Trading Panel event handlers
     const onReviewSend = (orderData) => {
-      console.log("🔍 PositionsView: Review & Send order:", orderData);
       // Initialize the order confirmation dialog
       initializeOrder(orderData);
     };
@@ -1172,7 +1164,6 @@ export default {
     };
 
     const onPriceAdjusted = (priceData) => {
-      console.log("🔍 PositionsView: Price adjusted:", priceData);
       // Update the adjustedNetCredit to affect chart calculation
       adjustedNetCredit.value = priceData.adjustedNetCredit;
     };
@@ -1188,7 +1179,6 @@ export default {
       if (isLegSelected(legSymbol)) {
         // Remove from selection
         removeLeg(legSymbol);
-        console.log(`🗑️ Removed position leg from selection: ${legSymbol}`);
       } else {
         // Parse option symbol to get missing details
         const parsedOption = parseOptionSymbol(leg.symbol);
@@ -1233,15 +1223,6 @@ export default {
         };
         
         addLeg(closingLeg, 'positions');
-        console.log(`✅ Added position leg for closing: ${legSymbol}`, {
-          originalSide: leg.qty > 0 ? 'long' : 'short',
-          closingSide: closingLeg.side,
-          quantity: closingLeg.quantity,
-          strike: closingLeg.strike_price,
-          type: closingLeg.type,
-          expiry: closingLeg.expiry,
-          parsedOption
-        });
       }
     };
 
@@ -1349,12 +1330,8 @@ export default {
 
     // Watch for adjusted net credit changes to update chart
     watch(adjustedNetCredit, (newCredit, oldCredit) => {
-      console.log("🔍 PositionsView: adjustedNetCredit changed:", { newCredit, oldCredit });
-      
       if (newCredit !== oldCredit && lastChartPositions.value) {
         // 🔑 KEY FIX: Regenerate chart data with new adjusted net credit
-        console.log("🔄 PositionsView: Regenerating chart with new adjustedNetCredit");
-        
         // Import the chart generation function and regenerate with stored positions
         import("../utils/chartUtils").then(({ generateMultiLegPayoff }) => {
           try {
@@ -1363,11 +1340,6 @@ export default {
               currentPrice.value, 
               adjustedNetCredit.value
             );
-            
-            console.log("🔍 PositionsView: Regenerated chart data with adjustedNetCredit:", {
-              adjustedNetCredit: adjustedNetCredit.value,
-              chartResult
-            });
             
             if (chartResult) {
               chartData.value = chartResult;
@@ -1383,7 +1355,6 @@ export default {
 
     // Handle symbol selection from TopBar
     const onSymbolSelected = async (symbol) => {
-      console.log("PositionsView: Symbol selected:", symbol);
       // The global symbol state will be updated automatically by TopBar
       // No need to manually update it here
     };

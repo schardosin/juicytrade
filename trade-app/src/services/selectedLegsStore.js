@@ -80,13 +80,6 @@ class SelectedLegsStore {
 
     // Store the leg
     this.legs.set(legData.symbol, leg);
-    
-    console.log(`✅ Added leg from ${source}:`, {
-      symbol: leg.symbol,
-      side: leg.side,
-      quantity: leg.quantity,
-      source: leg.source
-    });
 
     return true;
   }

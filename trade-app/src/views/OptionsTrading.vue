@@ -457,8 +457,6 @@ export default {
     };
 
     const onSymbolSelected = async (symbol) => {
-      console.log("Symbol selected:", symbol);
-
       // Clear existing data
       clearAllSelections();
       optionsChainData.value = [];
@@ -488,7 +486,7 @@ export default {
     };
 
     const onRightPanelCollapsed = () => {
-      console.log("Right panel collapsed");
+      // Right panel collapsed
     };
 
     const onPositionsChanged = (checkedPositions) => {
@@ -534,15 +532,12 @@ export default {
           // The chart generation will handle this by applying adjustedNetCredit
           // only to new positions while using actual prices for existing ones
           effectiveAdjustedNetCredit = adjustedNetCredit.value;
-          console.log("🔄 Mixed positions detected: existing + new, using selective adjustedNetCredit");
         } else if (hasExistingPositions && !hasNewPositions) {
           // Only existing positions: use null to calculate from actual prices
           effectiveAdjustedNetCredit = null;
-          console.log("📊 Only existing positions, using actual trade prices");
         } else if (!hasExistingPositions && hasNewPositions) {
           // Only new positions: use adjustedNetCredit for limit price functionality
           effectiveAdjustedNetCredit = adjustedNetCredit.value;
-          console.log("🆕 Only new positions, using adjustedNetCredit for limit prices");
         }
 
         try {
@@ -645,7 +640,6 @@ export default {
 
       // Listen for system recovery events to refresh data
       const handleSystemRecovery = async (event) => {
-        console.log('🔄 System recovery detected in OptionsTrading, refreshing data...');
         try {
           // Refresh all critical data after recovery
           await fetchSymbolData(currentSymbol.value);
@@ -658,8 +652,6 @@ export default {
           
           // Refresh options manager data
           await optionsManager.refreshAllData();
-          
-          console.log('✅ OptionsTrading data refresh completed after recovery');
         } catch (error) {
           console.error('❌ Error refreshing OptionsTrading data after recovery:', error);
         }

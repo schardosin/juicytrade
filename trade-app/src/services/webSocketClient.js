@@ -37,7 +37,6 @@ class WebSocketStreamingClient {
   }
 
   handleStatusUpdate(status) {
-    console.log(`WebSocket status update: ${status}`);
     const wasConnected = this.isConnected.value;
     this.isConnected.value = (status === 'connected');
     
@@ -56,13 +55,11 @@ class WebSocketStreamingClient {
       
       // If we just connected, trigger immediate system health update
       if (!wasConnected) {
-        console.log('🔄 WebSocket just connected, updating system health...');
         // Import dynamically to avoid circular dependency
         import('./smartMarketDataStore.js').then(({ smartMarketDataStore }) => {
           // Update system health immediately when connection is established
           smartMarketDataStore.systemState.isHealthy = true;
           smartMarketDataStore.systemState.failedComponents.clear();
-          console.log('✅ System health updated: WebSocket connected');
         }).catch(error => {
           console.error('❌ Failed to update system health:', error);
         });
@@ -217,8 +214,6 @@ class WebSocketStreamingClient {
     const stock_symbols = symbols.filter(s => !this.isOptionSymbol(s));
     const option_symbols = symbols.filter(s => this.isOptionSymbol(s));
 
-    console.log(`[webSocketClient] Posting 'subscribe_replace_all' to worker with ${stock_symbols.length} stocks and ${option_symbols.length} options.`);
-    
     this.worker.postMessage({
       command: "subscribe_replace_all",
       action: "subscribe_replace_all",

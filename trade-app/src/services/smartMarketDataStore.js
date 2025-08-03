@@ -23,7 +23,6 @@ class DataHealthMonitor {
     // Wait for the initial WebSocket connection before starting health checks
     try {
       await webSocketClient.connect();
-      console.log("🏥 Initial WebSocket connection established, starting health monitoring");
     } catch (error) {
       console.warn("⚠️ Initial WebSocket connection failed, will retry via health monitoring");
     }
@@ -32,8 +31,6 @@ class DataHealthMonitor {
     this.healthTimer = setInterval(() => {
       this.performHealthChecks();
     }, this.healthCheckInterval);
-    console.log("🏥 Data health monitoring started");
-    
     // Wait a bit before first health check to allow initial connection to stabilize
     setTimeout(() => {
       this.performHealthChecks();
@@ -425,7 +422,6 @@ class SmartMarketDataStore {
 
     // Listen for focus/blur events as additional sleep detection
     window.addEventListener('focus', () => {
-      console.log('🎯 Window gained focus, checking connection health');
       setTimeout(() => {
         this.performHealthCheck();
       }, 500);
@@ -724,7 +720,6 @@ class SmartMarketDataStore {
     }
 
     try {
-      console.log(`📊 Updating Greeks for ${symbols.length} symbols`);
       const greeksData = await api.getOptionsGreeks(symbols);
       
       // Update Greeks data for each symbol
@@ -735,7 +730,6 @@ class SmartMarketDataStore {
             timestamp: Date.now(),
           });
         });
-        console.log(`📊 Greeks updated successfully for ${Object.keys(greeksData).length} symbols`);
       }
     } catch (error) {
       console.error("❌ Error updating Greeks:", error);
@@ -818,7 +812,7 @@ class SmartMarketDataStore {
     });
 
     webSocketClient.onSubscriptionConfirmed((data) => {
-      console.log("Subscription confirmed by backend:", data);
+
     });
 
     webSocketClient.onPositionsUpdate((data) => {
@@ -1070,11 +1064,8 @@ class SmartMarketDataStore {
    * Set up periodic updates for a data source
    */
   setupPeriodicUpdate(key, config) {
-    console.log(`🔄 Setting up periodic update for ${key} with ${config.interval}ms interval`);
-    
     const fetchData = async () => {
       try {
-        console.log(`📡 Fetching periodic data for ${key} using method ${config.method}`);
         this.setLoading(key, true);
         
         // Check if the method exists
@@ -1083,8 +1074,6 @@ class SmartMarketDataStore {
         }
         
         const response = await api[config.method](...(config.params || []));
-        console.log(`✅ Successfully fetched ${key} data:`, response);
-        
         // The API methods already return the extracted data, not the full response
         // So we use the response directly
         this.updateData(key, response);
@@ -1097,13 +1086,11 @@ class SmartMarketDataStore {
     };
 
     // Initial fetch
-    console.log(`🚀 Starting initial fetch for ${key}`);
     fetchData();
 
     // Set up periodic updates
     const timer = setInterval(fetchData, config.interval);
     this.timers.set(key, timer);
-    console.log(`⏰ Periodic timer set for ${key}`);
   }
 
   /**

@@ -588,7 +588,6 @@ export default {
     watch(
       () => webSocketClient.isConnected.value,
       (newStatus) => {
-        console.log(`TopBar: WebSocket connection status changed to: ${newStatus}`);
         isConnected.value = newStatus;
       },
       { immediate: true }

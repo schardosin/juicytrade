@@ -360,27 +360,7 @@ export function convertButterflyToPositions(
 }
 
 export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCredit = null) {
-  console.log("🔧 generateMultiLegPayoff called with:", {
-    positionCount: positions?.length || 0,
-    underlyingPrice,
-    adjustedNetCredit,
-    adjustedNetCreditType: typeof adjustedNetCredit,
-    positions: positions.map(pos => ({
-      symbol: pos.symbol,
-      qty: pos.qty,
-      strike_price: pos.strike_price,
-      option_type: pos.option_type,
-      avg_entry_price: pos.avg_entry_price,
-      current_price: pos.current_price,
-      asset_class: pos.asset_class,
-      isExisting: pos.isExisting,
-      isSelected: pos.isSelected,
-      source: pos.source
-    }))
-  });
-
   if (!positions || positions.length === 0) {
-    console.log("❌ generateMultiLegPayoff: No positions provided");
     return null;
   }
 
@@ -476,18 +456,6 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
     }
   }, 0);
 
-  console.log("💰 Net Credit Calculation:", {
-    netCredit,
-    adjustedNetCredit,
-    positions: optionPositions.map(pos => ({
-      symbol: pos.symbol,
-      qty: pos.qty,
-      avg_entry_price: pos.avg_entry_price,
-      contribution: pos.qty < 0 ? 
-        `+${pos.avg_entry_price * Math.abs(pos.qty)} (received)` : 
-        `-${pos.avg_entry_price * Math.abs(pos.qty)} (paid)`
-    }))
-  });
 
   // Separate existing and new positions for mixed scenario handling
   const existingPositions = optionPositions.filter(pos => pos.isExisting);
@@ -513,17 +481,6 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
     }
   }, 0);
 
-  console.log("💰 Mixed Position Credit Calculation:", {
-    totalNetCredit: netCredit,
-    existingNetCredit,
-    newNetCredit,
-    adjustedNetCredit,
-    hasExisting: existingPositions.length > 0,
-    hasNew: newPositions.length > 0,
-    effectiveStrategy: adjustedNetCredit !== null && newPositions.length > 0 ? 
-      "Using adjustedNetCredit for new positions, actual prices for existing" :
-      "Using calculated net credit from actual prices"
-  });
 
   for (let price = lowerBound; price <= upperBound; price += step) {
     prices.push(price);

@@ -14,7 +14,6 @@ function connect(url) {
   socket = new WebSocket(url);
 
   socket.onopen = () => {
-    console.log("WebSocket connection established in worker.");
     postMessage({ type: 'status', message: 'connected' });
     
     // Process any queued messages
