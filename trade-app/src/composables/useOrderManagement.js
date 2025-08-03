@@ -1,12 +1,15 @@
-import { ref, computed } from "vue";
+import { ref, computed, watch } from "vue";
 import orderService from "../services/orderService";
 import notificationService from "../services/notificationService";
 
 /**
  * Order Management Composable
  * Provides centralized order state and functionality
+ * @param {Object} options - Configuration options
+ * @param {Function} options.onOrderSuccess - Callback to execute when order is successful
  */
-export function useOrderManagement() {
+export function useOrderManagement(options = {}) {
+  const { onOrderSuccess } = options;
   // Reactive state
   const showOrderConfirmation = ref(false);
   const showOrderResult = ref(false);
@@ -537,6 +540,13 @@ export function useOrderManagement() {
     orderResult.value = null;
     isPlacingOrder.value = false;
   };
+
+  // Watch for successful orders and trigger cleanup callback
+  watch(orderResult, (newResult) => {
+    if (newResult && newResult.success && onOrderSuccess) {
+      onOrderSuccess(newResult);
+    }
+  });
 
   return {
     // State

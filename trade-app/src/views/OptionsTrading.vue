@@ -120,7 +120,7 @@ export default {
     RightPanel,
   },
   setup() {
-    // Use centralized order management
+    // Use centralized order management with cleanup callback
     const {
       showOrderConfirmation,
       showOrderResult,
@@ -131,7 +131,12 @@ export default {
       handleOrderConfirmation,
       handleOrderCancellation,
       handleOrderResultClose,
-    } = useOrderManagement();
+    } = useOrderManagement({
+      onOrderSuccess: () => {
+        // Clear all selections when order is successful
+        clearAllSelections();
+      }
+    });
 
     // Use global symbol state
     const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
@@ -733,13 +738,6 @@ export default {
       { immediate: true }
     );
 
-    // Clear selections when order is successfully placed
-    watch(orderResult, (newResult) => {
-      if (newResult && newResult.success) {
-        // Order was successful, clear all selections
-        clearAllSelections();
-      }
-    });
 
     // Watch for time and update marketStatus accordingly (use US/Eastern time)
     function updateMarketStatusNow() {

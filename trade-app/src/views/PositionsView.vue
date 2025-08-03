@@ -397,7 +397,7 @@ export default {
     // Selected legs integration - same pattern as OptionsTrading
     const { selectedLegs, hasSelectedLegs, addLeg, removeLeg, clearAll } = useSelectedLegs();
 
-    // Use centralized order management
+    // Use centralized order management with cleanup callback
     const {
       showOrderConfirmation,
       showOrderResult,
@@ -408,7 +408,12 @@ export default {
       handleOrderConfirmation,
       handleOrderCancellation,
       handleOrderResultClose,
-    } = useOrderManagement();
+    } = useOrderManagement({
+      onOrderSuccess: () => {
+        // Clear all selections when order is successful
+        clearAllSelections();
+      }
+    });
 
     // Computed properties for global symbol state
     const currentSymbol = computed(() => globalSymbolState.currentSymbol);
@@ -439,8 +444,13 @@ export default {
     const groupBy = ref("order_chains");
     const expandedGroups = ref([]);
     const isRightPanelExpanded = ref(false);
-    const rightPanelSection = ref(null);
     const adjustedNetCredit = ref(null); // Add adjustedNetCredit for limit price functionality
+
+    // Computed property to determine which section to show in right panel
+    const rightPanelSection = computed(() => {
+      // If legs are selected, show analysis section, otherwise null (let user choose)
+      return selectedLegs.value.length > 0 ? "analysis" : null;
+    });
 
     const onRightPanelCollapsed = () => {
       isRightPanelExpanded.value = false;
@@ -1358,6 +1368,23 @@ export default {
       // The global symbol state will be updated automatically by TopBar
       // No need to manually update it here
     };
+
+    // Show/hide right panel based on selected legs (same as OptionsTrading)
+    watch(
+      selectedLegs,
+      (newLegs) => {
+        const hasLegs = newLegs.length > 0;
+        
+        // Auto-expand right panel to Analysis tab when legs are selected
+        if (hasLegs) {
+          isRightPanelExpanded.value = true;
+        } else {
+          // Auto-collapse when no legs selected
+          isRightPanelExpanded.value = false;
+        }
+      },
+      { immediate: true }
+    );
 
     // Lifecycle
     onMounted(async () => {
