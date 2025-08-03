@@ -9,6 +9,9 @@
 </template>
 
 <script>
+import { watch } from "vue";
+import { useRoute } from "vue-router";
+import { useSelectedLegs } from "./composables/useSelectedLegs.js";
 import NotificationContainer from "./components/notifications/NotificationContainer.vue";
 import SystemRecoveryIndicator from "./components/SystemRecoveryIndicator.vue";
 
@@ -17,6 +20,23 @@ export default {
   components: {
     NotificationContainer,
     SystemRecoveryIndicator,
+  },
+  setup() {
+    const route = useRoute();
+    const { clearAll } = useSelectedLegs();
+
+    // Clear selected legs when navigating between views
+    watch(
+      () => route.name,
+      (newRouteName, oldRouteName) => {
+        // Only clear if we're actually changing routes (not initial load)
+        if (oldRouteName && newRouteName !== oldRouteName) {
+          clearAll();
+        }
+      }
+    );
+
+    return {};
   },
 };
 </script>
