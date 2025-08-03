@@ -440,8 +440,21 @@ export default {
 
     const orderLegs = computed(() => {
       return selectedLegs.value.map((leg) => {
-        // Use natural price: bid when selling, ask when buying
-        const price = leg.side === "buy" ? leg.ask : leg.bid;
+        // ✅ NEW: Use live price lookup first, then fallback to leg data
+        const livePrice = getLivePrice(leg.symbol);
+        let price = 0;
+        
+        if (livePrice && livePrice.bid > 0 && livePrice.ask > 0) {
+          // Use live bid/ask based on side (natural pricing)
+          price = leg.side === "buy" ? livePrice.ask : livePrice.bid;
+        } else {
+          // Fallback to leg data with multiple fallback options
+          if (leg.side === "buy") {
+            price = leg.ask || leg.current_price || leg.avg_entry_price || 0;
+          } else {
+            price = leg.bid || leg.current_price || leg.avg_entry_price || 0;
+          }
+        }
 
         return {
           symbol: leg.symbol,

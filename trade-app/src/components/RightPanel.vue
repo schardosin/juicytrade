@@ -474,65 +474,62 @@ export default {
         }
       });
 
-      // Add selected legs from centralized store as new positions (only if they don't already exist)
-      selectedLegs.value.forEach((leg) => {
-        // Skip if this leg already exists as a position
-        if (!existingSymbols.has(leg.symbol)) {
-          // Look up current market price from options chain data
-          const chainOption = props.optionsChainData.find(
-            (opt) => opt.symbol === leg.symbol
-          );
+      // Add selected legs from centralized store as new positions (allow duplicates for closing positions)
+      selectedLegs.value.forEach((leg, index) => {
+        // Look up current market price from options chain data
+        const chainOption = props.optionsChainData.find(
+          (opt) => opt.symbol === leg.symbol
+        );
 
-          let currentPrice = leg.current_price || 0;
-          let avgEntryPrice = 0;
-          let unrealizedPL = 0;
+        let currentPrice = leg.current_price || 0;
+        let avgEntryPrice = 0;
+        let unrealizedPL = 0;
 
-          if (chainOption) {
-            // Use ask price for long positions, bid price for short positions
-            const entryPrice =
-              leg.side === "buy" ? chainOption.ask : chainOption.bid;
-            const marketPrice =
-              leg.side === "buy" ? chainOption.bid : chainOption.ask; // Current market price for exit
+        if (chainOption) {
+          // Use ask price for long positions, bid price for short positions
+          const entryPrice =
+            leg.side === "buy" ? chainOption.ask : chainOption.bid;
+          const marketPrice =
+            leg.side === "buy" ? chainOption.bid : chainOption.ask; // Current market price for exit
 
-            currentPrice = marketPrice || entryPrice || leg.current_price || 0;
-            avgEntryPrice = entryPrice || 0;
+          currentPrice = marketPrice || entryPrice || leg.current_price || 0;
+          avgEntryPrice = entryPrice || 0;
 
-            // Calculate unrealized P&L
-            if (avgEntryPrice > 0) {
-              const qty =
-                leg.side === "buy" ? leg.quantity : -leg.quantity;
-              // For long positions: (current_price - entry_price) * qty * 100
-              // For short positions: (entry_price - current_price) * |qty| * 100
-              if (qty > 0) {
-                // Long position
-                unrealizedPL = (currentPrice - avgEntryPrice) * qty * 100;
-              } else {
-                // Short position
-                unrealizedPL =
-                  (avgEntryPrice - currentPrice) * Math.abs(qty) * 100;
-              }
+          // Calculate unrealized P&L
+          if (avgEntryPrice > 0) {
+            const qty =
+              leg.side === "buy" ? leg.quantity : -leg.quantity;
+            // For long positions: (current_price - entry_price) * qty * 100
+            // For short positions: (entry_price - current_price) * |qty| * 100
+            if (qty > 0) {
+              // Long position
+              unrealizedPL = (currentPrice - avgEntryPrice) * qty * 100;
+            } else {
+              // Short position
+              unrealizedPL =
+                (avgEntryPrice - currentPrice) * Math.abs(qty) * 100;
             }
-          } else {
-            // Use leg data if no chain option found
-            currentPrice = leg.current_price || ((leg.bid + leg.ask) / 2) || 0;
-            avgEntryPrice = leg.side === "buy" ? leg.ask : leg.bid;
           }
-
-          positions.push({
-            id: leg.symbol,
-            symbol: leg.symbol,
-            asset_class: "us_option", // Required for chart
-            qty: leg.side === "buy" ? leg.quantity : -leg.quantity,
-            strike_price: leg.strike_price,
-            option_type: leg.type,
-            expiry_date: leg.expiry,
-            current_price: currentPrice,
-            avg_entry_price: avgEntryPrice,
-            unrealized_pl: unrealizedPL,
-            isExisting: false,
-            isSelected: true,
-          });
+        } else {
+          // Use leg data if no chain option found
+          currentPrice = leg.current_price || ((leg.bid + leg.ask) / 2) || 0;
+          avgEntryPrice = leg.side === "buy" ? leg.ask : leg.bid;
         }
+
+        positions.push({
+          id: `${leg.symbol}_selected_${index}`, // Unique ID to allow duplicates
+          symbol: leg.symbol,
+          asset_class: "us_option", // Required for chart
+          qty: leg.side === "buy" ? leg.quantity : -leg.quantity,
+          strike_price: leg.strike_price,
+          option_type: leg.type,
+          expiry_date: leg.expiry,
+          current_price: currentPrice,
+          avg_entry_price: avgEntryPrice,
+          unrealized_pl: unrealizedPL,
+          isExisting: false,
+          isSelected: true,
+        });
       });
 
       return positions;

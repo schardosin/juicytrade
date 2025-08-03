@@ -203,6 +203,8 @@
                             v-for="(leg, legIndex) in strategy.legs"
                             :key="`${group.id}-strategy-${strategy.name}-leg-${legIndex}`"
                             class="position-leg-row"
+                            :class="{ selected: isLegSelected(leg.symbol) }"
+                            @click="togglePositionLegSelection(leg, strategy)"
                           >
                             <td class="symbol-cell leg-symbol">
                               <div class="leg-description">
@@ -333,6 +335,15 @@
         @positions-changed="onPositionsChanged"
       />
     </div>
+
+    <!-- Bottom Trading Panel -->
+    <BottomTradingPanel
+      :visible="hasSelectedLegs"
+      :symbol="currentSymbol"
+      :underlyingPrice="currentPrice"
+      @review-send="onReviewSend"
+      @price-adjusted="onPriceAdjusted"
+    />
   </div>
 </template>
 
@@ -342,9 +353,11 @@ import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import RightPanel from "../components/RightPanel.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
+import BottomTradingPanel from "../components/BottomTradingPanel.vue";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
+import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 
 export default {
   name: "PositionsView",
@@ -353,6 +366,7 @@ export default {
     SideNav,
     RightPanel,
     SymbolHeader,
+    BottomTradingPanel,
   },
   setup() {
     // Use global symbol state instead of local refs
@@ -364,6 +378,9 @@ export default {
     // Smart Market Data integration - same pattern as other components
     const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
     const liveOptionPrices = reactive(new Map());
+
+    // Selected legs integration - same pattern as OptionsTrading
+    const { selectedLegs, hasSelectedLegs, addLeg, removeLeg, clearAll } = useSelectedLegs();
 
     // Computed properties for global symbol state
     const currentSymbol = computed(() => globalSymbolState.currentSymbol);
@@ -1096,6 +1113,74 @@ export default {
       // Not used in positions view
     };
 
+    // Bottom Trading Panel event handlers
+    const onReviewSend = (orderData) => {
+      console.log("🔍 PositionsView: Review & Send order:", orderData);
+      // TODO: Implement order confirmation dialog
+      // For now, just log the order data
+    };
+
+    const onPriceAdjusted = (priceData) => {
+      console.log("🔍 PositionsView: Price adjusted:", priceData);
+      // The price adjustment is handled by the BottomTradingPanel internally
+      // This is just for logging/debugging purposes
+    };
+
+    // Position leg selection functions
+    const isLegSelected = (legSymbol) => {
+      return selectedLegs.value.some(leg => leg.symbol === legSymbol);
+    };
+
+    const togglePositionLegSelection = (leg, strategy) => {
+      const legSymbol = leg.symbol;
+      
+      if (isLegSelected(legSymbol)) {
+        // Remove from selection
+        removeLeg(legSymbol);
+        console.log(`🗑️ Removed position leg from selection: ${legSymbol}`);
+      } else {
+        // Parse option symbol to get missing details
+        const parsedOption = parseOptionSymbol(leg.symbol);
+        
+        // Format expiry date for centralized store (YYYY-MM-DD format)
+        let formattedExpiry = null;
+        if (parsedOption && parsedOption.expiry) {
+          // parsedOption.expiry is in MM/DD format, convert to YYYY-MM-DD
+          const [month, day] = parsedOption.expiry.split("/");
+          const currentYear = new Date().getFullYear();
+          formattedExpiry = `${currentYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+        }
+        
+        // Add to selection with opposite side for closing
+        const closingLeg = {
+          symbol: leg.symbol,
+          side: leg.qty > 0 ? 'sell' : 'buy', // Opposite side for closing
+          quantity: Math.abs(leg.qty), // Use position quantity
+          strike_price: parsedOption?.strike || 0,
+          type: parsedOption?.type || 'call',
+          expiry: formattedExpiry,
+          current_price: getLegCurrentPrice(leg),
+          bid: leg.bid || 0,
+          ask: leg.ask || 0,
+          // Position-specific data
+          original_quantity: Math.abs(leg.qty),
+          avg_entry_price: leg.avg_entry_price,
+          unrealized_pl: leg.unrealized_pl
+        };
+        
+        addLeg(closingLeg, 'positions');
+        console.log(`✅ Added position leg for closing: ${legSymbol}`, {
+          originalSide: leg.qty > 0 ? 'long' : 'short',
+          closingSide: closingLeg.side,
+          quantity: closingLeg.quantity,
+          strike: closingLeg.strike_price,
+          type: closingLeg.type,
+          expiry: closingLeg.expiry,
+          parsedOption
+        });
+      }
+    };
+
     // Subscribe to all position symbols for live price updates - DEFINED BEFORE WATCHER
     const subscribeToAllPositionSymbols = (positionsData) => {
       const symbols = new Set();
@@ -1302,6 +1387,13 @@ export default {
       priceChangePercent,
       marketStatus,
       onTradeModeChanged,
+      // Position selection functions
+      isLegSelected,
+      togglePositionLegSelection,
+      // Bottom Trading Panel integration
+      hasSelectedLegs,
+      onReviewSend,
+      onPriceAdjusted,
     };
   },
 };
@@ -1601,6 +1693,20 @@ export default {
 
 .position-leg-row {
   background: var(--bg-primary);
+  cursor: pointer;
+  transition: all 0.2s ease;
+  border: 1px solid transparent;
+}
+
+.position-leg-row:hover {
+  background-color: var(--bg-tertiary);
+  border-color: #444444;
+}
+
+.position-leg-row.selected {
+  background-color: rgba(255, 215, 0, 0.1);
+  border-color: #ffd700;
+  box-shadow: 0 0 0 1px rgba(255, 215, 0, 0.3);
 }
 
 .symbol-content {
