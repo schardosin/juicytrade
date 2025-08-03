@@ -813,8 +813,8 @@ export default {
       (positionsData) => {
         console.log("🔍 RightPanel: Position data changed for", props.currentSymbol, positionsData);
         
-        // Clear checked positions when data changes (symbol change or data refresh)
-        checkedPositions.value.clear();
+        // Only clear checked positions on symbol change, not on data refresh
+        // We'll let the allPositions watcher handle the checkbox state properly
         
         if (positionsData?.positions && Array.isArray(positionsData.positions)) {
           console.log("📊 RightPanel: Processing", positionsData.positions.length, "positions");
@@ -848,6 +848,16 @@ export default {
         }
       },
       { deep: true, immediate: true }
+    );
+
+    // Watch for symbol changes to clear checkboxes only when symbol changes
+    watch(
+      () => props.currentSymbol,
+      (newSymbol, oldSymbol) => {
+        if (newSymbol !== oldSymbol) {
+          checkedPositions.value.clear();
+        }
+      }
     );
 
     // Watch for forced expansion and section changes
