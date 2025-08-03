@@ -174,10 +174,25 @@ class StreamingManager:
             logger.error(f"❌ Error checking provider health: {e}")
     
     async def _attempt_recovery(self, reason: str):
-        """Attempt to recover from connection issues"""
+        """Attempt to recover from connection issues with enhanced sleep/wake handling"""
         try:
             logger.info(f"🔄 Attempting recovery due to: {reason}")
             self._health_stats['reconnection_count'] += 1
+            
+            # For sleep/wake scenarios, be more aggressive with cleanup
+            if reason in ["system_wakeup", "no_data_timeout"]:
+                logger.info("🧹 Sleep/wake detected - performing aggressive connection cleanup")
+                
+                # Force disconnect all providers first to clear stale connections
+                for provider_name, provider in self._providers.items():
+                    try:
+                        logger.info(f"🛑 Force disconnecting {provider_name} for cleanup")
+                        await asyncio.wait_for(provider.disconnect_streaming(), timeout=5.0)
+                    except Exception as e:
+                        logger.warning(f"⚠️ Error force disconnecting {provider_name}: {e}")
+                
+                # Wait longer for cleanup after sleep/wake
+                await asyncio.sleep(2.0)
             
             # Try to reconnect all providers
             for provider_name, provider in self._providers.items():

@@ -37,13 +37,27 @@ class ConnectionManager:
         }
         
     async def connect(self, websocket: WebSocket):
-        """Enhanced WebSocket connection with health tracking and shutdown protection"""
+        """Enhanced WebSocket connection with health tracking and connection limit protection"""
         if self.is_shutting_down:
             logger.warning("🚫 Rejecting new connection - shutdown in progress")
             await websocket.close(code=1001, reason="Server shutting down")
             return
             
         try:
+            # Check for stale connections before accepting new ones
+            await self._cleanup_stale_connections()
+            
+            # Validate connection limits to prevent Alpaca 429 errors
+            if len(self.active_connections) >= 5:  # Conservative limit for Alpaca
+                logger.warning(f"⚠️ Connection limit reached ({len(self.active_connections)}), cleaning up stale connections")
+                await self._cleanup_stale_connections()
+                
+                # If still at limit after cleanup, reject new connection
+                if len(self.active_connections) >= 5:
+                    logger.error("❌ Connection limit exceeded after cleanup - rejecting new connection")
+                    await websocket.close(code=1008, reason="Connection limit exceeded")
+                    return
+            
             await websocket.accept()
             self.active_connections.append(websocket)
             self.shutdown_manager.register_websocket(websocket)
@@ -121,6 +135,59 @@ class ConnectionManager:
             pass  # Connection might already be closed or timeout
         finally:
             self.disconnect(websocket)
+    
+    async def _cleanup_stale_connections(self):
+        """Clean up stale or disconnected WebSocket connections"""
+        try:
+            stale_connections = []
+            current_time = time.time()
+            
+            for connection in self.active_connections[:]:  # Copy to avoid modification during iteration
+                connection_id = id(connection)
+                
+                # Check if connection is actually disconnected
+                try:
+                    if hasattr(connection, 'client_state'):
+                        if connection.client_state.name == "DISCONNECTED":
+                            stale_connections.append(connection)
+                            continue
+                    
+                    # Check for connections that haven't sent messages recently (stale)
+                    if connection_id in self._connection_health:
+                        last_message_time = self._connection_health[connection_id].get('last_message', 0)
+                        time_since_message = current_time - last_message_time
+                        
+                        # Consider connections stale if no activity for 5 minutes
+                        if time_since_message > 300:
+                            logger.info(f"🧹 Marking connection as stale (no activity for {time_since_message:.0f}s)")
+                            stale_connections.append(connection)
+                            continue
+                    
+                    # Try to ping the connection to verify it's alive
+                    try:
+                        await asyncio.wait_for(connection.ping(), timeout=1.0)
+                    except (asyncio.TimeoutError, Exception):
+                        logger.info("🧹 Connection failed ping test - marking as stale")
+                        stale_connections.append(connection)
+                        
+                except Exception as e:
+                    logger.warning(f"⚠️ Error checking connection health: {e}")
+                    stale_connections.append(connection)
+            
+            # Clean up stale connections
+            if stale_connections:
+                logger.info(f"🧹 Cleaning up {len(stale_connections)} stale connections")
+                cleanup_tasks = []
+                for conn in stale_connections:
+                    cleanup_tasks.append(asyncio.create_task(self._cleanup_connection(conn)))
+                
+                if cleanup_tasks:
+                    await asyncio.gather(*cleanup_tasks, return_exceptions=True)
+                    
+                logger.info(f"✅ Cleaned up stale connections. Active connections: {len(self.active_connections)}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error during stale connection cleanup: {e}")
     
     async def broadcast(self, message: dict):
         """Enhanced broadcast with connection health checking and error handling"""

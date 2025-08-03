@@ -1071,25 +1071,52 @@ class AlpacaProvider(BaseProvider):
     # === Streaming Methods ===
     
     async def connect_streaming(self) -> bool:
-        """Connect to Alpaca streaming services."""
+        """Connect to Alpaca streaming services with connection limit handling."""
         try:
-            # Initialize streaming clients
-            self.option_stream = OptionDataStream(self.api_key, self.api_secret)
-            self.stock_stream = StockDataStream(self.api_key, self.api_secret)
-            self.trading_stream = TradingStream(
-                self.api_key,
-                self.api_secret,
-                paper=self.use_paper
-            )
+            # Check for connection limit errors and handle with exponential backoff
+            max_retries = 3
+            base_delay = 5  # Start with 5 seconds
             
-            # Start the streams in a separate thread
-            import threading
-            threading.Thread(target=self.option_stream.run, daemon=True).start()
-            threading.Thread(target=self.stock_stream.run, daemon=True).start()
+            for attempt in range(max_retries):
+                try:
+                    # Initialize streaming clients
+                    self.option_stream = OptionDataStream(self.api_key, self.api_secret)
+                    self.stock_stream = StockDataStream(self.api_key, self.api_secret)
+                    self.trading_stream = TradingStream(
+                        self.api_key,
+                        self.api_secret,
+                        paper=self.use_paper
+                    )
+                    
+                    # Start the streams in a separate thread
+                    import threading
+                    threading.Thread(target=self.option_stream.run, daemon=True).start()
+                    threading.Thread(target=self.stock_stream.run, daemon=True).start()
+                    
+                    self.is_connected = True
+                    self._log_info("Streaming connection established")
+                    return True
+                    
+                except Exception as e:
+                    error_msg = str(e).lower()
+                    
+                    # Check for connection limit errors (HTTP 429 or connection limit exceeded)
+                    if "429" in error_msg or "connection limit" in error_msg or "rate limit" in error_msg:
+                        if attempt < max_retries - 1:
+                            delay = base_delay * (2 ** attempt)  # Exponential backoff
+                            logger.warning(f"⚠️ Alpaca connection limit hit (attempt {attempt + 1}/{max_retries}). "
+                                         f"Waiting {delay}s before retry...")
+                            await asyncio.sleep(delay)
+                            continue
+                        else:
+                            logger.error(f"❌ Alpaca connection limit exceeded after {max_retries} attempts")
+                            raise Exception("Connection limit exceeded - too many active connections")
+                    else:
+                        # Non-connection-limit error, re-raise immediately
+                        raise e
             
-            self.is_connected = True
-            self._log_info("Streaming connection established")
-            return True
+            return False
+            
         except Exception as e:
             self._log_error("connect_streaming", e)
             return False
@@ -1142,13 +1169,13 @@ class AlpacaProvider(BaseProvider):
     
     async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         """
-        Unsubscribe from real-time data for symbols.
+        Unsubscribe from real-time data for symbols with proper connection cleanup.
         
-        Note: Alpaca doesn't support true unsubscribing from individual symbols,
-        so we track what should be unsubscribed and manage subscriptions internally.
+        This method now properly closes WebSocket connections when all symbols are unsubscribed
+        to prevent connection limit issues after sleep/wake cycles.
         """
         try:
-            logger.info(f"🗑️ Alpaca: Marking {len(symbols)} symbols for unsubscription: {symbols}")
+            logger.info(f"🗑️ Alpaca: Unsubscribing from {len(symbols)} symbols: {symbols}")
             
             # Remove symbols from our tracking set
             for symbol in symbols:
@@ -1156,12 +1183,17 @@ class AlpacaProvider(BaseProvider):
             
             logger.info(f"📋 Alpaca: Remaining subscribed symbols: {list(self._subscribed_symbols)}")
             
-            # Instead of restarting streams (which causes connection limits),
-            # we'll just track the unsubscribed symbols internally.
-            # New subscriptions will only include the remaining symbols.
-            logger.info(f"✅ Alpaca: Symbols marked for unsubscription. Next subscription will use remaining {len(self._subscribed_symbols)} symbols")
+            # If no symbols remain, properly close all streams to prevent connection limit issues
+            if not self._subscribed_symbols:
+                logger.info("🧹 Alpaca: No symbols remaining - closing all streams to prevent connection limits")
+                await self._stop_all_streams()
+                return True
             
-            return True
+            # If symbols remain, restart streams with only the remaining symbols
+            # This ensures proper cleanup of old connections
+            logger.info(f"🔄 Alpaca: Restarting streams with remaining {len(self._subscribed_symbols)} symbols")
+            return await self._restart_streams_with_symbols(list(self._subscribed_symbols))
+            
         except Exception as e:
             self._log_error(f"unsubscribe_from_symbols {symbols}", e)
             return False
