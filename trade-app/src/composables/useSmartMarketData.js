@@ -1,4 +1,4 @@
-import { inject, onMounted } from "vue";
+import { inject } from "vue";
 import smartMarketDataStore from "../services/smartMarketDataStore.js";
 
 /**
@@ -16,10 +16,8 @@ import smartMarketDataStore from "../services/smartMarketDataStore.js";
  * ```
  */
 export function useSmartMarketData() {
-  // Initialize store on first use
-  onMounted(() => {
-    smartMarketDataStore.initialize();
-  });
+  // Ensure store is initialized (safe to call multiple times)
+  smartMarketDataStore.initialize();
 
   /**
    * Get reactive stock price for a symbol
