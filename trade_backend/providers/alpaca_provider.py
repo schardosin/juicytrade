@@ -1071,81 +1071,76 @@ class AlpacaProvider(BaseProvider):
     # === Streaming Methods ===
     
     async def connect_streaming(self) -> bool:
-        """Connect to Alpaca streaming services with aggressive connection limit prevention."""
+        """Connect to Alpaca streaming services with proper connection management."""
         try:
-            # CRITICAL: Prevent multiple concurrent connection attempts
+            # Prevent multiple concurrent connection attempts
             if hasattr(self, '_connecting') and self._connecting:
-                logger.warning("🚫 Alpaca: Connection attempt already in progress, skipping")
-                return False
+                logger.info("🔄 Alpaca: Connection attempt already in progress, waiting...")
+                return self.is_connected
             
             self._connecting = True
             
             try:
-                # STEP 1: Ensure all existing streams are completely closed
-                logger.info("🧹 Alpaca: Ensuring all existing streams are closed before connecting")
-                await self._force_close_all_streams()
+                # Ensure clean state before connecting
+                if self.is_connected:
+                    logger.info("🔄 Alpaca: Already connected, disconnecting first for clean reconnection")
+                    await self.disconnect_streaming()
+                    await asyncio.sleep(1.0)  # Brief pause for cleanup
                 
-                # STEP 2: Wait for complete cleanup
-                await asyncio.sleep(2.0)
+                logger.info("📡 Alpaca: Initializing streaming connections...")
                 
-                # STEP 3: Check for connection limit errors and handle with exponential backoff
-                max_retries = 3
-                base_delay = 10  # Increased base delay to 10 seconds
+                # Initialize streaming clients with proper sequencing
+                # Create option stream first (if needed)
+                if not hasattr(self, '_disable_option_stream') or not self._disable_option_stream:
+                    self.option_stream = OptionDataStream(self.api_key, self.api_secret)
                 
-                for attempt in range(max_retries):
-                    try:
-                        logger.info(f"🔄 Alpaca: Connection attempt {attempt + 1}/{max_retries}")
-                        
-                        # CRITICAL: Only create ONE stream at a time to avoid connection limits
-                        # Start with stock stream only
-                        logger.info("📡 Alpaca: Creating stock stream only (avoiding multiple concurrent connections)")
-                        self.stock_stream = StockDataStream(self.api_key, self.api_secret)
-                        
-                        # Start the stock stream in a separate thread
-                        import threading
-                        threading.Thread(target=self.stock_stream.run, daemon=True).start()
-                        
-                        # Wait a moment for the connection to establish
-                        await asyncio.sleep(1.0)
-                        
-                        # DO NOT create option stream - this causes connection limit issues
-                        # We'll handle options through the stock stream if needed
-                        self.option_stream = None
-                        
-                        # Trading stream is separate and usually doesn't cause issues
-                        self.trading_stream = TradingStream(
-                            self.api_key,
-                            self.api_secret,
-                            paper=self.use_paper
-                        )
-                        
-                        self.is_connected = True
-                        logger.info("✅ Alpaca: Streaming connection established (stock stream only)")
-                        return True
-                        
-                    except Exception as e:
-                        error_msg = str(e).lower()
-                        
-                        # Check for connection limit errors (HTTP 429 or connection limit exceeded)
-                        if "429" in error_msg or "connection limit" in error_msg or "rate limit" in error_msg:
-                            if attempt < max_retries - 1:
-                                delay = base_delay * (2 ** attempt)  # Exponential backoff
-                                logger.warning(f"⚠️ Alpaca connection limit hit (attempt {attempt + 1}/{max_retries}). "
-                                             f"Waiting {delay}s before retry...")
-                                
-                                # Force cleanup before retry
-                                await self._force_close_all_streams()
-                                await asyncio.sleep(delay)
-                                continue
-                            else:
-                                logger.error(f"❌ Alpaca connection limit exceeded after {max_retries} attempts")
-                                raise Exception("Connection limit exceeded - too many active connections")
-                        else:
-                            # Non-connection-limit error, re-raise immediately
-                            logger.error(f"❌ Alpaca connection error: {e}")
-                            raise e
+                # Create stock stream
+                self.stock_stream = StockDataStream(self.api_key, self.api_secret)
                 
-                return False
+                # Create trading stream
+                self.trading_stream = TradingStream(
+                    self.api_key,
+                    self.api_secret,
+                    paper=self.use_paper
+                )
+                
+                # Start streams with proper sequencing to avoid connection conflicts
+                import threading
+                
+                # Start option stream first if enabled
+                if self.option_stream:
+                    logger.info("🚀 Alpaca: Starting option stream...")
+                    threading.Thread(target=self.option_stream.run, daemon=True).start()
+                    await asyncio.sleep(0.5)  # Small delay between stream starts
+                
+                # Start stock stream
+                logger.info("🚀 Alpaca: Starting stock stream...")
+                threading.Thread(target=self.stock_stream.run, daemon=True).start()
+                await asyncio.sleep(0.5)  # Small delay
+                
+                self.is_connected = True
+                logger.info("✅ Alpaca: Streaming connections established successfully")
+                return True
+                
+            except Exception as e:
+                error_msg = str(e).lower()
+                
+                # Handle connection limit errors with backoff
+                if "429" in error_msg or "connection limit" in error_msg or "rate limit" in error_msg:
+                    logger.warning(f"⚠️ Alpaca: Connection limit hit - {e}")
+                    
+                    # Disable option stream and retry with stock stream only
+                    if not hasattr(self, '_disable_option_stream') or not self._disable_option_stream:
+                        logger.info("🔄 Alpaca: Retrying with option stream disabled to reduce connections")
+                        self._disable_option_stream = True
+                        await asyncio.sleep(5.0)  # Wait before retry
+                        return await self.connect_streaming()
+                    else:
+                        logger.error("❌ Alpaca: Connection limit exceeded even with minimal streams")
+                        raise Exception("Connection limit exceeded - unable to establish any connections")
+                else:
+                    logger.error(f"❌ Alpaca: Connection error - {e}")
+                    raise e
                 
             finally:
                 self._connecting = False
@@ -1877,56 +1872,6 @@ class AlpacaProvider(BaseProvider):
             self._log_error("_stop_all_streams", e)
             return False
     
-    async def _force_close_all_streams(self) -> bool:
-        """Force close all streaming connections with aggressive cleanup."""
-        try:
-            logger.info("🔥 Alpaca: Force closing all streams with aggressive cleanup")
-            
-            # Set connection flag to false immediately
-            self.is_connected = False
-            
-            # Force close option stream with timeout
-            if self.option_stream:
-                try:
-                    await asyncio.wait_for(self.option_stream.close(), timeout=3.0)
-                except (asyncio.TimeoutError, Exception) as e:
-                    logger.warning(f"Force close option stream timeout/error: {e}")
-                finally:
-                    self.option_stream = None
-            
-            # Force close stock stream with timeout
-            if self.stock_stream:
-                try:
-                    await asyncio.wait_for(self.stock_stream.close(), timeout=3.0)
-                except (asyncio.TimeoutError, Exception) as e:
-                    logger.warning(f"Force close stock stream timeout/error: {e}")
-                finally:
-                    self.stock_stream = None
-            
-            # Force close trading stream with timeout
-            if self.trading_stream:
-                try:
-                    await asyncio.wait_for(self.trading_stream.close(), timeout=3.0)
-                except (asyncio.TimeoutError, Exception) as e:
-                    logger.warning(f"Force close trading stream timeout/error: {e}")
-                finally:
-                    self.trading_stream = None
-            
-            # Clear subscribed symbols to prevent reconnection issues
-            self._subscribed_symbols = set()
-            
-            logger.info("✅ Alpaca: All streams force closed")
-            return True
-            
-        except Exception as e:
-            logger.error(f"❌ Error during force close: {e}")
-            # Ensure streams are set to None even if errors occur
-            self.option_stream = None
-            self.stock_stream = None
-            self.trading_stream = None
-            self.is_connected = False
-            self._subscribed_symbols = set()
-            return False
 
     # === Enhanced Positions Helper Methods ===
     
