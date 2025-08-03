@@ -29,7 +29,7 @@
           placeholder="Find a symbol or company"
           class="search-input"
           @input="handleInput"
-          @focus="showDropdown = true"
+          @focus="handleFocus"
           @blur="handleBlur"
           @keydown="handleKeydown"
           @keyup.enter="performSearch"
@@ -367,7 +367,6 @@ export default {
 
     const performSearch = async () => {
       if (searchQuery.value.trim()) {
-        console.log(`Searching for: ${searchQuery.value}`);
         try {
           // Use unified data access - cached for 10 minutes
           const results = await lookupSymbols(searchQuery.value);
@@ -375,7 +374,6 @@ export default {
           if (results && results.length > 0) {
             // Take the first result and emit a symbol selection event
             const selectedSymbol = results[0];
-            console.log("Selected symbol from search:", selectedSymbol);
 
             // Emit an event that the parent can listen to
             // For now, we'll use a global event bus or direct method call
@@ -406,15 +404,29 @@ export default {
     };
 
 
-    // Handle input with debouncing
+    // Handle focus - improved state management
+    const handleFocus = () => {
+      showDropdown.value = true;
+      // If we have a query and no results, trigger search
+      if (searchQuery.value.length > 0 && searchResults.value.length === 0 && !searchLoading.value) {
+        handleInput();
+      }
+    };
+
+    // Handle input with improved debouncing and state management
     const handleInput = () => {
+      // Clear any existing timeout
       if (searchTimeout) {
         clearTimeout(searchTimeout);
       }
 
+      // Reset state
+      highlightedIndex.value = -1;
+
       if (searchQuery.value.length === 0) {
         searchResults.value = [];
         searchLoading.value = false;
+        showDropdown.value = false;
         return;
       }
 
@@ -422,8 +434,9 @@ export default {
         return;
       }
 
+      // Show dropdown and loading state
+      showDropdown.value = true;
       searchLoading.value = true;
-      highlightedIndex.value = -1;
 
       searchTimeout = setTimeout(async () => {
         try {
@@ -439,12 +452,13 @@ export default {
       }, 300); // 300ms debounce
     };
 
-    // Handle blur with delay to allow click events
-    const handleBlur = () => {
+    // Handle blur with improved race condition prevention
+    const handleBlur = (event) => {
+      // Use a longer timeout to prevent race conditions with mousedown events
       setTimeout(() => {
         showDropdown.value = false;
         highlightedIndex.value = -1;
-      }, 150);
+      }, 200);
     };
 
     // Handle keyboard navigation
@@ -480,8 +494,20 @@ export default {
       }
     };
 
-    // Select a symbol
+    // Select a symbol with improved state cleanup
     const selectSymbol = (symbol) => {
+      // Clear search state first to prevent race conditions
+      searchResults.value = [];
+      searchLoading.value = false;
+      highlightedIndex.value = -1;
+      
+      // Clear any pending search timeout
+      if (searchTimeout) {
+        clearTimeout(searchTimeout);
+        searchTimeout = null;
+      }
+      
+      // Update query and hide dropdown
       searchQuery.value = symbol.symbol;
       showDropdown.value = false;
 
@@ -638,6 +664,7 @@ export default {
       performSearch,
       toggleUserMenu,
       openSettings,
+      handleFocus,
       handleInput,
       handleBlur,
       handleKeydown,

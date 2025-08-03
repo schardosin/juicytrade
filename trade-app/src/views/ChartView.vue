@@ -81,9 +81,18 @@ export default {
     RightPanel,
   },
   setup() {
-    // Use global symbol state
-    const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
-      useGlobalSymbol();
+    // Use global symbol state with centralized symbol selection
+    const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus, setupSymbolSelectionListener } =
+      useGlobalSymbol({
+        onSymbolChange: async (symbolData) => {
+          // Fetch new data for the selected symbol
+          try {
+            await fetchSymbolData(symbolData.symbol);
+          } catch (error) {
+            console.error("Error loading data for new symbol:", error);
+          }
+        }
+      });
 
     // Use SmartMarketData for live price subscriptions
     const { getStockPrice } = useSmartMarketData();
@@ -261,26 +270,11 @@ export default {
     onMounted(async () => {
       await fetchSymbolData(currentSymbol.value);
 
-      // Listen for symbol selection events from TopBar
-      const handleSymbolSelection = (event) => {
-        onSymbolSelected(event.detail);
-      };
-
-      window.addEventListener("symbol-selected", handleSymbolSelection);
-
-      // Store the handler for cleanup
-      window._chartSymbolSelectionHandler = handleSymbolSelection;
-    });
-
-    onUnmounted(() => {
-      // Clean up event listener
-      if (window._chartSymbolSelectionHandler) {
-        window.removeEventListener(
-          "symbol-selected",
-          window._chartSymbolSelectionHandler
-        );
-        delete window._chartSymbolSelectionHandler;
-      }
+      // Set up centralized symbol selection listener
+      const cleanup = setupSymbolSelectionListener();
+      
+      // Store cleanup for unmount
+      onUnmounted(cleanup);
     });
 
     return {

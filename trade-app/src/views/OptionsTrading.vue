@@ -138,9 +138,31 @@ export default {
       }
     });
 
-    // Use global symbol state
-    const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
-      useGlobalSymbol();
+    // Use global symbol state with centralized symbol selection
+    const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus, setupSymbolSelectionListener } =
+      useGlobalSymbol({
+        onSymbolChange: async (symbolData) => {
+          // Clear existing data
+          clearAllSelections();
+          optionsChainData.value = [];
+          optionsDataByExpiration.value = {}; // Clear CollapsibleOptionsChain data
+          expirationDates.value = [];
+          selectedExpiry.value = null;
+
+          // Fetch new data for the selected symbol
+          try {
+            await fetchSymbolData(symbolData.symbol);
+            await fetchExpirationDates(symbolData.symbol);
+
+            if (selectedExpiry.value) {
+              await fetchOptionsChain(symbolData.symbol, selectedExpiry.value);
+              onExpiryChange();
+            }
+          } catch (error) {
+            console.error("Error loading data for new symbol:", error);
+          }
+        }
+      });
 
     // Use centralized selected legs (positions loaded globally by useGlobalSymbol)
     const { selectedLegs, clearAll: clearSelectedLegs } = useSelectedLegs();
@@ -638,10 +660,8 @@ export default {
         onExpiryChange();
       }
 
-      // Listen for symbol selection events from TopBar
-      const handleSymbolSelection = (event) => {
-        onSymbolSelected(event.detail);
-      };
+      // Set up centralized symbol selection listener
+      const cleanup = setupSymbolSelectionListener();
 
       // Listen for system recovery events to refresh data
       const handleSystemRecovery = async (event) => {
@@ -662,31 +682,13 @@ export default {
         }
       };
 
-      window.addEventListener("symbol-selected", handleSymbolSelection);
       window.addEventListener("websocket-recovered", handleSystemRecovery);
 
-      // Store the handlers for cleanup
-      window._symbolSelectionHandler = handleSymbolSelection;
-      window._systemRecoveryHandler = handleSystemRecovery;
-    });
-
-    onUnmounted(() => {
-      // Clean up event listeners
-      if (window._symbolSelectionHandler) {
-        window.removeEventListener(
-          "symbol-selected",
-          window._symbolSelectionHandler
-        );
-        delete window._symbolSelectionHandler;
-      }
-      
-      if (window._systemRecoveryHandler) {
-        window.removeEventListener(
-          "websocket-recovered",
-          window._systemRecoveryHandler
-        );
-        delete window._systemRecoveryHandler;
-      }
+      // Store cleanup for unmount
+      onUnmounted(() => {
+        cleanup();
+        window.removeEventListener("websocket-recovered", handleSystemRecovery);
+      });
     });
 
     // Watchers

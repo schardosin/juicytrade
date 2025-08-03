@@ -384,8 +384,13 @@ export default {
     OrderConfirmationDialog,
   },
   setup() {
-    // Use global symbol state instead of local refs
-    const { globalSymbolState } = useGlobalSymbol();
+    // Use global symbol state with centralized symbol selection
+    const { globalSymbolState, setupSymbolSelectionListener } = useGlobalSymbol({
+      onSymbolChange: async (symbolData) => {
+        // Positions are already refreshed by updateSymbol in useGlobalSymbol
+        // Any additional positions-specific logic can go here if needed
+      }
+    });
 
     // Use unified market data composable
     const { getPositions, refreshPositions } = useMarketData();
@@ -1388,26 +1393,11 @@ export default {
 
     // Lifecycle
     onMounted(async () => {
-      // Listen for symbol selection events from TopBar
-      const handleSymbolSelection = (event) => {
-        onSymbolSelected(event.detail);
-      };
-
-      window.addEventListener("symbol-selected", handleSymbolSelection);
-
-      // Store the handler for cleanup
-      window._positionsSymbolSelectionHandler = handleSymbolSelection;
-    });
-
-    onUnmounted(() => {
-      // Clean up event listeners
-      if (window._positionsSymbolSelectionHandler) {
-        window.removeEventListener(
-          "symbol-selected",
-          window._positionsSymbolSelectionHandler
-        );
-        delete window._positionsSymbolSelectionHandler;
-      }
+      // Set up centralized symbol selection listener
+      const cleanup = setupSymbolSelectionListener();
+      
+      // Store cleanup for unmount
+      onUnmounted(cleanup);
     });
 
     return {

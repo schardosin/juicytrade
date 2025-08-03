@@ -88,7 +88,8 @@ const persistSymbolData = () => {
 import { DateTime } from "luxon";
 
 // Global symbol management composable
-export function useGlobalSymbol() {
+export function useGlobalSymbol(options = {}) {
+  const { onSymbolChange } = options;
   // Load positions for the initial/default symbol on first use
   const initializePositions = async () => {
     try {
@@ -179,6 +180,33 @@ export function useGlobalSymbol() {
   updateMarketStatusNow();
   setInterval(updateMarketStatusNow, 60000);
 
+  // Centralized symbol selection handler
+  const setupSymbolSelectionListener = () => {
+    const handleSymbolSelection = async (event) => {
+      const symbolData = event.detail;
+      
+      try {
+        // Update global symbol state (this triggers all the existing logic)
+        await updateSymbol(symbolData);
+        
+        // Call view-specific callback if provided
+        if (onSymbolChange) {
+          await onSymbolChange(symbolData);
+        }
+      } catch (error) {
+        console.error('❌ Error handling symbol selection:', error);
+      }
+    };
+
+    // Set up event listener
+    window.addEventListener("symbol-selected", handleSymbolSelection);
+    
+    // Return cleanup function
+    return () => {
+      window.removeEventListener("symbol-selected", handleSymbolSelection);
+    };
+  };
+
   return {
     // Reactive state
     globalSymbolState,
@@ -188,6 +216,7 @@ export function useGlobalSymbol() {
     updatePrice,
     updateMarketStatus,
     getSymbolData,
+    setupSymbolSelectionListener,
 
     // Computed-like getters for convenience
     currentSymbol: () => globalSymbolState.currentSymbol,

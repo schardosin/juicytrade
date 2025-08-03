@@ -146,8 +146,6 @@ class SelectedLegsStore {
   clearAllLegs() {
     const count = this.legs.size;
     this.legs.clear();
-    
-    console.log(`🧹 Cleared all legs (${count} removed)`);
   }
 
   /**
