@@ -764,44 +764,6 @@ export default {
       }
     };
 
-    // Fetch positions for current symbol (following ActivitySection pattern)
-    const fetchPositionsForSymbol = async (symbol) => {
-      try {
-        // Get filtered positions data using the composable
-        const response = await getPositionsForSymbol(symbol);
-        
-        let positions = [];
-        if (response && response.positions && Array.isArray(response.positions)) {
-          // The data store already filtered the positions for us!
-          positions = response.positions.map((pos) => {
-            // Parse option symbol to get missing details if needed
-            const parsedOption = parseOptionSymbol(pos.symbol);
-            
-            return {
-              id: pos.symbol,
-              symbol: pos.symbol,
-              asset_class: pos.asset_class || "us_option",
-              underlying_symbol: pos.underlying_symbol,
-              qty: pos.qty,
-              strike_price: parsedOption?.strike_price || pos.strike_price,
-              option_type: parsedOption?.option_type || pos.option_type,
-              expiry_date: parsedOption?.expiry_date || pos.expiry_date,
-              current_price: pos.current_price,
-              avg_entry_price: pos.avg_entry_price || 
-                (pos.cost_basis ? Math.abs(pos.cost_basis / (pos.qty * 100)) : 0),
-              unrealized_pl: pos.unrealized_pl || 0,
-              isExisting: true,
-              isSelected: false,
-            };
-          });
-        }
-
-        existingPositions.value = positions;
-      } catch (error) {
-        console.error("Error fetching positions for symbol:", error);
-        existingPositions.value = [];
-      }
-    };
 
     // Watch for changes in positions to update checked state
     watch(
@@ -841,17 +803,51 @@ export default {
       { deep: true }
     );
 
-    // Simple symbol watching (following ActivitySection pattern)
+    // Watch for position data changes (reactive updates from global store)
+    // This single watcher handles both symbol changes and position data updates
     watch(
-      () => props.currentSymbol,
-      (newSymbol) => {
-        // Clear previously checked positions when symbol changes
+      () => {
+        const positionsComputed = getPositionsForSymbol(props.currentSymbol);
+        return positionsComputed.value; // Get the actual value from the computed
+      },
+      (positionsData) => {
+        console.log("🔍 RightPanel: Position data changed for", props.currentSymbol, positionsData);
+        
+        // Clear checked positions when data changes (symbol change or data refresh)
         checkedPositions.value.clear();
         
-        // Fetch positions for the new symbol
-        fetchPositionsForSymbol(newSymbol);
+        if (positionsData?.positions && Array.isArray(positionsData.positions)) {
+          console.log("📊 RightPanel: Processing", positionsData.positions.length, "positions");
+          
+          existingPositions.value = positionsData.positions.map((pos) => {
+            // Parse option symbol to get missing details if needed
+            const parsedOption = parseOptionSymbol(pos.symbol);
+            
+            return {
+              id: pos.symbol,
+              symbol: pos.symbol,
+              asset_class: pos.asset_class || "us_option",
+              underlying_symbol: pos.underlying_symbol,
+              qty: pos.qty,
+              strike_price: parsedOption?.strike_price || pos.strike_price,
+              option_type: parsedOption?.option_type || pos.option_type,
+              expiry_date: parsedOption?.expiry_date || pos.expiry_date,
+              current_price: pos.current_price,
+              avg_entry_price: pos.avg_entry_price || 
+                (pos.cost_basis ? Math.abs(pos.cost_basis / (pos.qty * 100)) : 0),
+              unrealized_pl: pos.unrealized_pl || 0,
+              isExisting: true,
+              isSelected: false,
+            };
+          });
+          
+          console.log("✅ RightPanel: Processed positions:", existingPositions.value);
+        } else {
+          console.log("📭 RightPanel: No positions found for", props.currentSymbol);
+          existingPositions.value = [];
+        }
       },
-      { immediate: true }
+      { deep: true, immediate: true }
     );
 
     // Watch for forced expansion and section changes

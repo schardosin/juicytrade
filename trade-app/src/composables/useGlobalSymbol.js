@@ -1,5 +1,6 @@
 import { ref, reactive, computed, watch } from "vue";
 import { useSmartMarketData } from "./useSmartMarketData.js";
+import smartMarketDataStore from "../services/smartMarketDataStore.js";
 
 // Load persisted symbol data from localStorage
 const loadPersistedSymbolData = () => {
@@ -88,9 +89,28 @@ import { DateTime } from "luxon";
 
 // Global symbol management composable
 export function useGlobalSymbol() {
+  // Load positions for the initial/default symbol on first use
+  const initializePositions = async () => {
+    try {
+      await smartMarketDataStore.refreshPositions();
+    } catch (error) {
+      console.error(`❌ Failed to load initial positions for ${globalSymbolState.currentSymbol}:`, error);
+    }
+  };
+
+  // Initialize positions for the current symbol (only once per app load)
+  if (!globalSymbolState._positionsInitialized) {
+    globalSymbolState._positionsInitialized = true;
+    // Use setTimeout to avoid blocking the composable setup
+    setTimeout(initializePositions, 0);
+  }
+
   // Update symbol information
-  const updateSymbol = (symbolData) => {
-    globalSymbolState.currentSymbol = symbolData.symbol;
+  const updateSymbol = async (symbolData) => {
+    const oldSymbol = globalSymbolState.currentSymbol;
+    const newSymbol = symbolData.symbol;
+    
+    globalSymbolState.currentSymbol = newSymbol;
     globalSymbolState.companyName = symbolData.description;
     globalSymbolState.exchange = symbolData.exchange || "Unknown";
 
@@ -101,10 +121,18 @@ export function useGlobalSymbol() {
     globalSymbolState.isLivePrice = false;
     globalSymbolState.marketStatus = "Market Closed";
 
+    // 🆕 IMMEDIATELY load positions for new symbol (only if symbol actually changed)
+    if (oldSymbol !== newSymbol) {
+      try {
+        await smartMarketDataStore.refreshPositions();
+      } catch (error) {
+        console.error(`❌ Failed to load positions for ${newSymbol}:`, error);
+      }
+    }
+
     // Persist the symbol data to localStorage
     persistSymbolData();
 
-    console.log("Global symbol updated:", symbolData.symbol);
   };
 
   // Update price information

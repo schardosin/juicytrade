@@ -59,15 +59,11 @@ export function useMarketData() {
   };
 
   /**
-   * Get positions filtered by symbol (async method following ActivitySection pattern)
+   * Get positions filtered by symbol (reactive computed)
    */
-  const getPositionsForSymbol = async (symbol) => {
-    // Get the reactive computed from the store
-    const reactivePositions = smartMarketDataStore.getFilteredPositions(symbol);
-    
-    // Return the current value (for async/await pattern)
-    // The reactive computed will automatically update when data changes
-    return reactivePositions.value;
+  const getPositionsForSymbol = (symbol) => {
+    // Return the reactive computed directly from the store
+    return smartMarketDataStore.getFilteredPositions(symbol);
   };
 
   /**

@@ -137,8 +137,7 @@ export default {
     const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
       useGlobalSymbol();
 
-    // Use market data composable for refreshing positions and centralized selected legs
-    const { refreshPositions } = useMarketData();
+    // Use centralized selected legs (positions loaded globally by useGlobalSymbol)
     const { selectedLegs, clearAll: clearSelectedLegs } = useSelectedLegs();
 
     // Use centralized options chain manager
@@ -467,11 +466,8 @@ export default {
       expirationDates.value = [];
       selectedExpiry.value = null;
 
-      // Update global symbol state
+      // Update global symbol state (positions will be loaded automatically by useGlobalSymbol)
       updateSymbol(symbol);
-
-      // Force a refresh of the positions data from the backend
-      await refreshPositions();
 
       // Fetch new data for the selected symbol
       try {

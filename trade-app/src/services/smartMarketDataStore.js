@@ -928,6 +928,7 @@ class SmartMarketDataStore {
       this.trackDataAccess('positions');
       
       const allPositions = this.data.get('positions');
+      
       if (!allPositions || !symbol) {
         return null;
       }
@@ -955,7 +956,7 @@ class SmartMarketDataStore {
         allPositions.symbol_groups.forEach((symbolGroupData) => {
           if (
             symbolGroup.includes(symbolGroupData.symbol) &&
-            symbolGroupData.asset_class === "options"
+            (symbolGroupData.asset_class === "options" || symbolGroupData.asset_class === "us_option")
           ) {
             symbolGroupData.strategies.forEach((strategy) => {
               strategy.legs.forEach((leg) => {
@@ -973,7 +974,7 @@ class SmartMarketDataStore {
         allPositions.position_groups.forEach((group) => {
           if (
             symbolGroup.includes(group.symbol) &&
-            group.asset_class === "options"
+            (group.asset_class === "options" || group.asset_class === "us_option")
           ) {
             group.legs.forEach((leg) => {
               filteredPositions.push({
@@ -987,7 +988,7 @@ class SmartMarketDataStore {
       } else if (allPositions.positions && Array.isArray(allPositions.positions)) {
         // Fallback to old structure
         filteredPositions = allPositions.positions.filter((pos) => {
-          const isOption = pos.asset_class === "us_option";
+          const isOption = pos.asset_class === "us_option" || pos.asset_class === "option";
           const underlyingFromSymbol = extractUnderlyingFromOptionSymbol(pos.symbol);
           const isCurrentSymbolGroup = symbolGroup.includes(underlyingFromSymbol);
 
