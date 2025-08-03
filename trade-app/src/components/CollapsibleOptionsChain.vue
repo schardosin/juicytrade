@@ -245,6 +245,7 @@
 <script>
 import { ref, computed, reactive } from "vue";
 import { useMarketData } from "../composables/useMarketData.js";
+import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 
 export default {
   name: "CollapsibleOptionsChain",
@@ -256,10 +257,6 @@ export default {
     underlyingPrice: {
       type: Number,
       default: null,
-    },
-    selectedOptions: {
-      type: Array,
-      default: () => [],
     },
     expirationDates: {
       type: Array,
@@ -283,14 +280,18 @@ export default {
     },
   },
   emits: [
-    "option-selected",
-    "option-deselected",
     "expiration-expanded",
     "expiration-collapsed",
     "strike-count-changed",
   ],
   setup(props, { emit }) {
     const { getOptionPrice, getOptionGreeks } = useMarketData();
+    const { 
+      isSelected, 
+      addFromOptionsChain, 
+      removeLeg, 
+      getSelectionClass 
+    } = useSelectedLegs();
 
     // Reactive state - sync with parent's current strike count
     const strikeCount = ref(props.currentStrikeCount || 20);
@@ -526,56 +527,34 @@ export default {
       return "ITM";
     };
 
-    const isSelected = (symbol) => {
-      return props.selectedOptions.some((sel) => sel.symbol === symbol);
-    };
-
-    const getSelectionType = (symbol) => {
-      const selection = props.selectedOptions.find(
-        (sel) => sel.symbol === symbol
-      );
-      return selection ? selection.side : null;
-    };
-
     const getCallSelectionClass = (expiration, strike) => {
       const option = getCallOption(expiration, strike);
       if (!option) return "";
 
-      const selectionType = getSelectionType(option.symbol);
-      return {
-        "selected-buy": selectionType === "buy",
-        "selected-sell": selectionType === "sell",
-      };
+      return getSelectionClass(option.symbol);
     };
 
     const getPutSelectionClass = (expiration, strike) => {
       const option = getPutOption(expiration, strike);
       if (!option) return "";
 
-      const selectionType = getSelectionType(option.symbol);
-      return {
-        "selected-buy": selectionType === "buy",
-        "selected-sell": selectionType === "sell",
-      };
+      return getSelectionClass(option.symbol);
     };
 
     const selectCallOption = (expiration, strike, side = "buy") => {
       const option = getCallOption(expiration, strike);
       if (!option) return;
 
-      const existingSelection = props.selectedOptions.find(
-        (sel) => sel.symbol === option.symbol
-      );
-
-      if (existingSelection && existingSelection.side === side) {
-        emit("option-deselected", option.symbol);
+      if (isSelected(option.symbol)) {
+        // If already selected, remove it
+        removeLeg(option.symbol);
       } else {
-        emit("option-selected", {
+        // Add new selection with expiry from the expiration group
+        addFromOptionsChain({
           ...option,
-          side: side,
-          quantity: 1,
           expiry: expiration.date,
-        });
+          expiration_date: expiration.date
+        }, side);
       }
     };
 
@@ -583,19 +562,16 @@ export default {
       const option = getPutOption(expiration, strike);
       if (!option) return;
 
-      const existingSelection = props.selectedOptions.find(
-        (sel) => sel.symbol === option.symbol
-      );
-
-      if (existingSelection && existingSelection.side === side) {
-        emit("option-deselected", option.symbol);
+      if (isSelected(option.symbol)) {
+        // If already selected, remove it
+        removeLeg(option.symbol);
       } else {
-        emit("option-selected", {
+        // Add new selection with expiry from the expiration group
+        addFromOptionsChain({
           ...option,
-          side: side,
-          quantity: 1,
           expiry: expiration.date,
-        });
+          expiration_date: expiration.date
+        }, side);
       }
     };
 
@@ -631,8 +607,6 @@ export default {
       formatPrice,
       isAtTheMoney,
       getITMLabel,
-      isSelected,
-      getSelectionType,
       getCallSelectionClass,
       getPutSelectionClass,
       selectCallOption,

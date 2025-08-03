@@ -90,7 +90,7 @@
             v-for="(leg, index) in orderLegs"
             :key="index"
             class="order-leg"
-            :class="{ selected: selectedLegs.includes(leg.symbol) }"
+            :class="{ selected: internalSelectedLegs.includes(leg.symbol) }"
             @click="toggleLegSelection(leg.symbol)"
           >
             <span class="leg-qty">{{ leg.quantity }}</span>
@@ -233,7 +233,7 @@
 </template>
 
 <script>
-import { ref, computed, watch, toRefs, reactive } from "vue";
+import { ref, computed, watch, reactive } from "vue";
 import {
   calculateMultiLegProfitLoss,
   calculateBuyingPowerEffect,
@@ -242,6 +242,7 @@ import {
   calculateGreeks,
 } from "../services/optionsCalculator.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
+import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 
 export default {
   name: "BottomTradingPanel",
@@ -249,14 +250,6 @@ export default {
     visible: {
       type: Boolean,
       default: false,
-    },
-    selectedOptions: {
-      type: Array,
-      default: () => [],
-    },
-    optionsData: {
-      type: Array,
-      default: () => [],
     },
     symbol: {
       type: String,
@@ -267,9 +260,14 @@ export default {
       default: null,
     },
   },
-  emits: ["clear-trade", "review-send", "update-leg-quantity", "price-adjusted"],
+  emits: ["review-send", "price-adjusted"],
   setup(props, { emit }) {
-    const { selectedOptions, optionsData } = toRefs(props);
+    const { 
+      selectedLegs, 
+      hasSelectedLegs, 
+      updateQuantity, 
+      clearAll 
+    } = useSelectedLegs();
 
     // Smart Market Data integration - same pattern as CollapsibleOptionsChain
     const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
@@ -279,7 +277,7 @@ export default {
     const limitPrice = ref(0);
     const selectedOrderType = ref("limit");
     const selectedTimeInForce = ref("day");
-    const selectedLegs = ref([]);
+    const internalSelectedLegs = ref([]); // Renamed to avoid conflict
     const priceLocked = ref(false);
 
     // Live price function - same pattern as CollapsibleOptionsChain
@@ -308,20 +306,14 @@ export default {
           : livePrice.bid ?? 0;
       }
 
-      // Fallback to static data from props (backward compatibility)
-      const option = optionsData.value.find(
-        (opt) => opt.symbol === selection.symbol
-      );
-
-      if (!option) return 0;
-
-      if (priceType === "bid") return option.bid || 0;
-      if (priceType === "ask") return option.ask || 0;
+      // Fallback to leg data
+      if (priceType === "bid") return selection.bid || 0;
+      if (priceType === "ask") return selection.ask || 0;
       if (priceType === "mid")
-        return ((option.bid || 0) + (option.ask || 0)) / 2;
+        return ((selection.bid || 0) + (selection.ask || 0)) / 2;
 
       // Default to natural price for the side
-      return selection.side === "buy" ? option.ask || 0 : option.bid || 0;
+      return selection.side === "buy" ? selection.ask || 0 : selection.bid || 0;
     };
 
     // Price function for limit price calculation (can be locked)
@@ -346,17 +338,14 @@ export default {
     // Net premium PER COMBINATION (not multiplied by quantity)
     const netPremiumPerCombination = computed(() => {
       let total = 0;
-      selectedOptions.value.forEach((selection) => {
-        // Use locked price if locked, otherwise use static data
+      selectedLegs.value.forEach((selection) => {
+        // Use locked price if locked, otherwise use live/static data
         let price;
         if (priceLocked.value && lockedPrices.value.has(selection.symbol)) {
           price = lockedPrices.value.get(selection.symbol)?.price ?? 0;
         } else {
-          // Fallback to static data from props
-          const option = optionsData.value.find(
-            (opt) => opt.symbol === selection.symbol
-          );
-          price = option ? ((option.bid || 0) + (option.ask || 0)) / 2 : 0;
+          // Use current price from leg data
+          price = selection.current_price || ((selection.bid || 0) + (selection.ask || 0)) / 2;
         }
         const premium = selection.side === "buy" ? -price : price;
         // Don't multiply by quantity - this is per combination
@@ -368,14 +357,14 @@ export default {
     // Total premium for all combinations (multiplied by quantity)
     const totalPremium = computed(() => {
       // Get the minimum quantity to determine how many combinations we have
-      const minQuantity = Math.min(...selectedOptions.value.map(opt => opt.quantity));
+      const minQuantity = Math.min(...selectedLegs.value.map(opt => opt.quantity));
       return netPremiumPerCombination.value * minQuantity;
     });
 
     // BID price display PER COMBINATION (always live, never locked)
     const bidPricePerCombination = computed(() => {
       let total = 0;
-      selectedOptions.value.forEach((selection) => {
+      selectedLegs.value.forEach((selection) => {
         const price =
           selection.side === "buy"
             ? getOptionPriceLive(selection, "ask")
@@ -390,7 +379,7 @@ export default {
     // ASK price display PER COMBINATION (always live, never locked)
     const askPricePerCombination = computed(() => {
       let total = 0;
-      selectedOptions.value.forEach((selection) => {
+      selectedLegs.value.forEach((selection) => {
         const price =
           selection.side === "buy"
             ? getOptionPriceLive(selection, "bid")
@@ -418,8 +407,8 @@ export default {
     // Calculate comprehensive P&L analysis using centralized calculator
     const profitLossAnalysis = computed(() => {
       return calculateMultiLegProfitLoss(
-        selectedOptions.value,
-        optionsData.value,
+        selectedLegs.value,
+        selectedLegs.value, // Use same data for both params
         props.underlyingPrice
       );
     });
@@ -450,31 +439,24 @@ export default {
     });
 
     const orderLegs = computed(() => {
-      return props.selectedOptions.map((option) => {
-        const liveOption = props.optionsData.find(
-          (o) => o.symbol === option.symbol
-        );
-
+      return selectedLegs.value.map((leg) => {
         // Use natural price: bid when selling, ask when buying
-        let price = 0;
-        if (liveOption) {
-          price = option.side === "buy" ? liveOption.ask : liveOption.bid;
-        }
+        const price = leg.side === "buy" ? leg.ask : leg.bid;
 
         return {
-          symbol: option.symbol,
-          quantity: option.quantity,
-          date: formatDate(option.expiry),
-          strike: (option.strike_price || option.strike)?.toString() || "-",
-          type: option.type?.charAt(0).toUpperCase() || "P",
-          action: option.side === "buy" ? "BTO" : "STO",
+          symbol: leg.symbol,
+          quantity: leg.quantity,
+          date: formatDate(leg.expiry),
+          strike: (leg.strike_price || leg.strike)?.toString() || "-",
+          type: leg.type?.charAt(0).toUpperCase() || "P",
+          action: leg.side === "buy" ? "BTO" : "STO",
           price: price.toFixed(2),
         };
       });
     });
 
     const canSubmit = computed(() => {
-      return props.selectedOptions.length > 0;
+      return selectedLegs.value.length > 0;
     });
 
     const priceProgressPercent = computed(() => {
@@ -558,7 +540,7 @@ export default {
     };
 
     const handleCancel = () => {
-      emit("clear-trade");
+      clearAll();
     };
 
     const incrementPrice = () => {
@@ -574,31 +556,28 @@ export default {
     };
 
     const toggleLegSelection = (symbol) => {
-      const index = selectedLegs.value.indexOf(symbol);
+      const index = internalSelectedLegs.value.indexOf(symbol);
       if (index >= 0) {
         // Remove from selection
-        selectedLegs.value.splice(index, 1);
+        internalSelectedLegs.value.splice(index, 1);
       } else {
         // Add to selection
-        selectedLegs.value.push(symbol);
+        internalSelectedLegs.value.push(symbol);
       }
     };
 
     const incrementQuantity = () => {
       // If legs are selected, only affect selected legs; otherwise affect all legs
       const legsToUpdate =
-        selectedLegs.value.length > 0
-          ? props.selectedOptions.filter((option) =>
-              selectedLegs.value.includes(option.symbol)
+        internalSelectedLegs.value.length > 0
+          ? selectedLegs.value.filter((leg) =>
+              internalSelectedLegs.value.includes(leg.symbol)
             )
-          : props.selectedOptions;
+          : selectedLegs.value;
 
-      legsToUpdate.forEach((option) => {
-        if (option.quantity < 10) {
-          emit("update-leg-quantity", {
-            symbol: option.symbol,
-            quantity: option.quantity + 1,
-          });
+      legsToUpdate.forEach((leg) => {
+        if (leg.quantity < 10) {
+          updateQuantity(leg.symbol, leg.quantity + 1);
         }
       });
     };
@@ -606,18 +585,15 @@ export default {
     const decrementQuantity = () => {
       // If legs are selected, only affect selected legs; otherwise affect all legs
       const legsToUpdate =
-        selectedLegs.value.length > 0
-          ? props.selectedOptions.filter((option) =>
-              selectedLegs.value.includes(option.symbol)
+        internalSelectedLegs.value.length > 0
+          ? selectedLegs.value.filter((leg) =>
+              internalSelectedLegs.value.includes(leg.symbol)
             )
-          : props.selectedOptions;
+          : selectedLegs.value;
 
-      legsToUpdate.forEach((option) => {
-        if (option.quantity > 1) {
-          emit("update-leg-quantity", {
-            symbol: option.symbol,
-            quantity: option.quantity - 1,
-          });
+      legsToUpdate.forEach((leg) => {
+        if (leg.quantity > 1) {
+          updateQuantity(leg.symbol, leg.quantity - 1);
         }
       });
     };
@@ -627,10 +603,10 @@ export default {
         // Locking - cache current live prices for all selected options
         console.log(
           "🔒 Locking prices for",
-          selectedOptions.value.length,
+          selectedLegs.value.length,
           "options"
         );
-        selectedOptions.value.forEach((selection) => {
+        selectedLegs.value.forEach((selection) => {
           const livePrice = getLivePrice(selection.symbol);
           if (livePrice) {
             lockedPrices.value.set(selection.symbol, livePrice);
@@ -648,8 +624,8 @@ export default {
     const handleReviewSend = () => {
       // Get the expiry date from the first selected option (all should have the same expiry)
       const expiry =
-        props.selectedOptions.length > 0
-          ? props.selectedOptions[0].expiry
+        selectedLegs.value.length > 0
+          ? selectedLegs.value[0].expiry
           : null;
 
       // Get comprehensive analysis from centralized calculator
@@ -666,10 +642,7 @@ export default {
       const orderData = {
         symbol: props.symbol,
         expiry: expiry,
-        legs: props.selectedOptions.map((leg) => {
-          const liveOption = props.optionsData.find(
-            (o) => o.symbol === leg.symbol
-          );
+        legs: selectedLegs.value.map((leg) => {
           return {
             symbol: leg.symbol,
             displaySymbol: leg.symbol,
@@ -677,10 +650,10 @@ export default {
             quantity: leg.quantity,
             ratio_qty: leg.quantity,
             type: leg.type || "Call",
-            strike: leg.strike,
+            strike: leg.strike_price,
             date: formatDate(leg.expiry),
             expiry: leg.expiry,
-            price: liveOption ? (liveOption.bid + liveOption.ask) / 2 : 0,
+            price: leg.current_price || ((leg.bid + leg.ask) / 2) || 0,
           };
         }),
         orderType: selectedOrderType.value,
@@ -738,7 +711,7 @@ export default {
     );
 
     watch(
-      () => props.selectedOptions,
+      selectedLegs,
       (newOptions, oldOptions) => {
         // Simple approach: unlock on ANY change if currently locked
         if (priceLocked.value) {
@@ -760,7 +733,7 @@ export default {
       limitPrice,
       selectedOrderType,
       selectedTimeInForce,
-      selectedLegs,
+      internalSelectedLegs,
       priceLocked,
       stats,
       orderLegs,

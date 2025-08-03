@@ -281,6 +281,7 @@ import QuoteDetailsSection from "./QuoteDetailsSection.vue";
 import PayoffChart from "./PayoffChart.vue";
 import ActivitySection from "./ActivitySection.vue";
 import { useMarketData } from "../composables/useMarketData.js";
+import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
 
 export default {
@@ -307,10 +308,6 @@ export default {
     isLivePrice: {
       type: Boolean,
       default: false,
-    },
-    selectedOptions: {
-      type: Array,
-      default: () => [],
     },
     chartData: {
       type: Object,
@@ -339,8 +336,9 @@ export default {
   },
   emits: ["panel-collapsed", "positions-changed"],
   setup(props, { emit }) {
-    // Use unified market data composable
+    // Use unified market data composable and centralized selected legs
     const { getPositionsForSymbol } = useMarketData();
+    const { selectedLegs } = useSelectedLegs();
 
     const activeSection = ref("overview");
     const isExpanded = ref(false);
@@ -395,7 +393,7 @@ export default {
       return Number(price).toFixed(2);
     };
 
-    // Computed property to combine existing positions with selected options
+    // Computed property to combine existing positions with selected legs from centralized store
     const allPositions = computed(() => {
       const positions = [];
       const existingSymbols = new Set();
@@ -476,33 +474,33 @@ export default {
         }
       });
 
-      // Add selected options as new positions (only if they don't already exist)
-      props.selectedOptions.forEach((option) => {
-        // Skip if this option already exists as a position
-        if (!existingSymbols.has(option.symbol)) {
+      // Add selected legs from centralized store as new positions (only if they don't already exist)
+      selectedLegs.value.forEach((leg) => {
+        // Skip if this leg already exists as a position
+        if (!existingSymbols.has(leg.symbol)) {
           // Look up current market price from options chain data
           const chainOption = props.optionsChainData.find(
-            (opt) => opt.symbol === option.symbol
+            (opt) => opt.symbol === leg.symbol
           );
 
-          let currentPrice = 0;
+          let currentPrice = leg.current_price || 0;
           let avgEntryPrice = 0;
           let unrealizedPL = 0;
 
           if (chainOption) {
             // Use ask price for long positions, bid price for short positions
             const entryPrice =
-              option.side === "buy" ? chainOption.ask : chainOption.bid;
+              leg.side === "buy" ? chainOption.ask : chainOption.bid;
             const marketPrice =
-              option.side === "buy" ? chainOption.bid : chainOption.ask; // Current market price for exit
+              leg.side === "buy" ? chainOption.bid : chainOption.ask; // Current market price for exit
 
-            currentPrice = marketPrice || entryPrice || 0;
+            currentPrice = marketPrice || entryPrice || leg.current_price || 0;
             avgEntryPrice = entryPrice || 0;
 
             // Calculate unrealized P&L
             if (avgEntryPrice > 0) {
               const qty =
-                option.side === "buy" ? option.quantity : -option.quantity;
+                leg.side === "buy" ? leg.quantity : -leg.quantity;
               // For long positions: (current_price - entry_price) * qty * 100
               // For short positions: (entry_price - current_price) * |qty| * 100
               if (qty > 0) {
@@ -514,16 +512,20 @@ export default {
                   (avgEntryPrice - currentPrice) * Math.abs(qty) * 100;
               }
             }
+          } else {
+            // Use leg data if no chain option found
+            currentPrice = leg.current_price || ((leg.bid + leg.ask) / 2) || 0;
+            avgEntryPrice = leg.side === "buy" ? leg.ask : leg.bid;
           }
 
           positions.push({
-            id: option.symbol,
-            symbol: option.symbol,
+            id: leg.symbol,
+            symbol: leg.symbol,
             asset_class: "us_option", // Required for chart
-            qty: option.side === "buy" ? option.quantity : -option.quantity,
-            strike_price: option.strike_price || option.strike,
-            option_type: option.type,
-            expiry_date: option.expiry,
+            qty: leg.side === "buy" ? leg.quantity : -leg.quantity,
+            strike_price: leg.strike_price,
+            option_type: leg.type,
+            expiry_date: leg.expiry,
             current_price: currentPrice,
             avg_entry_price: avgEntryPrice,
             unrealized_pl: unrealizedPL,

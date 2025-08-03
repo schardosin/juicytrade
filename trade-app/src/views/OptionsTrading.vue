@@ -33,14 +33,11 @@
             <CollapsibleOptionsChain
               :symbol="currentSymbol"
               :underlyingPrice="currentPrice"
-              :selectedOptions="selectedOptions"
               :expirationDates="optionsManager.expirationDates.value"
               :optionsDataByExpiration="optionsManager.dataByExpiration.value"
               :loading="optionsManager.loading.value"
               :error="optionsManager.error.value"
               :currentStrikeCount="optionsManager.strikeCount.value"
-              @option-selected="onOptionSelected"
-              @option-deselected="onOptionDeselected"
               @expiration-expanded="onExpirationExpanded"
               @expiration-collapsed="onExpirationCollapsed"
               @strike-count-changed="onStrikeCountChanged"
@@ -55,7 +52,6 @@
         :currentPrice="currentPrice"
         :priceChange="priceChange"
         :isLivePrice="isLivePrice"
-        :selectedOptions="selectedOptions"
         :chartData="chartData"
         :additionalQuoteData="additionalQuoteData"
         :optionsChainData="optionsManager.flattenedData.value"
@@ -82,13 +78,9 @@
     <!-- Bottom Trading Panel -->
     <BottomTradingPanel
       :visible="showBottomPanel"
-      :selectedOptions="selectedOptions"
-      :optionsData="optionsManager.flattenedData.value"
       :symbol="currentSymbol"
       :underlyingPrice="currentPrice"
-      @clear-trade="clearAllSelections"
       @review-send="onReviewAndSend"
-      @update-leg-quantity="onUpdateLegQuantity"
       @price-adjusted="onPriceAdjusted"
     />
   </div>
@@ -109,6 +101,7 @@ import { useOrderManagement } from "../composables/useOrderManagement";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { useOptionsChainManager } from "../composables/useOptionsChainManager";
 import { useMarketData } from "../composables/useMarketData.js";
+import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import api from "../services/api";
 // webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
 // import webSocketClient from "../services/webSocketClient";
@@ -144,8 +137,9 @@ export default {
     const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus } =
       useGlobalSymbol();
 
-    // Use market data composable for refreshing positions
+    // Use market data composable for refreshing positions and centralized selected legs
     const { refreshPositions } = useMarketData();
+    const { selectedLegs, clearAll: clearSelectedLegs } = useSelectedLegs();
 
     // Use centralized options chain manager
     const optionsManager = useOptionsChainManager(
@@ -156,7 +150,6 @@ export default {
 
     // Local reactive data (non-symbol related)
     const selectedExpiry = ref(null);
-    const selectedOptions = ref([]);
     const chartData = ref(null);
     const selectedTradeMode = ref("options");
     const isRightPanelExpanded = ref(false);
@@ -205,18 +198,13 @@ export default {
     }));
 
     const estimatedCost = computed(() => {
-      if (selectedOptions.value.length === 0) return null;
+      if (selectedLegs.value.length === 0) return null;
 
       let totalCost = 0;
-      selectedOptions.value.forEach((selection) => {
-        const option = optionsChainData.value.find(
-          (opt) => opt.symbol === selection.symbol
-        );
-        if (option) {
-          const price = selection.side === "buy" ? option.ask : option.bid;
-          const cost = selection.side === "buy" ? -price : price;
-          totalCost += cost * selection.quantity * 100; // Options are in contracts of 100
-        }
+      selectedLegs.value.forEach((leg) => {
+        const price = leg.side === "buy" ? leg.ask : leg.bid;
+        const cost = leg.side === "buy" ? -price : price;
+        totalCost += cost * leg.quantity * 100; // Options are in contracts of 100
       });
 
       return totalCost;
@@ -225,7 +213,7 @@ export default {
     // Computed property to determine which section to show in right panel
     const rightPanelSection = computed(() => {
       // If options are selected, show analysis section, otherwise null (let user choose)
-      return selectedOptions.value.length > 0 ? "analysis" : null;
+      return selectedLegs.value.length > 0 ? "analysis" : null;
     });
 
     // Methods
@@ -370,7 +358,7 @@ export default {
     };
 
     const clearAllSelections = () => {
-      selectedOptions.value = [];
+      clearSelectedLegs();
       chartData.value = null;
       showBottomPanel.value = false;
       isRightPanelExpanded.value = false;
@@ -378,42 +366,31 @@ export default {
 
     const updateChartData = (positions = null) => {
       // If positions are provided (from RightPanel), use them directly
-      // Otherwise, use selectedOptions (from options chain selections)
+      // Otherwise, use selectedLegs (from centralized store)
       let positionsToUse = positions;
 
       if (!positionsToUse) {
-        if (selectedOptions.value.length === 0) {
+        if (selectedLegs.value.length === 0) {
           chartData.value = null;
           return;
         }
 
         try {
-          // Convert selected options to position format for chart using centralized manager
-          positionsToUse = selectedOptions.value
-            .map((selection) => {
-              // Use the centralized options manager to find option data
-              const option = optionsManager.getOptionBySymbol(selection.symbol);
-              if (!option) {
-                console.warn(
-                  `Option not found in manager: ${selection.symbol}`
-                );
-                return null;
-              }
-
-              const price = selection.side === "buy" ? option.ask : option.bid;
+          // Convert selected legs to position format for chart
+          positionsToUse = selectedLegs.value
+            .map((leg) => {
+              const price = leg.side === "buy" ? leg.ask : leg.bid;
               const quantity =
-                selection.side === "buy"
-                  ? selection.quantity
-                  : -selection.quantity;
+                leg.side === "buy" ? leg.quantity : -leg.quantity;
 
               return {
-                symbol: option.symbol,
+                symbol: leg.symbol,
                 asset_class: "us_option",
-                side: selection.side === "buy" ? "long" : "short",
+                side: leg.side === "buy" ? "long" : "short",
                 qty: quantity,
-                strike_price: option.strike_price,
-                option_type: option.type,
-                expiry_date: selection.expiry, // Use the expiry from the selection
+                strike_price: leg.strike_price,
+                option_type: leg.type,
+                expiry_date: leg.expiry,
                 current_price: price,
                 avg_entry_price: price,
                 cost_basis: price * quantity * 100, // Keep the sign for proper cost calculation
@@ -426,7 +403,7 @@ export default {
             .filter(Boolean);
         } catch (error) {
           console.error(
-            "Error converting selected options to positions:",
+            "Error converting selected legs to positions:",
             error
           );
           chartData.value = null;
@@ -471,14 +448,7 @@ export default {
       initializeOrder(orderData);
     };
 
-    const onUpdateLegQuantity = ({ symbol, quantity }) => {
-      const optionIndex = selectedOptions.value.findIndex(
-        (sel) => sel.symbol === symbol
-      );
-      if (optionIndex >= 0) {
-        selectedOptions.value[optionIndex].quantity = quantity;
-      }
-    };
+    // onUpdateLegQuantity is no longer needed - quantity updates are handled by the centralized store
 
     const handleOrderEdit = () => {
       // Hide confirmation dialog and show bottom trading panel
@@ -734,8 +704,8 @@ export default {
     watch(currentPrice, (newPrice, oldPrice) => {
       if (newPrice !== oldPrice && chartData.value) {
         // Regenerate chart data with new underlying price
-        if (selectedOptions.value.length > 0) {
-          updateChartData(); // This will use selectedOptions
+        if (selectedLegs.value.length > 0) {
+          updateChartData(); // This will use selectedLegs
         } else {
           // If we have chart data from positions, we need to trigger a positions update
           // The chart will automatically update via the PayoffChart watcher
@@ -745,7 +715,7 @@ export default {
 
     // Watch for adjusted net credit changes to update chart
     watch(adjustedNetCredit, (newCredit, oldCredit) => {      
-      if (newCredit !== oldCredit && (chartData.value || selectedOptions.value.length > 0)) {
+      if (newCredit !== oldCredit && (chartData.value || selectedLegs.value.length > 0)) {
         // Regenerate chart data with new adjusted net credit
         updateChartData();
       }
@@ -757,11 +727,11 @@ export default {
       }
     });
 
-    // Show/hide bottom panel based on selected options
+    // Show/hide bottom panel based on selected legs
     watch(
-      selectedOptions,
-      (newOptions) => {
-        showBottomPanel.value = newOptions.length > 0;
+      selectedLegs,
+      (newLegs) => {
+        showBottomPanel.value = newLegs.length > 0;
       },
       { immediate: true }
     );
@@ -804,7 +774,7 @@ export default {
       selectedExpiry,
       expirationDates,
       optionsChainData,
-      selectedOptions,
+      selectedLegs,
       chartData,
       selectedTradeMode,
       tradeModes,
@@ -828,7 +798,6 @@ export default {
       onOrderPlaced,
       toggleRightPanel,
       onReviewAndSend,
-      onUpdateLegQuantity,
       handleOrderEdit,
       onSymbolSelected,
       onTradeModeChanged,
