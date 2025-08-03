@@ -727,11 +727,20 @@ export default {
       }
     });
 
-    // Show/hide bottom panel based on selected legs
+    // Show/hide bottom panel and expand right panel based on selected legs
     watch(
       selectedLegs,
       (newLegs) => {
-        showBottomPanel.value = newLegs.length > 0;
+        const hasLegs = newLegs.length > 0;
+        showBottomPanel.value = hasLegs;
+        
+        // Auto-expand right panel to Analysis tab when legs are selected
+        if (hasLegs) {
+          isRightPanelExpanded.value = true;
+        } else {
+          // Auto-collapse when no legs selected
+          isRightPanelExpanded.value = false;
+        }
       },
       { immediate: true }
     );
