@@ -1,0 +1,32 @@
+{
+  "watchlists": {
+    "default": {
+      "id": "default",
+      "name": "My Watchlist",
+      "symbols": [
+        "SPY",
+        "QQQ",
+        "TSLA",
+        "MSFT",
+        "AAPL"
+      ],
+      "created_at": "2025-08-04T19:14:03.808364Z",
+      "updated_at": "2025-08-04T19:30:26.938896Z"
+    },
+    "techstocks_7d1ae936": {
+      "id": "techstocks_7d1ae936",
+      "name": "Tech Stocks",
+      "symbols": [
+        "AAPL",
+        "MSFT",
+        "GOOGL",
+        "NVDA"
+      ],
+      "created_at": "2025-08-04T19:16:28.056355Z",
+      "updated_at": "2025-08-04T19:30:38.544975Z"
+    }
+  },
+  "active_watchlist": "default",
+  "version": "1.0",
+  "last_updated": "2025-08-04T19:31:08.737191Z"
+}

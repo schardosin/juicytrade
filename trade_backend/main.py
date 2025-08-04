@@ -14,12 +14,18 @@ from .models import (
     CreateProviderInstanceRequest, UpdateProviderInstanceRequest, ProviderInstanceResponse,
     TestProviderConnectionRequest, TestProviderConnectionResponse
 )
+from .watchlist_models import (
+    CreateWatchlistRequest, UpdateWatchlistRequest, AddSymbolRequest,
+    SetActiveWatchlistRequest, WatchlistResponse, WatchlistsResponse,
+    WatchlistSymbolsResponse, SearchWatchlistsRequest
+)
 from .provider_manager import provider_manager
 from .provider_config import provider_config_manager
 from .provider_types import get_provider_types
 from .streaming_manager import streaming_manager
 from .connection_manager import ConnectionManager
 from .shutdown_manager import shutdown_manager
+from .watchlist_manager import watchlist_manager
 
 # Configure logging
 logging.basicConfig(
@@ -808,6 +814,255 @@ async def cancel_order(order_id: str):
             raise HTTPException(status_code=400, detail=f"Failed to cancel order {order_id}")
     except Exception as e:
         logger.error(f"Error cancelling order {order_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# === Watchlist Endpoints ===
+
+@app.get("/watchlists", response_model=ApiResponse)
+async def get_watchlists():
+    """Get all watchlists with metadata."""
+    try:
+        data = watchlist_manager.get_all_watchlists()
+        return ApiResponse(
+            success=True,
+            data=data,
+            message=f"Retrieved {data['total_watchlists']} watchlists"
+        )
+    except Exception as e:
+        logger.error(f"Error getting watchlists: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/watchlists/active", response_model=ApiResponse)
+async def get_active_watchlist():
+    """Get the currently active watchlist."""
+    try:
+        active_watchlist = watchlist_manager.get_active_watchlist()
+        active_watchlist_id = watchlist_manager.get_active_watchlist_id()
+        
+        if not active_watchlist:
+            raise HTTPException(status_code=404, detail="No active watchlist found")
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "active_watchlist_id": active_watchlist_id,
+                "active_watchlist": active_watchlist
+            },
+            message="Retrieved active watchlist"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting active watchlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/watchlists/active", response_model=ApiResponse)
+async def set_active_watchlist(request: SetActiveWatchlistRequest):
+    """Set the active watchlist."""
+    try:
+        set_active = watchlist_manager.set_active_watchlist(request.watchlist_id)
+        
+        # Get the active watchlist
+        active_watchlist = watchlist_manager.get_active_watchlist()
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "active_watchlist_id": request.watchlist_id,
+                "active_watchlist": active_watchlist
+            },
+            message=f"Active watchlist set to '{request.watchlist_id}'"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error setting active watchlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/watchlists/{watchlist_id}", response_model=ApiResponse)
+async def get_watchlist(watchlist_id: str):
+    """Get a specific watchlist by ID."""
+    try:
+        watchlist = watchlist_manager.get_watchlist(watchlist_id)
+        if not watchlist:
+            raise HTTPException(status_code=404, detail=f"Watchlist '{watchlist_id}' not found")
+        
+        return ApiResponse(
+            success=True,
+            data=watchlist,
+            message=f"Retrieved watchlist '{watchlist_id}'"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting watchlist {watchlist_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/watchlists", response_model=ApiResponse)
+async def create_watchlist(request: CreateWatchlistRequest):
+    """Create a new watchlist."""
+    try:
+        watchlist_id = watchlist_manager.create_watchlist(
+            name=request.name,
+            symbols=request.symbols
+        )
+        
+        # Get the created watchlist to return
+        watchlist = watchlist_manager.get_watchlist(watchlist_id)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "watchlist_id": watchlist_id,
+                "watchlist": watchlist
+            },
+            message=f"Watchlist '{request.name}' created successfully"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating watchlist: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/watchlists/{watchlist_id}", response_model=ApiResponse)
+async def update_watchlist(watchlist_id: str, request: UpdateWatchlistRequest):
+    """Update an existing watchlist."""
+    try:
+        updated = watchlist_manager.update_watchlist(
+            watchlist_id=watchlist_id,
+            name=request.name,
+            symbols=request.symbols
+        )
+        
+        if not updated:
+            return ApiResponse(
+                success=True,
+                data={"watchlist_id": watchlist_id},
+                message="No changes made to watchlist"
+            )
+        
+        # Get the updated watchlist to return
+        watchlist = watchlist_manager.get_watchlist(watchlist_id)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "watchlist_id": watchlist_id,
+                "watchlist": watchlist
+            },
+            message=f"Watchlist '{watchlist_id}' updated successfully"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating watchlist {watchlist_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/watchlists/{watchlist_id}", response_model=ApiResponse)
+async def delete_watchlist(watchlist_id: str):
+    """Delete a watchlist."""
+    try:
+        deleted = watchlist_manager.delete_watchlist(watchlist_id)
+        
+        return ApiResponse(
+            success=True,
+            data={"watchlist_id": watchlist_id, "deleted": deleted},
+            message=f"Watchlist '{watchlist_id}' deleted successfully"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error deleting watchlist {watchlist_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/watchlists/{watchlist_id}/symbols", response_model=ApiResponse)
+async def add_symbol_to_watchlist(watchlist_id: str, request: AddSymbolRequest):
+    """Add a symbol to a watchlist."""
+    try:
+        # Basic symbol validation
+        if not watchlist_manager.validate_symbol(request.symbol):
+            raise HTTPException(status_code=400, detail=f"Invalid symbol: {request.symbol}")
+        
+        added = watchlist_manager.add_symbol(watchlist_id, request.symbol)
+        
+        # Get updated watchlist
+        watchlist = watchlist_manager.get_watchlist(watchlist_id)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "watchlist_id": watchlist_id,
+                "symbol": request.symbol,
+                "watchlist": watchlist
+            },
+            message=f"Symbol '{request.symbol}' added to watchlist"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error adding symbol to watchlist {watchlist_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/watchlists/{watchlist_id}/symbols/{symbol}", response_model=ApiResponse)
+async def remove_symbol_from_watchlist(watchlist_id: str, symbol: str):
+    """Remove a symbol from a watchlist."""
+    try:
+        removed = watchlist_manager.remove_symbol(watchlist_id, symbol)
+        
+        # Get updated watchlist
+        watchlist = watchlist_manager.get_watchlist(watchlist_id)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "watchlist_id": watchlist_id,
+                "symbol": symbol,
+                "watchlist": watchlist
+            },
+            message=f"Symbol '{symbol}' removed from watchlist"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error removing symbol from watchlist {watchlist_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/watchlists/search", response_model=ApiResponse)
+async def search_watchlists(request: SearchWatchlistsRequest):
+    """Search watchlists by name or symbols."""
+    try:
+        results = watchlist_manager.search_watchlists(request.query)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "query": request.query,
+                "results": results,
+                "total_results": len(results)
+            },
+            message=f"Found {len(results)} watchlists matching '{request.query}'"
+        )
+    except Exception as e:
+        logger.error(f"Error searching watchlists: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/watchlists/symbols/all", response_model=ApiResponse)
+async def get_all_watchlist_symbols():
+    """Get all unique symbols across all watchlists."""
+    try:
+        symbols = watchlist_manager.get_all_symbols()
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "symbols": symbols,
+                "total_symbols": len(symbols)
+            },
+            message=f"Retrieved {len(symbols)} unique symbols from all watchlists"
+        )
+    except Exception as e:
+        logger.error(f"Error getting all watchlist symbols: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # === Streaming Endpoints ===

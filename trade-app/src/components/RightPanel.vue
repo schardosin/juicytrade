@@ -262,6 +262,11 @@
           <ActivitySection :currentSymbol="currentSymbol" />
         </div>
 
+        <!-- Watchlist Section -->
+        <div v-else-if="activeSection === 'watchlist'" class="section-content">
+          <WatchlistSection />
+        </div>
+
         <!-- Other Sections (Placeholder) -->
         <div v-else class="section-content">
           <div class="placeholder-content">
@@ -280,6 +285,7 @@ import RightPanelSection from "./RightPanelSection.vue";
 import QuoteDetailsSection from "./QuoteDetailsSection.vue";
 import PayoffChart from "./PayoffChart.vue";
 import ActivitySection from "./ActivitySection.vue";
+import WatchlistSection from "./WatchlistSection.vue";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
@@ -291,6 +297,7 @@ export default {
     QuoteDetailsSection,
     PayoffChart,
     ActivitySection,
+    WatchlistSection,
   },
   props: {
     currentSymbol: {
