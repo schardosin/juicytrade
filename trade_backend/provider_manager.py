@@ -6,6 +6,8 @@ from .providers.alpaca_provider import AlpacaProvider
 from .providers.public_provider import PublicProvider
 from .providers.tradier_provider import TradierProvider
 from .provider_config import provider_config_manager
+from .provider_credential_store import ProviderCredentialStore
+from .provider_types import get_provider_types, validate_credentials, apply_defaults
 from .config import settings
 from .models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult, Account, PositionGroup
 
@@ -14,68 +16,135 @@ logger = logging.getLogger(__name__)
 class ProviderManager:
     def __init__(self):
         self._providers: Dict[str, BaseProvider] = {}
-        self._initialize_providers()
+        self.credential_store = ProviderCredentialStore()
+        self._initialize_active_providers()
 
-    def _initialize_providers(self):
-        # Initialize Alpaca Live
-        try:
-            self._providers['alpaca'] = AlpacaProvider(
-                api_key=settings.alpaca_api_key_live,
-                api_secret=settings.alpaca_api_secret_live,
-                base_url=settings.alpaca_base_url_live,
-                data_url=settings.alpaca_data_url,
-                use_paper=False
-            )
-            logger.info("Alpaca provider initialized.")
-        except Exception as e:
-            logger.error(f"Failed to initialize Alpaca provider: {e}")
+    def _initialize_active_providers(self):
+        """Initialize only active provider instances from credential store"""
+        logger.info("🔄 Initializing active provider instances...")
+        
+        # Clear existing providers
+        self._providers.clear()
+        
+        # Get active instances from credential store
+        active_instances = self.credential_store.get_active_instances()
+        
+        if not active_instances:
+            logger.warning("⚠️ No active provider instances found. Please configure provider instances through the API.")
+            return
+        
+        # Initialize each active instance
+        for instance_id, instance_data in active_instances.items():
+            try:
+                provider_type = instance_data.get('provider_type')
+                account_type = instance_data.get('account_type')
+                credentials = instance_data.get('credentials', {})
+                display_name = instance_data.get('display_name', instance_id)
+                
+                # Apply default values to credentials
+                credentials = apply_defaults(provider_type, account_type, credentials)
+                
+                # Create provider instance
+                provider = self._create_provider_instance(provider_type, account_type, credentials)
+                
+                if provider:
+                    self._providers[instance_id] = provider
+                    logger.info(f"✅ Initialized provider instance: {display_name} ({instance_id})")
+                else:
+                    logger.error(f"❌ Failed to create provider instance: {instance_id}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Error initializing provider instance {instance_id}: {e}")
+        
+        logger.info(f"🎯 Initialized {len(self._providers)} active provider instances")
 
-        # Initialize Alpaca Paper
-        try:
-            self._providers['alpaca_paper'] = AlpacaProvider(
-                api_key=settings.alpaca_api_key_paper,
-                api_secret=settings.alpaca_api_secret_paper,
-                base_url=settings.alpaca_base_url_paper,
-                data_url=settings.alpaca_data_url,
-                use_paper=True
-            )
-            logger.info("Alpaca Paper provider initialized.")
-        except Exception as e:
-            logger.error(f"Failed to initialize Alpaca Paper provider: {e}")
 
-        # Initialize Public
+    def _create_provider_instance(self, provider_type: str, account_type: str, credentials: Dict[str, str]) -> Optional[BaseProvider]:
+        """Create a provider instance based on type and credentials"""
         try:
-            self._providers['public'] = PublicProvider(
-                api_secret=settings.public_secret_key,
-                account_id=settings.public_account_id
-            )
-            logger.info("Public provider initialized.")
+            if provider_type == "alpaca":
+                return AlpacaProvider(
+                    api_key=credentials.get('api_key'),
+                    api_secret=credentials.get('api_secret'),
+                    base_url=credentials.get('base_url'),
+                    data_url=credentials.get('data_url'),
+                    use_paper=(account_type == "paper")
+                )
+            elif provider_type == "tradier":
+                return TradierProvider(
+                    account_id=credentials.get('account_id'),
+                    api_key=credentials.get('api_key'),
+                    base_url=credentials.get('base_url'),
+                    stream_url=credentials.get('stream_url')
+                )
+            elif provider_type == "public":
+                return PublicProvider(
+                    api_secret=credentials.get('api_secret'),
+                    account_id=credentials.get('account_id')
+                )
+            else:
+                logger.error(f"❌ Unknown provider type: {provider_type}")
+                return None
+                
         except Exception as e:
-            logger.error(f"Failed to initialize Public provider: {e}")
+            logger.error(f"❌ Error creating {provider_type} provider: {e}")
+            return None
 
-        # Initialize Tradier Live
-        try:
-            self._providers['tradier'] = TradierProvider(
-                account_id=settings.tradier_account_id,
-                api_key=settings.tradier_secret_key,
-                base_url=settings.tradier_base_url_live,
-                stream_url=settings.tradier_stream_url_live
-            )
-            logger.info("Tradier provider initialized.")
-        except Exception as e:
-            logger.error(f"Failed to initialize Tradier provider: {e}")
+    def get_available_provider_instances(self) -> Dict[str, Dict[str, Any]]:
+        """Get all available provider instances with their metadata"""
+        instances = {}
+        for instance_id, provider in self._providers.items():
+            instance_data = self.credential_store.get_instance(instance_id)
+            if instance_data:
+                instances[instance_id] = {
+                    'provider_type': instance_data.get('provider_type'),
+                    'account_type': instance_data.get('account_type'),
+                    'display_name': instance_data.get('display_name'),
+                    'active': instance_data.get('active', False),
+                    'created_at': instance_data.get('created_at'),
+                    'updated_at': instance_data.get('updated_at')
+                }
+        return instances
 
-        # Initialize Tradier Paper
+    async def test_provider_connection(self, provider_type: str, account_type: str, credentials: Dict[str, str]) -> Dict[str, Any]:
+        """Test a provider connection without saving credentials"""
         try:
-            self._providers['tradier_paper'] = TradierProvider(
-                account_id=settings.tradier_account_id_paper,
-                api_key=settings.tradier_secret_key_paper,
-                base_url=settings.tradier_base_url_paper,
-                stream_url=settings.tradier_stream_url_paper
-            )
-            logger.info("Tradier Paper provider initialized.")
+            # Apply defaults to credentials
+            test_credentials = apply_defaults(provider_type, account_type, credentials)
+            
+            # Create temporary provider instance
+            provider = self._create_provider_instance(provider_type, account_type, test_credentials)
+            
+            if not provider:
+                return {
+                    'success': False,
+                    'message': f'Failed to create {provider_type} provider instance',
+                    'details': {'error': 'Provider creation failed'}
+                }
+            
+            # Test the connection with a simple health check
+            health_result = await provider.health_check()
+            
+            if health_result.get('status') == 'healthy':
+                return {
+                    'success': True,
+                    'message': f'{provider_type.title()} connection successful',
+                    'details': health_result
+                }
+            else:
+                return {
+                    'success': False,
+                    'message': f'{provider_type.title()} connection failed',
+                    'details': health_result
+                }
+                
         except Exception as e:
-            logger.error(f"Failed to initialize Tradier Paper provider: {e}")
+            logger.error(f"❌ Error testing {provider_type} connection: {e}")
+            return {
+                'success': False,
+                'message': f'Connection test failed: {str(e)}',
+                'details': {'error': str(e)}
+            }
 
     def _get_provider(self, operation: str) -> Optional[BaseProvider]:
         config = provider_config_manager.get_config()

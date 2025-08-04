@@ -6,7 +6,7 @@
     :draggable="false"
     class="settings-dialog"
     header="Settings"
-    :style="{ width: '800px', height: '600px' }"
+    :style="{ width: '1000px', height: '600px' }"
     @hide="onClose"
   >
     <div class="settings-container">

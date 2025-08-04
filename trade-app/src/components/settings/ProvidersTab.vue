@@ -1,88 +1,401 @@
 <template>
   <div class="providers-tab">
-    <!-- Header -->
-    <div class="tab-header">
-      <h2>Provider Configuration</h2>
-      <p>Configure which providers to use for different services</p>
+    <!-- Sub-tab Navigation -->
+    <div class="sub-tab-nav">
+      <button
+        v-for="tab in subTabs"
+        :key="tab.key"
+        :class="['sub-tab-btn', { active: activeSubTab === tab.key }]"
+        @click="setActiveSubTab(tab.key)"
+      >
+        <i :class="tab.icon"></i>
+        <span>{{ tab.label }}</span>
+      </button>
     </div>
 
-    <!-- Loading State -->
-    <div v-if="loading" class="loading-section">
-      <div class="loading-spinner"></div>
-      <span>Loading provider capabilities...</span>
-    </div>
+    <!-- Provider Instances Tab -->
+    <div v-if="activeSubTab === 'instances'" class="sub-tab-content">
+      <div class="tab-header">
+        <div class="header-content">
+          <h2>Provider Instances</h2>
+          <p>Manage your trading provider connections</p>
+        </div>
+        <Button
+          label="Add Provider"
+          icon="pi pi-plus"
+          @click="showAddProviderDialog = true"
+          class="add-provider-btn p-button-brand"
+        />
+      </div>
 
-    <!-- Error State -->
-    <div v-else-if="error" class="error-section">
-      <i class="pi pi-exclamation-triangle"></i>
-      <span>{{ error }}</span>
-      <Button
-        label="Retry"
-        icon="pi pi-refresh"
-        @click="loadProviderData"
-        class="retry-button"
-        size="small"
-      />
-    </div>
+      <!-- Loading State -->
+      <div v-if="instancesLoading" class="loading-section">
+        <div class="loading-spinner"></div>
+        <span>Loading provider instances...</span>
+      </div>
 
-    <!-- Provider Configuration -->
-    <div v-else class="provider-config">
-      <!-- Service Categories -->
-      <div v-for="category in serviceCategories" :key="category.name" class="service-category">
-        <h3 class="category-title">
-          <i :class="category.icon"></i>
-          {{ category.title }}
-        </h3>
-        
-        <!-- Service Items -->
-        <div class="service-items">
-          <div v-for="service in category.services" :key="service.key" class="service-item">
-            <div class="service-info">
-              <label class="service-label">{{ service.label }}</label>
-              <span class="service-description">{{ service.description }}</span>
+      <!-- Error State -->
+      <div v-else-if="instancesError" class="error-section">
+        <i class="pi pi-exclamation-triangle"></i>
+        <span>{{ instancesError }}</span>
+        <Button
+          label="Retry"
+          icon="pi pi-refresh"
+          @click="loadProviderInstances"
+          class="retry-button"
+          size="small"
+        />
+      </div>
+
+      <!-- Provider Instances List -->
+      <div v-else-if="providerInstances && Object.keys(providerInstances).length > 0" class="provider-instances">
+        <div 
+          v-for="(instance, instanceId) in providerInstances" 
+          :key="instanceId" 
+          class="provider-instance"
+          :class="{ 'inactive': !instance.active }"
+        >
+          <div class="instance-info">
+            <div class="instance-header">
+              <div class="instance-icon">
+                <i :class="getProviderIcon(instance.provider_type)"></i>
+              </div>
+              <div class="instance-details">
+                <h4 class="instance-name">{{ instance.display_name }}</h4>
+                <div class="instance-meta">
+                  <span class="provider-type">{{ getProviderTypeName(instance.provider_type) }}</span>
+                  <span class="separator">•</span>
+                  <span class="account-type" :class="instance.account_type">
+                    {{ instance.account_type.toUpperCase() }}
+                  </span>
+                </div>
+              </div>
             </div>
-            
-            <!-- Provider Dropdown -->
-            <div class="provider-selection">
-              <Dropdown
-                v-model="currentConfig[service.key]"
-                :options="getAvailableProvidersForService(service.key)"
-                option-label="label"
-                option-value="value"
-                :placeholder="getProviderPlaceholder(service.key)"
-                @change="onProviderChange(service.key, $event.value)"
-                class="provider-dropdown"
-                :loading="updating"
-                :disabled="updating"
-              />
+            <div class="instance-badges">
+              <span class="status-badge" :class="{ 'active': instance.active, 'inactive': !instance.active }">
+                {{ instance.active ? 'Active' : 'Inactive' }}
+              </span>
+            </div>
+          </div>
+          
+          <div class="instance-actions">
+            <Button
+              :icon="instance.active ? 'pi pi-pause' : 'pi pi-play'"
+              :label="instance.active ? 'Deactivate' : 'Activate'"
+              @click="toggleProviderInstance(instanceId)"
+              :class="instance.active ? 'p-button-warning' : 'p-button-success'"
+              size="small"
+              text
+              :loading="togglingInstances.has(instanceId)"
+            />
+            <Button
+              icon="pi pi-cog"
+              label="Configure"
+              @click="editProviderInstance(instanceId)"
+              class="p-button-secondary"
+              size="small"
+              text
+            />
+            <Button
+              icon="pi pi-trash"
+              label="Delete"
+              @click="confirmDeleteInstance(instanceId)"
+              class="p-button-danger"
+              size="small"
+              text
+            />
+          </div>
+        </div>
+      </div>
+
+      <!-- Empty State -->
+      <div v-else class="empty-state">
+        <i class="pi pi-server"></i>
+        <h4>No Provider Instances</h4>
+        <p>Add your first provider instance to start trading</p>
+        <Button
+          label="Add Provider"
+          icon="pi pi-plus"
+          @click="showAddProviderDialog = true"
+          class="p-button-primary"
+        />
+      </div>
+    </div>
+
+    <!-- Service Routing Tab -->
+    <div v-if="activeSubTab === 'routing'" class="sub-tab-content">
+      <div class="tab-header">
+        <div class="header-content">
+          <h2>Service Routing</h2>
+          <p>Configure which provider instances to use for different services</p>
+        </div>
+      </div>
+
+      <!-- Loading State -->
+      <div v-if="routingLoading" class="loading-section">
+        <div class="loading-spinner"></div>
+        <span>Loading service configuration...</span>
+      </div>
+
+      <!-- Error State -->
+      <div v-else-if="routingError" class="error-section">
+        <i class="pi pi-exclamation-triangle"></i>
+        <span>{{ routingError }}</span>
+        <Button
+          label="Retry"
+          icon="pi pi-refresh"
+          @click="loadRoutingData"
+          class="retry-button"
+          size="small"
+        />
+      </div>
+
+      <!-- Service Configuration -->
+      <div v-else class="service-config">
+        <!-- Service Categories -->
+        <div v-for="category in serviceCategories" :key="category.name" class="service-category">
+          <h3 class="category-title">
+            <i :class="category.icon"></i>
+            {{ category.title }}
+          </h3>
+          
+          <!-- Service Items -->
+          <div class="service-items">
+            <div v-for="service in category.services" :key="service.key" class="service-item">
+              <div class="service-info">
+                <label class="service-label">{{ service.label }}</label>
+                <span class="service-description">{{ service.description }}</span>
+              </div>
               
-              <!-- Status Indicator -->
-              <div class="provider-status">
-                <i 
-                  :class="getStatusIcon(service.key)" 
-                  :title="getStatusTooltip(service.key)"
-                ></i>
+              <!-- Provider Dropdown -->
+              <div class="provider-selection">
+                <Dropdown
+                  v-model="currentConfig[service.key]"
+                  :options="getAvailableInstancesForService(service.key)"
+                  option-label="label"
+                  option-value="value"
+                  :placeholder="getProviderPlaceholder(service.key)"
+                  @change="onProviderChange(service.key, $event.value)"
+                  class="provider-dropdown"
+                  :loading="updatingRouting"
+                  :disabled="updatingRouting"
+                />
+                
+                <!-- Status Indicator -->
+                <div class="provider-status">
+                  <i 
+                    :class="getStatusIcon(service.key)" 
+                    :title="getStatusTooltip(service.key)"
+                  ></i>
+                </div>
               </div>
             </div>
           </div>
         </div>
-      </div>
-      
-      <!-- Validation Warnings -->
-      <div v-if="validationWarnings.length > 0" class="validation-warnings">
-        <h4>Configuration Warnings</h4>
-        <div v-for="warning in validationWarnings" :key="warning" class="warning-item">
-          <i class="pi pi-exclamation-triangle"></i>
-          <span>{{ warning }}</span>
+        
+        <!-- Validation Warnings -->
+        <div v-if="validationWarnings.length > 0" class="validation-warnings">
+          <h4>Configuration Warnings</h4>
+          <div v-for="warning in validationWarnings" :key="warning" class="warning-item">
+            <i class="pi pi-exclamation-triangle"></i>
+            <span>{{ warning }}</span>
+          </div>
+        </div>
+
+        <!-- Save Status -->
+        <div v-if="lastSaved" class="save-status">
+          <i class="pi pi-check-circle"></i>
+          <span>Last saved: {{ formatTime(lastSaved) }}</span>
         </div>
       </div>
-
-      <!-- Save Status -->
-      <div v-if="lastSaved" class="save-status">
-        <i class="pi pi-check-circle"></i>
-        <span>Last saved: {{ formatTime(lastSaved) }}</span>
-      </div>
     </div>
+
+    <!-- Add/Edit Provider Dialog -->
+    <Dialog
+      v-model:visible="showAddProviderDialog"
+      :header="editingInstance ? 'Edit Provider Instance' : 'Add Provider Instance'"
+      modal
+      class="provider-dialog"
+      :style="{ width: '800px' }"
+    >
+      <form class="dialog-content" @submit.prevent="saveProvider">
+        <!-- Step 1: Provider Type Selection -->
+        <div v-if="dialogStep === 1" class="dialog-step">
+          <h4>Select Provider Type</h4>
+          <div class="provider-type-grid">
+            <div
+              v-for="(providerType, key) in providerTypes"
+              :key="key"
+              class="provider-type-card"
+              :class="{ selected: newProvider.provider_type === key }"
+              @click="selectProviderType(key)"
+            >
+              <div class="provider-icon">
+                <i :class="getProviderIcon(key)"></i>
+              </div>
+              <div class="provider-info">
+                <h5>{{ providerType.name }}</h5>
+                <p>{{ providerType.description }}</p>
+                <div class="supported-accounts">
+                  <span
+                    v-for="accountType in providerType.supports_account_types"
+                    :key="accountType"
+                    class="account-badge"
+                    :class="accountType"
+                  >
+                    {{ accountType.toUpperCase() }}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 2: Account Type Selection -->
+        <div v-if="dialogStep === 2" class="dialog-step">
+          <h4>Select Account Type</h4>
+          <div class="account-type-selection">
+            <div
+              v-for="accountType in getSelectedProviderAccountTypes()"
+              :key="accountType"
+              class="account-type-card"
+              :class="{ selected: newProvider.account_type === accountType }"
+              @click="selectAccountType(accountType)"
+            >
+              <div class="account-icon">
+                <i :class="accountType === 'live' ? 'pi pi-dollar' : 'pi pi-flask'"></i>
+              </div>
+              <div class="account-info">
+                <h5>{{ accountType === 'live' ? 'Live Trading' : 'Paper Trading' }}</h5>
+                <p>{{ accountType === 'live' ? 'Real money trading' : 'Practice with virtual money' }}</p>
+              </div>
+              <div v-if="accountType === 'live'" class="warning-badge">
+                <i class="pi pi-exclamation-triangle"></i>
+                <span>Real Money</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Step 3: Credentials Form -->
+        <div v-if="dialogStep === 3" class="dialog-step">
+          <h4>Configure Credentials</h4>
+          <div class="credentials-form">
+            <!-- Display Name -->
+            <div class="form-group">
+              <label>Display Name</label>
+              <InputText
+                v-model="newProvider.display_name"
+                placeholder="Enter a name for this provider instance"
+                autocomplete="off"
+                class="w-full"
+              />
+            </div>
+
+            <!-- Dynamic Credential Fields -->
+            <div
+              v-for="field in getCredentialFields()"
+              :key="field.name"
+              class="form-group"
+            >
+              <label>{{ field.label }}</label>
+              <InputText
+                v-model="newProvider.credentials[field.name]"
+                :type="field.type"
+                :placeholder="field.placeholder"
+                :required="field.required"
+                :autocomplete="field.type === 'password' ? 'current-password' : 'off'"
+                class="w-full"
+              />
+              <small v-if="field.default" class="field-hint">
+                Default: {{ field.default }}
+              </small>
+            </div>
+
+            <!-- Test Connection -->
+            <div class="test-connection">
+              <Button
+                label="Test Connection"
+                icon="pi pi-wifi"
+                @click="testConnection"
+                class="p-button-secondary"
+                :loading="testingConnection"
+                :disabled="!canTestConnection"
+                type="button"
+              />
+              <div v-if="connectionTestResult" class="test-result" :class="connectionTestResult.success ? 'success' : 'error'">
+                <i :class="connectionTestResult.success ? 'pi pi-check' : 'pi pi-times'"></i>
+                <span>{{ connectionTestResult.message }}</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </form>
+
+      <template #footer>
+        <div class="dialog-footer">
+          <Button
+            v-if="dialogStep > 1"
+            label="Back"
+            icon="pi pi-arrow-left"
+            @click="dialogStep--"
+            class="p-button-secondary"
+          />
+          <Button
+            v-if="dialogStep < 3"
+            label="Next"
+            icon="pi pi-arrow-right"
+            @click="dialogStep++"
+            :disabled="!canProceedToNextStep"
+          />
+          <Button
+            v-if="dialogStep === 3"
+            :label="editingInstance ? 'Update' : 'Create'"
+            icon="pi pi-check"
+            @click="saveProvider"
+            :loading="savingProvider"
+            :disabled="!canSaveProvider"
+          />
+          <Button
+            label="Cancel"
+            icon="pi pi-times"
+            @click="closeDialog"
+            class="p-button-text"
+          />
+        </div>
+      </template>
+    </Dialog>
+
+    <!-- Delete Confirmation Dialog -->
+    <Dialog
+      v-model:visible="showDeleteDialog"
+      header="Delete Provider Instance"
+      modal
+      class="delete-dialog"
+      :style="{ width: '400px' }"
+    >
+      <div class="delete-content">
+        <i class="pi pi-exclamation-triangle warning-icon"></i>
+        <p>Are you sure you want to delete this provider instance?</p>
+        <p><strong>{{ instanceToDelete?.display_name }}</strong></p>
+        <p class="warning-text">This action cannot be undone.</p>
+      </div>
+      <template #footer>
+        <Button
+          label="Cancel"
+          icon="pi pi-times"
+          @click="showDeleteDialog = false"
+          class="p-button-text"
+        />
+        <Button
+          label="Delete"
+          icon="pi pi-trash"
+          @click="deleteProviderInstance"
+          class="p-button-danger"
+          :loading="deletingInstance"
+        />
+      </template>
+    </Dialog>
   </div>
 </template>
 
@@ -90,14 +403,19 @@
 import { ref, onMounted, computed, watch } from "vue";
 import Dropdown from "primevue/dropdown";
 import Button from "primevue/button";
+import Dialog from "primevue/dialog";
+import InputText from "primevue/inputtext";
 import { useMarketData } from "../../composables/useMarketData";
 import { useNotifications } from "../../composables/useNotifications";
+import api from "../../services/api";
 
 export default {
   name: "ProvidersTab",
   components: {
     Dropdown,
     Button,
+    Dialog,
+    InputText,
   },
   setup() {
     const { showSuccess, showError, showWarning } = useNotifications();
@@ -110,26 +428,53 @@ export default {
       getError
     } = useMarketData();
 
-    // Get reactive data from smart data system
+    // Sub-tab management
+    const activeSubTab = ref("instances");
+    const subTabs = [
+      { key: "instances", label: "Provider Instances", icon: "pi pi-server" },
+      { key: "routing", label: "Service Routing", icon: "pi pi-sitemap" }
+    ];
+
+    // Provider instances data
+    const providerInstances = ref({});
+    const providerTypes = ref({});
+    const instancesLoading = ref(false);
+    const instancesError = ref(null);
+    const togglingInstances = ref(new Set());
+
+    // Service routing data
     const reactiveAvailableProviders = getAvailableProviders();
     const reactiveProviderConfig = getProviderConfig();
-
-    // Local reactive data
-    const updating = ref(false);
+    const routingLoading = computed(() => 
+      isLoading("providers.available").value || isLoading("providers.config").value
+    );
+    const routingError = computed(() => 
+      getError("providers.available").value || getError("providers.config").value
+    );
+    const availableProviders = computed(() => reactiveAvailableProviders.value || {});
+    const currentConfig = computed(() => reactiveProviderConfig.value || {});
+    const updatingRouting = ref(false);
     const validationWarnings = ref([]);
     const lastSaved = ref(null);
 
-    // Computed loading and error states from smart data system
-    const loading = computed(() => 
-      isLoading("providers.available").value || isLoading("providers.config").value
-    );
-    const error = computed(() => 
-      getError("providers.available").value || getError("providers.config").value
-    );
+    // Dialog management
+    const showAddProviderDialog = ref(false);
+    const showDeleteDialog = ref(false);
+    const dialogStep = ref(1);
+    const editingInstance = ref(null);
+    const instanceToDelete = ref(null);
+    const savingProvider = ref(false);
+    const deletingInstance = ref(false);
+    const testingConnection = ref(false);
+    const connectionTestResult = ref(null);
 
-    // Computed properties for easier access
-    const availableProviders = computed(() => reactiveAvailableProviders.value || {});
-    const currentConfig = computed(() => reactiveProviderConfig.value || {});
+    // New provider form data
+    const newProvider = ref({
+      provider_type: '',
+      account_type: '',
+      display_name: '',
+      credentials: {}
+    });
 
     // Service categories configuration
     const serviceCategories = [
@@ -194,25 +539,259 @@ export default {
       },
     ];
 
-    // Load provider data using smart data system
-    const loadProviderData = async () => {
+    // Methods
+    const setActiveSubTab = (tabKey) => {
+      activeSubTab.value = tabKey;
+    };
+
+    const loadProviderInstances = async () => {
       try {
-        // Force refresh provider data through smart data system
-        await refreshProviderData();
+        instancesLoading.value = true;
+        instancesError.value = null;
         
-        // Validate current configuration
-        validateConfiguration();
+        const [instancesData, typesData] = await Promise.all([
+          api.getProviderInstances(),
+          api.getProviderTypes()
+        ]);
         
-        console.log("Provider data refreshed through smart data system");
+        providerInstances.value = instancesData;
+        providerTypes.value = typesData;
         
-      } catch (err) {
-        console.error("Error refreshing provider data:", err);
-        showError("Failed to refresh provider configuration", "Configuration Error");
+      } catch (error) {
+        console.error("Error loading provider instances:", error);
+        instancesError.value = "Failed to load provider instances";
+      } finally {
+        instancesLoading.value = false;
       }
     };
 
-    // Get available providers for a specific service
-    const getAvailableProvidersForService = (serviceKey) => {
+    const loadRoutingData = async () => {
+      try {
+        await refreshProviderData();
+        validateConfiguration();
+      } catch (error) {
+        console.error("Error loading routing data:", error);
+        showError("Failed to load service routing configuration", "Configuration Error");
+      }
+    };
+
+    const getProviderIcon = (providerType) => {
+      const icons = {
+        alpaca: "pi pi-chart-bar",
+        tradier: "pi pi-chart-line",
+        public: "pi pi-building"
+      };
+      return icons[providerType] || "pi pi-server";
+    };
+
+    const getProviderTypeName = (providerType) => {
+      return providerTypes.value[providerType]?.name || providerType;
+    };
+
+    const toggleProviderInstance = async (instanceId) => {
+      try {
+        togglingInstances.value.add(instanceId);
+        
+        const result = await api.toggleProviderInstance(instanceId);
+        
+        // Update local state
+        if (providerInstances.value[instanceId]) {
+          providerInstances.value[instanceId].active = result.data.active;
+        }
+        
+        const action = result.data.active ? "activated" : "deactivated";
+        showSuccess(`Provider instance ${action} successfully`);
+        
+        // Refresh routing data to update available providers
+        await refreshProviderData();
+        
+      } catch (error) {
+        console.error("Error toggling provider instance:", error);
+        showError("Failed to toggle provider instance", "Toggle Error");
+      } finally {
+        togglingInstances.value.delete(instanceId);
+      }
+    };
+
+    const editProviderInstance = (instanceId) => {
+      const instance = providerInstances.value[instanceId];
+      if (!instance) return;
+      
+      editingInstance.value = instanceId;
+      
+      // Initialize credentials object with empty values for required fields and defaults for optional fields
+      const credentialFields = providerTypes.value[instance.provider_type]?.credential_fields[instance.account_type] || [];
+      const credentials = {};
+      credentialFields.forEach(field => {
+        if (field.required) {
+          credentials[field.name] = ''; // Empty for security, user must re-enter required fields
+        } else {
+          credentials[field.name] = field.default || ''; // Use default for optional fields
+        }
+      });
+      
+      newProvider.value = {
+        provider_type: instance.provider_type,
+        account_type: instance.account_type,
+        display_name: instance.display_name,
+        credentials: credentials
+      };
+      
+      dialogStep.value = 3; // Skip to credentials step for editing
+      showAddProviderDialog.value = true;
+    };
+
+    const confirmDeleteInstance = (instanceId) => {
+      instanceToDelete.value = providerInstances.value[instanceId];
+      showDeleteDialog.value = true;
+    };
+
+    const deleteProviderInstance = async () => {
+      if (!instanceToDelete.value) return;
+      
+      try {
+        deletingInstance.value = true;
+        
+        await api.deleteProviderInstance(instanceToDelete.value.instance_id);
+        
+        // Remove from local state
+        delete providerInstances.value[instanceToDelete.value.instance_id];
+        
+        showSuccess("Provider instance deleted successfully");
+        showDeleteDialog.value = false;
+        instanceToDelete.value = null;
+        
+        // Refresh routing data
+        await refreshProviderData();
+        
+      } catch (error) {
+        console.error("Error deleting provider instance:", error);
+        showError("Failed to delete provider instance", "Delete Error");
+      } finally {
+        deletingInstance.value = false;
+      }
+    };
+
+    const selectProviderType = (providerType) => {
+      newProvider.value.provider_type = providerType;
+      newProvider.value.account_type = '';
+      newProvider.value.credentials = {};
+    };
+
+    const selectAccountType = (accountType) => {
+      newProvider.value.account_type = accountType;
+      newProvider.value.credentials = {};
+    };
+
+    const getSelectedProviderAccountTypes = () => {
+      if (!newProvider.value.provider_type || !providerTypes.value[newProvider.value.provider_type]) {
+        return [];
+      }
+      return providerTypes.value[newProvider.value.provider_type].supports_account_types;
+    };
+
+    const getCredentialFields = () => {
+      if (!newProvider.value.provider_type || !newProvider.value.account_type || !providerTypes.value[newProvider.value.provider_type]) {
+        return [];
+      }
+      
+      const providerType = providerTypes.value[newProvider.value.provider_type];
+      const fields = providerType.credential_fields[newProvider.value.account_type] || [];
+      
+      return fields;
+    };
+
+    const canProceedToNextStep = computed(() => {
+      if (dialogStep.value === 1) {
+        return !!newProvider.value.provider_type;
+      }
+      if (dialogStep.value === 2) {
+        return !!newProvider.value.account_type;
+      }
+      return false;
+    });
+
+    const canTestConnection = computed(() => {
+      const fields = getCredentialFields();
+      return fields.every(field => !field.required || newProvider.value.credentials[field.name]);
+    });
+
+    const canSaveProvider = computed(() => {
+      return canTestConnection.value && newProvider.value.display_name;
+    });
+
+    const testConnection = async () => {
+      try {
+        testingConnection.value = true;
+        connectionTestResult.value = null;
+        
+        const result = await api.testProviderConnection({
+          provider_type: newProvider.value.provider_type,
+          account_type: newProvider.value.account_type,
+          credentials: newProvider.value.credentials
+        });
+        
+        connectionTestResult.value = result;
+        
+      } catch (error) {
+        console.error("Error testing connection:", error);
+        connectionTestResult.value = {
+          success: false,
+          message: "Connection test failed"
+        };
+      } finally {
+        testingConnection.value = false;
+      }
+    };
+
+    const saveProvider = async () => {
+      try {
+        savingProvider.value = true;
+        
+        if (editingInstance.value) {
+          // Update existing instance
+          await api.updateProviderInstance(editingInstance.value, {
+            display_name: newProvider.value.display_name,
+            credentials: newProvider.value.credentials
+          });
+          
+          showSuccess("Provider instance updated successfully");
+        } else {
+          // Create new instance
+          const result = await api.createProviderInstance(newProvider.value);
+          
+          showSuccess("Provider instance created successfully");
+        }
+        
+        // Reload data
+        await loadProviderInstances();
+        await refreshProviderData();
+        
+        closeDialog();
+        
+      } catch (error) {
+        console.error("Error saving provider:", error);
+        showError("Failed to save provider instance", "Save Error");
+      } finally {
+        savingProvider.value = false;
+      }
+    };
+
+    const closeDialog = () => {
+      showAddProviderDialog.value = false;
+      dialogStep.value = 1;
+      editingInstance.value = null;
+      connectionTestResult.value = null;
+      newProvider.value = {
+        provider_type: '',
+        account_type: '',
+        display_name: '',
+        credentials: {}
+      };
+    };
+
+    // Service routing methods (from original ProvidersTab)
+    const getAvailableInstancesForService = (serviceKey) => {
       const providers = [];
       
       Object.entries(availableProviders.value).forEach(([providerName, providerData]) => {
@@ -225,7 +804,7 @@ export default {
           
         if (supportsService) {
           providers.push({
-            label: formatProviderName(providerName),
+            label: formatProviderName(providerName, providerData),
             value: providerName,
             capabilities: capabilities
           });
@@ -236,39 +815,29 @@ export default {
       return providers.sort((a, b) => a.label.localeCompare(b.label));
     };
 
-    // Format provider name for display using backend data
-    const formatProviderName = (providerName) => {
-      // Ensure providerName is a string
-      if (!providerName || typeof providerName !== 'string') {
-        return "Unknown";
-      }
-      
-      const providerData = availableProviders.value[providerName];
+    const formatProviderName = (providerName, providerData) => {
       if (providerData) {
         const displayName = providerData.display_name || providerName;
         const accountType = providerData.paper ? "(Paper)" : "(Live)";
         return `${displayName} ${accountType}`;
       }
       
-      // Fallback for unknown providers
       return providerName.charAt(0).toUpperCase() + providerName.slice(1);
     };
 
-    // Get placeholder text for provider dropdown
     const getProviderPlaceholder = (serviceKey) => {
-      const availableCount = getAvailableProvidersForService(serviceKey).length;
+      const availableCount = getAvailableInstancesForService(serviceKey).length;
       if (availableCount === 0) {
         return "No providers available";
       }
       return "Select provider...";
     };
 
-    // Handle provider change using smart data system
     const onProviderChange = async (serviceKey, newProvider) => {
-      if (!newProvider || updating.value) return;
+      if (!newProvider || updatingRouting.value) return;
       
       try {
-        updating.value = true;
+        updatingRouting.value = true;
         
         // Update the configuration
         const updatedConfig = { ...currentConfig.value };
@@ -284,7 +853,7 @@ export default {
         validateConfiguration();
         
         showSuccess(
-          `${serviceKey.replace('_', ' ')} provider updated to ${formatProviderName(newProvider)}`,
+          `${serviceKey.replace('_', ' ')} provider updated to ${formatProviderName(newProvider, availableProviders.value[newProvider])}`,
           "Provider Updated"
         );
         
@@ -293,13 +862,12 @@ export default {
         showError("Failed to update provider configuration", "Update Error");
         
         // Refresh data to revert any UI changes
-        await loadProviderData();
+        await loadRoutingData();
       } finally {
-        updating.value = false;
+        updatingRouting.value = false;
       }
     };
 
-    // Validate current configuration
     const validateConfiguration = () => {
       const warnings = [];
       
@@ -309,11 +877,11 @@ export default {
       }
       
       Object.entries(currentConfig.value).forEach(([serviceKey, providerName]) => {
-        const availableProvidersForService = getAvailableProvidersForService(serviceKey);
+        const availableProvidersForService = getAvailableInstancesForService(serviceKey);
         
         // Check if selected provider is still available
         if (!availableProvidersForService.find(p => p.value === providerName)) {
-          warnings.push(`${serviceKey.replace('_', ' ')} provider "${formatProviderName(providerName)}" is no longer available`);
+          warnings.push(`${serviceKey.replace('_', ' ')} provider "${formatProviderName(providerName, availableProviders.value[providerName])}" is no longer available`);
         }
         
         // Check for trading account warnings using backend paper flag
@@ -328,10 +896,9 @@ export default {
       validationWarnings.value = warnings;
     };
 
-    // Get status icon for service
     const getStatusIcon = (serviceKey) => {
       const provider = currentConfig.value[serviceKey];
-      const availableProviders = getAvailableProvidersForService(serviceKey);
+      const availableProviders = getAvailableInstancesForService(serviceKey);
       
       if (!provider) {
         return "pi pi-exclamation-circle text-warning";
@@ -344,30 +911,32 @@ export default {
       return "pi pi-check-circle text-success";
     };
 
-    // Get status tooltip
     const getStatusTooltip = (serviceKey) => {
       const provider = currentConfig.value[serviceKey];
-      const availableProviders = getAvailableProvidersForService(serviceKey);
+      const availableProvidersForService = getAvailableInstancesForService(serviceKey);
       
       if (!provider) {
         return "No provider selected";
       }
       
-      if (!availableProviders.find(p => p.value === provider)) {
+      if (!availableProvidersForService.find(p => p.value === provider)) {
         return "Selected provider is not available";
       }
       
-      return `Using ${formatProviderName(provider)}`;
+      const providerData = availableProviders.value[provider];
+      return `Using ${formatProviderName(provider, providerData)}`;
     };
 
-    // Format time for display
     const formatTime = (date) => {
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };
 
     // Load data on mount
-    onMounted(() => {
-      loadProviderData();
+    onMounted(async () => {
+      await Promise.all([
+        loadProviderInstances(),
+        loadRoutingData()
+      ]);
     });
 
     // Watch for changes in provider data and auto-validate
@@ -376,21 +945,62 @@ export default {
     }, { deep: true });
 
     return {
-      // Reactive data
+      // Sub-tab management
+      activeSubTab,
+      subTabs,
+      setActiveSubTab,
+      
+      // Provider instances data
+      providerInstances,
+      providerTypes,
+      instancesLoading,
+      instancesError,
+      togglingInstances,
+      
+      // Service routing data
       availableProviders,
       currentConfig,
-      loading,
-      updating,
-      error,
+      routingLoading,
+      routingError,
+      updatingRouting,
       validationWarnings,
       lastSaved,
+      
+      // Dialog management
+      showAddProviderDialog,
+      showDeleteDialog,
+      dialogStep,
+      editingInstance,
+      instanceToDelete,
+      savingProvider,
+      deletingInstance,
+      testingConnection,
+      connectionTestResult,
+      newProvider,
       
       // Static data
       serviceCategories,
       
       // Methods
-      loadProviderData,
-      getAvailableProvidersForService,
+      loadProviderInstances,
+      loadRoutingData,
+      getProviderIcon,
+      getProviderTypeName,
+      toggleProviderInstance,
+      editProviderInstance,
+      confirmDeleteInstance,
+      deleteProviderInstance,
+      selectProviderType,
+      selectAccountType,
+      getSelectedProviderAccountTypes,
+      getCredentialFields,
+      canProceedToNextStep,
+      canTestConnection,
+      canSaveProvider,
+      testConnection,
+      saveProvider,
+      closeDialog,
+      getAvailableInstancesForService,
       formatProviderName,
       getProviderPlaceholder,
       onProviderChange,
@@ -409,25 +1019,77 @@ export default {
   overflow-y: auto;
 }
 
+/* Sub-tab Navigation */
+.sub-tab-nav {
+  display: flex;
+  gap: var(--spacing-sm);
+  margin-bottom: var(--spacing-xl);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.sub-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-md) var(--spacing-lg);
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: var(--transition-normal);
+  border-bottom: 2px solid transparent;
+}
+
+.sub-tab-btn:hover {
+  color: var(--text-primary);
+  background-color: var(--bg-tertiary);
+}
+
+.sub-tab-btn.active {
+  color: var(--color-brand);
+  border-bottom-color: var(--color-brand);
+}
+
+.sub-tab-btn i {
+  font-size: var(--font-size-md);
+}
+
+/* Tab Content */
+.sub-tab-content {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
 .tab-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
   margin-bottom: var(--spacing-xl);
   padding-bottom: var(--spacing-lg);
   border-bottom: 1px solid var(--border-primary);
 }
 
-.tab-header h2 {
+.header-content h2 {
   margin: 0 0 var(--spacing-sm) 0;
   font-size: var(--font-size-xl);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
 }
 
-.tab-header p {
+.header-content p {
   margin: 0;
   font-size: var(--font-size-md);
   color: var(--text-secondary);
 }
 
+.add-provider-btn {
+  flex-shrink: 0;
+}
+
+/* Loading and Error States */
 .loading-section,
 .error-section {
   display: flex;
@@ -467,7 +1129,162 @@ export default {
   margin-top: var(--spacing-md);
 }
 
-.provider-config {
+/* Provider Instances */
+.provider-instances {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.provider-instance {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-lg);
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  transition: var(--transition-normal);
+  min-width: 0; /* Allow flex items to shrink */
+  overflow: hidden; /* Prevent content overflow */
+}
+
+.provider-instance:hover {
+  border-color: var(--border-tertiary);
+}
+
+.provider-instance.inactive {
+  opacity: 0.6;
+}
+
+.instance-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  flex: 1;
+}
+
+.instance-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.instance-icon {
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  color: var(--color-primary);
+}
+
+.instance-icon i {
+  font-size: var(--font-size-lg);
+}
+
+.instance-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.instance-name {
+  margin: 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.instance-meta {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.separator {
+  color: var(--text-tertiary);
+}
+
+.account-type.live {
+  color: var(--color-danger);
+  font-weight: var(--font-weight-semibold);
+}
+
+.account-type.paper {
+  color: var(--color-info);
+  font-weight: var(--font-weight-semibold);
+}
+
+.instance-badges {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.status-badge {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+}
+
+.status-badge.active {
+  background-color: rgba(0, 200, 81, 0.1);
+  color: var(--color-success);
+  border: 1px solid var(--color-success);
+}
+
+.status-badge.inactive {
+  background-color: rgba(255, 187, 51, 0.1);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning);
+}
+
+.instance-actions {
+  display: flex;
+  gap: var(--spacing-xs);
+  flex-shrink: 0; /* Prevent actions from shrinking */
+  min-width: fit-content; /* Ensure buttons don't get cut off */
+}
+
+/* Empty State */
+.empty-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-xxl);
+  text-align: center;
+  color: var(--text-secondary);
+}
+
+.empty-state i {
+  font-size: 3rem;
+  margin-bottom: var(--spacing-lg);
+  color: var(--text-tertiary);
+}
+
+.empty-state h4 {
+  margin: 0 0 var(--spacing-sm) 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.empty-state p {
+  margin: 0 0 var(--spacing-lg) 0;
+  font-size: var(--font-size-md);
+  color: var(--text-tertiary);
+}
+
+/* Service Configuration (from original ProvidersTab) */
+.service-config {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-xl);
@@ -606,6 +1423,262 @@ export default {
 
 .save-status i {
   color: var(--color-success);
+}
+
+/* Dialog Styles */
+.provider-dialog :deep(.p-dialog) {
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+}
+
+.dialog-content {
+  padding: var(--spacing-lg) 0;
+}
+
+.dialog-step h4 {
+  margin: 0 0 var(--spacing-lg) 0;
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+/* Provider Type Grid */
+.provider-type-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.provider-type-card {
+  padding: var(--spacing-lg);
+  background-color: var(--bg-tertiary);
+  border: 2px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: var(--transition-normal);
+}
+
+.provider-type-card:hover {
+  border-color: var(--border-tertiary);
+}
+
+.provider-type-card.selected {
+  border-color: var(--color-primary);
+  background-color: rgba(var(--color-primary-rgb), 0.05);
+}
+
+.provider-type-card .provider-icon {
+  width: 48px;
+  height: 48px;
+  margin-bottom: var(--spacing-md);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary);
+}
+
+.provider-type-card .provider-icon i {
+  font-size: var(--font-size-xl);
+}
+
+.provider-type-card h5 {
+  margin: 0 0 var(--spacing-sm) 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.provider-type-card p {
+  margin: 0 0 var(--spacing-md) 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.supported-accounts {
+  display: flex;
+  gap: var(--spacing-xs);
+}
+
+.account-badge {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+}
+
+.account-badge.live {
+  background-color: rgba(220, 38, 127, 0.1);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger);
+}
+
+.account-badge.paper {
+  background-color: rgba(59, 130, 246, 0.1);
+  color: var(--color-info);
+  border: 1px solid var(--color-info);
+}
+
+/* Account Type Selection */
+.account-type-selection {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.account-type-card {
+  position: relative;
+  padding: var(--spacing-lg);
+  background-color: var(--bg-tertiary);
+  border: 2px solid var(--border-secondary);
+  border-radius: var(--radius-lg);
+  cursor: pointer;
+  transition: var(--transition-normal);
+}
+
+.account-type-card:hover {
+  border-color: var(--border-tertiary);
+}
+
+.account-type-card.selected {
+  border-color: var(--color-primary);
+  background-color: rgba(var(--color-primary-rgb), 0.05);
+}
+
+.account-type-card .account-icon {
+  width: 40px;
+  height: 40px;
+  margin-bottom: var(--spacing-md);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-primary);
+}
+
+.account-type-card .account-icon i {
+  font-size: var(--font-size-lg);
+}
+
+.account-type-card h5 {
+  margin: 0 0 var(--spacing-sm) 0;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.account-type-card p {
+  margin: 0;
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.warning-badge {
+  position: absolute;
+  top: var(--spacing-sm);
+  right: var(--spacing-sm);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background-color: rgba(220, 38, 127, 0.1);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* Credentials Form */
+.credentials-form {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.form-group label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.field-hint {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.test-connection {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border-secondary);
+}
+
+.test-result {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.test-result.success {
+  background-color: rgba(0, 200, 81, 0.1);
+  color: var(--color-success);
+  border: 1px solid var(--color-success);
+}
+
+.test-result.error {
+  background-color: rgba(220, 38, 127, 0.1);
+  color: var(--color-danger);
+  border: 1px solid var(--color-danger);
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-sm);
+  padding-top: var(--spacing-lg);
+  border-top: 1px solid var(--border-secondary);
+}
+
+/* Delete Dialog */
+.delete-content {
+  text-align: center;
+  padding: var(--spacing-lg);
+}
+
+.warning-icon {
+  font-size: 3rem;
+  color: var(--color-danger);
+  margin-bottom: var(--spacing-lg);
+}
+
+.delete-content p {
+  margin: 0 0 var(--spacing-sm) 0;
+  font-size: var(--font-size-md);
+  color: var(--text-primary);
+}
+
+.warning-text {
+  font-size: var(--font-size-sm);
+  color: var(--text-tertiary);
+  font-style: italic;
 }
 
 /* Custom scrollbar */

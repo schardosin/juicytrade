@@ -10,10 +10,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .models import (
     StockQuote, OptionContract, Position, Order, ApiResponse,
-    SymbolRequest, OrderRequest, MultiLegOrderRequest, SymbolSearchResult, Account
+    SymbolRequest, OrderRequest, MultiLegOrderRequest, SymbolSearchResult, Account,
+    CreateProviderInstanceRequest, UpdateProviderInstanceRequest, ProviderInstanceResponse,
+    TestProviderConnectionRequest, TestProviderConnectionResponse
 )
 from .provider_manager import provider_manager
 from .provider_config import provider_config_manager
+from .provider_types import get_provider_types
 from .streaming_manager import streaming_manager
 from .connection_manager import ConnectionManager
 from .shutdown_manager import shutdown_manager
@@ -127,6 +130,253 @@ async def get_available_providers():
     """Get available providers and their capabilities."""
     providers = provider_config_manager.get_available_providers()
     return ApiResponse(success=True, data=providers)
+
+# === Provider Instance Management Endpoints ===
+
+@app.get("/providers/types", response_model=ApiResponse)
+async def get_provider_types_endpoint():
+    """Get available provider types and their field definitions."""
+    try:
+        provider_types = get_provider_types()
+        return ApiResponse(
+            success=True,
+            data=provider_types,
+            message="Retrieved provider type definitions"
+        )
+    except Exception as e:
+        logger.error(f"Error getting provider types: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/providers/instances", response_model=ApiResponse)
+async def get_provider_instances():
+    """Get all provider instances with their status."""
+    try:
+        # Get all instances from credential store
+        all_instances = provider_manager.credential_store.get_all_instances()
+        
+        # Convert to response format (without credentials for security)
+        instances_data = {}
+        for instance_id, instance_data in all_instances.items():
+            instances_data[instance_id] = {
+                'instance_id': instance_id,
+                'active': instance_data.get('active', False),
+                'provider_type': instance_data.get('provider_type'),
+                'account_type': instance_data.get('account_type'),
+                'display_name': instance_data.get('display_name'),
+                'created_at': instance_data.get('created_at'),
+                'updated_at': instance_data.get('updated_at')
+            }
+        
+        return ApiResponse(
+            success=True,
+            data=instances_data,
+            message=f"Retrieved {len(instances_data)} provider instances"
+        )
+    except Exception as e:
+        logger.error(f"Error getting provider instances: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/providers/instances", response_model=ApiResponse)
+async def create_provider_instance(request: CreateProviderInstanceRequest):
+    """Create a new provider instance."""
+    try:
+        from .provider_types import validate_credentials, apply_defaults
+        import time
+        
+        # Validate credentials
+        validation_errors = validate_credentials(
+            request.provider_type, 
+            request.account_type, 
+            request.credentials
+        )
+        
+        if validation_errors:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Credential validation failed: {', '.join(validation_errors)}"
+            )
+        
+        # Apply default values
+        credentials_with_defaults = apply_defaults(
+            request.provider_type, 
+            request.account_type, 
+            request.credentials
+        )
+        
+        # Generate unique instance ID
+        instance_id = provider_manager.credential_store.generate_instance_id(
+            request.provider_type,
+            request.account_type,
+            request.display_name
+        )
+        
+        # Add instance to credential store
+        success = provider_manager.credential_store.add_instance(
+            instance_id=instance_id,
+            provider_type=request.provider_type,
+            account_type=request.account_type,
+            display_name=request.display_name,
+            credentials=credentials_with_defaults
+        )
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to create provider instance")
+        
+        # Reinitialize providers to include the new instance
+        provider_manager._initialize_active_providers()
+        
+        return ApiResponse(
+            success=True,
+            data={"instance_id": instance_id},
+            message=f"Provider instance '{request.display_name}' created successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating provider instance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/providers/instances/{instance_id}", response_model=ApiResponse)
+async def update_provider_instance(instance_id: str, request: UpdateProviderInstanceRequest):
+    """Update an existing provider instance."""
+    try:
+        # Check if instance exists
+        instance = provider_manager.credential_store.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Provider instance not found")
+        
+        # Prepare updates
+        updates = {}
+        if request.display_name is not None:
+            updates['display_name'] = request.display_name
+        
+        if request.credentials is not None:
+            from .provider_types import validate_credentials, apply_defaults
+            
+            # Validate new credentials
+            validation_errors = validate_credentials(
+                instance['provider_type'],
+                instance['account_type'],
+                request.credentials
+            )
+            
+            if validation_errors:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Credential validation failed: {', '.join(validation_errors)}"
+                )
+            
+            # Apply defaults and update
+            credentials_with_defaults = apply_defaults(
+                instance['provider_type'],
+                instance['account_type'],
+                request.credentials
+            )
+            updates['credentials'] = credentials_with_defaults
+        
+        # Update instance
+        success = provider_manager.credential_store.update_instance(instance_id, **updates)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to update provider instance")
+        
+        # Reinitialize providers if credentials were updated
+        if request.credentials is not None:
+            provider_manager._initialize_active_providers()
+        
+        return ApiResponse(
+            success=True,
+            data={"instance_id": instance_id},
+            message="Provider instance updated successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating provider instance {instance_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.put("/providers/instances/{instance_id}/toggle", response_model=ApiResponse)
+async def toggle_provider_instance(instance_id: str):
+    """Activate/deactivate a provider instance."""
+    try:
+        # Toggle the instance
+        new_active_state = provider_manager.credential_store.toggle_instance(instance_id)
+        
+        if new_active_state is None:
+            raise HTTPException(status_code=404, detail="Provider instance not found")
+        
+        # Reinitialize providers to reflect the change
+        provider_manager._initialize_active_providers()
+        
+        action = "activated" if new_active_state else "deactivated"
+        return ApiResponse(
+            success=True,
+            data={"instance_id": instance_id, "active": new_active_state},
+            message=f"Provider instance {action} successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error toggling provider instance {instance_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/providers/instances/{instance_id}", response_model=ApiResponse)
+async def delete_provider_instance(instance_id: str):
+    """Delete a provider instance."""
+    try:
+        # Check if instance exists
+        instance = provider_manager.credential_store.get_instance(instance_id)
+        if not instance:
+            raise HTTPException(status_code=404, detail="Provider instance not found")
+        
+        # Delete the instance
+        success = provider_manager.credential_store.delete_instance(instance_id)
+        
+        if not success:
+            raise HTTPException(status_code=500, detail="Failed to delete provider instance")
+        
+        # Reinitialize providers to remove the deleted instance
+        provider_manager._initialize_active_providers()
+        
+        return ApiResponse(
+            success=True,
+            data={"instance_id": instance_id},
+            message="Provider instance deleted successfully"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting provider instance {instance_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/providers/instances/test", response_model=ApiResponse)
+async def test_provider_connection(request: TestProviderConnectionRequest):
+    """Test a provider connection without saving credentials."""
+    try:
+        # Test the connection using provider manager
+        result = await provider_manager.test_provider_connection(
+            request.provider_type,
+            request.account_type,
+            request.credentials
+        )
+        
+        return ApiResponse(
+            success=result['success'],
+            data=result.get('details', {}),
+            message=result['message']
+        )
+        
+    except Exception as e:
+        logger.error(f"Error testing provider connection: {e}")
+        return ApiResponse(
+            success=False,
+            data={'error': str(e)},
+            message=f"Connection test failed: {str(e)}"
+        )
 
 # === Market Data Endpoints ===
 

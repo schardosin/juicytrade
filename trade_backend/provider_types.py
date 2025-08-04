@@ -1,0 +1,103 @@
+from typing import Dict, List, Any
+
+# Provider type definitions with credential field specifications
+PROVIDER_TYPES: Dict[str, Dict[str, Any]] = {
+    "alpaca": {
+        "name": "Alpaca",
+        "description": "Alpaca Trading API",
+        "supports_account_types": ["live", "paper"],
+        "capabilities": {
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "streaming": ["streaming_quotes", "trade_account"]
+        },
+        "credential_fields": {
+            "live": [
+                {"name": "api_key", "label": "API Key", "type": "text", "required": True, "placeholder": "Your Alpaca Live API Key"},
+                {"name": "api_secret", "label": "API Secret", "type": "password", "required": True, "placeholder": "Your Alpaca Live API Secret"},
+                {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://api.alpaca.markets"},
+                {"name": "data_url", "label": "Data URL", "type": "text", "required": False, "default": "https://data.alpaca.markets"}
+            ],
+            "paper": [
+                {"name": "api_key", "label": "API Key", "type": "text", "required": True, "placeholder": "Your Alpaca Paper API Key"},
+                {"name": "api_secret", "label": "API Secret", "type": "password", "required": True, "placeholder": "Your Alpaca Paper API Secret"},
+                {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://paper-api.alpaca.markets"},
+                {"name": "data_url", "label": "Data URL", "type": "text", "required": False, "default": "https://data.alpaca.markets"}
+            ]
+        }
+    },
+    "tradier": {
+        "name": "Tradier",
+        "description": "Tradier Brokerage API",
+        "supports_account_types": ["live", "paper"],
+        "capabilities": {
+            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
+            "streaming": ["streaming_quotes"]
+        },
+        "credential_fields": {
+            "live": [
+                {"name": "api_key", "label": "API Key", "type": "password", "required": True, "placeholder": "Your Tradier Live API Key"},
+                {"name": "account_id", "label": "Account ID", "type": "text", "required": True, "placeholder": "Your Tradier Live Account ID"},
+                {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://api.tradier.com"},
+                {"name": "stream_url", "label": "Stream URL", "type": "text", "required": False, "default": "wss://ws.tradier.com/v1/markets/events"}
+            ],
+            "paper": [
+                {"name": "api_key", "label": "API Key", "type": "password", "required": True, "placeholder": "Your Tradier Sandbox API Key"},
+                {"name": "account_id", "label": "Account ID", "type": "text", "required": True, "placeholder": "Your Tradier Sandbox Account ID"},
+                {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://sandbox.tradier.com"},
+                {"name": "stream_url", "label": "Stream URL", "type": "text", "required": False, "default": "wss://ws.sandbox.tradier.com/v1/markets/events"}
+            ]
+        }
+    },
+    "public": {
+        "name": "Public.com",
+        "description": "Public.com Trading API",
+        "supports_account_types": ["live"],
+        "capabilities": {
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date"]
+        },
+        "credential_fields": {
+            "live": [
+                {"name": "api_secret", "label": "API Secret", "type": "password", "required": True, "placeholder": "Your Public.com API Secret"},
+                {"name": "account_id", "label": "Account ID", "type": "text", "required": True, "placeholder": "Your Public.com Account ID"}
+            ]
+        }
+    }
+}
+
+def get_provider_types() -> Dict[str, Dict[str, Any]]:
+    """Get all available provider types"""
+    return PROVIDER_TYPES
+
+def get_provider_type(provider_type: str) -> Dict[str, Any]:
+    """Get specific provider type definition"""
+    return PROVIDER_TYPES.get(provider_type, {})
+
+def get_credential_fields(provider_type: str, account_type: str) -> List[Dict[str, Any]]:
+    """Get credential fields for a specific provider type and account type"""
+    provider_def = PROVIDER_TYPES.get(provider_type, {})
+    credential_fields = provider_def.get("credential_fields", {})
+    return credential_fields.get(account_type, [])
+
+def validate_credentials(provider_type: str, account_type: str, credentials: Dict[str, str]) -> List[str]:
+    """Validate credentials against provider type requirements"""
+    errors = []
+    fields = get_credential_fields(provider_type, account_type)
+    
+    for field in fields:
+        field_name = field["name"]
+        if field.get("required", False) and not credentials.get(field_name):
+            errors.append(f"Missing required field: {field['label']}")
+    
+    return errors
+
+def apply_defaults(provider_type: str, account_type: str, credentials: Dict[str, str]) -> Dict[str, str]:
+    """Apply default values to credentials"""
+    fields = get_credential_fields(provider_type, account_type)
+    result = credentials.copy()
+    
+    for field in fields:
+        field_name = field["name"]
+        if field_name not in result and "default" in field:
+            result[field_name] = field["default"]
+    
+    return result

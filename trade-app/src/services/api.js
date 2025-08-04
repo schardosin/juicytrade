@@ -495,6 +495,85 @@ export const api = {
       throw error;
     }
   },
+
+  // === Provider Instance Management APIs ===
+
+  // Get provider types and their field definitions
+  async getProviderTypes() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/providers/types`);
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching provider types:", error);
+      throw error;
+    }
+  },
+
+  // Get all provider instances
+  async getProviderInstances() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/providers/instances`);
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching provider instances:", error);
+      throw error;
+    }
+  },
+
+  // Create a new provider instance
+  async createProviderInstance(instanceData) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/providers/instances`, instanceData);
+      return response.data;
+    } catch (error) {
+      console.error("Error creating provider instance:", error);
+      throw error;
+    }
+  },
+
+  // Update an existing provider instance
+  async updateProviderInstance(instanceId, updateData) {
+    try {
+      const response = await axios.put(`${API_BASE_URL}/providers/instances/${instanceId}`, updateData);
+      return response.data;
+    } catch (error) {
+      console.error("Error updating provider instance:", error);
+      throw error;
+    }
+  },
+
+  // Toggle provider instance active/inactive
+  async toggleProviderInstance(instanceId) {
+    try {
+      const response = await axios.put(`${API_BASE_URL}/providers/instances/${instanceId}/toggle`);
+      return response.data;
+    } catch (error) {
+      console.error("Error toggling provider instance:", error);
+      throw error;
+    }
+  },
+
+  // Delete a provider instance
+  async deleteProviderInstance(instanceId) {
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/providers/instances/${instanceId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error deleting provider instance:", error);
+      throw error;
+    }
+  },
+
+  // Test provider connection without saving
+  async testProviderConnection(connectionData) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/providers/instances/test`, connectionData);
+      return response.data;
+    } catch (error) {
+      console.error("Error testing provider connection:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;

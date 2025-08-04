@@ -399,7 +399,6 @@ export default {
     };
 
     const openSettings = () => {
-      console.log("Settings clicked");
       showSettingsDialog.value = true;
     };
 

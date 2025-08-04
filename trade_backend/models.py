@@ -172,3 +172,39 @@ class HistoricalTrade(BaseModel):
     order_id: Optional[str] = None
     commission: Optional[float] = None
     asset_class: Optional[str] = None
+
+# Provider Instance Management Models
+class CreateProviderInstanceRequest(BaseModel):
+    """Request model for creating a new provider instance."""
+    provider_type: str
+    account_type: str
+    display_name: str
+    credentials: Dict[str, str]
+
+class UpdateProviderInstanceRequest(BaseModel):
+    """Request model for updating a provider instance."""
+    display_name: Optional[str] = None
+    credentials: Optional[Dict[str, str]] = None
+
+class ProviderInstanceResponse(BaseModel):
+    """Response model for provider instance data."""
+    instance_id: str
+    active: bool
+    provider_type: str
+    account_type: str
+    display_name: str
+    created_at: int
+    updated_at: int
+    # Note: credentials are not included in response for security
+
+class TestProviderConnectionRequest(BaseModel):
+    """Request model for testing provider connection."""
+    provider_type: str
+    account_type: str
+    credentials: Dict[str, str]
+
+class TestProviderConnectionResponse(BaseModel):
+    """Response model for provider connection test."""
+    success: bool
+    message: str
+    details: Optional[Dict[str, Any]] = None

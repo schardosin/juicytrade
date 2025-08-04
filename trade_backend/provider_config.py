@@ -89,23 +89,52 @@ class ProviderConfigManager:
 
     def update_config(self, new_config: Dict[str, Any]) -> bool:
         validated_config = self._config.copy()
+        
+        # Import here to avoid circular imports
+        from .provider_manager import provider_manager
+        from .provider_types import get_provider_types
+        
+        # Get available provider instances
+        available_instances = provider_manager.get_available_provider_instances()
+        
         for key, value in new_config.items():
             if key in DEFAULT_ROUTING:
-                # Validate provider exists and supports the capability
+                # Check if it's a legacy provider name (for backward compatibility)
                 if value in PROVIDER_CAPABILITIES:
-                    # Check if it's a streaming capability
+                    # Legacy provider validation
                     if key == "streaming_quotes":
                         if "streaming" in PROVIDER_CAPABILITIES[value]["capabilities"] and key in PROVIDER_CAPABILITIES[value]["capabilities"]["streaming"]:
                             validated_config[key] = value
                         else:
                             logger.warning(f"Invalid streaming provider/capability: {key}:{value}")
-                    # Check if it's a REST capability
                     elif "rest" in PROVIDER_CAPABILITIES[value]["capabilities"] and key in PROVIDER_CAPABILITIES[value]["capabilities"]["rest"]:
                         validated_config[key] = value
                     else:
                         logger.warning(f"Invalid REST provider/capability: {key}:{value}")
+                # Check if it's a new provider instance ID
+                elif value in available_instances:
+                    instance_data = available_instances[value]
+                    provider_type = instance_data.get('provider_type')
+                    
+                    # Get provider type capabilities
+                    provider_types = get_provider_types()
+                    if provider_type in provider_types:
+                        capabilities = provider_types[provider_type].get('capabilities', {})
+                        
+                        # Check if provider supports this capability
+                        if key == "streaming_quotes":
+                            if key in capabilities.get('streaming', []):
+                                validated_config[key] = value
+                            else:
+                                logger.warning(f"Provider instance {value} doesn't support streaming capability: {key}")
+                        elif key in capabilities.get('rest', []):
+                            validated_config[key] = value
+                        else:
+                            logger.warning(f"Provider instance {value} doesn't support REST capability: {key}")
+                    else:
+                        logger.warning(f"Unknown provider type for instance {value}: {provider_type}")
                 else:
-                    logger.warning(f"Unknown provider: {value}")
+                    logger.warning(f"Unknown provider or instance: {value}")
             else:
                 logger.warning(f"Invalid config key: {key}")
 
@@ -118,14 +147,44 @@ class ProviderConfigManager:
         self._save_config()
 
     def get_available_providers(self) -> Dict[str, Dict[str, any]]:
-        # This can be enhanced to check provider health
-        return {
-            provider: {
-                "capabilities": caps["capabilities"],
-                "paper": caps["paper"],
-                "display_name": caps["display_name"]
+        # Import here to avoid circular imports
+        from .provider_manager import provider_manager
+        from .provider_types import get_provider_types
+        
+        # Get available provider instances
+        available_instances = provider_manager.get_available_provider_instances()
+        provider_types = get_provider_types()
+        
+        result = {}
+        
+        # Add dynamic provider instances
+        for instance_id, instance_data in available_instances.items():
+            if instance_data.get('active', False):  # Only include active instances
+                provider_type = instance_data.get('provider_type')
+                account_type = instance_data.get('account_type')
+                
+                if provider_type in provider_types:
+                    type_info = provider_types[provider_type]
+                    result[instance_id] = {
+                        "capabilities": type_info.get('capabilities', {}),
+                        "paper": (account_type == "paper"),
+                        "display_name": instance_data.get('display_name', instance_id),
+                        "provider_type": provider_type,
+                        "account_type": account_type,
+                        "instance_id": instance_id
+                    }
+        
+        # Add legacy providers for backward compatibility (only if no instances exist)
+        if not result:
+            result = {
+                provider: {
+                    "capabilities": caps["capabilities"],
+                    "paper": caps["paper"],
+                    "display_name": caps["display_name"]
+                }
+                for provider, caps in PROVIDER_CAPABILITIES.items()
             }
-            for provider, caps in PROVIDER_CAPABILITIES.items()
-        }
+        
+        return result
 
 provider_config_manager = ProviderConfigManager()

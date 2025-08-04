@@ -177,6 +177,17 @@
   border-color: var(--color-primary-hover) !important;
 }
 
+.p-button.p-button-brand {
+  background-color: var(--color-brand) !important;
+  border-color: var(--color-brand) !important;
+  color: var(--text-primary) !important;
+}
+
+.p-button.p-button-brand:hover {
+  background-color: var(--color-brand-hover) !important;
+  border-color: var(--color-brand-hover) !important;
+}
+
 /* === Menu Components === */
 .p-menu {
   background-color: var(--bg-tertiary) !important;
