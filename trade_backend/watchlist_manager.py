@@ -18,7 +18,7 @@ class WatchlistManager:
     
     def __init__(self, config_file: str = "watchlist.json"):
         """Initialize the watchlist manager with JSON file storage."""
-        self.config_file = Path(__file__).parent / config_file
+        self.config_file = Path(__file__).parent.parent / config_file
         self._watchlists = {}
         self._active_watchlist = "default"
         self._version = "1.0"

@@ -109,6 +109,7 @@
           v-for="symbol in activeSymbols" 
           :key="symbol"
           class="symbol-row"
+          @click="handleSymbolClick(symbol)"
         >
           <span class="symbol-name">{{ symbol }}</span>
           
@@ -129,7 +130,7 @@
           
           <button 
             class="remove-btn"
-            @click="handleRemoveSymbol(symbol)"
+            @click.stop="handleRemoveSymbol(symbol)"
             title="Remove symbol"
           >
             ×
@@ -362,6 +363,24 @@ export default {
       return change > 0 ? "positive" : "negative";
     };
 
+    // Handle symbol click - dispatch symbol selection event
+    const handleSymbolClick = (symbol) => {
+      // Create symbol data object similar to what TopBar creates
+      const symbolData = {
+        symbol: symbol,
+        description: `${symbol} Stock`, // Basic description, could be enhanced
+        exchange: "Unknown", // Could be enhanced with real exchange data
+        type: "stock"
+      };
+
+      // Dispatch the same event that TopBar uses for symbol selection
+      window.dispatchEvent(
+        new CustomEvent("symbol-selected", {
+          detail: symbolData,
+        })
+      );
+    };
+
     // Focus dialog inputs when opened
     watch(showCreateDialog, (show) => {
       if (show) {
@@ -411,6 +430,7 @@ export default {
       formatPrice,
       formatChange,
       getChangeClass,
+      handleSymbolClick,
     };
   },
 };
@@ -661,6 +681,7 @@ export default {
   border-bottom: 1px solid var(--border-secondary);
   font-size: var(--font-size-sm);
   transition: var(--transition-fast);
+  cursor: pointer;
 }
 
 .symbol-row:hover {
