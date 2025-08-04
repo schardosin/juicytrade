@@ -645,12 +645,12 @@ export default {
       const analysis = profitLossAnalysis.value;
       const greeksData = greeks.value;
 
-      // ✅ Use the stored broker value if available, otherwise fall back to original logic
+      // ✅ Use the stored broker value if available, otherwise fall back to corrected logic
       const brokerLimitPrice = limitPrice._brokerValue !== undefined 
         ? limitPrice._brokerValue
-        : (analysis.netPremium >= 0
-            ? -Math.abs(limitPrice.value) // Credit: negative
-            : Math.abs(limitPrice.value)); // Debit: positive
+        : (analysis.netPremium <= 0  // FIXED: Credit when netPremium <= 0
+            ? -Math.abs(limitPrice.value) // Credit: negative (we receive money)
+            : Math.abs(limitPrice.value)); // Debit: positive (we pay money)
 
       const orderData = {
         symbol: props.symbol,

@@ -64,18 +64,8 @@ class OrderService {
     } = orderData;
 
     // Use limitPrice if available, otherwise fall back to orderPrice
-    let price = limitPrice !== undefined ? limitPrice : orderPrice;
-
-    // Determine if this is a credit or debit order based on the strategy
-    const isCredit = this.isCreditOrder(orderData);
-
-    // For credit orders, ensure the limit price is negative (we receive money)
-    // For debit orders, ensure the limit price is positive (we pay money)
-    if (isCredit && price > 0) {
-      price = -Math.abs(price);
-    } else if (!isCredit && price < 0) {
-      price = Math.abs(price);
-    }
+    // FIXED: Trust the UI to send correctly signed values - no more sign correction
+    const price = limitPrice !== undefined ? limitPrice : orderPrice;
 
     return {
       legs: this.formatLegs(legs),
@@ -91,38 +81,17 @@ class OrderService {
    * @returns {boolean} True if credit order, false if debit order
    */
   isCreditOrder(orderData) {
-    const { legs, netPremium, limitPrice } = orderData;
+    const { netPremium, limitPrice } = orderData;
 
-    // If we have netPremium, use that to determine credit/debit
-    // Note: In our system, negative netPremium means we receive money (credit)
-    // and positive netPremium means we pay money (debit)
+    // Primary: Use netPremium if available (consistent with UI logic)
+    // Note: netPremium <= 0 means credit (we receive money)
     if (netPremium !== undefined) {
-      return netPremium < 0; // Negative netPremium = credit
+      return netPremium <= 0; // FIXED: Consistent with UI logic
     }
 
-    // Check if limitPrice indicates credit (negative means we receive money)
+    // Secondary: Check limitPrice (negative means we receive money)
     if (limitPrice !== undefined) {
       return limitPrice < 0;
-    }
-
-    // Otherwise, calculate based on legs
-    if (legs && legs.length > 0) {
-      let totalPremium = 0;
-
-      legs.forEach((leg) => {
-        const price = leg.price || 0;
-        const quantity = leg.ratio_qty || leg.quantity || 1;
-
-        if (leg.side === "sell") {
-          // Selling = we receive premium (+)
-          totalPremium += price * quantity;
-        } else {
-          // Buying = we pay premium (-)
-          totalPremium -= price * quantity;
-        }
-      });
-
-      return totalPremium > 0; // Positive total = credit
     }
 
     // Default to debit if we can't determine

@@ -1046,6 +1046,8 @@ class TradierProvider(BaseProvider):
     async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a multi-leg trading order."""
         try:
+            logger.info(f"🔄 Tradier: Placing multi-leg order with data: {order_data}")
+            
             order_url = f"{self.base_url}/v1/accounts/{self.account_id}/orders"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -1054,14 +1056,19 @@ class TradierProvider(BaseProvider):
 
             underlying_symbol = self._parse_option_symbol(order_data["legs"][0]["symbol"])["underlying"]
             
-            order_type = "debit" if order_data["limit_price"] > 0 else "credit"
+            # CRITICAL: Log the limit_price value and credit/debit determination
+            limit_price = order_data["limit_price"]
+            order_type = "debit" if limit_price > 0 else "credit"
+            
+            logger.info(f"💰 Tradier: limit_price={limit_price}, determined order_type={order_type}")
+            logger.info(f"📊 Tradier: Credit spread should have negative limit_price, Debit spread should have positive limit_price")
 
             payload = {
                 "class": "multileg",
                 "symbol": underlying_symbol,
                 "type": order_type,
                 "duration": order_data["time_in_force"],
-                "price": f"{abs(order_data['limit_price']):.2f}",
+                "price": f"{abs(limit_price):.2f}",  # Tradier expects positive price value
             }
 
             for i, leg in enumerate(order_data["legs"]):
@@ -1069,21 +1076,26 @@ class TradierProvider(BaseProvider):
                 payload[f"side[{i}]"] = leg["side"]
                 payload[f"quantity[{i}]"] = str(leg["qty"])
 
+            logger.info(f"📤 Tradier: Sending payload to broker: {payload}")
+
             resp = requests.post(order_url, headers=headers, data=payload)
             resp.raise_for_status()
             order_response = resp.json()
             
+            logger.info(f"📥 Tradier: Broker response: {order_response}")
+            
             order_id = order_response.get("order", {}).get("id")
             if order_id:
+                logger.info(f"✅ Tradier: Order placed successfully with ID: {order_id}")
                 return Order(
                     id=str(order_id),
                     symbol="Multi-leg",
                     asset_class="us_option",
-                    side=order_data["order_type"],
-                    order_type=order_data["order_type"],
-                    qty=order_data["qty"],
+                    side=order_data.get("order_type", order_type),
+                    order_type=order_data.get("order_type", order_type),
+                    qty=order_data.get("qty", 1),
                     filled_qty=0,
-                    limit_price=order_data["limit_price"],
+                    limit_price=limit_price,  # Store original signed value
                     status="submitted",
                     time_in_force=order_data["time_in_force"],
                     submitted_at=datetime.now().isoformat(),
@@ -1093,6 +1105,7 @@ class TradierProvider(BaseProvider):
                 raise Exception(f"Failed to place multi-leg order: {order_response}")
 
         except Exception as e:
+            logger.error(f"❌ Tradier: place_multi_leg_order failed: {e}")
             self._log_error("place_multi_leg_order", e)
             raise
 
