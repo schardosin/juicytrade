@@ -673,6 +673,20 @@ export default {
   text-transform: uppercase;
 }
 
+.table-header .symbol-col {
+  text-align: left;
+}
+
+.table-header .bid-col,
+.table-header .ask-col,
+.table-header .change-col {
+  text-align: right;
+}
+
+.table-header .actions-col {
+  text-align: center;
+}
+
 .symbol-row {
   display: grid;
   grid-template-columns: 1fr 80px 80px 80px 30px;
