@@ -100,9 +100,9 @@
         <!-- Table Header -->
         <div class="table-header">
           <span class="symbol-col">Symbol</span>
-          <span class="bid-col">Bid (Sell)</span>
-          <span class="ask-col">Ask (Buy)</span>
-          <span class="change-col">Net Chg</span>
+          <span class="last-col">Last</span>
+          <span class="change-col">Chg</span>
+          <span class="change-percent-col">Chg%</span>
           <span class="actions-col"></span>
         </div>
 
@@ -115,19 +115,22 @@
         >
           <span class="symbol-name">{{ symbol }}</span>
           
-          <span class="bid-price">
-            {{ formatPrice(getSymbolBid(symbol)) }}
-          </span>
-          
-          <span class="ask-price">
-            {{ formatPrice(getSymbolAsk(symbol)) }}
+          <span class="last-price">
+            {{ formatPrice(getSymbolPrice(symbol)) }}
           </span>
           
           <span 
-            class="net-change"
+            class="change-amount"
             :class="getChangeClass(getSymbolChange(symbol))"
           >
             {{ formatChange(getSymbolChange(symbol)) }}
+          </span>
+          
+          <span 
+            class="change-percent"
+            :class="getChangeClass(getSymbolChangePercent(symbol))"
+          >
+            {{ formatChangePercent(getSymbolChangePercent(symbol)) }}
           </span>
           
           <button 
@@ -334,6 +337,11 @@ export default {
     };
 
     // Price formatting and data methods
+    const getSymbolPrice = (symbol) => {
+      const data = getSymbolData(symbol);
+      return data.value?.price || 0;
+    };
+
     const getSymbolBid = (symbol) => {
       const data = getSymbolData(symbol);
       return data.value?.bid || 0;
@@ -349,6 +357,11 @@ export default {
       return data.value?.change || 0;
     };
 
+    const getSymbolChangePercent = (symbol) => {
+      const data = getSymbolData(symbol);
+      return data.value?.changePercent || 0;
+    };
+
     const formatPrice = (price) => {
       if (!price || price === 0) return "--";
       return price.toFixed(2);
@@ -358,6 +371,12 @@ export default {
       if (!change || change === 0) return "0.00";
       const sign = change > 0 ? "+" : "";
       return `${sign}${change.toFixed(2)}`;
+    };
+
+    const formatChangePercent = (changePercent) => {
+      if (!changePercent || changePercent === 0) return "0.00%";
+      const sign = changePercent > 0 ? "+" : "";
+      return `${sign}${changePercent.toFixed(2)}%`;
     };
 
     const getChangeClass = (change) => {
@@ -426,11 +445,14 @@ export default {
       handleConfirmRename,
       closeCreateDialog,
       closeRenameDialog,
+      getSymbolPrice,
       getSymbolBid,
       getSymbolAsk,
       getSymbolChange,
+      getSymbolChangePercent,
       formatPrice,
       formatChange,
+      formatChangePercent,
       getChangeClass,
       handleSymbolClick,
     };
@@ -707,9 +729,9 @@ export default {
   text-align: left;
 }
 
-.table-header .bid-col,
-.table-header .ask-col,
-.table-header .change-col {
+.table-header .last-col,
+.table-header .change-col,
+.table-header .change-percent-col {
   text-align: right;
 }
 
@@ -737,6 +759,31 @@ export default {
   color: var(--text-primary);
 }
 
+.last-price {
+  text-align: right;
+  font-family: monospace;
+  color: var(--text-primary);
+}
+
+.change-amount, .change-percent {
+  text-align: right;
+  font-family: monospace;
+  font-weight: var(--font-weight-medium);
+}
+
+.change-amount.positive, .change-percent.positive {
+  color: var(--color-success);
+}
+
+.change-amount.negative, .change-percent.negative {
+  color: var(--color-danger);
+}
+
+.change-amount.neutral, .change-percent.neutral {
+  color: var(--text-secondary);
+}
+
+/* Legacy styles for backward compatibility */
 .bid-price, .ask-price {
   text-align: right;
   font-family: monospace;

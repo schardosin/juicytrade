@@ -11,7 +11,7 @@ import notificationService from "../services/notificationService.js";
  */
 export function useWatchlist() {
   // Smart market data integration
-  const { getStockPrice } = useSmartMarketData();
+  const { getStockPrice, getPreviousClose } = useSmartMarketData();
 
   // Reactive state
   const watchlists = ref({});
@@ -40,20 +40,38 @@ export function useWatchlist() {
     return getStockPrice(symbol);
   };
 
-  // Get symbol data with live pricing
+  // Get symbol data with live pricing and calculated change
   const getSymbolData = (symbol) => {
     const priceData = getStockPrice(symbol);
+    const previousCloseData = getPreviousClose(symbol);
     
     return computed(() => {
       const price = priceData.value;
+      const prevClose = previousCloseData.value;
+      
+      // Get current price and previous close
+      const currentPrice = price?.price || 0;
+      const previousClose = prevClose || 0;
+      
+      // Calculate change using the same logic as SymbolHeader
+      let change = 0;
+      let changePercent = 0;
+      
+      if (currentPrice && previousClose && 
+          typeof currentPrice === 'number' && 
+          typeof previousClose === 'number' && 
+          previousClose !== 0) {
+        change = currentPrice - previousClose;
+        changePercent = (change / previousClose) * 100;
+      }
       
       return {
         symbol,
-        price: price?.price || 0,
+        price: currentPrice,
         bid: price?.bid || 0,
         ask: price?.ask || 0,
-        change: 0, // TODO: Calculate change from previous close
-        changePercent: 0, // TODO: Calculate change percentage
+        change: change,
+        changePercent: changePercent,
         timestamp: price?.timestamp || null
       };
     });
