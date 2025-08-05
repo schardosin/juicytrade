@@ -524,7 +524,9 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
     // Handle mixed scenario: apply adjustedNetCredit only to new positions
     if (adjustedNetCredit !== null && newPositions.length > 0) {
       // Calculate the difference between adjusted and original net credit for new positions only
-      const newCreditAdjustment = (adjustedNetCredit - newNetCredit) * 100;
+      // FIXED: Multiply by minimum quantity to account for multiple contracts
+      const minQuantity = Math.min(...optionPositions.map(pos => Math.abs(pos.qty)));
+      const newCreditAdjustment = (adjustedNetCredit - newNetCredit) * 100 * minQuantity;
       totalPayoff += newCreditAdjustment;
       
       // Note: existing positions already use their actual entry prices in the calculation above

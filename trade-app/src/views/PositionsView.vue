@@ -1009,8 +1009,8 @@ export default {
         legCount += 1; // Count legs, not contracts
       });
       
-      // Return the net credit/debit per leg (average price per leg)
-      return legCount > 0 ? totalValue / legCount : 0;
+      // Return the net credit/debit for the strategy (total, not average)
+      return totalValue;
     };
 
     const formatStrategyTrdPrc = (strategy) => {
