@@ -55,29 +55,37 @@
           class="provider-instance"
           :class="{ 'inactive': !instance.active }"
         >
-          <div class="instance-info">
-            <div class="instance-header">
-              <div class="instance-icon">
-                <i :class="getProviderIcon(instance.provider_type)"></i>
-              </div>
-              <div class="instance-details">
-                <h4 class="instance-name">{{ instance.display_name }}</h4>
-                <div class="instance-meta">
-                  <span class="provider-type">{{ getProviderTypeName(instance.provider_type) }}</span>
-                  <span class="separator">•</span>
-                  <span class="account-type" :class="instance.account_type">
-                    {{ instance.account_type.toUpperCase() }}
-                  </span>
-                </div>
-              </div>
+          <!-- Fixed width section for logo and name -->
+          <div class="instance-main-info">
+            <div class="instance-icon">
+              <img 
+                v-if="!getProviderIcon(instance.provider_type)" 
+                :src="`/src/assets/logos/${instance.provider_type}.svg`" 
+                :alt="`${instance.provider_type} logo`"
+                class="provider-logo"
+              />
+              <i v-else :class="getProviderIcon(instance.provider_type)"></i>
             </div>
-            <div class="instance-badges">
-              <span class="status-badge" :class="{ 'active': instance.active, 'inactive': !instance.active }">
-                {{ instance.active ? 'Active' : 'Inactive' }}
-              </span>
+            <div class="instance-details">
+              <h4 class="instance-name">{{ instance.display_name }}</h4>
+              <div class="instance-meta">
+                <span class="provider-type">{{ getProviderTypeName(instance.provider_type) }}</span>
+                <span class="separator">•</span>
+                <span class="account-type" :class="instance.account_type">
+                  {{ instance.account_type.toUpperCase() }}
+                </span>
+              </div>
             </div>
           </div>
+
+          <!-- Status badge column -->
+          <div class="instance-status">
+            <span class="status-badge" :class="{ 'active': instance.active, 'inactive': !instance.active }">
+              {{ instance.active ? 'Active' : 'Inactive' }}
+            </span>
+          </div>
           
+          <!-- Actions column - aligned -->
           <div class="instance-actions">
             <Button
               :icon="instance.active ? 'pi pi-pause' : 'pi pi-play'"
@@ -231,7 +239,13 @@
               @click="selectProviderType(key)"
             >
               <div class="provider-icon">
-                <i :class="getProviderIcon(key)"></i>
+                <img 
+                  v-if="!getProviderIcon(key)" 
+                  :src="`/src/assets/logos/${key}.svg`" 
+                  :alt="`${key} logo`"
+                  class="provider-logo"
+                />
+                <i v-else :class="getProviderIcon(key)"></i>
               </div>
               <div class="provider-info">
                 <h5>{{ providerType.name }}</h5>
@@ -576,10 +590,14 @@ export default {
     };
 
     const getProviderIcon = (providerType) => {
+      // Return null for providers with SVG logos, use fallback icons for others
+      const svgProviders = ['alpaca', 'tradier', 'public'];
+      if (svgProviders.includes(providerType)) {
+        return null; // Will use SVG logo instead
+      }
+      
       const icons = {
-        alpaca: "pi pi-chart-bar",
-        tradier: "pi pi-chart-line",
-        public: "pi pi-building"
+        // Fallback icons for providers without SVG logos
       };
       return icons[providerType] || "pi pi-server";
     };
@@ -1137,9 +1155,10 @@ export default {
 }
 
 .provider-instance {
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr auto auto;
   align-items: center;
-  justify-content: space-between;
+  gap: var(--spacing-lg);
   padding: var(--spacing-lg);
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-secondary);
@@ -1157,22 +1176,22 @@ export default {
   opacity: 0.6;
 }
 
-.instance-info {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-lg);
-  flex: 1;
-}
-
-.instance-header {
+.instance-main-info {
   display: flex;
   align-items: center;
   gap: var(--spacing-md);
+  min-width: 0; /* Allow content to shrink */
+}
+
+.instance-status {
+  display: flex;
+  justify-content: center;
+  min-width: 80px; /* Fixed width for alignment */
 }
 
 .instance-icon {
-  width: 40px;
-  height: 40px;
+  width: 56px;
+  height: 36px;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1184,6 +1203,13 @@ export default {
 
 .instance-icon i {
   font-size: var(--font-size-lg);
+}
+
+.provider-logo {
+  width: 48px;
+  height: 28px;
+  object-fit: contain;
+  filter: brightness(0) saturate(100%) invert(58%) sepia(69%) saturate(2618%) hue-rotate(346deg) brightness(101%) contrast(101%);
 }
 
 .instance-details {
@@ -1463,8 +1489,8 @@ export default {
 }
 
 .provider-type-card.selected {
-  border-color: var(--color-primary);
-  background-color: rgba(var(--color-primary-rgb), 0.05);
+  border-color: var(--color-brand);
+  background-color: rgba(255, 107, 53, 0.05);
 }
 
 .provider-type-card .provider-icon {
@@ -1482,6 +1508,13 @@ export default {
 
 .provider-type-card .provider-icon i {
   font-size: var(--font-size-xl);
+}
+
+.provider-type-card .provider-logo {
+  width: 32px;
+  height: 32px;
+  object-fit: contain;
+  filter: brightness(0) saturate(100%) invert(58%) sepia(69%) saturate(2618%) hue-rotate(346deg) brightness(101%) contrast(101%);
 }
 
 .provider-type-card h5 {
@@ -1544,8 +1577,8 @@ export default {
 }
 
 .account-type-card.selected {
-  border-color: var(--color-primary);
-  background-color: rgba(var(--color-primary-rgb), 0.05);
+  border-color: var(--color-brand);
+  background-color: rgba(255, 107, 53, 0.05);
 }
 
 .account-type-card .account-icon {

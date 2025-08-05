@@ -1,69 +1,71 @@
 <template>
   <div class="watchlist-section">
-    <!-- Header with settings -->
-    <div class="watchlist-header">
-      <h3>Watchlists</h3>
-      <button 
-        class="settings-btn" 
-        @click="showSettings = !showSettings"
-        title="Watchlist Settings"
-      >
-        ⚙️
-      </button>
-    </div>
-
-    <!-- Add Symbol Input -->
-    <div class="add-symbol-row">
-      <input 
-        v-model="newSymbol"
-        @keyup.enter="handleAddSymbol"
-        @input="validateInput"
-        placeholder="Add Symbol: AAPL"
-        class="symbol-input"
-        :disabled="isLoading"
-      />
-      <button 
-        @click="handleAddSymbol" 
-        class="add-btn"
-        :disabled="!canAddSymbol"
-      >
-        Add
-      </button>
-      <select 
-        v-model="selectedWatchlistId" 
-        class="watchlist-select"
-        @change="handleWatchlistChange"
-        :disabled="isLoading"
-      >
-        <option 
-          v-for="option in watchlistOptions" 
-          :key="option.value" 
-          :value="option.value"
+    <!-- Controls Section -->
+    <div class="controls-section">
+      <!-- Watchlist Selector Row -->
+      <div class="selector-row">
+        <select 
+          v-model="selectedWatchlistId" 
+          class="watchlist-selector"
+          @change="handleWatchlistChange"
+          :disabled="isLoading"
         >
-          {{ option.label }}
-        </option>
-      </select>
-    </div>
-
-    <!-- Settings Panel -->
-    <div v-if="showSettings" class="settings-panel">
-      <div class="settings-row">
-        <button @click="showCreateDialog = true" class="create-btn">
-          + New Watchlist
-        </button>
+          <option 
+            v-for="option in watchlistOptions" 
+            :key="option.value" 
+            :value="option.value"
+          >
+            {{ option.label }}
+          </option>
+        </select>
         <button 
-          @click="handleRenameWatchlist" 
-          class="rename-btn"
-          :disabled="!activeWatchlist"
+          class="settings-btn" 
+          @click="showSettings = !showSettings"
+          title="Watchlist Settings"
         >
-          Rename
+          ⚙️
         </button>
+      </div>
+
+      <!-- Settings Panel -->
+      <div v-if="showSettings" class="settings-panel">
+        <div class="settings-row">
+          <button @click="showCreateDialog = true" class="create-btn">
+            + New Watchlist
+          </button>
+          <button 
+            @click="handleRenameWatchlist" 
+            class="rename-btn"
+            :disabled="!activeWatchlist"
+          >
+            Rename
+          </button>
+          <button 
+            @click="handleDeleteWatchlist" 
+            class="delete-btn"
+            :disabled="!activeWatchlist || Object.keys(watchlists).length <= 1"
+          >
+            Delete
+          </button>
+        </div>
+      </div>
+
+      <!-- Add Symbol Row -->
+      <div class="symbol-row">
+        <input 
+          v-model="newSymbol"
+          @keyup.enter="handleAddSymbol"
+          @input="validateInput"
+          placeholder="Add Symbol: AAPL"
+          class="symbol-input"
+          :disabled="isLoading"
+        />
         <button 
-          @click="handleDeleteWatchlist" 
-          class="delete-btn"
-          :disabled="!activeWatchlist || Object.keys(watchlists).length <= 1"
+          @click="handleAddSymbol" 
+          class="add-btn"
+          :disabled="!canAddSymbol"
         >
-          Delete
+          Add
         </button>
       </div>
     </div>
@@ -108,7 +110,7 @@
         <div 
           v-for="symbol in activeSymbols" 
           :key="symbol"
-          class="symbol-row"
+          class="symbol-data-row"
           @click="handleSymbolClick(symbol)"
         >
           <span class="symbol-name">{{ symbol }}</span>
@@ -444,19 +446,37 @@ export default {
   background-color: var(--bg-primary);
 }
 
-.watchlist-header {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  padding: 12px 16px;
+/* Controls Section - Unified styling */
+.controls-section {
+  background-color: var(--bg-secondary);
   border-bottom: 1px solid var(--border-secondary);
 }
 
-.watchlist-header h3 {
-  margin: 0;
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
+.selector-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 16px;
+}
+
+.watchlist-selector {
+  flex: 1;
+  height: 32px;
+  padding: 0 10px;
+  background-color: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-sm);
   color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.watchlist-selector:focus {
+  outline: none;
+  border-color: var(--color-info);
+  background-color: var(--bg-quaternary);
 }
 
 .settings-btn {
@@ -464,9 +484,15 @@ export default {
   border: none;
   color: var(--text-secondary);
   cursor: pointer;
-  padding: 4px;
+  padding: 6px;
   border-radius: var(--radius-sm);
   transition: var(--transition-fast);
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 14px;
 }
 
 .settings-btn:hover {
@@ -474,16 +500,18 @@ export default {
   color: var(--text-primary);
 }
 
-.add-symbol-row {
+.symbol-row {
   display: flex;
+  align-items: center;
   gap: 8px;
   padding: 12px 16px;
-  border-bottom: 1px solid var(--border-secondary);
+  border-top: 1px solid var(--border-primary);
 }
 
 .symbol-input {
   flex: 1;
-  padding: 8px 12px;
+  height: 32px;
+  padding: 0 10px;
   background-color: var(--bg-tertiary);
   border: 1px solid var(--border-secondary);
   border-radius: var(--radius-sm);
@@ -503,19 +531,21 @@ export default {
 }
 
 .add-btn {
-  padding: 8px 16px;
-  background-color: var(--color-primary);
+  height: 32px;
+  padding: 0 12px;
+  background-color: #ff6b35;
   border: none;
   border-radius: var(--radius-sm);
-  color: var(--text-primary);
+  color: white;
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-medium);
   cursor: pointer;
   transition: var(--transition-fast);
+  white-space: nowrap;
 }
 
 .add-btn:hover:not(:disabled) {
-  background-color: var(--color-info);
+  background-color: #e55a2b;
 }
 
 .add-btn:disabled {
@@ -687,7 +717,7 @@ export default {
   text-align: center;
 }
 
-.symbol-row {
+.symbol-data-row {
   display: grid;
   grid-template-columns: 1fr 80px 80px 80px 30px;
   gap: 8px;
@@ -698,7 +728,7 @@ export default {
   cursor: pointer;
 }
 
-.symbol-row:hover {
+.symbol-data-row:hover {
   background-color: var(--bg-tertiary);
 }
 

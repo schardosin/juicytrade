@@ -167,14 +167,14 @@
 }
 
 .p-button:not(.p-button-text) {
-  background-color: var(--color-primary) !important;
-  border-color: var(--color-primary) !important;
+  background-color: var(--color-brand) !important;
+  border-color: var(--color-brand) !important;
   color: var(--text-primary) !important;
 }
 
 .p-button:not(.p-button-text):hover {
-  background-color: var(--color-primary-hover) !important;
-  border-color: var(--color-primary-hover) !important;
+  background-color: var(--color-brand-hover) !important;
+  border-color: var(--color-brand-hover) !important;
 }
 
 .p-button.p-button-brand {
