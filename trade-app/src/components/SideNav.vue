@@ -66,12 +66,6 @@ export default {
         route: "/activity",
       },
       {
-        id: "watchlist",
-        label: "Watchlist",
-        icon: "pi pi-eye",
-        route: "/watchlist",
-      },
-      {
         id: "history",
         label: "History",
         icon: "pi pi-history",

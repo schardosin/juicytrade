@@ -54,26 +54,6 @@
 
       <div
         class="menu-icon"
-        :class="{ active: activeSection === 'options' }"
-        @click="toggleSection('options')"
-        title="Options Chain Helper"
-      >
-        <i class="pi pi-calendar"></i>
-        <span class="icon-label">TTL</span>
-      </div>
-
-      <div
-        class="menu-icon"
-        :class="{ active: activeSection === 'options-helper' }"
-        @click="toggleSection('options-helper')"
-        title="Options Helper"
-      >
-        <i class="pi pi-link"></i>
-        <span class="icon-label">OCH</span>
-      </div>
-
-      <div
-        class="menu-icon"
         :class="{ active: activeSection === 'news' }"
         @click="toggleSection('news')"
         title="News"
