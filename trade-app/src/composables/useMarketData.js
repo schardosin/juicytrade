@@ -103,9 +103,12 @@ export function useMarketData() {
   /**
    * Get historical data (cached for 5 minutes)
    */
-  const getHistoricalData = async (symbol, timeframe, forceRefresh = false) => {
-    const key = `historicalData.${symbol}.${timeframe}`;
-    return await smartMarketDataStore.getData(key, { forceRefresh });
+  const getHistoricalData = async (symbol, timeframe, options = {}) => {
+    // Import API service dynamically to avoid circular dependencies
+    const api = await import('../services/api.js');
+    
+    // Call API directly with all parameters to ensure start_date is passed
+    return await api.default.getHistoricalData(symbol, timeframe, options);
   };
 
   /**
