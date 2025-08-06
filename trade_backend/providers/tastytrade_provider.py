@@ -150,7 +150,7 @@ class DXLinkCandleClient:
             # Create candle symbol format: SYMBOL{=PERIODtype}
             candle_symbol = f"{symbol}{{={timeframe}}}"
             
-            # FEED_SUBSCRIPTION with fromTime for historical data
+            # FEED_SUBSCRIPTION with fromTime for historical data and trading session parameters
             subscription_msg = {
                 "type": "FEED_SUBSCRIPTION",
                 "channel": self.channel_id,
@@ -158,7 +158,9 @@ class DXLinkCandleClient:
                 "add": [{
                     "type": "Candle",
                     "symbol": candle_symbol,
-                    "fromTime": from_time
+                    "fromTime": from_time,
+                    "tho": "true",  # Trading hours only - exclude extended session
+                    "a": "s"        # Align candles to trading session (not midnight)
                 }]
             }
             await self.websocket.send(json.dumps(subscription_msg))
@@ -738,10 +740,32 @@ class TastyTradeProvider(BaseProvider):
             
             # If no data from DXLink, log the issue and return empty
             if not result:
-                logger.error(f"TastyTrade: No historical data received from DXLink for {symbol} {timeframe}")
-            
-            # 6. Sort by time and apply limit
+                logger.warning(f"TastyTrade: No historical data received from DXLink for {symbol} {timeframe}")
+
+            # 6. Sort by time and apply end_date filter if specified
             result.sort(key=lambda x: x['time'])
+            
+            # Apply end_date filter if specified
+            if end_date:
+                try:
+                    # Parse end_date and filter out bars after this date
+                    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                    end_date_str = end_dt.strftime('%Y-%m-%d')
+                    
+                    # Filter bars to only include those on or before end_date
+                    filtered_result = []
+                    for bar in result:
+                        bar_date = bar['time'][:10]  # Extract date part (YYYY-MM-DD)
+                        if bar_date <= end_date_str:
+                            filtered_result.append(bar)
+                    
+                    result = filtered_result
+                    logger.info(f"TastyTrade: Applied end_date filter {end_date}, {len(result)} bars remaining")
+                    
+                except Exception as e:
+                    logger.error(f"Error applying end_date filter {end_date}: {e}")
+            
+            # Apply limit after filtering
             if limit and len(result) > limit:
                 result = result[-limit:]  # Get most recent bars
             
@@ -845,14 +869,25 @@ class TastyTradeProvider(BaseProvider):
                 logger.warning("Missing timestamp in candle data")
                 return None
             
-            # Extract OHLCV data
+            # Extract OHLCV data with proper NaN handling for volume
+            volume_raw = candle_data.get('volume', 0)
+            
+            # Handle NaN volume (common for index symbols like SPX)
+            if volume_raw == 'NaN' or volume_raw is None:
+                volume = 0
+            else:
+                try:
+                    volume = int(float(volume_raw))
+                except (ValueError, TypeError):
+                    volume = 0
+            
             return {
                 'time': time_str,
                 'open': float(candle_data.get('open', 0)),
                 'high': float(candle_data.get('high', 0)),
                 'low': float(candle_data.get('low', 0)),
                 'close': float(candle_data.get('close', 0)),
-                'volume': int(candle_data.get('volume', 0))
+                'volume': volume
             }
             
         except Exception as e:
