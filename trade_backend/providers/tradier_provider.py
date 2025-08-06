@@ -1472,6 +1472,7 @@ class TradierProvider(BaseProvider):
         status_mapping = {
             "pending": "pending",  # Frontend "pending" maps to Tradier "pending"
             "open": "open",
+            "pending": "open",
             "filled": "filled",
             "canceled": "canceled",
             "cancelled": "canceled",  # Handle both spellings

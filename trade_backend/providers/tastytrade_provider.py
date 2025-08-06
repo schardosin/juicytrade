@@ -4,6 +4,7 @@ import json
 import logging
 import time
 import httpx
+import websockets
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime, timedelta
 
@@ -15,6 +16,294 @@ from ..models import (
 from ..config import settings
 
 logger = logging.getLogger(__name__)
+
+class DXLinkCandleClient:
+    """Dedicated client for DXLink Candle Events to fetch historical data."""
+    
+    def __init__(self, dxlink_url: str, quote_token: str):
+        self.dxlink_url = dxlink_url
+        self.quote_token = quote_token
+        self.websocket = None
+        self.channel_id = 1  # Use channel 1 for candle data
+        
+    async def get_candles(self, symbol: str, timeframe: str, from_time: int, limit: int = 500) -> List[Dict]:
+        """Get historical candles via DXLink streaming."""
+        try:
+            logger.info(f"DXLink: Getting candles for {symbol} {timeframe} from {from_time}")
+            
+            # Connect to DXLink WebSocket
+            self.websocket = await websockets.connect(
+                self.dxlink_url,
+                ping_interval=30,
+                ping_timeout=10,
+                close_timeout=5
+            )
+            
+            # Execute DXLink setup sequence
+            if not await self._dxlink_setup_sequence():
+                logger.error("DXLink setup sequence failed")
+                return []
+            
+            # Subscribe and collect candles
+            candles = await self._subscribe_and_collect_candles(symbol, timeframe, from_time, limit)
+            
+            logger.info(f"DXLink: Collected {len(candles)} candles for {symbol}")
+            return candles
+            
+        except Exception as e:
+            logger.error(f"DXLink candle collection error: {e}")
+            return []
+        finally:
+            await self._disconnect()
+    
+    async def _dxlink_setup_sequence(self) -> bool:
+        """Execute the full DXLink setup sequence."""
+        try:
+            # 1. SETUP
+            setup_msg = {
+                "type": "SETUP",
+                "channel": 0,
+                "version": "0.1-DXF-JS/0.3.0",
+                "keepaliveTimeout": 60,
+                "acceptKeepaliveTimeout": 60
+            }
+            await self.websocket.send(json.dumps(setup_msg))
+            
+            # Wait for SETUP response
+            response = await asyncio.wait_for(self.websocket.recv(), timeout=10)
+            setup_response = json.loads(response)
+            if setup_response.get("type") != "SETUP":
+                logger.error(f"Unexpected SETUP response: {setup_response}")
+                return False
+            
+            # 2. Wait for AUTH_STATE: UNAUTHORIZED
+            auth_state = await asyncio.wait_for(self.websocket.recv(), timeout=10)
+            auth_response = json.loads(auth_state)
+            if auth_response.get("type") != "AUTH_STATE" or auth_response.get("state") != "UNAUTHORIZED":
+                logger.error(f"Unexpected AUTH_STATE response: {auth_response}")
+                return False
+            
+            # 3. AUTHORIZE
+            auth_msg = {
+                "type": "AUTH",
+                "channel": 0,
+                "token": self.quote_token
+            }
+            await self.websocket.send(json.dumps(auth_msg))
+            
+            # Wait for AUTH_STATE: AUTHORIZED
+            auth_success = await asyncio.wait_for(self.websocket.recv(), timeout=10)
+            auth_success_response = json.loads(auth_success)
+            if (auth_success_response.get("type") != "AUTH_STATE" or 
+                auth_success_response.get("state") != "AUTHORIZED"):
+                logger.error(f"Authorization failed: {auth_success_response}")
+                return False
+            
+            # 4. CHANNEL_REQUEST
+            channel_msg = {
+                "type": "CHANNEL_REQUEST",
+                "channel": self.channel_id,
+                "service": "FEED",
+                "parameters": {"contract": "AUTO"}
+            }
+            await self.websocket.send(json.dumps(channel_msg))
+            
+            # Wait for CHANNEL_OPENED
+            channel_response = await asyncio.wait_for(self.websocket.recv(), timeout=10)
+            channel_opened = json.loads(channel_response)
+            if channel_opened.get("type") != "CHANNEL_OPENED":
+                logger.error(f"Channel open failed: {channel_opened}")
+                return False
+            
+            # 5. FEED_SETUP for Candle events
+            feed_setup_msg = {
+                "type": "FEED_SETUP",
+                "channel": self.channel_id,
+                "acceptAggregationPeriod": 0.1,
+                "acceptDataFormat": "COMPACT",
+                "acceptEventFields": {
+                    "Candle": ["eventType", "eventSymbol", "time", "open", "high", "low", "close", "volume"]
+                }
+            }
+            await self.websocket.send(json.dumps(feed_setup_msg))
+            
+            # Wait for FEED_CONFIG
+            feed_response = await asyncio.wait_for(self.websocket.recv(), timeout=10)
+            feed_config = json.loads(feed_response)
+            if feed_config.get("type") != "FEED_CONFIG":
+                logger.error(f"Feed setup failed: {feed_config}")
+                return False
+            
+            logger.info("DXLink setup sequence completed successfully")
+            return True
+            
+        except asyncio.TimeoutError:
+            logger.error("DXLink setup sequence timeout")
+            return False
+        except Exception as e:
+            logger.error(f"DXLink setup sequence error: {e}")
+            return False
+    
+    async def _subscribe_and_collect_candles(self, symbol: str, timeframe: str, from_time: int, limit: int) -> List[Dict]:
+        """Subscribe to candle events and collect historical data with optimized performance."""
+        try:
+            # Create candle symbol format: SYMBOL{=PERIODtype}
+            candle_symbol = f"{symbol}{{={timeframe}}}"
+            
+            # FEED_SUBSCRIPTION with fromTime for historical data
+            subscription_msg = {
+                "type": "FEED_SUBSCRIPTION",
+                "channel": self.channel_id,
+                "reset": True,
+                "add": [{
+                    "type": "Candle",
+                    "symbol": candle_symbol,
+                    "fromTime": from_time
+                }]
+            }
+            await self.websocket.send(json.dumps(subscription_msg))
+            
+            logger.info(f"DXLink: Subscribed to {candle_symbol} from timestamp {from_time}")
+            
+            # Optimized data collection with adaptive timeout strategy and deduplication
+            candles_dict = {}  # Use dict to deduplicate by timestamp
+            consecutive_empty_messages = 0
+            max_empty_messages = 2  # Very aggressive - stop after 2 empty messages
+            start_time = time.time()
+            last_data_time = time.time()
+            initial_burst_complete = False
+            
+            # Track data flow patterns to detect completion
+            no_new_data_iterations = 0
+            max_no_data_iterations = 2  # Very aggressive - stop after 2 iterations without new data
+            
+            while len(candles_dict) < limit and no_new_data_iterations < max_no_data_iterations:
+                try:
+                    # Short timeout - we want to detect completion quickly
+                    timeout = 1.0
+                    message = await asyncio.wait_for(self.websocket.recv(), timeout=timeout)
+                    data = json.loads(message)
+                    
+                    if data.get("type") == "FEED_DATA":
+                        feed_data = data.get("data", [])
+                        
+                        # Process candle events
+                        new_candles = self._process_feed_data(feed_data)
+                        if new_candles:
+                            # Deduplicate by timestamp - keep the most recent version of each candle
+                            candles_before = len(candles_dict)
+                            for candle in new_candles:
+                                timestamp = candle.get('time')
+                                if timestamp:
+                                    # Always keep the latest version (DXLink sends updates for current candle)
+                                    candles_dict[timestamp] = candle
+                            
+                            # Check if we actually got new unique candles
+                            candles_after = len(candles_dict)
+                            if candles_after > candles_before:
+                                # We got new unique data, reset counters
+                                no_new_data_iterations = 0
+                                consecutive_empty_messages = 0
+                                last_data_time = time.time()
+                                
+                                # Detect initial burst completion (when we get < 10 candles at once)
+                                if not initial_burst_complete and len(new_candles) < 10:
+                                    initial_burst_complete = True
+                                    logger.info(f"DXLink: Initial burst complete, got {candles_after} unique candles")
+                                
+                                # Log progress
+                                elapsed = time.time() - start_time
+                                if candles_after % 50 == 0 or elapsed > 2:
+                                    logger.info(f"DXLink: Received {len(new_candles)} candles, total unique: {candles_after} (elapsed: {elapsed:.1f}s)")
+                                    start_time = time.time()  # Reset timer
+                            else:
+                                # Got candles but they were duplicates - increment counter
+                                no_new_data_iterations += 1
+                                logger.debug(f"DXLink: Got {len(new_candles)} duplicate candles, no new unique data (iteration {no_new_data_iterations})")
+                        else:
+                            # No candles in this message
+                            no_new_data_iterations += 1
+                            consecutive_empty_messages += 1
+                    else:
+                        # Handle other message types (keepalive, etc.)
+                        logger.debug(f"DXLink: Received {data.get('type')} message")
+                        no_new_data_iterations += 1
+                        consecutive_empty_messages += 1
+                        
+                except asyncio.TimeoutError:
+                    no_new_data_iterations += 1
+                    consecutive_empty_messages += 1
+                    time_since_last_data = time.time() - last_data_time
+                    
+                    logger.debug(f"DXLink: Timeout waiting for data (no_new_data: {no_new_data_iterations}, time since last: {time_since_last_data:.1f}s)")
+                    
+                    # Very aggressive completion detection
+                    if candles_dict and no_new_data_iterations >= 1:
+                        logger.info(f"DXLink: No new data for {no_new_data_iterations} iterations with {len(candles_dict)} unique candles, assuming complete")
+                        break
+                    continue
+            
+            # Convert dict back to list and sort by timestamp
+            candles = list(candles_dict.values())
+            candles.sort(key=lambda x: x.get('time', 0))
+            
+            # Don't remove the last candle automatically - let the API consumer decide
+            # The deduplication already handles live updates properly
+            
+            # Apply limit
+            if limit and len(candles) > limit:
+                candles = candles[-limit:]
+            
+            total_elapsed = time.time() - (start_time if 'start_time' in locals() else time.time())
+            logger.info(f"DXLink: Final candle count: {len(candles)} (total time: {total_elapsed:.1f}s)")
+            return candles
+            
+        except Exception as e:
+            logger.error(f"DXLink candle collection error: {e}")
+            return []
+    
+    def _process_feed_data(self, feed_data: List) -> List[Dict]:
+        """Process FEED_DATA messages and extract candle events."""
+        candles = []
+        
+        try:
+            # DXLink COMPACT format: flat array with candle data
+            # Format: ['Candle', 'SYMBOL{=timeframe}', timestamp, open, high, low, close, volume, 'Candle', ...]
+            for item in feed_data:
+                if isinstance(item, list):
+                    # Parse the flat array - each candle is 8 consecutive elements
+                    i = 0
+                    while i + 7 < len(item):
+                        if item[i] == "Candle":
+                            candle = {
+                                "eventType": item[i],        # "Candle"
+                                "eventSymbol": item[i + 1],  # "MSFT{=d}"
+                                "time": item[i + 2],         # timestamp in ms
+                                "open": item[i + 3],         # open price
+                                "high": item[i + 4],         # high price
+                                "low": item[i + 5],          # low price
+                                "close": item[i + 6],        # close price
+                                "volume": item[i + 7]        # volume
+                            }
+                            candles.append(candle)
+                            i += 8  # Move to next candle (8 fields per candle)
+                        else:
+                            i += 1  # Skip non-candle data
+        except Exception as e:
+            logger.error(f"Error processing feed data: {e}")
+            logger.error(f"Feed data structure: {feed_data}")
+        
+        return candles
+    
+    async def _disconnect(self):
+        """Clean disconnect from DXLink."""
+        try:
+            if self.websocket:
+                await self.websocket.close()
+                self.websocket = None
+                logger.info("DXLink WebSocket disconnected")
+        except Exception as e:
+            logger.error(f"Error disconnecting DXLink: {e}")
 
 class SymbolLookupCache:
     """Smart caching for symbol lookup with prefix filtering."""
@@ -399,8 +688,176 @@ class TastyTradeProvider(BaseProvider):
     async def get_historical_bars(self, symbol: str, timeframe: str, 
                                 start_date: str = None, end_date: str = None, 
                                 limit: int = 500) -> List[Dict[str, Any]]:
-        """Get historical OHLCV bars for charting."""
-        raise NotImplementedError("TastyTrade get_historical_bars not yet implemented")
+        """
+        Get historical OHLCV bars for charting using DXLink Candle Events.
+        
+        This method:
+        1. Maps timeframe to DXLink candle format
+        2. Calculates appropriate fromTime based on parameters
+        3. Establishes temporary DXLink connection
+        4. Collects candle data via streaming
+        5. Transforms to standard OHLCV format
+        6. Cleans up connection
+        """
+        try:
+            logger.info(f"TastyTrade: Getting historical bars for {symbol} {timeframe}")
+            
+            # 1. Validate inputs and map timeframe
+            dxlink_timeframe = self._map_timeframe_to_dxlink(timeframe)
+            if not dxlink_timeframe:
+                logger.error(f"Unsupported timeframe: {timeframe}")
+                return []
+            
+            logger.info(f"TastyTrade: Mapped {timeframe} -> {dxlink_timeframe}")
+            
+            # 2. Calculate fromTime for historical data
+            from_time = self._calculate_from_time(start_date, timeframe)
+            logger.info(f"TastyTrade: Using fromTime {from_time}")
+            
+            # 3. Ensure we have valid quote token
+            if not await self._get_quote_token():
+                logger.error("Failed to get quote token for historical data")
+                return []
+            
+            logger.info(f"TastyTrade: Got quote token, DXLink URL: {self._dxlink_url}")
+            
+            # 4. Create DXLink candle client and collect data
+            candle_client = DXLinkCandleClient(self._dxlink_url, self._quote_token)
+            candles = await candle_client.get_candles(symbol, dxlink_timeframe, from_time, limit)
+            
+            logger.info(f"TastyTrade: DXLink returned {len(candles)} raw candles")
+            
+            # 5. Transform to standard format
+            result = []
+            for candle in candles:
+                transformed = self._transform_dxlink_candle(candle, timeframe)
+                if transformed:
+                    result.append(transformed)
+                else:
+                    logger.warning(f"Failed to transform candle: {candle}")
+            
+            # If no data from DXLink, log the issue and return empty
+            if not result:
+                logger.error(f"TastyTrade: No historical data received from DXLink for {symbol} {timeframe}")
+            
+            # 6. Sort by time and apply limit
+            result.sort(key=lambda x: x['time'])
+            if limit and len(result) > limit:
+                result = result[-limit:]  # Get most recent bars
+            
+            logger.info(f"TastyTrade: Retrieved {len(result)} historical bars for {symbol} ({timeframe})")
+            return result
+            
+        except Exception as e:
+            logger.error(f"TastyTrade get_historical_bars error for {symbol} {timeframe}: {e}")
+            import traceback
+            logger.error(f"TastyTrade get_historical_bars traceback: {traceback.format_exc()}")
+            return []
+    
+    def _map_timeframe_to_dxlink(self, timeframe: str) -> Optional[str]:
+        """Convert our timeframe to DXLink candle format."""
+        timeframe_map = {
+            '1m': '1m',
+            '5m': '5m', 
+            '15m': '15m',
+            '30m': '30m',
+            '1h': '1h',
+            '4h': '4h',
+            'D': 'd',      # Daily should be 'd', not '1d'
+            'W': 'w',      # Weekly should be 'w', not '1w'  
+            'M': 'mo'      # Monthly should be 'mo', not '1M'
+        }
+        return timeframe_map.get(timeframe)
+    
+    def _calculate_from_time(self, start_date: str, timeframe: str) -> int:
+        """Calculate Unix timestamp for DXLink fromTime parameter."""
+        try:
+            if start_date:
+                # Parse provided start date and convert to UTC midnight for DXLink
+                start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                
+                # For DXLink, we need to send UTC midnight timestamp
+                # Since DXLink sends data with UTC midnight timestamps, we should match that
+                from datetime import timezone
+                start_dt_utc = start_dt.replace(tzinfo=timezone.utc)
+                
+                logger.info(f"TastyTrade: Start date {start_date} -> UTC: {start_dt_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+            else:
+                # Calculate default lookback based on timeframe (same logic as Tradier/Alpaca)
+                now = datetime.now()
+                if timeframe in ['1m', '5m', '15m', '30m']:
+                    # Intraday: last 5 days (same as Alpaca)
+                    start_dt = now - timedelta(days=5)
+                elif timeframe in ['1h', '4h']:
+                    # Hourly: last 30 days
+                    start_dt = now - timedelta(days=30)
+                elif timeframe == 'D':
+                    # Daily: last 365 days (same as Alpaca)
+                    start_dt = now - timedelta(days=365)
+                elif timeframe == 'W':
+                    # Weekly: last 2 years
+                    start_dt = now - timedelta(days=730)
+                elif timeframe == 'M':
+                    # Monthly: last 5 years
+                    start_dt = now - timedelta(days=1825)
+                else:
+                    # Default: last 30 days
+                    start_dt = now - timedelta(days=30)
+                
+                # Convert to UTC for consistency
+                from datetime import timezone
+                start_dt_utc = start_dt.replace(tzinfo=timezone.utc)
+            
+            # Convert to Unix timestamp (milliseconds since epoch for DXLink)
+            from_time_ms = int(start_dt_utc.timestamp() * 1000)
+            logger.info(f"TastyTrade: Using fromTime {from_time_ms} ({start_dt_utc.strftime('%Y-%m-%d %H:%M:%S %Z')})")
+            return from_time_ms
+            
+        except Exception as e:
+            logger.error(f"Error calculating fromTime: {e}")
+            # Fallback: last 5 days in milliseconds (same as intraday default)
+            fallback_dt = datetime.now() - timedelta(days=5)
+            from datetime import timezone
+            fallback_dt_utc = fallback_dt.replace(tzinfo=timezone.utc)
+            return int(fallback_dt_utc.timestamp() * 1000)
+    
+    def _transform_dxlink_candle(self, candle_data: Dict, timeframe: str) -> Optional[Dict[str, Any]]:
+        """Transform DXLink candle event to standard OHLCV format."""
+        try:
+            # Extract timestamp and convert to appropriate format
+            timestamp = candle_data.get('time')
+            if timestamp:
+                # DXLink time is in milliseconds UTC, convert to datetime in UTC
+                from datetime import timezone
+                dt_utc = datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
+                
+                # Format time based on timeframe
+                if timeframe in ['1m', '5m', '15m', '30m', '1h', '4h']:
+                    # Intraday - convert to Eastern Time and include time
+                    from zoneinfo import ZoneInfo
+                    dt_et = dt_utc.astimezone(ZoneInfo("America/New_York"))
+                    time_str = dt_et.strftime('%Y-%m-%d %H:%M')
+                else:
+                    # Daily+ - DXLink sends midnight UTC timestamps, use UTC date directly
+                    # This avoids timezone conversion issues where midnight UTC becomes previous day in ET
+                    time_str = dt_utc.strftime('%Y-%m-%d')
+            else:
+                logger.warning("Missing timestamp in candle data")
+                return None
+            
+            # Extract OHLCV data
+            return {
+                'time': time_str,
+                'open': float(candle_data.get('open', 0)),
+                'high': float(candle_data.get('high', 0)),
+                'low': float(candle_data.get('low', 0)),
+                'close': float(candle_data.get('close', 0)),
+                'volume': int(candle_data.get('volume', 0))
+            }
+            
+        except Exception as e:
+            logger.error(f"Error transforming DXLink candle: {e}")
+            return None
     
     # === Account & Portfolio Methods ===
     
