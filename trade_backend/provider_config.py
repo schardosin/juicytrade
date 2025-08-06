@@ -58,6 +58,22 @@ PROVIDER_CAPABILITIES = {
         },
         "paper": True,
         "display_name": "Tradier"
+    },
+    "tastytrade": {
+        "capabilities": {
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "streaming": ["streaming_quotes", "trade_account"]
+        },
+        "paper": False,
+        "display_name": "TastyTrade"
+    },
+    "tastytrade_paper": {
+        "capabilities": {
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "streaming": ["streaming_quotes", "trade_account"]
+        },
+        "paper": True,
+        "display_name": "TastyTrade"
     }
 }
 

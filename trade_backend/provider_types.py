@@ -61,6 +61,27 @@ PROVIDER_TYPES: Dict[str, Dict[str, Any]] = {
                 {"name": "account_id", "label": "Account ID", "type": "text", "required": True, "placeholder": "Your Public.com Account ID"}
             ]
         }
+    },
+    "tastytrade": {
+        "name": "TastyTrade",
+        "description": "TastyTrade Brokerage API",
+        "supports_account_types": ["live", "paper"],
+        "capabilities": {
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "streaming": ["streaming_quotes", "trade_account"]
+        },
+        "credential_fields": {
+            "live": [
+                {"name": "username", "label": "Username", "type": "text", "required": True, "placeholder": "Your TastyTrade Username"},
+                {"name": "password", "label": "Password", "type": "password", "required": True, "placeholder": "Your TastyTrade Password"},
+                {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://api.tastytrade.com"}
+            ],
+            "paper": [
+                {"name": "username", "label": "Username", "type": "text", "required": True, "placeholder": "Your TastyTrade Sandbox Username"},
+                {"name": "password", "label": "Password", "type": "password", "required": True, "placeholder": "Your TastyTrade Sandbox Password"},
+                {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://api.cert.tastyworks.com"}
+            ]
+        }
     }
 }
 

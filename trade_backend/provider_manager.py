@@ -5,6 +5,7 @@ from .providers.base_provider import BaseProvider
 from .providers.alpaca_provider import AlpacaProvider
 from .providers.public_provider import PublicProvider
 from .providers.tradier_provider import TradierProvider
+from .providers.tastytrade_provider import TastyTradeProvider
 from .provider_config import provider_config_manager
 from .provider_credential_store import ProviderCredentialStore
 from .provider_types import get_provider_types, validate_credentials, apply_defaults
@@ -81,6 +82,12 @@ class ProviderManager:
                 return PublicProvider(
                     api_secret=credentials.get('api_secret'),
                     account_id=credentials.get('account_id')
+                )
+            elif provider_type == "tastytrade":
+                return TastyTradeProvider(
+                    username=credentials.get('username'),
+                    password=credentials.get('password'),
+                    base_url=credentials.get('base_url')
                 )
             else:
                 logger.error(f"❌ Unknown provider type: {provider_type}")

@@ -591,7 +591,7 @@ export default {
 
     const getProviderIcon = (providerType) => {
       // Return null for providers with SVG logos, use fallback icons for others
-      const svgProviders = ['alpaca', 'tradier', 'public'];
+      const svgProviders = ['alpaca', 'tradier', 'public', 'tastytrade'];
       if (svgProviders.includes(providerType)) {
         return null; // Will use SVG logo instead
       }
