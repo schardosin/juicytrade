@@ -714,6 +714,7 @@ class TastyTradeProvider(BaseProvider):
             
             # 2. Calculate fromTime for historical data
             from_time = self._calculate_from_time(start_date, timeframe)
+            
             logger.info(f"TastyTrade: Using fromTime {from_time}")
             
             # 3. Ensure we have valid quote token
@@ -724,17 +725,40 @@ class TastyTradeProvider(BaseProvider):
             logger.info(f"TastyTrade: Got quote token, DXLink URL: {self._dxlink_url}")
             
             # 4. Create DXLink candle client and collect data
+            # If end_date is specified, we need to collect more data to ensure we have enough
+            # bars within the date range after filtering
+            collection_limit = limit
+            if end_date:
+                # Increase collection limit to account for potential filtering
+                # Use a reasonable multiplier to ensure we get enough data
+                collection_limit = max(limit * 3, 100)  # At least 3x the requested limit or 100
+                logger.info(f"TastyTrade: Increased collection limit to {collection_limit} due to end_date filter")
+            
             candle_client = DXLinkCandleClient(self._dxlink_url, self._quote_token)
-            candles = await candle_client.get_candles(symbol, dxlink_timeframe, from_time, limit)
+            candles = await candle_client.get_candles(symbol, dxlink_timeframe, from_time, collection_limit)
             
             logger.info(f"TastyTrade: DXLink returned {len(candles)} raw candles")
             
-            # 5. Transform to standard format
+            # 5. Transform to standard format and filter out null data
             result = []
             for candle in candles:
                 transformed = self._transform_dxlink_candle(candle, timeframe)
                 if transformed:
-                    result.append(transformed)
+                    # Filter out bars with null or NaN OHLC data
+                    import math
+                    open_val = transformed.get('open')
+                    high_val = transformed.get('high')
+                    low_val = transformed.get('low')
+                    close_val = transformed.get('close')
+                    
+                    # Check if all OHLC values are valid (not None and not NaN)
+                    if (open_val is not None and not math.isnan(open_val) and
+                        high_val is not None and not math.isnan(high_val) and
+                        low_val is not None and not math.isnan(low_val) and
+                        close_val is not None and not math.isnan(close_val)):
+                        result.append(transformed)
+                    else:
+                        logger.debug(f"TastyTrade: Filtered out bar with null/NaN OHLC data: {transformed.get('time')}")
                 else:
                     logger.warning(f"Failed to transform candle: {candle}")
             
@@ -833,8 +857,11 @@ class TastyTradeProvider(BaseProvider):
                 start_dt_utc = start_dt.replace(tzinfo=timezone.utc)
             
             # Convert to Unix timestamp (milliseconds since epoch for DXLink)
-            from_time_ms = int(start_dt_utc.timestamp() * 1000)
-            logger.info(f"TastyTrade: Using fromTime {from_time_ms} ({start_dt_utc.strftime('%Y-%m-%d %H:%M:%S %Z')})")
+            # Subtract a small buffer to avoid edge cases with incomplete first candles
+            buffer_hours = 24 if timeframe == 'D' else 1  # 1 day buffer for daily, 1 hour for others
+            start_dt_utc_buffered = start_dt_utc - timedelta(hours=buffer_hours)
+            from_time_ms = int(start_dt_utc_buffered.timestamp() * 1000)
+            logger.info(f"TastyTrade: Using fromTime {from_time_ms} ({start_dt_utc_buffered.strftime('%Y-%m-%d %H:%M:%S %Z')}) with {buffer_hours}h buffer")
             return from_time_ms
             
         except Exception as e:
@@ -881,12 +908,28 @@ class TastyTradeProvider(BaseProvider):
                 except (ValueError, TypeError):
                     volume = 0
             
+            # Extract OHLC data and handle null values properly
+            open_val = candle_data.get('open')
+            high_val = candle_data.get('high')
+            low_val = candle_data.get('low')
+            close_val = candle_data.get('close')
+            
+            # Convert to float if not null, otherwise keep as None
+            try:
+                open_price = float(open_val) if open_val is not None else None
+                high_price = float(high_val) if high_val is not None else None
+                low_price = float(low_val) if low_val is not None else None
+                close_price = float(close_val) if close_val is not None else None
+            except (ValueError, TypeError):
+                # If conversion fails, treat as null data
+                open_price = high_price = low_price = close_price = None
+            
             return {
                 'time': time_str,
-                'open': float(candle_data.get('open', 0)),
-                'high': float(candle_data.get('high', 0)),
-                'low': float(candle_data.get('low', 0)),
-                'close': float(candle_data.get('close', 0)),
+                'open': open_price,
+                'high': high_price,
+                'low': low_price,
+                'close': close_price,
                 'volume': volume
             }
             
