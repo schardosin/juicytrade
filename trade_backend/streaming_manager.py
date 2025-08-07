@@ -6,6 +6,7 @@ from typing import List, Dict, Optional, Set
 from .provider_config import provider_config_manager
 from .provider_manager import provider_manager
 from .models import MarketData
+from .utils.symbol_converter import SymbolConverter
 
 logger = logging.getLogger(__name__)
 
@@ -386,20 +387,28 @@ class StreamingManager:
                     logger.warning(f"⚠️ Provider {quotes_provider_name} not connected, attempting recovery")
                     await self._recover_provider(provider, quotes_provider_name)
                 
+                # Convert symbols to provider format before subscribing
+                provider_symbols = SymbolConverter.batch_convert_to_provider_format(symbols, quotes_provider_name)
+                
+                # Log conversion for debugging
+                if provider_symbols != symbols:
+                    logger.info(f"🔄 Converted {len(symbols)} symbols for {quotes_provider_name} provider")
+                    logger.debug(f"Symbol conversion examples: {list(zip(symbols[:3], provider_symbols[:3]))}")
+                
                 # Subscribe with timeout
                 success = await asyncio.wait_for(
-                    provider.subscribe_to_symbols(symbols),
+                    provider.subscribe_to_symbols(provider_symbols),
                     timeout=15.0
                 )
                 
                 if success:
-                    # Update internal tracking
+                    # Update internal tracking (store original symbols, not provider-specific ones)
                     if "quotes" not in self._subscriptions:
                         self._subscriptions["quotes"] = set()
                     self._subscriptions["quotes"].update(symbols)
-                    logger.info(f"✅ Successfully subscribed to {len(symbols)} symbols")
+                    logger.info(f"✅ Successfully subscribed to {len(symbols)} symbols on {quotes_provider_name}")
                 else:
-                    logger.warning(f"⚠️ Subscription returned False for {len(symbols)} symbols")
+                    logger.warning(f"⚠️ Subscription returned False for {len(symbols)} symbols on {quotes_provider_name}")
                 
         except asyncio.TimeoutError:
             logger.error(f"⚠️ Subscription timeout for {len(symbols)} symbols")

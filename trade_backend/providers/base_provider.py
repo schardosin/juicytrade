@@ -8,6 +8,7 @@ from ..models import (
     StockQuote, OptionContract, Position, Order, 
     ExpirationDate, MarketData, ApiResponse, SymbolSearchResult, Account
 )
+from ..utils.symbol_converter import SymbolConverter
 
 logger = logging.getLogger(__name__)
 
@@ -346,3 +347,65 @@ class BaseProvider(ABC):
     def _log_info(self, message: str):
         """Helper method for consistent info logging."""
         logger.info(f"{self.name} provider: {message}")
+    
+    # === Symbol Conversion Methods ===
+    
+    def convert_symbols_to_provider_format(self, symbols: List[str]) -> List[str]:
+        """
+        Convert symbols to this provider's expected format.
+        
+        Args:
+            symbols: List of symbols in any supported format
+            
+        Returns:
+            List of symbols in this provider's format
+        """
+        provider_type = self._get_provider_type()
+        return SymbolConverter.batch_convert_to_provider_format(symbols, provider_type)
+    
+    def convert_symbols_to_standard_format(self, symbols: List[str]) -> List[str]:
+        """
+        Convert symbols from this provider's format to standard OCC format.
+        
+        Args:
+            symbols: List of symbols in this provider's format
+            
+        Returns:
+            List of symbols in standard OCC format
+        """
+        return SymbolConverter.batch_convert_to_standard_occ(symbols)
+    
+    def convert_symbol_to_provider_format(self, symbol: str) -> str:
+        """
+        Convert a single symbol to this provider's expected format.
+        
+        Args:
+            symbol: Symbol in any supported format
+            
+        Returns:
+            Symbol in this provider's format
+        """
+        provider_type = self._get_provider_type()
+        return SymbolConverter.to_provider_format(symbol, provider_type)
+    
+    def convert_symbol_to_standard_format(self, symbol: str) -> str:
+        """
+        Convert a single symbol from this provider's format to standard OCC format.
+        
+        Args:
+            symbol: Symbol in this provider's format
+            
+        Returns:
+            Symbol in standard OCC format
+        """
+        return SymbolConverter.to_standard_occ(symbol)
+    
+    def _get_provider_type(self) -> str:
+        """
+        Get the provider type for symbol conversion.
+        Subclasses can override this if needed.
+        
+        Returns:
+            Provider type string (lowercase)
+        """
+        return self.name.lower()

@@ -440,10 +440,11 @@ class TastyTradeProvider(BaseProvider):
     For streaming, uses DXLink with separate quote tokens.
     """
     
-    def __init__(self, username: str, password: str, base_url: str):
+    def __init__(self, username: str, password: str, account_id: str, base_url: str):
         super().__init__("TastyTrade")
         self.username = username
         self.password = password
+        self.account_id = account_id
         self.base_url = base_url
         self._session_token = None
         self._session_expires_at = None
@@ -571,27 +572,281 @@ class TastyTradeProvider(BaseProvider):
         """Get stock quotes for multiple symbols."""
         raise NotImplementedError("TastyTrade get_stock_quotes not yet implemented")
     
+    async def _get_option_quotes(self, option_symbols: List[str]) -> Dict[str, Dict[str, Any]]:
+        """Get option quotes for multiple option symbols using TastyTrade market data API."""
+        try:
+            if not option_symbols:
+                return {}
+            
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            # TastyTrade market data endpoint for instruments
+            pricing_data = {}
+            
+            # Process symbols in batches to avoid URL length limits
+            batch_size = 50
+            for i in range(0, len(option_symbols), batch_size):
+                batch_symbols = option_symbols[i:i + batch_size]
+                
+                try:
+                    # Use the instruments endpoint with market data
+                    symbols_param = ",".join(batch_symbols)
+                    url = f"{self.base_url}/instruments/equity-options"
+                    headers = {
+                        "Authorization": self._session_token,
+                        "Accept": "application/json",
+                        "User-Agent": "juicytrade/1.0"
+                    }
+                    params = {
+                        "symbol[]": batch_symbols  # TastyTrade uses array notation
+                    }
+                    
+                    async with httpx.AsyncClient(timeout=30.0) as client:
+                        response = await client.get(url, headers=headers, params=params)
+                        response.raise_for_status()
+                        
+                        data = response.json()
+                        items = data.get("data", {}).get("items", [])
+                        
+                        # Extract pricing data for each symbol
+                        for item in items:
+                            symbol = item.get("symbol", "")
+                            if symbol in batch_symbols:
+                                # Extract market data if available
+                                market_data = item.get("market-data", {})
+                                pricing_data[symbol] = {
+                                    "bid": market_data.get("bid"),
+                                    "ask": market_data.get("ask"),
+                                    "close": market_data.get("close"),
+                                    "volume": market_data.get("volume"),
+                                    "open_interest": market_data.get("open-interest"),
+                                    "implied_volatility": market_data.get("implied-volatility"),
+                                    "delta": market_data.get("delta"),
+                                    "gamma": market_data.get("gamma"),
+                                    "theta": market_data.get("theta"),
+                                    "vega": market_data.get("vega"),
+                                }
+                        
+                except Exception as e:
+                    logger.error(f"Error fetching pricing data for batch: {e}")
+                    # Continue with other batches even if one fails
+                    continue
+            
+            logger.info(f"TastyTrade: Retrieved pricing data for {len(pricing_data)}/{len(option_symbols)} symbols")
+            return pricing_data
+            
+        except Exception as e:
+            self._log_error("_get_option_quotes", e)
+            return {}
+    
     async def get_expiration_dates(self, symbol: str) -> List[str]:
         """Get available expiration dates for options on a symbol."""
-        raise NotImplementedError("TastyTrade get_expiration_dates not yet implemented")
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            url = f"{self.base_url}/option-chains/{symbol}"
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json",
+                "User-Agent": "juicytrade/1.0"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                
+                data = response.json()
+                items = data.get("data", {}).get("items", [])
+                
+                # Extract unique expiration dates
+                expiry_dates = list(set(item.get("expiration-date") for item in items if item.get("expiration-date")))
+                expiry_dates.sort()
+                
+                return expiry_dates
+                
+        except Exception as e:
+            self._log_error(f"get_expiration_dates for {symbol}", e)
+            return []
     
     async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
-        """Get options chain for a symbol and expiration date."""
-        raise NotImplementedError("TastyTrade get_options_chain not yet implemented")
+        """Get options chain for a symbol and expiration date with pricing data."""
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            # 1. Get basic option contracts
+            url = f"{self.base_url}/option-chains/{symbol}"
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json",
+                "User-Agent": "juicytrade/1.0"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                
+                data = response.json()
+                items = data.get("data", {}).get("items", [])
+                
+                # Filter contracts
+                filtered_contracts = []
+                option_symbols = []
+                for item in items:
+                    # Filter by expiry if specified
+                    if expiry and item.get("expiration-date") != expiry:
+                        continue
+                    
+                    # Filter by option type if specified
+                    if option_type and item.get("option-type") != option_type.upper():
+                        continue
+                    
+                    filtered_contracts.append(item)
+                    option_symbols.append(item.get("symbol", ""))
+                
+                if not filtered_contracts:
+                    return []
+                
+                # 2. Get pricing data for the filtered contracts
+                pricing_data = await self._get_option_quotes(option_symbols)
+                
+                # 3. Transform contracts with pricing data
+                result = []
+                for item in filtered_contracts:
+                    transformed_contract = self._transform_tastytrade_option_contract(item, pricing_data)
+                    if transformed_contract:
+                        result.append(transformed_contract)
+                
+                return result
+                
+        except Exception as e:
+            self._log_error(f"get_options_chain for {symbol} {expiry}", e)
+            return []
     
     async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
-        """Get basic options chain (no Greeks) for fast loading, ATM-focused."""
-        raise NotImplementedError("TastyTrade get_options_chain_basic not yet implemented")
+        """Fast loading - basic options data without Greeks, ATM-focused by strike count."""
+        try:
+            # Get full options chain first
+            contracts = await self.get_options_chain(symbol, expiry)
+            
+            if not contracts:
+                return []
+            
+            # Get underlying price if not provided
+            if underlying_price is None:
+                try:
+                    quote = await self.get_stock_quote(symbol)
+                    underlying_price = (quote.bid + quote.ask) / 2 if quote and quote.bid and quote.ask else None
+                except:
+                    underlying_price = None
+            
+            # Smart filtering - focus on ATM strikes by count
+            if underlying_price and contracts:
+                # Get all unique strikes and sort them
+                strikes = sorted(list(set(contract.strike_price for contract in contracts)))
+                
+                # Find the ATM strike (closest to underlying price)
+                atm_strike = min(strikes, key=lambda x: abs(x - underlying_price))
+                atm_index = strikes.index(atm_strike)
+                
+                # Calculate how many strikes to take on each side
+                strikes_per_side = strike_count // 2
+                
+                # Get the range of strikes around ATM
+                start_index = max(0, atm_index - strikes_per_side)
+                end_index = min(len(strikes), atm_index + strikes_per_side + 1)
+                
+                # Select strikes in the range
+                selected_strikes = set(strikes[start_index:end_index])
+                
+                # Filter contracts to only include selected strikes
+                filtered_contracts = [
+                    contract for contract in contracts 
+                    if contract.strike_price in selected_strikes
+                ]
+                
+                contracts = filtered_contracts
+            
+            # Transform to basic format (remove Greeks for faster loading)
+            result = []
+            for contract in contracts:
+                basic_contract = self._transform_to_basic_contract(contract)
+                if basic_contract:
+                    result.append(basic_contract)
+            
+            return result
+            
+        except Exception as e:
+            self._log_error(f"get_options_chain_basic for {symbol} {expiry}", e)
+            return []
     
     async def get_options_greeks_batch(self, option_symbols: List[str]) -> Dict[str, Dict]:
         """Get Greeks for multiple option symbols in batch."""
-        raise NotImplementedError("TastyTrade get_options_greeks_batch not yet implemented")
+        try:
+            # TastyTrade doesn't have a dedicated Greeks endpoint, so we need to get full option data
+            # Group symbols by underlying and expiration for efficient API calls
+            symbol_groups = {}
+            
+            for option_symbol in option_symbols:
+                # Convert standard OCC format to TastyTrade format for parsing
+                tastytrade_symbol = self.convert_symbol_to_provider_format(option_symbol)
+                parsed = self._parse_option_symbol(tastytrade_symbol)
+                if parsed:
+                    key = f"{parsed['underlying']}_{parsed['expiry']}"
+                    if key not in symbol_groups:
+                        symbol_groups[key] = {
+                            'underlying': parsed['underlying'],
+                            'expiry': parsed['expiry'],
+                            'symbols': []
+                        }
+                    # Store the original standard OCC symbol for the response
+                    symbol_groups[key]['symbols'].append(option_symbol)
+            
+            # Fetch Greeks for each group
+            greeks_data = {}
+            for group in symbol_groups.values():
+                try:
+                    contracts = await self.get_options_chain(
+                        group['underlying'], 
+                        group['expiry']
+                    )
+                    
+                    # Extract Greeks for requested symbols
+                    for contract in contracts:
+                        # contract.symbol is already in standard OCC format (converted by the provider)
+                        if contract.symbol in group['symbols']:
+                            greeks_data[contract.symbol] = {
+                                'delta': contract.delta,
+                                'theta': contract.theta,
+                                'gamma': contract.gamma,
+                                'vega': contract.vega,
+                                'implied_volatility': contract.implied_volatility
+                            }
+                except Exception as e:
+                    self._log_error(f"get_options_greeks_batch for group {group['underlying']}", e)
+                    continue
+            
+            return greeks_data
+        except Exception as e:
+            self._log_error(f"get_options_greeks_batch", e)
+            return {}
     
     async def get_options_chain_smart(self, symbol: str, expiry: str, underlying_price: float = None, 
                                    atm_range: int = 20, include_greeks: bool = False, 
                                    strikes_only: bool = False) -> List[OptionContract]:
-        """Get smart options chain with configurable loading."""
-        raise NotImplementedError("TastyTrade get_options_chain_smart not yet implemented")
+        """Smart options chain with configurable loading."""
+        try:
+            if include_greeks:
+                # Use full options chain with Greeks
+                return await self.get_options_chain(symbol, expiry)
+            else:
+                # Use basic fast loading
+                return await self.get_options_chain_basic(symbol, expiry, underlying_price, atm_range)
+        except Exception as e:
+            self._log_error(f"get_options_chain_smart for {symbol} {expiry}", e)
+            return []
     
     async def get_next_market_date(self) -> str:
         """Get the next trading date."""
@@ -941,29 +1196,219 @@ class TastyTradeProvider(BaseProvider):
     
     async def get_positions(self) -> List[Position]:
         """Get all current positions."""
-        raise NotImplementedError("TastyTrade get_positions not yet implemented")
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            url = f"{self.base_url}/accounts/{self.account_id}/positions"
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json",
+                "User-Agent": "juicytrade/1.0"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                
+                data = response.json()
+                items = data.get("data", {}).get("items", [])
+                
+                # Transform TastyTrade positions to our standard model
+                positions = []
+                for item in items:
+                    position = self._transform_tastytrade_position(item)
+                    if position:
+                        positions.append(position)
+                
+                return positions
+                
+        except Exception as e:
+            self._log_error("get_positions", e)
+            return []
     
     async def get_orders(self, status: str = "open") -> List[Order]:
         """Get orders with optional status filter."""
-        raise NotImplementedError("TastyTrade get_orders not yet implemented")
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            # Use different endpoints based on status
+            if status == "open":
+                # Use live orders endpoint for open orders
+                url = f"{self.base_url}/accounts/{self.account_id}/orders/live"
+            else:
+                # Use all orders endpoint for other statuses
+                url = f"{self.base_url}/accounts/{self.account_id}/orders"
+            
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json",
+                "User-Agent": "juicytrade/1.0"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                
+                data = response.json()
+                items = data.get("data", {}).get("items", [])
+                
+                # Transform TastyTrade orders to our standard model
+                orders = []
+                for item in items:
+                    order = self._transform_tastytrade_order(item)
+                    if order:
+                        # Apply additional status filtering for non-live endpoints
+                        if status != "open" and status != "all":
+                            order_status = order.status.lower() if order.status else ""
+                            if status == "filled" and order_status != "filled":
+                                continue
+                            elif status == "cancelled" and order_status != "cancelled":
+                                continue
+                        
+                        orders.append(order)
+                
+                return orders
+                
+        except Exception as e:
+            self._log_error(f"get_orders with status {status}", e)
+            return []
     
     async def get_account(self) -> Optional[Account]:
         """Get account information including balance and buying power."""
-        raise NotImplementedError("TastyTrade get_account not yet implemented")
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            url = f"{self.base_url}/accounts/{self.account_id}/balances"
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json",
+                "User-Agent": "juicytrade/1.0"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=headers)
+                response.raise_for_status()
+                
+                data = response.json()
+                account_data = data.get("data", {})
+                
+                # Transform TastyTrade account to our standard model
+                return self._transform_tastytrade_account(account_data)
+                
+        except Exception as e:
+            self._log_error("get_account", e)
+            return None
     
     # === Order Management Methods ===
     
     async def place_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a trading order."""
-        raise NotImplementedError("TastyTrade place_order not yet implemented")
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            # Transform our standard order format to TastyTrade format
+            tastytrade_order = self._transform_to_tastytrade_order(order_data)
+            
+            # Log the order being sent for debugging
+            logger.info(f"TastyTrade: Sending order: {tastytrade_order}")
+            
+            url = f"{self.base_url}/accounts/{self.account_id}/orders"
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "juicytrade/1.0"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=tastytrade_order)
+                
+                # Log response details for debugging
+                logger.info(f"TastyTrade: Order response status: {response.status_code}")
+                if response.status_code != 200:
+                    logger.error(f"TastyTrade: Order response body: {response.text}")
+                
+                response.raise_for_status()
+                
+                data = response.json()
+                # TastyTrade nests the actual order data under data.order
+                order_data = data.get("data", {}).get("order", {})
+                
+                # Transform TastyTrade order response to our standard model
+                return self._transform_tastytrade_order(order_data)
+                
+        except Exception as e:
+            self._log_error("place_order", e)
+            raise
 
     async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a multi-leg trading order."""
-        raise NotImplementedError("TastyTrade place_multi_leg_order not yet implemented")
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            # Transform our standard multi-leg order format to TastyTrade format
+            tastytrade_order = self._transform_to_tastytrade_multi_leg_order(order_data)
+            
+            # Log the order being sent for debugging
+            logger.info(f"TastyTrade: Sending multi-leg order: {tastytrade_order}")
+            
+            url = f"{self.base_url}/accounts/{self.account_id}/orders"
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "juicytrade/1.0"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=tastytrade_order)
+                
+                # Log response details for debugging
+                logger.info(f"TastyTrade: Order response status: {response.status_code}")
+                if response.status_code != 200:
+                    logger.error(f"TastyTrade: Order response body: {response.text}")
+                
+                response.raise_for_status()
+                
+                data = response.json()
+                # TastyTrade nests the actual order data under data.order
+                order_data = data.get("data", {}).get("order", {})
+                
+                # Transform TastyTrade order response to our standard model
+                return self._transform_tastytrade_order(order_data)
+                
+        except Exception as e:
+            self._log_error("place_multi_leg_order", e)
+            raise
     
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an existing order."""
-        raise NotImplementedError("TastyTrade cancel_order not yet implemented")
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            url = f"{self.base_url}/accounts/{self.account_id}/orders/{order_id}"
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json",
+                "User-Agent": "juicytrade/1.0"
+            }
+            
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.delete(url, headers=headers)
+                response.raise_for_status()
+                
+                # TastyTrade returns success if the order was cancelled
+                return True
+                
+        except Exception as e:
+            self._log_error(f"cancel_order {order_id}", e)
+            return False
     
     # === Streaming Methods ===
     
@@ -1027,6 +1472,10 @@ class TastyTradeProvider(BaseProvider):
         # TastyTrade uses OCC format similar to other providers
         return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
     
+    def _get_provider_type(self) -> str:
+        """Override to return 'tastytrade' for symbol conversion."""
+        return "tastytrade"
+    
     def _parse_option_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Parse TastyTrade option symbol to extract components."""
         try:
@@ -1063,6 +1512,401 @@ class TastyTradeProvider(BaseProvider):
             self._log_error(f"parse_option_symbol {symbol}", e)
             return None
     
+    def _transform_tastytrade_option_contract(self, raw_contract: Dict[str, Any], pricing_data: Dict[str, Any] = None) -> Optional[OptionContract]:
+        """Transform TastyTrade option contract to our standard model with optional pricing data."""
+        try:
+            symbol = raw_contract.get("symbol", "")
+            
+            # Convert TastyTrade symbol to standard OCC format for UI consistency
+            standard_symbol = self.convert_symbol_to_standard_format(symbol)
+            
+            # Get pricing data for this symbol if available (use original TastyTrade symbol for lookup)
+            price_info = pricing_data.get(symbol, {}) if pricing_data else {}
+            
+            return OptionContract(
+                symbol=standard_symbol,  # UI gets standard OCC format
+                underlying_symbol=raw_contract.get("underlying-symbol", ""),
+                expiration_date=raw_contract.get("expiration-date", ""),
+                strike_price=float(raw_contract.get("strike-price", 0)),
+                type=raw_contract.get("option-type", "").lower(),
+                bid=price_info.get("bid"),
+                ask=price_info.get("ask"),
+                close_price=price_info.get("close"),
+                volume=price_info.get("volume"),
+                open_interest=price_info.get("open_interest"),
+                # Greeks from pricing data if available
+                implied_volatility=price_info.get("implied_volatility"),
+                delta=price_info.get("delta"),
+                gamma=price_info.get("gamma"),
+                theta=price_info.get("theta"),
+                vega=price_info.get("vega"),
+            )
+        except Exception as e:
+            self._log_error("transform_tastytrade_option_contract", e)
+            return None
+    
+    def _transform_to_basic_contract(self, contract: OptionContract) -> Optional[OptionContract]:
+        """Transform option contract to basic format without Greeks (faster)."""
+        try:
+            return OptionContract(
+                symbol=contract.symbol,
+                underlying_symbol=contract.underlying_symbol,
+                expiration_date=contract.expiration_date,
+                strike_price=contract.strike_price,
+                type=contract.type,
+                bid=contract.bid,
+                ask=contract.ask,
+                close_price=contract.close_price,
+                volume=contract.volume,
+                open_interest=contract.open_interest,
+                # Greeks are None for basic loading (will be loaded separately)
+                implied_volatility=None,
+                delta=None,
+                gamma=None,
+                theta=None,
+                vega=None,
+            )
+        except Exception as e:
+            self._log_error("transform_to_basic_contract", e)
+            return None
+
+    def _transform_to_tastytrade_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform our standard order format to TastyTrade format."""
+        try:
+            # Map our order types to TastyTrade format
+            order_type_map = {
+                "market": "Market",
+                "limit": "Limit",
+                "stop": "Stop",
+                "stop_limit": "Stop Limit"
+            }
+            
+            # Map our actions to TastyTrade format
+            action_map = {
+                "buy": "Buy to Open",
+                "sell": "Sell to Close",
+                "buy_to_open": "Buy to Open",
+                "sell_to_open": "Sell to Open",
+                "buy_to_close": "Buy to Close",
+                "sell_to_close": "Sell to Close"
+            }
+            
+            # Map our time in force to TastyTrade format
+            tif_map = {
+                "day": "Day",
+                "gtc": "GTC",
+                "ioc": "IOC",
+                "fok": "FOK"
+            }
+            
+            # Determine instrument type
+            symbol = order_data.get("symbol", "")
+            instrument_type = "Equity Option" if self._is_option_symbol(symbol) else "Equity"
+            
+            # Build TastyTrade order
+            tastytrade_order = {
+                "order-type": order_type_map.get(order_data.get("type", "limit").lower(), "Limit"),
+                "time-in-force": tif_map.get(order_data.get("time_in_force", "day").lower(), "Day"),
+                "legs": [
+                    {
+                        "instrument-type": instrument_type,
+                        "action": action_map.get(order_data.get("side", "buy").lower(), "Buy to Open"),
+                        "quantity": int(order_data.get("quantity", 1)),
+                        "symbol": symbol
+                    }
+                ]
+            }
+            
+            # Add price for limit orders
+            if order_data.get("type", "").lower() == "limit" and order_data.get("price"):
+                tastytrade_order["price"] = float(order_data["price"])
+                # Determine price effect (Debit/Credit) based on action
+                action = order_data.get("side", "buy").lower()
+                if action in ["buy", "buy_to_open"]:
+                    tastytrade_order["price-effect"] = "Debit"
+                else:
+                    tastytrade_order["price-effect"] = "Credit"
+            
+            # Add stop price for stop orders
+            if order_data.get("stop_price"):
+                tastytrade_order["stop-trigger"] = float(order_data["stop_price"])
+            
+            return tastytrade_order
+            
+        except Exception as e:
+            self._log_error("transform_to_tastytrade_order", e)
+            raise
+    
+    def _transform_to_tastytrade_multi_leg_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Transform our standard multi-leg order format to TastyTrade format."""
+        try:
+            # Map our order types to TastyTrade format
+            order_type_map = {
+                "market": "Market",
+                "limit": "Limit",
+                "stop": "Stop",
+                "stop_limit": "Stop Limit"
+            }
+            
+            # Map our actions to TastyTrade format
+            action_map = {
+                "buy": "Buy to Open",
+                "sell": "Sell to Close",
+                "buy_to_open": "Buy to Open",
+                "sell_to_open": "Sell to Open",
+                "buy_to_close": "Buy to Close",
+                "sell_to_close": "Sell to Close"
+            }
+            
+            # Map our time in force to TastyTrade format
+            tif_map = {
+                "day": "Day",
+                "gtc": "GTC",
+                "ioc": "IOC",
+                "fok": "FOK"
+            }
+            
+            # Build legs with proper symbol conversion
+            legs = []
+            for leg in order_data.get("legs", []):
+                original_symbol = leg.get("symbol", "")
+                
+                # Convert symbol to TastyTrade format if it's an option
+                if self._is_option_symbol(original_symbol):
+                    tastytrade_symbol = self.convert_symbol_to_provider_format(original_symbol)
+                    instrument_type = "Equity Option"
+                else:
+                    tastytrade_symbol = original_symbol
+                    instrument_type = "Equity"
+                
+                legs.append({
+                    "instrument-type": instrument_type,
+                    "action": action_map.get(leg.get("side", "buy").lower(), "Buy to Open"),
+                    "quantity": int(leg.get("quantity", 1)),
+                    "symbol": tastytrade_symbol
+                })
+            
+            # Build TastyTrade multi-leg order
+            tastytrade_order = {
+                "order-type": order_type_map.get(order_data.get("type", "limit").lower(), "Limit"),
+                "time-in-force": tif_map.get(order_data.get("time_in_force", "day").lower(), "Day"),
+                "legs": legs
+            }
+            
+            # Add price and price-effect for limit orders (required for TastyTrade)
+            order_type = order_data.get("type", "limit").lower()
+            
+            # Log the incoming order data for debugging
+            logger.info(f"TastyTrade: Processing order data: {order_data}")
+            
+            if order_type in ["limit", "stop_limit"]:  # Both limit and stop_limit need price
+                # Check multiple possible price fields
+                price = (order_data.get("price") or 
+                        order_data.get("limit_price") or 
+                        order_data.get("net_price") or
+                        order_data.get("premium"))
+                
+                if price is not None:  # Allow 0 price
+                    price_float = float(price)
+                    
+                    # TastyTrade requires positive prices and correct price-effect
+                    if price_float < 0:
+                        # Negative price means this is a credit spread - we receive money
+                        tastytrade_order["price"] = abs(price_float)  # Make price positive
+                        tastytrade_order["price-effect"] = "Credit"   # We receive credit
+                        logger.info(f"TastyTrade: Converted negative price {price} to positive {abs(price_float)} with Credit effect")
+                    else:
+                        # Positive price means this is a debit spread - we pay money
+                        tastytrade_order["price"] = price_float
+                        tastytrade_order["price-effect"] = order_data.get("price_effect", "Debit")
+                        logger.info(f"TastyTrade: Using positive price {price_float} with Debit effect")
+                    
+                    logger.info(f"TastyTrade: Final order price={tastytrade_order['price']} and price-effect={tastytrade_order['price-effect']}")
+                else:
+                    # If no price provided, this is likely an error - log it
+                    logger.warning(f"TastyTrade: No price found in order data for limit order: {order_data}")
+                    # Don't set a default price - let TastyTrade reject it with a proper error
+                    raise ValueError("Limit order requires a price but none was provided")
+            elif order_type == "market":
+                # Market orders don't need price but may need price-effect for multi-leg
+                if len(order_data.get("legs", [])) > 1:
+                    tastytrade_order["price-effect"] = order_data.get("price_effect", "Debit")
+            
+            return tastytrade_order
+            
+        except Exception as e:
+            self._log_error("transform_to_tastytrade_multi_leg_order", e)
+            raise
+    
+    def _transform_tastytrade_order(self, raw_order: Dict[str, Any]) -> Optional[Order]:
+        """Transform TastyTrade order to our standard model."""
+        try:
+            # Map TastyTrade status to our standard status
+            status_map = {
+                "Live": "open",
+                "Routed": "open",  # TastyTrade uses "Routed" for submitted orders
+                "Filled": "filled",
+                "Cancelled": "cancelled",
+                "Rejected": "rejected",
+                "Expired": "expired"
+            }
+            
+            # Map TastyTrade order type to our standard format
+            order_type_map = {
+                "Market": "market",
+                "Limit": "limit",
+                "Stop": "stop",
+                "Stop Limit": "stop_limit"
+            }
+            
+            # Extract legs information
+            legs = raw_order.get("legs", [])
+            
+            # For single-leg orders, use the first leg
+            if legs:
+                first_leg = legs[0]
+                symbol = first_leg.get("symbol", "")
+                # Convert TastyTrade symbol to standard OCC format for UI consistency
+                standard_symbol = self.convert_symbol_to_standard_format(symbol)
+                quantity = first_leg.get("quantity", 0)
+                side = self._map_tastytrade_action_to_side(first_leg.get("action", ""))
+                
+                # Determine asset class from instrument type
+                instrument_type = first_leg.get("instrument-type", "")
+                if instrument_type == "Equity Option":
+                    asset_class = "us_option"
+                elif instrument_type == "Equity":
+                    asset_class = "us_equity"
+                else:
+                    asset_class = "unknown"
+            else:
+                standard_symbol = ""
+                quantity = 0
+                side = "buy"
+                asset_class = "unknown"
+            
+            # Calculate total filled quantity from all legs
+            total_filled_qty = 0
+            for leg in legs:
+                filled_qty = leg.get("quantity", 0) - leg.get("remaining-quantity", 0)
+                total_filled_qty += filled_qty
+            
+            # Parse submitted timestamp
+            received_at = raw_order.get("received-at")
+            if received_at:
+                # Convert ISO timestamp to our format
+                try:
+                    from datetime import datetime
+                    dt = datetime.fromisoformat(received_at.replace('Z', '+00:00'))
+                    submitted_at = dt.isoformat()
+                except:
+                    submitted_at = received_at
+            else:
+                submitted_at = datetime.now().isoformat()
+            
+            # Handle limit_price with credit/debit conversion (same as Tradier)
+            limit_price = float(raw_order.get("price")) if raw_order.get("price") else None
+            price_effect = raw_order.get("price-effect", "").lower()
+            
+            # Convert credit orders to negative limit_price for UI consistency
+            if price_effect == "credit" and limit_price is not None:
+                limit_price = -abs(limit_price)
+            
+            # Handle avg_fill_price with same credit/debit logic
+            avg_fill_price = float(raw_order.get("filled-price")) if raw_order.get("filled-price") else None
+            if price_effect == "credit" and avg_fill_price is not None:
+                avg_fill_price = -abs(avg_fill_price)
+            
+            return Order(
+                id=str(raw_order.get("id", "")),
+                symbol=standard_symbol,  # UI gets standard OCC format
+                asset_class=asset_class,
+                side=side,
+                order_type=order_type_map.get(raw_order.get("order-type", ""), "limit"),
+                qty=float(quantity),
+                filled_qty=float(total_filled_qty),
+                limit_price=limit_price,
+                stop_price=float(raw_order.get("stop-trigger")) if raw_order.get("stop-trigger") else None,
+                avg_fill_price=avg_fill_price,
+                status=status_map.get(raw_order.get("status", ""), "unknown"),
+                time_in_force=raw_order.get("time-in-force", "Day").lower(),
+                submitted_at=submitted_at,
+                filled_at=raw_order.get("updated-at") if raw_order.get("status") == "Filled" else None,
+                legs=self._transform_tastytrade_legs(legs) if len(legs) > 1 else None
+            )
+            
+        except Exception as e:
+            self._log_error("transform_tastytrade_order", e)
+            return None
+    
+    def _map_tastytrade_action_to_side(self, action: str) -> str:
+        """Map TastyTrade action to our standard side."""
+        action_lower = action.lower()
+        if "buy" in action_lower:
+            return "buy"
+        elif "sell" in action_lower:
+            return "sell"
+        else:
+            return "buy"  # Default
+    
+    def _transform_tastytrade_legs(self, legs: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Transform TastyTrade legs to our standard format."""
+        transformed_legs = []
+        for leg in legs:
+            symbol = leg.get("symbol", "")
+            # Convert TastyTrade symbol to standard OCC format for UI consistency
+            standard_symbol = self.convert_symbol_to_standard_format(symbol)
+            
+            transformed_legs.append({
+                "symbol": standard_symbol,  # UI gets standard OCC format
+                "quantity": leg.get("quantity", 0),
+                "side": self._map_tastytrade_action_to_side(leg.get("action", "")),
+                "instrument_type": leg.get("instrument-type", "")
+            })
+        return transformed_legs
+    
+    def _transform_tastytrade_position(self, raw_position: Dict[str, Any]) -> Optional[Position]:
+        """Transform TastyTrade position to our standard model."""
+        try:
+            symbol = raw_position.get("symbol", "")
+            
+            # Convert TastyTrade symbol to standard OCC format for UI consistency
+            standard_symbol = self.convert_symbol_to_standard_format(symbol)
+            
+            return Position(
+                symbol=standard_symbol,  # UI gets standard OCC format
+                quantity=raw_position.get("quantity", 0),
+                average_price=raw_position.get("average-price"),
+                market_value=raw_position.get("market-value"),
+                unrealized_pnl=raw_position.get("unrealized-day-gain-loss"),
+                realized_pnl=raw_position.get("realized-day-gain-loss"),
+                instrument_type=raw_position.get("instrument-type", "")
+            )
+            
+        except Exception as e:
+            self._log_error("transform_tastytrade_position", e)
+            return None
+    
+    def _transform_tastytrade_account(self, raw_account: Dict[str, Any]) -> Optional[Account]:
+        """Transform TastyTrade account balances to our standard model."""
+        try:
+            return Account(
+                account_id=self.account_id,  # Use the account_id from provider instance
+                account_number=raw_account.get("account-number", ""),
+                status="active",  # TastyTrade accounts are active if we can fetch balances
+                buying_power=raw_account.get("equity-buying-power"),
+                cash=raw_account.get("cash-balance"),
+                day_trading_buying_power=raw_account.get("day-trading-buying-power"),
+                equity=raw_account.get("margin-equity"),
+                initial_margin=raw_account.get("reg-t-margin-requirement"),
+                maintenance_margin=raw_account.get("maintenance-requirement"),
+                portfolio_value=raw_account.get("net-liquidating-value")
+            )
+            
+        except Exception as e:
+            self._log_error("transform_tastytrade_account", e)
+            return None
+
     async def health_check(self) -> Dict[str, Any]:
         """Perform a health check on the TastyTrade provider."""
         try:

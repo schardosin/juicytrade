@@ -369,10 +369,12 @@ export default {
             // Handle different time formats from backend
             let time = bar.time;
 
-            // If time contains space (datetime format like "2025-07-11 19:55"), convert to timestamp
+            // If time contains space (datetime format like "2025-01-06 09:30"), convert to timestamp
             if (typeof time === "string" && time.includes(" ")) {
-              // Convert datetime string to Unix timestamp
-              const date = new Date(time);
+              // Backend sends Eastern Time datetime strings for intraday data
+              // Parse as Eastern Time by appending EST timezone
+              const etTimeString = time + ":00 EST"; // Assume EST for now
+              const date = new Date(etTimeString);
               time = Math.floor(date.getTime() / 1000);
             }
 
@@ -389,10 +391,12 @@ export default {
             // Handle different time formats from backend
             let time = bar.time;
 
-            // If time contains space (datetime format like "2025-07-11 19:55"), convert to timestamp
+            // If time contains space (datetime format like "2025-01-06 09:30"), convert to timestamp
             if (typeof time === "string" && time.includes(" ")) {
-              // Convert datetime string to Unix timestamp
-              const date = new Date(time);
+              // Backend sends Eastern Time datetime strings for intraday data
+              // Parse as Eastern Time by appending EST timezone
+              const etTimeString = time + ":00 EST"; // Assume EST for now
+              const date = new Date(etTimeString);
               time = Math.floor(date.getTime() / 1000);
             }
 

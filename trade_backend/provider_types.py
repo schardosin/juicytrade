@@ -74,11 +74,13 @@ PROVIDER_TYPES: Dict[str, Dict[str, Any]] = {
             "live": [
                 {"name": "username", "label": "Username", "type": "text", "required": True, "placeholder": "Your TastyTrade Username"},
                 {"name": "password", "label": "Password", "type": "password", "required": True, "placeholder": "Your TastyTrade Password"},
+                {"name": "account_id", "label": "Account ID", "type": "text", "required": True, "placeholder": "Your TastyTrade Account ID"},
                 {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://api.tastytrade.com"}
             ],
             "paper": [
                 {"name": "username", "label": "Username", "type": "text", "required": True, "placeholder": "Your TastyTrade Sandbox Username"},
                 {"name": "password", "label": "Password", "type": "password", "required": True, "placeholder": "Your TastyTrade Sandbox Password"},
+                {"name": "account_id", "label": "Account ID", "type": "text", "required": True, "placeholder": "Your TastyTrade Sandbox Account ID"},
                 {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://api.cert.tastyworks.com"}
             ]
         }

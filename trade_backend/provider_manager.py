@@ -87,6 +87,7 @@ class ProviderManager:
                 return TastyTradeProvider(
                     username=credentials.get('username'),
                     password=credentials.get('password'),
+                    account_id=credentials.get('account_id'),
                     base_url=credentials.get('base_url')
                 )
             else:

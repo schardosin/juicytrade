@@ -376,14 +376,14 @@ export default {
     const getCallOption = (expiration, strike) => {
       return expiration.optionsData.find(
         (opt) =>
-          opt.type === "call" && Math.abs(opt.strike_price - strike) < 0.01
+          (opt.type === "call" || opt.type === "c") && Math.abs(opt.strike_price - strike) < 0.01
       );
     };
 
     const getPutOption = (expiration, strike) => {
       return expiration.optionsData.find(
         (opt) =>
-          opt.type === "put" && Math.abs(opt.strike_price - strike) < 0.01
+          (opt.type === "put" || opt.type === "p") && Math.abs(opt.strike_price - strike) < 0.01
       );
     };
 
@@ -394,12 +394,15 @@ export default {
         // Call getOptionPrice only once to set up the subscription and heartbeat
         liveOptionPrices.set(symbol, getOptionPrice(symbol));
       }
-      return liveOptionPrices.get(symbol)?.value;
+      
+      const livePrice = liveOptionPrices.get(symbol)?.value;
+      return livePrice;
     };
 
     const getCallBid = (expiration, strike) => {
       const option = getCallOption(expiration, strike);
       if (!option) return 0;
+      
       const livePrice = getLivePrice(option.symbol);
       return livePrice?.bid ?? option.bid;
     };
@@ -432,7 +435,9 @@ export default {
         // Call getOptionGreeks only once to set up the subscription
         liveOptionGreeks.set(symbol, getOptionGreeks(symbol));
       }
-      return liveOptionGreeks.get(symbol)?.value;
+      
+      const liveGreeks = liveOptionGreeks.get(symbol)?.value;
+      return liveGreeks;
     };
 
     const getCallDelta = (expiration, strike) => {
