@@ -294,14 +294,12 @@ class DataRecoveryManager {
     // Clear stale price data
     for (const [symbol, priceData] of this.store.stockPrices.entries()) {
       if (priceData.timestamp < cutoffTime) {
-        console.log(`🧹 Clearing stale stock price for ${symbol}`);
         this.store.stockPrices.delete(symbol);
       }
     }
     
     for (const [symbol, priceData] of this.store.optionPrices.entries()) {
       if (priceData.timestamp < cutoffTime) {
-        console.log(`🧹 Clearing stale option price for ${symbol}`);
         this.store.optionPrices.delete(symbol);
       }
     }
@@ -309,15 +307,12 @@ class DataRecoveryManager {
     // Clear stale Greeks data
     for (const [symbol, greeksData] of this.store.optionGreeks.entries()) {
       if (greeksData.timestamp < cutoffTime) {
-        console.log(`🧹 Clearing stale Greeks for ${symbol}`);
         this.store.optionGreeks.delete(symbol);
       }
     }
     
     // Force WebSocket recovery
     await this.recoverWebSocket(context);
-    
-    console.log("✅ Stale connection recovery completed");
   }
 
   /**
@@ -766,7 +761,6 @@ class SmartMarketDataStore {
   unsubscribeFromGreeks(symbol) {
     this.activeGreeksSubscriptions.delete(symbol);
     // Keep Greeks data for UI continuity (same as prices)
-    console.log(`📊 Greeks subscription removed for: ${symbol}`);
   }
 
   /**
@@ -899,7 +893,6 @@ class SmartMarketDataStore {
     });
 
     if (toUnsubscribe.length > 0) {
-      console.log(`📊 Cleaning up unused Greeks for ${toUnsubscribe.length} symbols`);
       toUnsubscribe.forEach((symbol) => {
         this.lastGreeksAccess.delete(symbol);
         this.unsubscribeFromGreeks(symbol);
