@@ -2,7 +2,6 @@
   "expiration_dates": "public",
   "stock_quotes": "alpaca",
   "options_chain": "alpaca",
-  "next_market_date": "alpaca",
   "trade_account": "alpaca_paper",
   "symbol_lookup": "tradier",
   "historical_data": "tradier",

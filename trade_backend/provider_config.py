@@ -11,7 +11,6 @@ DEFAULT_ROUTING = {
     "expiration_dates": "public",
     "stock_quotes": "alpaca",
     "options_chain": "alpaca",
-    "next_market_date": "alpaca",
     "trade_account": "alpaca",  # Unified: account, positions, orders
     "symbol_lookup": "tradier",
     "historical_data": "tradier",

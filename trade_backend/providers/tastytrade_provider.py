@@ -877,7 +877,32 @@ class TastyTradeProvider(BaseProvider):
     
     async def get_next_market_date(self) -> str:
         """Get the next trading date."""
-        raise NotImplementedError("TastyTrade get_next_market_date not yet implemented")
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+            
+            # TastyTrade doesn't have a dedicated market calendar endpoint
+            # We'll use a simple approach: check if today is a weekday and not a holiday
+            from datetime import datetime, timedelta
+            
+            today = datetime.now().date()
+            next_date = today + timedelta(days=1)
+            
+            # Skip weekends
+            while next_date.weekday() >= 5:  # 5 = Saturday, 6 = Sunday
+                next_date += timedelta(days=1)
+            
+            return next_date.strftime('%Y-%m-%d')
+            
+        except Exception as e:
+            self._log_error("get_next_market_date", e)
+            # Fallback: return next weekday
+            from datetime import datetime, timedelta
+            today = datetime.now().date()
+            next_date = today + timedelta(days=1)
+            while next_date.weekday() >= 5:
+                next_date += timedelta(days=1)
+            return next_date.strftime('%Y-%m-%d')
     
     async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
         """Search for symbols matching the query using TastyTrade symbol search API with smart caching."""

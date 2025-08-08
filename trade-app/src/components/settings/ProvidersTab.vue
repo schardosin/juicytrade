@@ -535,11 +535,6 @@ export default {
             description: "Symbol search and company information"
           },
           {
-            key: "next_market_date",
-            label: "Next Market Date",
-            description: "Next trading day calculation"
-          },
-          {
             key: "market_calendar",
             label: "Market Calendar",
             description: "Trading holidays and market hours"

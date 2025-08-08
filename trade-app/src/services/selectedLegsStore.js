@@ -60,8 +60,8 @@ class SelectedLegsStore {
       type: legData.type || legData.option_type || 'call',
       expiry: legData.expiry || legData.expiry_date || legData.expiration_date,
       
-      // Pricing information
-      current_price: legData.current_price || 0,
+      // Pricing information - calculate current_price from bid/ask if not provided
+      current_price: legData.current_price || (legData.bid && legData.ask ? (legData.bid + legData.ask) / 2 : 0),
       bid: legData.bid || 0,
       ask: legData.ask || 0,
       
@@ -223,8 +223,8 @@ class SelectedLegsStore {
     // Valid side
     if (legData.side && !['buy', 'sell'].includes(legData.side)) return false;
     
-    // Valid type
-    if (legData.type && !['call', 'put', 'C', 'P'].includes(legData.type)) return false;
+    // Valid type - handle both full names and single letters, both cases
+    if (legData.type && !['call', 'put', 'C', 'P', 'c', 'p'].includes(legData.type)) return false;
     
     return true;
   }
