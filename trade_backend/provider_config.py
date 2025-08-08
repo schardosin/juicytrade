@@ -16,13 +16,15 @@ DEFAULT_ROUTING = {
     "symbol_lookup": "tradier",
     "historical_data": "tradier",
     "market_calendar": "tradier",
-    "streaming_quotes": "tradier"  # Dedicated streaming for market data
+    "streaming_quotes": "tradier",  # Dedicated streaming for market data
+    "greeks": "tradier",  # NEW: API-based Greeks
+    "streaming_greeks": None  # NEW: Real-time streaming Greeks
 }
 
 PROVIDER_CAPABILITIES = {
     "alpaca": {
         "capabilities": {
-            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes", "trade_account"]
         },
         "paper": False,
@@ -30,7 +32,7 @@ PROVIDER_CAPABILITIES = {
     },
     "alpaca_paper": {
         "capabilities": {
-            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes", "trade_account"]
         },
         "paper": True,
@@ -45,7 +47,7 @@ PROVIDER_CAPABILITIES = {
     },
     "tradier": {
         "capabilities": {
-            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
+            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes"]
         },
         "paper": False,
@@ -53,7 +55,7 @@ PROVIDER_CAPABILITIES = {
     },
     "tradier_paper": {
         "capabilities": {
-            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
+            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes"]
         },
         "paper": True,
@@ -62,7 +64,7 @@ PROVIDER_CAPABILITIES = {
     "tastytrade": {
         "capabilities": {
             "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
-            "streaming": ["streaming_quotes", "trade_account"]
+            "streaming": ["streaming_quotes", "trade_account", "streaming_greeks"]
         },
         "paper": False,
         "display_name": "TastyTrade"
@@ -70,7 +72,7 @@ PROVIDER_CAPABILITIES = {
     "tastytrade_paper": {
         "capabilities": {
             "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
-            "streaming": ["streaming_quotes", "trade_account"]
+            "streaming": ["streaming_quotes", "trade_account", "streaming_greeks"]
         },
         "paper": True,
         "display_name": "TastyTrade"
@@ -115,8 +117,12 @@ class ProviderConfigManager:
         
         for key, value in new_config.items():
             if key in DEFAULT_ROUTING:
+                # Allow null values for optional configurations
+                if value is None:
+                    validated_config[key] = value
+                    logger.info(f"Set {key} to null")
                 # Check if it's a legacy provider name (for backward compatibility)
-                if value in PROVIDER_CAPABILITIES:
+                elif value in PROVIDER_CAPABILITIES:
                     # Legacy provider validation
                     if key == "streaming_quotes":
                         if "streaming" in PROVIDER_CAPABILITIES[value]["capabilities"] and key in PROVIDER_CAPABILITIES[value]["capabilities"]["streaming"]:
@@ -138,7 +144,7 @@ class ProviderConfigManager:
                         capabilities = provider_types[provider_type].get('capabilities', {})
                         
                         # Check if provider supports this capability
-                        if key == "streaming_quotes":
+                        if key in ["streaming_quotes", "streaming_greeks"]:
                             if key in capabilities.get('streaming', []):
                                 validated_config[key] = value
                             else:

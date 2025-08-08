@@ -266,9 +266,20 @@ class ConnectionManager:
                         message_count += 1
                         consecutive_errors = 0  # Reset error counter on success
                         
-                        # Broadcast data
+                        # Determine message type based on data content
+                        message_type = "price_update"
+                        if hasattr(market_data, 'data_type'):
+                            if market_data.data_type == "greeks":
+                                message_type = "greeks_update"
+                        elif isinstance(market_data.data, dict):
+                            # Check if data contains Greeks fields
+                            greeks_fields = {'delta', 'gamma', 'theta', 'vega', 'implied_volatility'}
+                            if greeks_fields.intersection(market_data.data.keys()):
+                                message_type = "greeks_update"
+                        
+                        # Broadcast data with appropriate message type
                         await self.broadcast({
-                            "type": "price_update",
+                            "type": message_type,
                             "symbol": market_data.symbol,
                             "data": market_data.data,
                             "timestamp": market_data.timestamp
@@ -348,6 +359,8 @@ class ConnectionManager:
                 await self._handle_smart_subscription(websocket, data)
             elif message_type == "subscribe_replace_all":
                 await self._handle_unified_subscription(websocket, data)
+            elif message_type == "subscribe_persistent":
+                await self._handle_persistent_subscription(websocket, data)
             elif message_type == "get_subscription_status":
                 await self._handle_subscription_status(websocket)
             elif message_type == "ping":
@@ -420,6 +433,31 @@ class ConnectionManager:
             await websocket.send_json({
                 "type": "error",
                 "message": f"Error handling unified subscription: {str(e)}"
+            })
+    
+    async def _handle_persistent_subscription(self, websocket: WebSocket, data: dict):
+        """Handle persistent subscription (for orders, positions, etc.)"""
+        try:
+            symbols = data.get("symbols", [])
+            
+            logger.info(f"🔄 WebSocket: Persistent subscription - symbols: {symbols}")
+            
+            # Ensure persistent subscriptions for background data
+            if hasattr(self.streaming_manager, 'ensure_persistent_subscriptions'):
+                await self.streaming_manager.ensure_persistent_subscriptions(symbols)
+            
+            await websocket.send_json({
+                "type": "subscription_confirmed",
+                "subscription_type": "persistent",
+                "symbols": symbols,
+                "message": f"Persistent subscriptions ensured for {len(symbols)} symbols"
+            })
+            
+        except Exception as e:
+            logger.error(f"❌ Error handling persistent subscription: {e}")
+            await websocket.send_json({
+                "type": "error",
+                "message": f"Error handling persistent subscription: {str(e)}"
             })
     
     async def _handle_subscription_status(self, websocket: WebSocket):

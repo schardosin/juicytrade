@@ -298,7 +298,7 @@ class SmartMarketDataStore {
     this.optionPrices = reactive(new Map());
     this.previousClosePrices = reactive(new Map()); // Previous close prices cache
 
-    // Reactive data stores - Greeks data (periodic updates)
+    // Reactive data stores - Greeks data (streaming updates)
     this.optionGreeks = reactive(new Map());
 
     // Reactive data stores - REST API data
@@ -711,6 +711,7 @@ class SmartMarketDataStore {
 
   /**
    * Update Greeks data for all active subscriptions
+   * Only makes API calls if streaming Greeks are not available
    */
   async updateGreeksData() {
     const symbols = Array.from(this.activeGreeksSubscriptions);
@@ -719,20 +720,66 @@ class SmartMarketDataStore {
       return; // No symbols to update
     }
 
+    // Check if streaming Greeks are available
+    const shouldUseAPI = await this.shouldUseGreeksAPI();
+    
+    if (!shouldUseAPI) {
+      console.log("📊 Streaming Greeks available - skipping API call");
+      return; // Streaming Greeks are available, don't make API calls
+    }
+
+    console.log("📊 Using API Greeks for", symbols.length, "symbols");
+
     try {
       const greeksData = await api.getOptionsGreeks(symbols);
       
       // Update Greeks data for each symbol
       if (greeksData && typeof greeksData === 'object') {
-        Object.entries(greeksData).forEach(([symbol, greeks]) => {
-          this.optionGreeks.set(symbol, {
-            ...greeks,
-            timestamp: Date.now(),
+        // Handle the new Greeks API response structure
+        const greeksMap = greeksData.greeks || greeksData;
+        
+        if (greeksMap && typeof greeksMap === 'object') {
+          Object.entries(greeksMap).forEach(([symbol, greeks]) => {
+            this.optionGreeks.set(symbol, {
+              ...greeks,
+              timestamp: Date.now(),
+            });
           });
-        });
+        }
       }
     } catch (error) {
       console.error("❌ Error updating Greeks:", error);
+    }
+  }
+
+  /**
+   * Check if we should use API for Greeks or rely on streaming
+   */
+  async shouldUseGreeksAPI() {
+    try {
+      // Get current provider configuration
+      const config = await this.getData("providers.config");
+      
+      if (!config) {
+        return true; // No config available, use API as fallback
+      }
+      
+      // If streaming_greeks is configured, don't use API
+      if (config.streaming_greeks) {
+        return false; // Streaming Greeks available
+      }
+      
+      // If only API Greeks are configured, use API
+      if (config.greeks) {
+        return true; // Use API Greeks
+      }
+      
+      // No Greeks provider configured, don't make API calls
+      return false;
+      
+    } catch (error) {
+      console.error("❌ Error checking Greeks configuration:", error);
+      return true; // Fallback to API on error
     }
   }
 
@@ -811,6 +858,10 @@ class SmartMarketDataStore {
       this.handlePriceUpdate(data);
     });
 
+    webSocketClient.onGreeksUpdate((data) => {
+      this.handleGreeksUpdate(data);
+    });
+
     webSocketClient.onSubscriptionConfirmed((data) => {
 
     });
@@ -858,6 +909,32 @@ class SmartMarketDataStore {
     // Update access timestamp to keep subscription alive
     if (this.activeSubscriptions.has(symbol)) {
       this.lastAccess.set(symbol, Date.now());
+    }
+  }
+
+  /**
+   * Handle incoming Greeks updates from WebSocket
+   */
+  handleGreeksUpdate(data) {
+    const { symbol } = data;
+    if (!symbol) return;
+
+    // Extract Greeks data
+    const greeksData = {
+      delta: data.data?.delta || data.delta,
+      gamma: data.data?.gamma || data.gamma,
+      theta: data.data?.theta || data.theta,
+      vega: data.data?.vega || data.vega,
+      implied_volatility: data.data?.implied_volatility || data.implied_volatility,
+      timestamp: Date.now(),
+    };
+
+    // Update Greeks store
+    this.optionGreeks.set(symbol, greeksData);
+
+    // Update access timestamp to keep subscription alive
+    if (this.activeGreeksSubscriptions.has(symbol)) {
+      this.lastGreeksAccess.set(symbol, Date.now());
     }
   }
 

@@ -143,6 +143,10 @@ class WebSocketStreamingClient {
     this.addCallback('price_update', callback);
   }
 
+  onGreeksUpdate(callback) {
+    this.addCallback('greeks_update', callback);
+  }
+
   onSubscriptionConfirmed(callback) {
     this.addCallback('subscription_confirmed', callback);
   }
@@ -163,9 +167,9 @@ class WebSocketStreamingClient {
     if (callbacks) {
       callbacks.forEach(callback => {
         try {
-          // Pass the whole message for price_update and subscription_confirmed
+          // Pass the whole message for price_update, greeks_update, and subscription_confirmed
           // and just the data for others, which matches the legacy client's behavior.
-          const dataToSend = (message.type === 'price_update' || message.type === 'subscription_confirmed')
+          const dataToSend = (message.type === 'price_update' || message.type === 'greeks_update' || message.type === 'subscription_confirmed')
             ? message
             : message.data;
           callback(dataToSend);

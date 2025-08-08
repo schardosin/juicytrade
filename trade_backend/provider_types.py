@@ -7,7 +7,7 @@ PROVIDER_TYPES: Dict[str, Dict[str, Any]] = {
         "description": "Alpaca Trading API",
         "supports_account_types": ["live", "paper"],
         "capabilities": {
-            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes", "trade_account"]
         },
         "credential_fields": {
@@ -30,7 +30,7 @@ PROVIDER_TYPES: Dict[str, Dict[str, Any]] = {
         "description": "Tradier Brokerage API",
         "supports_account_types": ["live", "paper"],
         "capabilities": {
-            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar"],
+            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes"]
         },
         "credential_fields": {
@@ -68,7 +68,7 @@ PROVIDER_TYPES: Dict[str, Dict[str, Any]] = {
         "supports_account_types": ["live", "paper"],
         "capabilities": {
             "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
-            "streaming": ["streaming_quotes", "trade_account"]
+            "streaming": ["streaming_quotes", "trade_account", "streaming_greeks"]
         },
         "credential_fields": {
             "live": [

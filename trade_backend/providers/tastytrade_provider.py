@@ -17,6 +17,9 @@ from ..config import settings
 
 logger = logging.getLogger(__name__)
 
+# Configure httpx logging to reduce verbosity
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 class DXLinkCandleClient:
     """Dedicated client for DXLink Candle Events to fetch historical data."""
     
@@ -455,6 +458,10 @@ class TastyTradeProvider(BaseProvider):
         self._connection_ready = asyncio.Event()
         self._symbol_cache = SymbolLookupCache()
         
+        # Streaming infrastructure
+        self._streaming_queue = None
+        self._streaming_task = None
+        
     async def _create_session(self) -> bool:
         """Create a new session with TastyTrade API."""
         try:
@@ -612,10 +619,21 @@ class TastyTradeProvider(BaseProvider):
                         # Extract pricing data for each symbol
                         for item in items:
                             symbol = item.get("symbol", "")
-                            if symbol in batch_symbols:
+                            # Clean up symbol spaces for matching
+                            cleaned_symbol = ' '.join(symbol.split()).replace(' ', '') if symbol else ""
+                            
+                            # Check if this symbol (cleaned) matches any in our batch
+                            matching_batch_symbol = None
+                            for batch_symbol in batch_symbols:
+                                batch_cleaned = ' '.join(batch_symbol.split()).replace(' ', '') if batch_symbol else ""
+                                if cleaned_symbol == batch_cleaned:
+                                    matching_batch_symbol = batch_symbol
+                                    break
+                            
+                            if matching_batch_symbol:
                                 # Extract market data if available
                                 market_data = item.get("market-data", {})
-                                pricing_data[symbol] = {
+                                pricing_data[matching_batch_symbol] = {
                                     "bid": market_data.get("bid"),
                                     "ask": market_data.get("ask"),
                                     "close": market_data.get("close"),
@@ -627,6 +645,7 @@ class TastyTradeProvider(BaseProvider):
                                     "theta": market_data.get("theta"),
                                     "vega": market_data.get("vega"),
                                 }
+                                logger.debug(f"TastyTrade: Found pricing data for {matching_batch_symbol}")
                         
                 except Exception as e:
                     logger.error(f"Error fetching pricing data for batch: {e}")
@@ -1412,29 +1431,92 @@ class TastyTradeProvider(BaseProvider):
     
     # === Streaming Methods ===
     
+    async def _ensure_healthy_connection(self) -> bool:
+        """Ensure we have a healthy streaming connection, reconnect if needed."""
+        try:
+            # Check if we're already connected and healthy
+            if self.is_connected and self._stream_connection:
+                # Test the connection with a ping
+                try:
+                    await asyncio.wait_for(self._stream_connection.ping(), timeout=5.0)
+                    logger.debug("TastyTrade: Connection health check passed")
+                    return True
+                except (asyncio.TimeoutError, websockets.exceptions.ConnectionClosed, Exception):
+                    logger.warning("TastyTrade: Connection health check failed, reconnecting...")
+                    self.is_connected = False
+                    self._connection_ready.clear()
+            
+            # Connection is not healthy, attempt to reconnect
+            logger.info("TastyTrade: Establishing new streaming connection...")
+            return await self.connect_streaming()
+            
+        except Exception as e:
+            logger.error(f"TastyTrade: Error ensuring healthy connection: {e}")
+            return False
+
     async def connect_streaming(self) -> bool:
         """Connect to DXLink streaming service."""
         try:
-            # Get quote token for DXLink authentication
+            # Clean up any existing connection first
+            if self._stream_connection:
+                try:
+                    await self._stream_connection.close()
+                except:
+                    pass
+                self._stream_connection = None
+            
+            # Reset connection state
+            self.is_connected = False
+            self._connection_ready.clear()
+            
+            # Get fresh quote token for DXLink authentication
             if not await self._get_quote_token():
                 logger.error("Failed to get quote token for streaming")
                 return False
             
-            # TODO: Implement DXLink WebSocket connection
-            # This will require connecting to self._dxlink_url and using self._quote_token
-            logger.info("TastyTrade streaming connection not yet implemented")
-            self.is_connected = False
-            return False
+            # Create DXLink streaming connection with retry logic
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"TastyTrade: Connection attempt {attempt + 1}/{max_retries}")
+                    self._stream_connection = await websockets.connect(
+                        self._dxlink_url,
+                        ping_interval=30,
+                        ping_timeout=10,
+                        close_timeout=5
+                    )
+                    break
+                except Exception as e:
+                    logger.warning(f"TastyTrade: Connection attempt {attempt + 1} failed: {e}")
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(2 ** attempt)  # Exponential backoff
+            
+            # Execute DXLink setup sequence
+            if not await self._dxlink_streaming_setup():
+                logger.error("DXLink streaming setup failed")
+                return False
+            
+            self.is_connected = True
+            self._connection_ready.set()
+            
+            # Start the streaming data processing task
+            await self._start_streaming_task()
+            
+            logger.info("TastyTrade streaming connected successfully")
+            return True
             
         except Exception as e:
             logger.error(f"Error connecting to TastyTrade streaming: {e}")
+            self.is_connected = False
+            self._connection_ready.clear()
             return False
     
     async def disconnect_streaming(self) -> bool:
         """Disconnect from DXLink streaming service."""
         try:
             if self._stream_connection:
-                # TODO: Implement DXLink WebSocket disconnection
+                await self._stream_connection.close()
                 self._stream_connection = None
             
             self.is_connected = False
@@ -1449,24 +1531,189 @@ class TastyTradeProvider(BaseProvider):
             return False
     
     async def subscribe_to_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
-        """Subscribe to real-time data for symbols via DXLink."""
+        """Subscribe to real-time data for symbols via DXLink using correct streamer symbols."""
         logger.info(f"TastyTrade: subscribe_to_symbols called with {len(symbols)} symbols")
         
-        # TODO: Implement DXLink symbol subscription
-        # This will require DXLink protocol implementation
-        logger.info("TastyTrade symbol subscription not yet implemented")
-        return False
+        try:
+            # Check if connection is healthy, reconnect if needed
+            if not await self._ensure_healthy_connection():
+                logger.error("TastyTrade: Failed to establish healthy connection")
+                return False
+            
+            # Wait for connection to be ready
+            await self._connection_ready.wait()
+            
+            # Prepare subscriptions using correct streaming symbols
+            subscriptions = []
+            
+            for symbol in symbols:
+                # Convert to streaming symbol format for DXLink
+                if self._is_option_symbol(symbol):
+                    streaming_symbol = self._convert_to_streamer_symbol(symbol)
+                    logger.debug(f"TastyTrade: Using streamer symbol for {symbol}: {streaming_symbol}")
+                else:
+                    streaming_symbol = symbol  # Stock symbols use as-is
+                    logger.debug(f"TastyTrade: Using stock symbol as-is: {streaming_symbol}")
+                
+                # Add Quote subscription for prices
+                subscriptions.append({
+                    "type": "Quote",
+                    "symbol": streaming_symbol
+                })
+                
+                # Add Greeks subscription for option symbols
+                if self._is_option_symbol(symbol):
+                    subscriptions.append({
+                        "type": "Greeks",
+                        "symbol": streaming_symbol
+                    })
+                    logger.debug(f"TastyTrade: Added Greeks subscription for {streaming_symbol}")
+            
+            # Send subscription message
+            subscription_msg = {
+                "type": "FEED_SUBSCRIPTION",
+                "channel": 1,
+                "reset": False,
+                "add": subscriptions
+            }
+            
+            logger.debug(f"TastyTrade: Sending subscription message with {len(subscriptions)} subscriptions")
+            await self._stream_connection.send(json.dumps(subscription_msg))
+            
+            # Update subscribed symbols
+            self._subscribed_symbols.update(symbols)
+            
+            logger.info(f"TastyTrade: Subscribed to {len(symbols)} symbols with {len(subscriptions)} subscriptions")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error subscribing to TastyTrade symbols: {e}")
+            # Mark connection as unhealthy so it gets reconnected next time
+            self.is_connected = False
+            self._connection_ready.clear()
+            return False
     
     async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         """Unsubscribe from real-time data for symbols via DXLink."""
         logger.info(f"TastyTrade: unsubscribe_from_symbols called with {len(symbols)} symbols")
         
-        # TODO: Implement DXLink symbol unsubscription
-        logger.info("TastyTrade symbol unsubscription not yet implemented")
-        return False
+        try:
+            if not self.is_connected:
+                return True  # Already disconnected
+            
+            # Convert symbols to TastyTrade format and prepare unsubscriptions
+            subscriptions = []
+            
+            for symbol in symbols:
+                # Convert to TastyTrade format if needed
+                tastytrade_symbol = self.convert_symbol_to_provider_format(symbol)
+                
+                # Remove Quote subscription
+                subscriptions.append({
+                    "type": "Quote",
+                    "symbol": tastytrade_symbol
+                })
+                
+                # Remove Greeks subscription for option symbols
+                if self._is_option_symbol(symbol):
+                    subscriptions.append({
+                        "type": "Greeks",
+                        "symbol": tastytrade_symbol
+                    })
+            
+            # Send unsubscription message
+            unsubscription_msg = {
+                "type": "FEED_SUBSCRIPTION",
+                "channel": 1,
+                "reset": False,
+                "remove": subscriptions
+            }
+            
+            await self._stream_connection.send(json.dumps(unsubscription_msg))
+            
+            # Update subscribed symbols
+            self._subscribed_symbols.difference_update(symbols)
+            
+            logger.info(f"TastyTrade: Unsubscribed from {len(symbols)} symbols")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error unsubscribing from TastyTrade symbols: {e}")
+            return False
+
+    async def get_streaming_greeks_batch(self, symbols: List[str]) -> Dict[str, Dict]:
+        """Get streaming Greeks data for multiple option symbols."""
+        try:
+            logger.info(f"TastyTrade: get_streaming_greeks_batch called with {len(symbols)} symbols")
+            
+            # For TastyTrade, streaming Greeks flow through WebSocket messages, not synchronous collection
+            # The streaming task (_process_streaming_data) handles all WebSocket communication
+            # Greeks data is sent to the frontend via WebSocket, not through this API endpoint
+            
+            logger.info("TastyTrade: Streaming Greeks flow through WebSocket messages, returning empty for API endpoint")
+            return {}
+            
+        except Exception as e:
+            logger.error(f"Error getting streaming Greeks batch: {e}")
+            return {}
     
     # === Utility Methods ===
     
+    def _convert_to_streamer_symbol(self, symbol: str) -> str:
+        """Convert standard OCC symbol to TastyTrade DXLink streamer format.
+        
+        Examples:
+        - SPXW250806P02600000 -> .SPXW250806P2600
+        - SPY250808C00643000 -> .SPY250808C643
+        """
+        try:
+            if not self._is_option_symbol(symbol):
+                return symbol
+            
+            # Parse the standard OCC symbol
+            # Format: ROOT + YYMMDD + C/P + STRIKE(8 digits)
+            if len(symbol) < 15:
+                logger.warning(f"TastyTrade: Symbol too short for option parsing: {symbol}")
+                return symbol
+            
+            # Find where the date starts (6 consecutive digits)
+            for i in range(len(symbol) - 14):  # Need at least 15 chars after position i
+                date_part = symbol[i:i+6]
+                if date_part.isdigit():
+                    # Found the date part
+                    root = symbol[:i]
+                    date = date_part  # YYMMDD
+                    option_type = symbol[i+6]  # C or P
+                    strike_part = symbol[i+7:i+15]  # 8 digits
+                    
+                    # Convert strike to actual dollar amount (OCC format is dollars * 1000)
+                    try:
+                        strike_raw = int(strike_part)
+                        # Divide by 1000 to get actual strike price
+                        strike_dollars = strike_raw / 1000
+                        # Convert to clean string (remove .0 if it's a whole number)
+                        if strike_dollars == int(strike_dollars):
+                            strike_clean = str(int(strike_dollars))
+                        else:
+                            strike_clean = str(strike_dollars)
+                        
+                        # Build streamer symbol: .ROOT + DATE + TYPE + STRIKE
+                        streamer_symbol = f".{root}{date}{option_type}{strike_clean}"
+                        
+                        logger.debug(f"TastyTrade: Converted {symbol} -> {streamer_symbol}")
+                        return streamer_symbol
+                        
+                    except ValueError:
+                        logger.error(f"TastyTrade: Invalid strike price in symbol: {symbol}")
+                        return symbol
+            
+            logger.warning(f"TastyTrade: Could not parse option symbol: {symbol}")
+            return symbol
+            
+        except Exception as e:
+            logger.error(f"TastyTrade: Error converting symbol to streamer format: {e}")
+            return symbol
+
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol using TastyTrade format."""
         # TastyTrade uses OCC format similar to other providers
@@ -1475,6 +1722,68 @@ class TastyTradeProvider(BaseProvider):
     def _get_provider_type(self) -> str:
         """Override to return 'tastytrade' for symbol conversion."""
         return "tastytrade"
+    
+    def convert_symbol_to_standard_format(self, symbol: str) -> str:
+        """Convert TastyTrade symbol to standard OCC format.
+        
+        Handles both:
+        - TastyTrade API symbols with spaces: "SPXW  250808C06290000" -> "SPXW250808C06290000"
+        - TastyTrade streamer symbols: ".SPXW250808P6330" -> "SPXW250808P06330000"
+        """
+        try:
+            # Handle TastyTrade API symbols with extra spaces
+            if not symbol.startswith('.') and '  ' in symbol:
+                # Remove extra spaces from TastyTrade API symbols
+                cleaned_symbol = ' '.join(symbol.split())  # Normalize all whitespace to single spaces
+                cleaned_symbol = cleaned_symbol.replace(' ', '')  # Remove all spaces
+                logger.debug(f"TastyTrade: Cleaned API symbol {symbol} -> {cleaned_symbol}")
+                return cleaned_symbol
+            
+            # Handle streamer symbols (start with dot)
+            if symbol.startswith('.'):
+                # Remove the leading dot
+                symbol_no_dot = symbol[1:]
+                
+                # Parse the streamer symbol format: ROOT + YYMMDD + C/P + STRIKE
+                if len(symbol_no_dot) < 10:
+                    logger.warning(f"TastyTrade: Streamer symbol too short: {symbol}")
+                    return symbol
+                
+                # Find where the date starts (6 consecutive digits)
+                for i in range(len(symbol_no_dot) - 9):  # Need at least 10 chars after position i
+                    date_part = symbol_no_dot[i:i+6]
+                    if date_part.isdigit():
+                        # Found the date part
+                        root = symbol_no_dot[:i]
+                        date = date_part  # YYMMDD
+                        option_type = symbol_no_dot[i+6]  # C or P
+                        strike_part = symbol_no_dot[i+7:]  # Strike price
+                        
+                        # Convert strike back to 8-digit OCC format (multiply by 1000)
+                        try:
+                            strike_dollars = float(strike_part)
+                            strike_raw = int(strike_dollars * 1000)
+                            strike_formatted = f"{strike_raw:08d}"  # 8 digits with leading zeros
+                            
+                            # Build standard OCC symbol: ROOT + DATE + TYPE + STRIKE
+                            standard_symbol = f"{root}{date}{option_type}{strike_formatted}"
+                            
+                            logger.debug(f"TastyTrade: Converted streamer {symbol} -> standard {standard_symbol}")
+                            return standard_symbol
+                            
+                        except ValueError:
+                            logger.error(f"TastyTrade: Invalid strike price in streamer symbol: {symbol}")
+                            return symbol
+                
+                logger.warning(f"TastyTrade: Could not parse streamer symbol: {symbol}")
+                return symbol
+            
+            # If no special handling needed, return as-is
+            return symbol
+            
+        except Exception as e:
+            logger.error(f"TastyTrade: Error converting symbol to standard format: {e}")
+            return symbol
     
     def _parse_option_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Parse TastyTrade option symbol to extract components."""
@@ -1906,6 +2215,262 @@ class TastyTradeProvider(BaseProvider):
         except Exception as e:
             self._log_error("transform_tastytrade_account", e)
             return None
+
+    async def _dxlink_streaming_setup(self) -> bool:
+        """Execute DXLink setup sequence for streaming connection."""
+        try:
+            # 1. SETUP
+            setup_msg = {
+                "type": "SETUP",
+                "channel": 0,
+                "version": "0.1-DXF-JS/0.3.0",
+                "keepaliveTimeout": 60,
+                "acceptKeepaliveTimeout": 60
+            }
+            await self._stream_connection.send(json.dumps(setup_msg))
+            
+            # Wait for SETUP response
+            response = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            setup_response = json.loads(response)
+            if setup_response.get("type") != "SETUP":
+                logger.error(f"Unexpected SETUP response: {setup_response}")
+                return False
+            
+            # 2. Wait for AUTH_STATE: UNAUTHORIZED
+            auth_state = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            auth_response = json.loads(auth_state)
+            if auth_response.get("type") != "AUTH_STATE" or auth_response.get("state") != "UNAUTHORIZED":
+                logger.error(f"Unexpected AUTH_STATE response: {auth_response}")
+                return False
+            
+            # 3. AUTHORIZE
+            auth_msg = {
+                "type": "AUTH",
+                "channel": 0,
+                "token": self._quote_token
+            }
+            await self._stream_connection.send(json.dumps(auth_msg))
+            
+            # Wait for AUTH_STATE: AUTHORIZED
+            auth_success = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            auth_success_response = json.loads(auth_success)
+            if (auth_success_response.get("type") != "AUTH_STATE" or 
+                auth_success_response.get("state") != "AUTHORIZED"):
+                logger.error(f"Authorization failed: {auth_success_response}")
+                return False
+            
+            # 4. CHANNEL_REQUEST
+            channel_msg = {
+                "type": "CHANNEL_REQUEST",
+                "channel": 1,
+                "service": "FEED",
+                "parameters": {"contract": "AUTO"}
+            }
+            await self._stream_connection.send(json.dumps(channel_msg))
+            
+            # Wait for CHANNEL_OPENED
+            channel_response = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            channel_opened = json.loads(channel_response)
+            if channel_opened.get("type") != "CHANNEL_OPENED":
+                logger.error(f"Channel open failed: {channel_opened}")
+                return False
+            
+            # 5. FEED_SETUP for Quote and Greeks events
+            feed_setup_msg = {
+                "type": "FEED_SETUP",
+                "channel": 1,
+                "acceptAggregationPeriod": 0.1,
+                "acceptDataFormat": "COMPACT",
+                "acceptEventFields": {
+                    "Quote": ["eventType", "eventSymbol", "bidPrice", "askPrice", "bidSize", "askSize"],
+                    "Greeks": ["eventType", "eventSymbol", "delta", "gamma", "theta", "vega", "volatility"]
+                }
+            }
+            await self._stream_connection.send(json.dumps(feed_setup_msg))
+            
+            # Wait for FEED_CONFIG
+            feed_response = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            feed_config = json.loads(feed_response)
+            if feed_config.get("type") != "FEED_CONFIG":
+                logger.error(f"Feed setup failed: {feed_config}")
+                return False
+            
+            logger.info("DXLink streaming setup completed successfully")
+            return True
+            
+        except asyncio.TimeoutError:
+            logger.error("DXLink streaming setup timeout")
+            return False
+        except Exception as e:
+            logger.error(f"DXLink streaming setup error: {e}")
+            return False
+
+    def _process_greeks_feed_data(self, feed_data: List) -> Dict[str, Dict]:
+        """Process FEED_DATA messages and extract Greeks events."""
+        greeks_data = {}
+        
+        try:
+            # DXLink COMPACT format: flat array with Greeks data
+            # Format: ['Greeks', 'SYMBOL', delta, gamma, theta, vega, volatility, 'Greeks', ...]
+            for item in feed_data:
+                if isinstance(item, list):
+                    # Parse the flat array - each Greeks event has 6 consecutive elements
+                    i = 0
+                    while i + 5 < len(item):
+                        if item[i] == "Greeks":
+                            symbol = item[i + 1]
+                            greeks = {
+                                "delta": item[i + 2],
+                                "gamma": item[i + 3],
+                                "theta": item[i + 4],
+                                "vega": item[i + 5],
+                                "implied_volatility": item[i + 6] if i + 6 < len(item) else None
+                            }
+                            greeks_data[symbol] = greeks
+                            logger.debug(f"TastyTrade: Processed Greeks for {symbol}")
+                            i += 7  # Move to next Greeks event (7 fields per event)
+                        else:
+                            i += 1  # Skip non-Greeks data
+            
+            if greeks_data:
+                logger.debug(f"TastyTrade: Total Greeks processed: {len(greeks_data)} symbols")
+            
+        except Exception as e:
+            logger.error(f"Error processing Greeks feed data: {e}")
+            logger.error(f"Feed data structure: {feed_data}")
+        
+        return greeks_data
+
+    def set_streaming_queue(self, queue):
+        """Set the streaming queue for sending market data."""
+        self._streaming_queue = queue
+    
+    def is_streaming_connected(self) -> bool:
+        """Check if streaming connection is active."""
+        return self.is_connected and self._stream_connection is not None
+    
+    async def _start_streaming_task(self):
+        """Start the streaming data processing task."""
+        if self._streaming_task is None or self._streaming_task.done():
+            self._streaming_task = asyncio.create_task(self._process_streaming_data())
+            logger.info("TastyTrade: Started streaming data processing task")
+    
+    async def _process_streaming_data(self):
+        """Process incoming streaming data and send to queue."""
+        try:
+            logger.info("TastyTrade: Starting streaming data processor")
+            
+            while self.is_connected and self._stream_connection:
+                try:
+                    # Wait for incoming messages
+                    message = await asyncio.wait_for(self._stream_connection.recv(), timeout=30.0)
+                    data = json.loads(message)
+                    
+                    logger.debug(f"TastyTrade: Received message type: {data.get('type')}")
+                    
+                    if data.get("type") == "FEED_DATA":
+                        # Process both Quote and Greeks events from the feed data
+                        feed_data = data.get("data", [])
+                        logger.debug(f"TastyTrade: Processing FEED_DATA with {len(feed_data)} items")
+                        await self._process_feed_events(feed_data)
+                    else:
+                        logger.debug(f"TastyTrade: Received non-FEED_DATA message: {data}")
+                    
+                except asyncio.TimeoutError:
+                    logger.info("TastyTrade: Streaming timeout, sending keepalive ping")
+                    # Send keepalive ping
+                    if self._stream_connection:
+                        try:
+                            await self._stream_connection.ping()
+                        except Exception as e:
+                            logger.warning(f"TastyTrade: Keepalive ping failed: {e}")
+                            break
+                    continue
+                except Exception as e:
+                    logger.error(f"TastyTrade: Error processing streaming message: {e}")
+                    break
+                    
+        except Exception as e:
+            logger.error(f"TastyTrade: Streaming data processor error: {e}")
+        finally:
+            logger.info("TastyTrade: Streaming data processor stopped")
+    
+    async def _process_feed_events(self, feed_data: List):
+        """Process FEED_DATA events and send to streaming queue."""
+        try:
+            if not self._streaming_queue:
+                logger.warning("TastyTrade: No streaming queue available for feed events")
+                return
+            
+            # Process Quote events
+            quote_data = self._process_quote_feed_data(feed_data)
+            if quote_data:
+                logger.debug(f"TastyTrade: Processing {len(quote_data)} quote updates")
+                for symbol, quote in quote_data.items():
+                    # Convert TastyTrade symbol back to standard format
+                    standard_symbol = self.convert_symbol_to_standard_format(symbol)
+                    
+                    # Create MarketData object and send to queue
+                    market_data = MarketData(
+                        symbol=standard_symbol,
+                        data=quote,
+                        data_type="quote",
+                        timestamp=datetime.now().isoformat()
+                    )
+                    await self._streaming_queue.put(market_data)
+                    logger.debug(f"TastyTrade: Sent quote update for {standard_symbol}: {quote}")
+            
+            # Process Greeks events
+            greeks_data = self._process_greeks_feed_data(feed_data)
+            if greeks_data:
+                logger.debug(f"TastyTrade: Processing {len(greeks_data)} Greeks updates")
+                for symbol, greeks in greeks_data.items():
+                    # Convert TastyTrade symbol back to standard format
+                    standard_symbol = self.convert_symbol_to_standard_format(symbol)
+                    
+                    # Create MarketData object with Greeks data type and send to queue
+                    market_data = MarketData(
+                        symbol=standard_symbol,
+                        data=greeks,
+                        data_type="greeks",
+                        timestamp=datetime.now().isoformat()
+                    )
+                    await self._streaming_queue.put(market_data)
+                    
+                    logger.debug(f"TastyTrade: Sent Greeks update for {standard_symbol}")
+                
+        except Exception as e:
+            logger.error(f"TastyTrade: Error processing feed events: {e}")
+    
+    def _process_quote_feed_data(self, feed_data: List) -> Dict[str, Dict]:
+        """Process FEED_DATA messages and extract Quote events."""
+        quote_data = {}
+        
+        try:
+            # DXLink COMPACT format: flat array with Quote data
+            # Format: ['Quote', 'SYMBOL', bidPrice, askPrice, bidSize, askSize, 'Quote', ...]
+            for item in feed_data:
+                if isinstance(item, list):
+                    # Parse the flat array - each Quote event has 6 consecutive elements
+                    i = 0
+                    while i + 5 < len(item):
+                        if item[i] == "Quote":
+                            symbol = item[i + 1]
+                            quote = {
+                                "bid": item[i + 2],
+                                "ask": item[i + 3],
+                                "bid_size": item[i + 4],
+                                "ask_size": item[i + 5]
+                            }
+                            quote_data[symbol] = quote
+                            i += 6  # Move to next Quote event (6 fields per event)
+                        else:
+                            i += 1  # Skip non-Quote data
+        except Exception as e:
+            logger.error(f"Error processing Quote feed data: {e}")
+            logger.error(f"Feed data structure: {feed_data}")
+        
+        return quote_data
 
     async def health_check(self) -> Dict[str, Any]:
         """Perform a health check on the TastyTrade provider."""

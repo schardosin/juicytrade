@@ -26,6 +26,7 @@ from .streaming_manager import streaming_manager
 from .connection_manager import ConnectionManager
 from .shutdown_manager import shutdown_manager
 from .watchlist_manager import watchlist_manager
+from .greeks_manager import greeks_manager
 
 # Configure logging
 logging.basicConfig(
@@ -484,7 +485,7 @@ async def get_options_chain_basic(
 
 @app.get("/options_greeks", response_model=ApiResponse)
 async def get_options_greeks(symbols: str):
-    """Get Greeks for specific option symbols (comma-separated)."""
+    """Get Greeks for specific option symbols (comma-separated) using smart Greeks manager."""
     try:
         symbol_list = [s.strip() for s in symbols.split(',') if s.strip()]
         
@@ -495,15 +496,66 @@ async def get_options_greeks(symbols: str):
                 message="No symbols provided"
             )
         
-        greeks_data = await provider_manager.get_options_greeks_batch(symbol_list)
+        # Use the new Greeks manager for smart routing
+        greeks_data = await greeks_manager.get_greeks_batch(symbol_list)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "greeks": greeks_data,
+                "strategy": greeks_manager.get_current_strategy(),
+                "provider_info": greeks_manager.get_provider_info()
+            },
+            message=f"Retrieved Greeks for {len(symbol_list)} option symbols using {greeks_manager.get_current_strategy()} strategy"
+        )
+    except Exception as e:
+        logger.error(f"Error getting options Greeks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/greeks/{symbols}", response_model=ApiResponse)
+async def get_greeks_batch(symbols: str):
+    """Get Greeks for multiple option symbols using smart Greeks manager."""
+    try:
+        symbol_list = symbols.split(",")
+        greeks_data = await greeks_manager.get_greeks_batch(symbol_list)
         
         return ApiResponse(
             success=True,
             data=greeks_data,
-            message=f"Retrieved Greeks for {len(symbol_list)} option symbols"
+            message=f"Retrieved Greeks for {len(symbol_list)} symbols using {greeks_manager.get_current_strategy()} strategy",
+            metadata={
+                "strategy": greeks_manager.get_current_strategy(),
+                "provider_info": greeks_manager.get_provider_info()
+            }
         )
     except Exception as e:
-        logger.error(f"Error getting options Greeks: {e}")
+        logger.error(f"Error in get_greeks_batch: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/provider-capabilities", response_model=ApiResponse)
+async def get_provider_capabilities():
+    """Get provider capabilities matrix including Greeks support."""
+    try:
+        from .provider_config import PROVIDER_CAPABILITIES
+        
+        # Enhanced capabilities with Greeks information
+        enhanced_capabilities = {}
+        for provider, caps in PROVIDER_CAPABILITIES.items():
+            enhanced_capabilities[provider] = {
+                **caps,
+                "greeks_support": {
+                    "api_greeks": "greeks" in caps.get("capabilities", {}).get("rest", []),
+                    "streaming_greeks": "streaming_greeks" in caps.get("capabilities", {}).get("streaming", [])
+                }
+            }
+        
+        return ApiResponse(
+            success=True,
+            data=enhanced_capabilities,
+            message="Retrieved provider capabilities with Greeks support information"
+        )
+    except Exception as e:
+        logger.error(f"Error getting provider capabilities: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/options_chain_smart", response_model=ApiResponse)

@@ -75,6 +75,25 @@ class StreamingManager:
                         logger.error(f"❌ Failed to connect provider {quotes_provider_name} after {self._max_connection_attempts} attempts")
                         return False
             
+            # Connect streaming Greeks provider (if different from quotes provider)
+            greeks_provider_name = config.get("streaming_greeks")
+            if (greeks_provider_name and 
+                greeks_provider_name != quotes_provider_name and 
+                greeks_provider_name not in self._providers):
+                
+                provider = provider_manager._providers.get(greeks_provider_name)
+                if provider:
+                    provider.set_streaming_queue(self._streaming_queue)
+                    self._providers[greeks_provider_name] = provider
+                    
+                    # Enhanced connection with retry
+                    connected = await self._connect_with_retry(provider)
+                    if connected:
+                        logger.info(f"✅ Provider {greeks_provider_name} connected for Greeks streaming")
+                    else:
+                        logger.warning(f"⚠️ Failed to connect Greeks provider {greeks_provider_name}")
+                        # Don't fail the entire connection if Greeks provider fails
+            
             # Connect trade account provider
             trade_account_provider_name = config.get("trade_account")
             if trade_account_provider_name and trade_account_provider_name not in self._providers:
@@ -378,7 +397,9 @@ class StreamingManager:
         try:
             config = provider_config_manager.get_config()
             quotes_provider_name = config.get("streaming_quotes")
+            greeks_provider_name = config.get("streaming_greeks")
             
+            # Subscribe to quotes provider
             if quotes_provider_name and quotes_provider_name in self._providers:
                 provider = self._providers[quotes_provider_name]
                 
@@ -409,6 +430,40 @@ class StreamingManager:
                     logger.info(f"✅ Successfully subscribed to {len(symbols)} symbols on {quotes_provider_name}")
                 else:
                     logger.warning(f"⚠️ Subscription returned False for {len(symbols)} symbols on {quotes_provider_name}")
+            
+            # Subscribe to Greeks provider for option symbols (if different from quotes provider)
+            if (greeks_provider_name and 
+                greeks_provider_name != quotes_provider_name and 
+                greeks_provider_name in self._providers):
+                
+                # Filter to only option symbols
+                option_symbols = [s for s in symbols if self._is_option_symbol(s)]
+                
+                if option_symbols:
+                    provider = self._providers[greeks_provider_name]
+                    
+                    # Check if provider is connected
+                    if hasattr(provider, 'is_streaming_connected') and not provider.is_streaming_connected():
+                        logger.warning(f"⚠️ Greeks provider {greeks_provider_name} not connected, attempting recovery")
+                        await self._recover_provider(provider, greeks_provider_name)
+                    
+                    # Convert symbols to provider format before subscribing
+                    provider_option_symbols = SymbolConverter.batch_convert_to_provider_format(option_symbols, greeks_provider_name)
+                    
+                    # Subscribe with timeout
+                    success = await asyncio.wait_for(
+                        provider.subscribe_to_symbols(provider_option_symbols),
+                        timeout=15.0
+                    )
+                    
+                    if success:
+                        # Update internal tracking for Greeks
+                        if "greeks" not in self._subscriptions:
+                            self._subscriptions["greeks"] = set()
+                        self._subscriptions["greeks"].update(option_symbols)
+                        logger.info(f"✅ Successfully subscribed to Greeks for {len(option_symbols)} option symbols on {greeks_provider_name}")
+                    else:
+                        logger.warning(f"⚠️ Greeks subscription returned False for {len(option_symbols)} option symbols on {greeks_provider_name}")
                 
         except asyncio.TimeoutError:
             logger.error(f"⚠️ Subscription timeout for {len(symbols)} symbols")
@@ -479,6 +534,12 @@ class StreamingManager:
             "queue_size": self._streaming_queue.qsize(),
             "time_since_last_data": current_time - self._last_data_time
         }
+    
+    def _is_option_symbol(self, symbol: str) -> bool:
+        """Check if symbol is an option symbol."""
+        # Standard OCC format check - option symbols are typically longer than 10 characters
+        # and contain expiration date and strike price information
+        return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
 
 # Create streaming manager instance
 streaming_manager = StreamingManager()

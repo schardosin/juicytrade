@@ -166,6 +166,13 @@ class ProviderManager:
             logger.error(f"Provider '{provider_name}' not initialized.")
         return provider
 
+    def get_provider(self, instance_id: str) -> Optional[BaseProvider]:
+        """Get a provider instance by its instance ID."""
+        provider = self._providers.get(instance_id)
+        if not provider:
+            logger.error(f"Provider instance '{instance_id}' not found or not initialized.")
+        return provider
+
     async def get_expiration_dates(self, symbol: str) -> List[str]:
         provider = self._get_provider("expiration_dates")
         if provider:

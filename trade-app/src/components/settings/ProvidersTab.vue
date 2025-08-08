@@ -549,6 +549,16 @@ export default {
             label: "Streaming Quotes",
             description: "Real-time price streaming"
           },
+          {
+            key: "greeks",
+            label: "Greeks (API)",
+            description: "Option Greeks via API calls"
+          },
+          {
+            key: "streaming_greeks",
+            label: "Greeks (Streaming)",
+            description: "Real-time option Greeks streaming"
+          },
         ]
       },
     ];
@@ -834,6 +844,11 @@ export default {
     };
 
     const formatProviderName = (providerName, providerData) => {
+      // Handle null or undefined provider names
+      if (!providerName) {
+        return "None";
+      }
+      
       if (providerData) {
         const displayName = providerData.display_name || providerName;
         const accountType = providerData.paper ? "(Paper)" : "(Live)";
