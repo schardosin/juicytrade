@@ -354,9 +354,10 @@ export default {
       { key: "expiration_dates", label: "Expiration Dates" },
       { key: "historical_data", label: "Historical Data" },
       { key: "symbol_lookup", label: "Symbol Lookup" },
-      { key: "next_market_date", label: "Next Market Date" },
       { key: "market_calendar", label: "Market Calendar" },
       { key: "streaming_quotes", label: "Streaming Quotes" },
+      { key: "greeks", label: "Greeks" },
+      { key: "streaming_greeks", label: "Streaming Greeks" },
     ];
 
     // Methods
