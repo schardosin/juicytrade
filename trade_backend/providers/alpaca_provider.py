@@ -1528,7 +1528,11 @@ class AlpacaProvider(BaseProvider):
                     "bid": data.bid_price
                 }
             )
-            await self._streaming_queue.put(market_data)
+            # Send to cache instead of queue
+            if hasattr(self, '_streaming_cache') and self._streaming_cache:
+                await self._streaming_cache.update(market_data)
+            elif self._streaming_queue:
+                await self._streaming_queue.put(market_data)
         except Exception as e:
             self._log_error("stock_quote_handler", e)
     

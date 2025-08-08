@@ -304,6 +304,19 @@ class BaseProvider(ABC):
         """Set the queue for streaming data."""
         self._streaming_queue = queue
     
+    def set_streaming_cache(self, cache):
+        """Set the streaming cache for this provider."""
+        self._streaming_cache = cache
+        
+        # Add callback to update health tracking when data is received
+        async def data_received_callback(market_data):
+            # Update last data time for health monitoring
+            if hasattr(self, '_last_data_time'):
+                import time
+                self._last_data_time = time.time()
+        
+        cache.add_update_callback(data_received_callback)
+    
     # === Utility Methods ===
     
     def get_subscribed_symbols(self) -> Set[str]:

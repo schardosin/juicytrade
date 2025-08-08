@@ -141,10 +141,12 @@ class DataRecoveryManager {
 
   setupRecoveryStrategies() {
     this.recoveryStrategies.set('websocket_disconnected', this.recoverWebSocket.bind(this));
+    this.recoveryStrategies.set('websocket_recovery', this.recoverFromWebSocketRecovery.bind(this));
     this.recoveryStrategies.set('api_failure', this.recoverAPI.bind(this));
     this.recoveryStrategies.set('greeks_stale', this.recoverGreeks.bind(this));
     this.recoveryStrategies.set('data_stale', this.recoverStaleData.bind(this));
     this.recoveryStrategies.set('system_wakeup', this.recoverFromWakeup.bind(this));
+    this.recoveryStrategies.set('stale_connection', this.recoverFromStaleConnection.bind(this));
   }
 
   async executeRecovery(scenario, context = {}) {
@@ -258,6 +260,64 @@ class DataRecoveryManager {
     
     // Notify UI components about recovery completion
     this.notifyUIRecovery('system_wakeup');
+  }
+
+  async recoverFromWebSocketRecovery(context) {
+    console.log("🔄 Handling WebSocket recovery event", context);
+    
+    // The WebSocket client has already cleared stale data
+    // We just need to ensure our subscriptions are restored
+    const allSymbols = Array.from(this.store.activeSubscriptions);
+    if (allSymbols.length > 0) {
+      console.log(`🔄 Ensuring ${allSymbols.length} subscriptions are active after recovery`);
+      try {
+        await webSocketClient.replaceAllSubscriptions(allSymbols);
+      } catch (error) {
+        console.error("❌ Failed to restore subscriptions after recovery:", error);
+      }
+    }
+    
+    // Update system health
+    this.store.systemState.isHealthy = true;
+    this.store.systemState.failedComponents.clear();
+    
+    // Notify UI components
+    this.notifyUIRecovery('websocket_recovery');
+  }
+
+  async recoverFromStaleConnection(context) {
+    console.log("🔄 Recovering from stale connection", context);
+    
+    // Clear potentially stale data
+    const cutoffTime = Date.now() - 120000; // 2 minutes ago
+    
+    // Clear stale price data
+    for (const [symbol, priceData] of this.store.stockPrices.entries()) {
+      if (priceData.timestamp < cutoffTime) {
+        console.log(`🧹 Clearing stale stock price for ${symbol}`);
+        this.store.stockPrices.delete(symbol);
+      }
+    }
+    
+    for (const [symbol, priceData] of this.store.optionPrices.entries()) {
+      if (priceData.timestamp < cutoffTime) {
+        console.log(`🧹 Clearing stale option price for ${symbol}`);
+        this.store.optionPrices.delete(symbol);
+      }
+    }
+    
+    // Clear stale Greeks data
+    for (const [symbol, greeksData] of this.store.optionGreeks.entries()) {
+      if (greeksData.timestamp < cutoffTime) {
+        console.log(`🧹 Clearing stale Greeks for ${symbol}`);
+        this.store.optionGreeks.delete(symbol);
+      }
+    }
+    
+    // Force WebSocket recovery
+    await this.recoverWebSocket(context);
+    
+    console.log("✅ Stale connection recovery completed");
   }
 
   /**
@@ -880,59 +940,77 @@ class SmartMarketDataStore {
   }
 
   /**
-   * Handle incoming price updates from WebSocket
+   * Handle incoming price updates from WebSocket - optimized for high frequency
    */
   handlePriceUpdate(data) {
     const { symbol } = data;
     if (!symbol) return;
 
-    // Extract price data
+    // Fast path - direct price extraction
+    const price = data.price || data.data?.last || data.data?.mid;
+    const bid = data.data?.bid;
+    const ask = data.data?.ask;
+
+    // Calculate mid price if needed (optimized)
+    const finalPrice = price || (bid && ask ? (bid + ask) * 0.5 : null);
+
+    if (!finalPrice) return; // Skip if no valid price
+
+    // Minimal price data object
     const priceData = {
-      price: data.price || data.data?.last || data.data?.mid,
-      bid: data.data?.bid,
-      ask: data.data?.ask,
+      price: finalPrice,
+      bid,
+      ask,
       timestamp: Date.now(),
     };
 
-    // Calculate mid price if needed
-    if (!priceData.price && priceData.bid && priceData.ask) {
-      priceData.price = (priceData.bid + priceData.ask) / 2;
-    }
-
-    // Update appropriate store
-    if (this.isOptionSymbol(symbol)) {
+    // Fast symbol type check and update
+    if (symbol.length > 10) {
       this.optionPrices.set(symbol, priceData);
     } else {
       this.stockPrices.set(symbol, priceData);
     }
 
-    // Update access timestamp to keep subscription alive
+    // Update access timestamp only if actively subscribed (avoid unnecessary Map operations)
     if (this.activeSubscriptions.has(symbol)) {
       this.lastAccess.set(symbol, Date.now());
     }
   }
 
   /**
-   * Handle incoming Greeks updates from WebSocket
+   * Handle incoming Greeks updates from WebSocket - optimized for high frequency
    */
   handleGreeksUpdate(data) {
     const { symbol } = data;
     if (!symbol) return;
 
-    // Extract Greeks data
+    // Fast path - direct Greeks extraction
+    const dataObj = data.data || data;
+    const delta = dataObj.delta;
+    const gamma = dataObj.gamma;
+    const theta = dataObj.theta;
+    const vega = dataObj.vega;
+    const iv = dataObj.implied_volatility;
+
+    // Skip if no valid Greeks data
+    if (delta === undefined && gamma === undefined && theta === undefined && vega === undefined && iv === undefined) {
+      return;
+    }
+
+    // Minimal Greeks data object
     const greeksData = {
-      delta: data.data?.delta || data.delta,
-      gamma: data.data?.gamma || data.gamma,
-      theta: data.data?.theta || data.theta,
-      vega: data.data?.vega || data.vega,
-      implied_volatility: data.data?.implied_volatility || data.implied_volatility,
+      delta,
+      gamma,
+      theta,
+      vega,
+      implied_volatility: iv,
       timestamp: Date.now(),
     };
 
     // Update Greeks store
     this.optionGreeks.set(symbol, greeksData);
 
-    // Update access timestamp to keep subscription alive
+    // Update access timestamp only if actively subscribed
     if (this.activeGreeksSubscriptions.has(symbol)) {
       this.lastGreeksAccess.set(symbol, Date.now());
     }

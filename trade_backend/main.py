@@ -434,7 +434,7 @@ async def get_expiration_dates(symbol: str):
 
 @app.get("/options_chain", response_model=ApiResponse)
 async def get_options_chain(symbol: str, expiry: str, strategy_type: Optional[str] = None):
-    """Get options chain for a symbol and expiration date."""
+    """Get options chain for a symbol and expiration date - no price data (streaming provides prices)."""
     try:
         # Map strategy_type to option_type if needed
         option_type = None
@@ -446,13 +446,20 @@ async def get_options_chain(symbol: str, expiry: str, strategy_type: Optional[st
         
         contracts = await provider_manager.get_options_chain(symbol, expiry, option_type)
         
-        # Convert to dict format for API response
-        contracts_data = [contract.dict() for contract in contracts]
+        # Convert to dict format and remove price data for performance
+        contracts_data = []
+        for contract in contracts:
+            contract_dict = contract.dict()
+            # Remove price-related fields - UI gets these from streaming
+            price_fields = ['price', 'bid', 'ask', 'last', 'mark', 'bid_size', 'ask_size', 'volume', 'open_interest']
+            for field in price_fields:
+                contract_dict.pop(field, None)
+            contracts_data.append(contract_dict)
         
         return ApiResponse(
             success=True,
             data=contracts_data,
-            message=f"Retrieved {len(contracts)} option contracts"
+            message=f"Retrieved {len(contracts)} option contracts (no price data - use streaming)"
         )
     except Exception as e:
         logger.error(f"Error getting options chain: {e}")
@@ -465,19 +472,26 @@ async def get_options_chain_basic(
     underlying_price: Optional[float] = None,
     strike_count: int = 20
 ):
-    """Fast options chain loading - basic data only, ATM-focused by strike count."""
+    """Fast options chain loading - basic data only, ATM-focused by strike count, no price data."""
     try:
         contracts = await provider_manager.get_options_chain_basic(
             symbol, expiry, underlying_price, strike_count
         )
         
-        # Convert to dict format for API response
-        contracts_data = [contract.dict() for contract in contracts]
+        # Convert to dict format and remove price data for performance
+        contracts_data = []
+        for contract in contracts:
+            contract_dict = contract.dict()
+            # Remove price-related fields - UI gets these from streaming
+            price_fields = ['price', 'bid', 'ask', 'last', 'mark', 'bid_size', 'ask_size', 'volume', 'open_interest']
+            for field in price_fields:
+                contract_dict.pop(field, None)
+            contracts_data.append(contract_dict)
         
         return ApiResponse(
             success=True,
             data=contracts_data,
-            message=f"Retrieved {len(contracts)} basic option contracts ({strike_count} strikes around ATM)"
+            message=f"Retrieved {len(contracts)} basic option contracts ({strike_count} strikes around ATM, no price data)"
         )
     except Exception as e:
         logger.error(f"Error getting basic options chain: {e}")
@@ -567,19 +581,26 @@ async def get_options_chain_smart(
     include_greeks: bool = False,
     strikes_only: bool = False
 ):
-    """Smart options chain with configurable loading."""
+    """Smart options chain with configurable loading - no price data."""
     try:
         contracts = await provider_manager.get_options_chain_smart(
             symbol, expiry, underlying_price, atm_range, include_greeks, strikes_only
         )
         
-        # Convert to dict format for API response
-        contracts_data = [contract.dict() for contract in contracts]
+        # Convert to dict format and remove price data for performance
+        contracts_data = []
+        for contract in contracts:
+            contract_dict = contract.dict()
+            # Remove price-related fields - UI gets these from streaming
+            price_fields = ['price', 'bid', 'ask', 'last', 'mark', 'bid_size', 'ask_size', 'volume', 'open_interest']
+            for field in price_fields:
+                contract_dict.pop(field, None)
+            contracts_data.append(contract_dict)
         
         return ApiResponse(
             success=True,
             data=contracts_data,
-            message=f"Retrieved {len(contracts)} smart option contracts"
+            message=f"Retrieved {len(contracts)} smart option contracts (no price data)"
         )
     except Exception as e:
         logger.error(f"Error getting smart options chain: {e}")

@@ -326,7 +326,7 @@ class TradierProvider(BaseProvider):
                             # Put data in queue with timeout to prevent blocking
                             try:
                                 await asyncio.wait_for(
-                                    self._streaming_queue.put(market_data), 
+                                    self._send_to_cache_or_queue(market_data),
                                     timeout=1.0
                                 )
                             except asyncio.TimeoutError:
@@ -1522,6 +1522,13 @@ class TradierProvider(BaseProvider):
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""
         return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
+    
+    async def _send_to_cache_or_queue(self, market_data: MarketData):
+        """Send market data to cache if available, otherwise to queue."""
+        if hasattr(self, '_streaming_cache') and self._streaming_cache:
+            await self._streaming_cache.update(market_data)
+        elif self._streaming_queue:
+            await self._streaming_queue.put(market_data)
 
     # === Enhanced Positions with History Integration ===
     

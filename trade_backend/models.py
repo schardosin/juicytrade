@@ -78,7 +78,28 @@ class MarketData(BaseModel):
     symbol: str
     data_type: str  # "quote", "trade", etc.
     timestamp: str
+    timestamp_ms: Optional[int] = None  # Unix timestamp in milliseconds for easy comparison
     data: Dict[str, Any]
+    
+    def __init__(self, **data):
+        super().__init__(**data)
+        # Auto-generate timestamp_ms if not provided
+        if self.timestamp_ms is None:
+            import time
+            self.timestamp_ms = int(time.time() * 1000)
+    
+    @property
+    def age_seconds(self) -> float:
+        """Get age of this data in seconds."""
+        if self.timestamp_ms:
+            import time
+            return (time.time() * 1000 - self.timestamp_ms) / 1000
+        return 0
+    
+    @property
+    def is_fresh(self, max_age_seconds: float = 30.0) -> bool:
+        """Check if data is fresh (not older than max_age_seconds)."""
+        return self.age_seconds <= max_age_seconds
 
 class SymbolSearchResult(BaseModel):
     """Standardized symbol search result model."""

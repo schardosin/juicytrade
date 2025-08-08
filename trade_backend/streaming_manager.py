@@ -10,15 +10,92 @@ from .utils.symbol_converter import SymbolConverter
 
 logger = logging.getLogger(__name__)
 
+class LatestValueCache:
+    """
+    Latest-value cache for real-time market data.
+    Only stores the most recent value for each symbol, discarding old data.
+    """
+    
+    def __init__(self):
+        self._data: Dict[str, MarketData] = {}
+        self._lock = asyncio.Lock()
+        self._update_callbacks: List[callable] = []
+    
+    async def update(self, market_data: MarketData):
+        """Update cache with new market data - maximum performance, no deduplication."""
+        async with self._lock:
+            symbol = market_data.symbol
+            
+            # Set timestamp if missing
+            if not market_data.timestamp_ms:
+                market_data.timestamp_ms = time.time() * 1000
+            
+            # Direct update - no validation, no deduplication
+            self._data[symbol] = market_data
+            
+            # Notify callbacks of update
+            for callback in self._update_callbacks:
+                try:
+                    await callback(market_data)
+                except Exception as e:
+                    logger.error(f"❌ Error in cache update callback: {e}")
+            
+            return True
+    
+    
+    async def get_latest(self, symbol: str) -> Optional[MarketData]:
+        """Get the latest data for a symbol."""
+        async with self._lock:
+            return self._data.get(symbol)
+    
+    async def get_all_latest(self) -> Dict[str, MarketData]:
+        """Get all latest data."""
+        async with self._lock:
+            return self._data.copy()
+    
+    async def get_fresh_data(self, max_age_seconds: float = 30.0) -> Dict[str, MarketData]:
+        """Get only fresh data (not older than max_age_seconds)."""
+        async with self._lock:
+            fresh_data = {}
+            for symbol, data in self._data.items():
+                if data.is_fresh(max_age_seconds):
+                    fresh_data[symbol] = data
+            return fresh_data
+    
+    async def clear(self):
+        """Clear all cached data."""
+        async with self._lock:
+            self._data.clear()
+    
+    async def remove_symbol(self, symbol: str):
+        """Remove data for a specific symbol."""
+        async with self._lock:
+            self._data.pop(symbol, None)
+    
+    def add_update_callback(self, callback: callable):
+        """Add callback to be called when data is updated."""
+        self._update_callbacks.append(callback)
+    
+    def remove_update_callback(self, callback: callable):
+        """Remove update callback."""
+        if callback in self._update_callbacks:
+            self._update_callbacks.remove(callback)
+    
+    @property
+    def size(self) -> int:
+        """Get number of symbols in cache."""
+        return len(self._data)
+
 class StreamingManager:
     """
-    Streaming manager with robust connection management,
+    Streaming manager with latest-value cache, robust connection management,
     health monitoring, automatic recovery, and graceful shutdown support.
     """
     
     def __init__(self):
         self._providers = {}
-        self._streaming_queue = asyncio.Queue()
+        # Replace queue with latest-value cache
+        self._latest_cache = LatestValueCache()
         self._subscriptions: Dict[str, Set[str]] = {}
         
         # Enhanced subscription tracking
@@ -60,7 +137,8 @@ class StreamingManager:
             if quotes_provider_name and quotes_provider_name not in self._providers:
                 provider = provider_manager._providers.get(quotes_provider_name)
                 if provider:
-                    provider.set_streaming_queue(self._streaming_queue)
+                    # Set up cache callback instead of queue
+                    provider.set_streaming_cache(self._latest_cache)
                     self._providers[quotes_provider_name] = provider
                     
                     # Enhanced connection with retry
@@ -87,7 +165,7 @@ class StreamingManager:
                 
                 provider = provider_manager._providers.get(greeks_provider_name)
                 if provider:
-                    provider.set_streaming_queue(self._streaming_queue)
+                    provider.set_streaming_cache(self._latest_cache)
                     self._providers[greeks_provider_name] = provider
                     
                     # Enhanced connection with retry
@@ -98,17 +176,26 @@ class StreamingManager:
                         logger.warning(f"⚠️ Failed to connect Greeks provider {greeks_provider_name}")
                         # Don't fail the entire connection if Greeks provider fails
             
-            # Connect trade account provider
+            # Connect trade account provider (only if it's different from quotes/greeks providers)
+            # Trade account providers should only stream account data, not market quotes
             trade_account_provider_name = config.get("trade_account")
-            if trade_account_provider_name and trade_account_provider_name not in self._providers:
+            if (trade_account_provider_name and 
+                trade_account_provider_name not in self._providers and
+                trade_account_provider_name != quotes_provider_name and
+                trade_account_provider_name != greeks_provider_name):
+                
                 provider = provider_manager._providers.get(trade_account_provider_name)
                 if provider:
-                    provider.set_streaming_queue(self._streaming_queue)
+                    provider.set_streaming_cache(self._latest_cache)
                     self._providers[trade_account_provider_name] = provider
                     await provider.connect_streaming()
-                    logger.info(f"✅ Provider {trade_account_provider_name} connected for trade account streaming")
+                    logger.info(f"✅ Provider {trade_account_provider_name} connected for trade account streaming (positions/orders only)")
             
-            logger.info("✅ Enhanced streaming manager connected successfully")
+            # Log final provider configuration for debugging
+            connected_providers = list(self._providers.keys())
+            logger.info(f"✅ Enhanced streaming manager connected successfully")
+            logger.info(f"🔧 Connected providers: {connected_providers}")
+            logger.info(f"📊 Provider roles - Quotes: {quotes_provider_name}, Greeks: {greeks_provider_name}, Trade: {trade_account_provider_name}")
             return True
             
         except Exception as e:
@@ -325,36 +412,50 @@ class StreamingManager:
         except Exception as e:
             logger.error(f"❌ Error disconnecting provider {provider_name}: {e}")
 
-    async def get_data(self) -> Optional[MarketData]:
-        """Enhanced get_data with proper timeout, health tracking, and shutdown awareness"""
+    async def get_latest_data(self, symbol: str) -> Optional[MarketData]:
+        """Get the latest data for a specific symbol from cache."""
         try:
-            # Check if we're shutting down
             if self._shutdown_event.is_set():
                 return None
             
-            # Get data with timeout
-            data = await asyncio.wait_for(self._streaming_queue.get(), timeout=2.0)
+            return await self._latest_cache.get_latest(symbol)
             
-            if data:
-                # Update health tracking
-                current_time = time.time()
-                self._last_data_time = current_time
-                self._health_stats['total_messages'] += 1
-                self._health_stats['last_message_time'] = current_time
-                
-                return data
-            
-            return None
-            
-        except asyncio.TimeoutError:
-            # Timeout is normal when no data is available
-            return None
         except Exception as e:
             if not self._shutdown_event.is_set():
-                logger.error(f"❌ Error getting streaming data: {e}")
+                logger.error(f"❌ Error getting latest data for {symbol}: {e}")
                 self._health_stats['last_error'] = str(e)
                 self._health_stats['error_count'] += 1
             return None
+    
+    async def get_all_latest_data(self) -> Dict[str, MarketData]:
+        """Get all latest data from cache."""
+        try:
+            if self._shutdown_event.is_set():
+                return {}
+            
+            return await self._latest_cache.get_all_latest()
+            
+        except Exception as e:
+            if not self._shutdown_event.is_set():
+                logger.error(f"❌ Error getting all latest data: {e}")
+                self._health_stats['last_error'] = str(e)
+                self._health_stats['error_count'] += 1
+            return {}
+    
+    async def get_fresh_data(self, max_age_seconds: float = 30.0) -> Dict[str, MarketData]:
+        """Get only fresh data from cache."""
+        try:
+            if self._shutdown_event.is_set():
+                return {}
+            
+            return await self._latest_cache.get_fresh_data(max_age_seconds)
+            
+        except Exception as e:
+            if not self._shutdown_event.is_set():
+                logger.error(f"❌ Error getting fresh data: {e}")
+                self._health_stats['last_error'] = str(e)
+                self._health_stats['error_count'] += 1
+            return {}
     
     # Enhanced subscription methods with better error handling
     
@@ -535,7 +636,7 @@ class StreamingManager:
             "uptime_minutes": uptime / 60,
             "is_connected": self._is_connected,
             "active_providers": len(self._providers),
-            "queue_size": self._streaming_queue.qsize(),
+            "cache_size": self._latest_cache.size,
             "time_since_last_data": current_time - self._last_data_time
         }
     

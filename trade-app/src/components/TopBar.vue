@@ -159,9 +159,10 @@
 
       <!-- Status Indicator -->
       <div class="status-section">
-        <div class="connection-status" :class="connectionStatusClass">
-          <span class="status-dot"></span>
+        <div class="connection-status" :class="connectionStatusClass" :title="connectionTooltip">
+          <span class="status-dot" :class="statusDotClass"></span>
           <span class="status-text">{{ connectionStatus }}</span>
+          <span v-if="isRecovering" class="recovery-spinner"></span>
         </div>
       </div>
 
@@ -228,6 +229,9 @@ export default {
     const netLiquidation = ref(0);
     const buyingPower = ref(0);
     const isConnected = ref(false);
+    const connectionState = ref('disconnected'); // connected, connecting, stale, recovering, disconnected
+    const isRecovering = ref(false);
+    const lastDataReceived = ref(Date.now());
     const userMenuRef = ref();
     const accountLoading = ref(true);
     const accountError = ref(null);
@@ -288,15 +292,56 @@ export default {
       },
     ];
 
-    // Computed properties
+    // Enhanced computed properties for connection status
     const connectionStatus = computed(() => {
-      return isConnected.value ? "Connected" : "Disconnected";
+      switch (connectionState.value) {
+        case 'connecting':
+          return 'Connecting...';
+        case 'connected':
+          return 'Connected';
+        case 'stale':
+          return 'Stale Connection';
+        case 'recovering':
+          return 'Recovering...';
+        case 'disconnected':
+        default:
+          return 'Disconnected';
+      }
     });
 
     const connectionStatusClass = computed(() => ({
-      connected: isConnected.value,
-      disconnected: !isConnected.value,
+      connected: connectionState.value === 'connected',
+      connecting: connectionState.value === 'connecting',
+      stale: connectionState.value === 'stale',
+      recovering: connectionState.value === 'recovering',
+      disconnected: connectionState.value === 'disconnected',
     }));
+
+    const statusDotClass = computed(() => ({
+      'status-connected': connectionState.value === 'connected',
+      'status-connecting': connectionState.value === 'connecting',
+      'status-stale': connectionState.value === 'stale',
+      'status-recovering': connectionState.value === 'recovering',
+      'status-disconnected': connectionState.value === 'disconnected',
+    }));
+
+    const connectionTooltip = computed(() => {
+      const timeSinceData = Date.now() - lastDataReceived.value;
+      const minutes = Math.floor(timeSinceData / 60000);
+      const seconds = Math.floor((timeSinceData % 60000) / 1000);
+      
+      let tooltip = `Status: ${connectionStatus.value}`;
+      
+      if (connectionState.value === 'connected' && timeSinceData > 30000) {
+        tooltip += `\nLast data: ${minutes}m ${seconds}s ago`;
+      } else if (connectionState.value === 'stale') {
+        tooltip += `\nNo data for ${minutes}m ${seconds}s`;
+      } else if (connectionState.value === 'recovering') {
+        tooltip += '\nAttempting to restore connection...';
+      }
+      
+      return tooltip;
+    });
 
     // Trade account computed properties using smart data system
     const tradeAccountName = computed(() => {
@@ -598,10 +643,71 @@ export default {
       }
     };
 
+    // Enhanced connection status event handlers
+    const handleConnectionStatusUpdate = (event) => {
+      const status = event.detail || event;
+      console.log('🔄 Connection status update:', status);
+      
+      // Map worker status to our connection state
+      switch (status) {
+        case 'connecting':
+          connectionState.value = 'connecting';
+          isRecovering.value = false;
+          break;
+        case 'connected':
+          connectionState.value = 'connected';
+          isRecovering.value = false;
+          lastDataReceived.value = Date.now();
+          break;
+        case 'stale':
+          connectionState.value = 'stale';
+          isRecovering.value = false;
+          break;
+        case 'recovering':
+          connectionState.value = 'recovering';
+          isRecovering.value = true;
+          break;
+        case 'disconnected':
+        default:
+          connectionState.value = 'disconnected';
+          isRecovering.value = false;
+          break;
+      }
+    };
+
+    const handleRecoveryEvent = (event) => {
+      console.log('🚑 Recovery event received:', event.detail);
+      isRecovering.value = true;
+      connectionState.value = 'recovering';
+      
+      // Update last data received time from recovery detail if available
+      if (event.detail && event.detail.lastDataReceived) {
+        lastDataReceived.value = event.detail.lastDataReceived;
+      }
+    };
+
+    const handleDataReceived = () => {
+      // Update last data received timestamp when we get fresh data
+      lastDataReceived.value = Date.now();
+      
+      // If we were in stale state, move back to connected
+      if (connectionState.value === 'stale') {
+        connectionState.value = 'connected';
+        isRecovering.value = false;
+      }
+    };
+
     // Lifecycle hooks
     onMounted(() => {
       // Initial account display update
       updateAccountDisplay();
+      
+      // Set up enhanced connection status listeners
+      window.addEventListener('websocket-recovery', handleRecoveryEvent);
+      
+      // Listen for data updates to track freshness
+      webSocketClient.onPriceUpdate(handleDataReceived);
+      webSocketClient.onGreeksUpdate(handleDataReceived);
     });
 
     // Watch for reactive data changes and update display
@@ -655,6 +761,9 @@ export default {
       // Computed
       connectionStatus,
       connectionStatusClass,
+      statusDotClass,
+      connectionTooltip,
+      isRecovering,
       tradeAccountName,
       tradeAccountType,
       tradeAccountTypeClass,
@@ -993,20 +1102,95 @@ export default {
   border-radius: 50%;
 }
 
-.connection-status.connected .status-dot {
-  background-color: var(--color-connected);
-}
-
-.connection-status.disconnected .status-dot {
-  background-color: var(--color-disconnected);
-}
-
+/* Enhanced connection status styles */
 .connection-status.connected .status-text {
-  color: var(--color-connected);
+  color: #10b981; /* Green */
+}
+
+.connection-status.connecting .status-text {
+  color: #3b82f6; /* Blue */
+}
+
+.connection-status.stale .status-text {
+  color: #f59e0b; /* Amber */
+}
+
+.connection-status.recovering .status-text {
+  color: #8b5cf6; /* Purple */
 }
 
 .connection-status.disconnected .status-text {
-  color: var(--color-disconnected);
+  color: #ef4444; /* Red */
+}
+
+/* Status dot colors */
+.status-dot.status-connected {
+  background-color: #10b981; /* Green */
+  box-shadow: 0 0 4px rgba(16, 185, 129, 0.4);
+}
+
+.status-dot.status-connecting {
+  background-color: #3b82f6; /* Blue */
+  animation: pulse-blue 2s ease-in-out infinite;
+}
+
+.status-dot.status-stale {
+  background-color: #f59e0b; /* Amber */
+  animation: pulse-amber 2s ease-in-out infinite;
+}
+
+.status-dot.status-recovering {
+  background-color: #8b5cf6; /* Purple */
+  animation: pulse-purple 1.5s ease-in-out infinite;
+}
+
+.status-dot.status-disconnected {
+  background-color: #ef4444; /* Red */
+}
+
+/* Recovery spinner */
+.recovery-spinner {
+  width: 12px;
+  height: 12px;
+  border: 2px solid transparent;
+  border-top: 2px solid #8b5cf6;
+  border-radius: 50%;
+  animation: spin 1s linear infinite;
+  margin-left: 4px;
+}
+
+/* Pulse animations for different states */
+@keyframes pulse-blue {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.1);
+  }
+}
+
+@keyframes pulse-amber {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.6;
+    transform: scale(1.2);
+  }
+}
+
+@keyframes pulse-purple {
+  0%, 100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.8;
+    transform: scale(1.15);
+  }
 }
 
 .user-menu,

@@ -23,11 +23,15 @@ class WebSocketStreamingClient {
     this.worker = new Worker(new URL('./streaming-worker.js', import.meta.url), { type: 'module' });
 
     this.worker.onmessage = (event) => {
-      const { type, message, payload } = event.data;
+      const { type, message, payload, detail } = event.data;
       if (type === 'status') {
         this.handleStatusUpdate(message);
       } else if (type === 'data') {
         this.handleMessage(payload);
+      } else if (type === 'recovery') {
+        this.handleRecoveryEvent(message, detail);
+      } else if (type === 'status_info') {
+        this.handleStatusInfo(message);
       }
     };
 
@@ -163,6 +167,23 @@ class WebSocketStreamingClient {
   }
 
   handleMessage(message) {
+    // Add data freshness validation
+    if (message.timestamp_ms) {
+      const currentTime = Date.now();
+      const messageAge = (currentTime - message.timestamp_ms) / 1000; // Age in seconds
+      
+      // Ignore data older than 30 seconds for price updates
+      if ((message.type === 'price_update' || message.type === 'greeks_update') && messageAge > 30) {
+        console.debug(`🕒 Ignoring stale ${message.type} for ${message.symbol}: ${messageAge.toFixed(1)}s old`);
+        return;
+      }
+      
+      // Log if data is getting old (but still process it for non-price data)
+      if (messageAge > 10) {
+        console.debug(`⚠️ Processing aged ${message.type} for ${message.symbol}: ${messageAge.toFixed(1)}s old`);
+      }
+    }
+    
     const callbacks = this.callbacks.get(message.type);
     if (callbacks) {
       callbacks.forEach(callback => {
@@ -230,6 +251,124 @@ class WebSocketStreamingClient {
     return symbol && symbol.length > 10 && /\d{6}[CP]\d{8}/.test(symbol);
   }
 
+  // Enhanced recovery and connection management methods
+  handleRecoveryEvent(recoveryType, detail) {
+    console.log(`🚑 Recovery event: ${recoveryType}`, detail);
+    
+    // Notify the smart market data store about recovery
+    import('./smartMarketDataStore.js').then(({ smartMarketDataStore }) => {
+      // Clear stale data when recovery happens
+      this.clearStaleData();
+      
+      // Trigger recovery in the store
+      smartMarketDataStore.triggerRecovery('websocket_recovery', {
+        recoveryType,
+        detail,
+        timestamp: Date.now()
+      });
+      
+      // Dispatch custom event for UI components
+      window.dispatchEvent(new CustomEvent('websocket-recovery', {
+        detail: {
+          recoveryType,
+          detail,
+          timestamp: Date.now()
+        }
+      }));
+    }).catch(error => {
+      console.error('❌ Failed to handle recovery event:', error);
+    });
+  }
+
+  handleStatusInfo(statusInfo) {
+    console.log('📊 Connection status info:', statusInfo);
+    // Store status info for debugging
+    this.lastStatusInfo = statusInfo;
+  }
+
+  clearStaleData() {
+    console.log('🧹 Clearing stale data after recovery');
+    
+    // Import and clear stale data from the store
+    import('./smartMarketDataStore.js').then(({ smartMarketDataStore }) => {
+      // Clear price data that might be stale
+      const cutoffTime = Date.now() - 60000; // 1 minute ago
+      
+      // Clear stale stock prices
+      for (const [symbol, priceData] of smartMarketDataStore.stockPrices.entries()) {
+        if (priceData.timestamp < cutoffTime) {
+          console.log(`🧹 Clearing stale stock price for ${symbol}`);
+          smartMarketDataStore.stockPrices.delete(symbol);
+        }
+      }
+      
+      // Clear stale option prices
+      for (const [symbol, priceData] of smartMarketDataStore.optionPrices.entries()) {
+        if (priceData.timestamp < cutoffTime) {
+          console.log(`🧹 Clearing stale option price for ${symbol}`);
+          smartMarketDataStore.optionPrices.delete(symbol);
+        }
+      }
+      
+      // Clear stale Greeks data
+      for (const [symbol, greeksData] of smartMarketDataStore.optionGreeks.entries()) {
+        if (greeksData.timestamp < cutoffTime) {
+          console.log(`🧹 Clearing stale Greeks for ${symbol}`);
+          smartMarketDataStore.optionGreeks.delete(symbol);
+        }
+      }
+      
+      console.log('✅ Stale data cleared successfully');
+    }).catch(error => {
+      console.error('❌ Failed to clear stale data:', error);
+    });
+  }
+
+  // Force recovery method for manual triggers
+  async forceRecovery() {
+    console.log('🚑 Forcing connection recovery');
+    if (this.worker) {
+      this.worker.postMessage({ command: 'force_recovery' });
+    }
+  }
+
+  // Get detailed connection status
+  async getDetailedStatus() {
+    return new Promise((resolve) => {
+      if (!this.worker) {
+        resolve({
+          connected: false,
+          error: 'Worker not initialized'
+        });
+        return;
+      }
+      
+      // Set up one-time listener for status response
+      const handleStatusResponse = (event) => {
+        if (event.data.type === 'status_info') {
+          this.worker.removeEventListener('message', handleStatusResponse);
+          resolve({
+            connected: this.isConnected.value,
+            ...event.data.message
+          });
+        }
+      };
+      
+      this.worker.addEventListener('message', handleStatusResponse);
+      this.worker.postMessage({ command: 'get_status' });
+      
+      // Timeout after 5 seconds
+      setTimeout(() => {
+        this.worker.removeEventListener('message', handleStatusResponse);
+        resolve({
+          connected: this.isConnected.value,
+          error: 'Status request timeout'
+        });
+      }, 5000);
+    });
+  }
+
+  // Enhanced disconnect with worker cleanup
   disconnect() {
     console.log("🔌 Disconnecting WebSocket client...");
     
@@ -241,8 +380,20 @@ class WebSocketStreamingClient {
     }
     
     if (this.worker) {
-      this.worker.terminate();
-      this.worker = null;
+      // Send disconnect command to worker first
+      try {
+        this.worker.postMessage({ command: 'disconnect' });
+      } catch (error) {
+        console.warn('⚠️ Failed to send disconnect command to worker:', error);
+      }
+      
+      // Terminate worker after a brief delay
+      setTimeout(() => {
+        if (this.worker) {
+          this.worker.terminate();
+          this.worker = null;
+        }
+      }, 100);
     }
     
     this.isConnected.value = false;

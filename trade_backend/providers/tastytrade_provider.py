@@ -2454,10 +2454,10 @@ class TastyTradeProvider(BaseProvider):
             logger.info("TastyTrade: Streaming data processor stopped")
     
     async def _process_feed_events(self, feed_data: List):
-        """Process FEED_DATA events and send to streaming queue."""
+        """Process FEED_DATA events and send to streaming cache or queue."""
         try:
-            if not self._streaming_queue:
-                logger.warning("TastyTrade: No streaming queue available for feed events")
+            if not self._streaming_queue and not hasattr(self, '_streaming_cache'):
+                logger.warning("TastyTrade: No streaming queue or cache available for feed events")
                 return
             
             # Process Quote events
@@ -2475,7 +2475,7 @@ class TastyTradeProvider(BaseProvider):
                         data_type="quote",
                         timestamp=datetime.now().isoformat()
                     )
-                    await self._streaming_queue.put(market_data)
+                    await self._send_to_cache_or_queue(market_data)
                     logger.debug(f"TastyTrade: Sent quote update for {standard_symbol}: {quote}")
             
             # Process Greeks events
@@ -2486,14 +2486,14 @@ class TastyTradeProvider(BaseProvider):
                     # Convert TastyTrade symbol back to standard format
                     standard_symbol = self.convert_symbol_to_standard_format(symbol)
                     
-                    # Create MarketData object with Greeks data type and send to queue
+                    # Create MarketData object with Greeks data type and send to cache or queue
                     market_data = MarketData(
                         symbol=standard_symbol,
                         data=greeks,
                         data_type="greeks",
                         timestamp=datetime.now().isoformat()
                     )
-                    await self._streaming_queue.put(market_data)
+                    await self._send_to_cache_or_queue(market_data)
                     
                     logger.debug(f"TastyTrade: Sent Greeks update for {standard_symbol}")
                 
@@ -2529,6 +2529,13 @@ class TastyTradeProvider(BaseProvider):
             logger.error(f"Feed data structure: {feed_data}")
         
         return quote_data
+
+    async def _send_to_cache_or_queue(self, market_data: MarketData):
+        """Send market data to cache if available, otherwise to queue."""
+        if hasattr(self, '_streaming_cache') and self._streaming_cache:
+            await self._streaming_cache.update(market_data)
+        elif self._streaming_queue:
+            await self._streaming_queue.put(market_data)
 
     async def health_check(self) -> Dict[str, Any]:
         """Perform a health check on the TastyTrade provider."""

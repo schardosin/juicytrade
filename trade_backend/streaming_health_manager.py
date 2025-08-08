@@ -56,9 +56,10 @@ class ConnectionMetrics:
     @property
     def time_since_last_data(self) -> float:
         """Get time since last data in seconds."""
-        if self.last_data_time:
+        if self.last_data_time and self.last_data_time > 0:
             return time.time() - self.last_data_time
-        return float('inf')
+        # Return a large but finite number instead of inf to prevent logging issues
+        return 999999.0
     
     @property
     def is_stale(self) -> bool:
@@ -307,12 +308,19 @@ class StreamingHealthManager:
         if connection_id in self.recovery_tasks and not self.recovery_tasks[connection_id].done():
             return
         
-        # Check for stale connections
-        if metrics.state == ConnectionState.CONNECTED and metrics.is_stale:
+        # Add startup grace period - don't check for stale data immediately after connection
+        startup_grace_period = 60.0  # 60 seconds grace period after connection
+        connection_age = current_time - (metrics.connected_at or current_time)
+        
+        # Check for stale connections (but only after grace period)
+        if (metrics.state == ConnectionState.CONNECTED and 
+            connection_age > startup_grace_period and 
+            metrics.is_stale):
+            
             logger.warning(f"⚠️ Connection {connection_id} is stale (no data for {metrics.time_since_last_data:.1f}s)")
             self.update_connection_state(connection_id, ConnectionState.DEGRADED)
             
-            # Trigger recovery if very stale
+            # Trigger recovery if very stale (but only after extended grace period)
             if metrics.time_since_last_data > 300:  # 5 minutes
                 logger.error(f"❌ Connection {connection_id} is very stale, triggering recovery")
                 await self._trigger_recovery(connection_id)
@@ -321,8 +329,9 @@ class StreamingHealthManager:
         elif metrics.state == ConnectionState.FAILED:
             await self._trigger_recovery(connection_id)
         
-        # Perform periodic ping for healthy connections
-        elif metrics.state == ConnectionState.CONNECTED:
+        # Perform periodic ping for healthy connections (but only after grace period)
+        elif (metrics.state == ConnectionState.CONNECTED and 
+              connection_age > startup_grace_period):
             if not metrics.last_ping_time or (current_time - metrics.last_ping_time) > self.ping_interval:
                 await self._perform_ping(connection_id, metrics)
     

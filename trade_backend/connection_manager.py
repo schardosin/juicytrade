@@ -259,31 +259,34 @@ class ConnectionManager:
                    not self.shutdown_manager.is_shutting_down()):
                 
                 try:
-                    # Get data with shorter timeout for better responsiveness
-                    market_data = await self.streaming_manager.get_data()
+                    # Get latest data from cache instead of queue
+                    latest_data = await self.streaming_manager.get_all_latest_data()
                     
-                    if market_data and self.active_connections and not self.is_shutting_down:
-                        message_count += 1
-                        consecutive_errors = 0  # Reset error counter on success
-                        
-                        # Determine message type based on data content
-                        message_type = "price_update"
-                        if hasattr(market_data, 'data_type'):
-                            if market_data.data_type == "greeks":
-                                message_type = "greeks_update"
-                        elif isinstance(market_data.data, dict):
-                            # Check if data contains Greeks fields
-                            greeks_fields = {'delta', 'gamma', 'theta', 'vega', 'implied_volatility'}
-                            if greeks_fields.intersection(market_data.data.keys()):
-                                message_type = "greeks_update"
-                        
-                        # Broadcast data with appropriate message type
-                        await self.broadcast({
-                            "type": message_type,
-                            "symbol": market_data.symbol,
-                            "data": market_data.data,
-                            "timestamp": market_data.timestamp
-                        })
+                    # Process each symbol's latest data
+                    if latest_data:
+                        for symbol, market_data in latest_data.items():
+                            if market_data and self.active_connections and not self.is_shutting_down:
+                                message_count += 1
+                                consecutive_errors = 0  # Reset error counter on success
+                                
+                                # Determine message type based on data content
+                                message_type = "price_update"
+                                if hasattr(market_data, 'data_type'):
+                                    if market_data.data_type == "greeks":
+                                        message_type = "greeks_update"
+                                elif isinstance(market_data.data, dict):
+                                    # Check if data contains Greeks fields
+                                    greeks_fields = {'delta', 'gamma', 'theta', 'vega', 'implied_volatility'}
+                                    if greeks_fields.intersection(market_data.data.keys()):
+                                        message_type = "greeks_update"
+                                
+                                # Broadcast data with appropriate message type
+                                await self.broadcast({
+                                    "type": message_type,
+                                    "symbol": market_data.symbol,
+                                    "data": market_data.data,
+                                    "timestamp": market_data.timestamp
+                                })
                         
                         # Log statistics periodically
                         current_time = time.time()
@@ -291,10 +294,13 @@ class ConnectionManager:
                             logger.info(f"📊 Streaming stats: {message_count} messages processed, "
                                       f"{error_count} errors, {len(self.active_connections)} connections")
                             last_log_time = current_time
+                    else:
+                        # No data available, sleep to prevent busy waiting
+                        await asyncio.sleep(0.5)
+                        continue
                     
-                    elif not market_data:
-                        # No data received, small sleep to prevent busy waiting
-                        await asyncio.sleep(0.1)
+                    # Sleep briefly to prevent overwhelming the system
+                    await asyncio.sleep(0.1)
                         
                 except asyncio.CancelledError:
                     logger.info("🛑 Streaming data handler cancelled")
