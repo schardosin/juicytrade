@@ -401,7 +401,7 @@ export default {
 
     const getCallBid = (expiration, strike) => {
       const option = getCallOption(expiration, strike);
-      if (!option) return 0;
+      if (!option) return null;
       
       const livePrice = getLivePrice(option.symbol);
       return livePrice?.bid ?? option.bid;
@@ -409,21 +409,21 @@ export default {
 
     const getCallAsk = (expiration, strike) => {
       const option = getCallOption(expiration, strike);
-      if (!option) return 0;
+      if (!option) return null;
       const livePrice = getLivePrice(option.symbol);
       return livePrice?.ask ?? option.ask;
     };
 
     const getPutBid = (expiration, strike) => {
       const option = getPutOption(expiration, strike);
-      if (!option) return 0;
+      if (!option) return null;
       const livePrice = getLivePrice(option.symbol);
       return livePrice?.bid ?? option.bid;
     };
 
     const getPutAsk = (expiration, strike) => {
       const option = getPutOption(expiration, strike);
-      if (!option) return 0;
+      if (!option) return null;
       const livePrice = getLivePrice(option.symbol);
       return livePrice?.ask ?? option.ask;
     };
@@ -481,7 +481,7 @@ export default {
     };
 
     const formatPrice = (price) => {
-      if (!price || price === 0) return "-";
+      if (price === null || price === undefined) return "-";
       return price.toFixed(2);
     };
 
