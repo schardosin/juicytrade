@@ -12,6 +12,7 @@ from collections import OrderedDict
 from .base_provider import BaseProvider
 from ..models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult, Account, PositionGroup, HistoricalTrade
 from ..config import settings
+from ..streaming_health_manager import streaming_health_manager, ConnectionState, TimeoutWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,13 @@ class TradierProvider(BaseProvider):
         self._symbol_cache = SymbolLookupCache()
         self._lastday_price_cache = {}
         self._lastday_price_cache_date = None
+        
+        # Health monitoring
+        self._connection_id = f"tradier_{self.account_id}"
+        streaming_health_manager.register_provider("tradier", self)
+        self._connection_metrics = streaming_health_manager.register_connection(
+            self._connection_id, "tradier", "websocket"
+        )
 
     async def _create_session(self) -> bool:
         url = f"{self.base_url}/v1/markets/events/session"
@@ -188,31 +196,43 @@ class TradierProvider(BaseProvider):
             return False
 
     async def connect_streaming(self) -> bool:
-        """Enhanced connection with better error handling, recovery, and timeout protection"""
+        """Enhanced connection with health monitoring and timeout protection"""
         try:
+            # Update health status
+            streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.CONNECTING)
+            
             # Clear previous connection state
             self.is_connected = False
             self._connection_ready.clear()
             
             # Create new session with timeout
             logger.info("🔄 Creating Tradier session...")
-            session_created = await asyncio.wait_for(self._create_session(), timeout=30.0)
+            session_created = await TimeoutWrapper.execute(
+                self._create_session(),
+                timeout=30.0,
+                operation_name="create_tradier_session"
+            )
             if not session_created:
                 logger.error("❌ Failed to create Tradier session")
+                streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.FAILED)
                 return False
 
             # Close existing connection if any
             if self._stream_connection:
                 try:
-                    await asyncio.wait_for(self._stream_connection.close(), timeout=5.0)
-                except (asyncio.TimeoutError, Exception) as e:
+                    await TimeoutWrapper.execute(
+                        self._stream_connection.close(),
+                        timeout=5.0,
+                        operation_name="close_existing_connection"
+                    )
+                except Exception as e:
                     logger.warning(f"⚠️ Error closing existing connection: {e}")
                 self._stream_connection = None
 
             # Establish new WebSocket connection with timeout
             logger.info(f"🔄 Connecting to Tradier WebSocket: {self.stream_url}")
             
-            self._stream_connection = await asyncio.wait_for(
+            self._stream_connection = await TimeoutWrapper.execute(
                 websockets.connect(
                     self.stream_url,
                     ping_interval=30,  # Send ping every 30 seconds
@@ -221,7 +241,8 @@ class TradierProvider(BaseProvider):
                     max_size=2**20,    # 1MB max message size
                     max_queue=32       # Limit queue size
                 ),
-                timeout=15.0
+                timeout=15.0,
+                operation_name="connect_tradier_websocket"
             )
             
             logger.info("✅ Connected to Tradier WebSocket successfully")
@@ -231,15 +252,14 @@ class TradierProvider(BaseProvider):
             self._stream_task = asyncio.create_task(self._stream_handler())
             
             self.is_connected = True
+            streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.CONNECTED)
             return True
             
-        except asyncio.TimeoutError:
-            logger.error("❌ Timeout connecting to Tradier WebSocket")
-            self.is_connected = False
-            return False
         except Exception as e:
             logger.error(f"❌ Failed to connect to Tradier WebSocket: {e}")
             self.is_connected = False
+            streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.FAILED)
+            streaming_health_manager.record_error(self._connection_id, str(e))
             return False
 
     async def _stream_handler(self):
@@ -272,6 +292,9 @@ class TradierProvider(BaseProvider):
                         if message_type == 'quote':
                             quote_count += 1
                             symbol = data.get('symbol')
+                            
+                            # Record data received for health monitoring
+                            streaming_health_manager.record_data_received(self._connection_id)
                             
                             # Log first few quotes for debugging
                             if quote_count <= 5:
@@ -377,9 +400,14 @@ class TradierProvider(BaseProvider):
             await self._stream_connection.send(json.dumps(payload))
             # IMPORTANT: Replace the entire subscription set, don't add to it
             self._subscribed_symbols = set(symbols)
+            
+            # Update health monitoring subscriptions
+            streaming_health_manager.update_subscriptions(self._connection_id, self._subscribed_symbols)
+            
             return True
         except Exception as e:
             logger.error(f"Failed to subscribe to symbols on Tradier: {e}")
+            streaming_health_manager.record_error(self._connection_id, str(e))
             # Try to reconnect on failure
             self.is_connected = False
             return False
@@ -1132,21 +1160,30 @@ class TradierProvider(BaseProvider):
             logger.info("🛑 Disconnecting Tradier WebSocket...")
             self.is_connected = False
             
+            # Update health status
+            streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.DISCONNECTED)
+            
             # Cancel stream handler task if it exists
             if hasattr(self, '_stream_task') and self._stream_task and not self._stream_task.done():
                 self._stream_task.cancel()
                 try:
-                    await asyncio.wait_for(self._stream_task, timeout=3.0)
+                    await TimeoutWrapper.execute(
+                        self._stream_task,
+                        timeout=3.0,
+                        operation_name="cancel_stream_task"
+                    )
                 except (asyncio.TimeoutError, asyncio.CancelledError):
                     pass
             
             # Close WebSocket connection with timeout
             if self._stream_connection:
                 try:
-                    await asyncio.wait_for(self._stream_connection.close(), timeout=5.0)
+                    await TimeoutWrapper.execute(
+                        self._stream_connection.close(),
+                        timeout=5.0,
+                        operation_name="close_websocket"
+                    )
                     logger.info("✅ Tradier WebSocket connection closed")
-                except asyncio.TimeoutError:
-                    logger.warning("⚠️ Tradier WebSocket close timeout")
                 except Exception as e:
                     logger.warning(f"⚠️ Error closing Tradier WebSocket: {e}")
                 finally:
@@ -1156,11 +1193,15 @@ class TradierProvider(BaseProvider):
             self._connection_ready.clear()
             self._subscribed_symbols.clear()
             
+            # Clear health monitoring subscriptions
+            streaming_health_manager.update_subscriptions(self._connection_id, set())
+            
             logger.info("✅ Tradier streaming disconnected")
             return True
             
         except Exception as e:
             logger.error(f"❌ Error disconnecting Tradier streaming: {e}")
+            streaming_health_manager.record_error(self._connection_id, str(e))
             return False
     async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         """

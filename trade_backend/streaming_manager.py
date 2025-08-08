@@ -49,6 +49,10 @@ class StreamingManager:
         try:
             logger.info("🔄 Starting enhanced streaming manager connection...")
             
+            # Start the streaming health monitoring system
+            from .streaming_health_manager import streaming_health_manager
+            await streaming_health_manager.start_monitoring()
+            
             config = provider_config_manager.get_config()
             
             # Connect streaming quotes provider with retry logic

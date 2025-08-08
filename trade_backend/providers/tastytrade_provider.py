@@ -14,6 +14,7 @@ from ..models import (
     ExpirationDate, MarketData, ApiResponse, SymbolSearchResult, Account
 )
 from ..config import settings
+from ..streaming_health_manager import streaming_health_manager, ConnectionState, TimeoutWrapper
 
 logger = logging.getLogger(__name__)
 
@@ -461,6 +462,13 @@ class TastyTradeProvider(BaseProvider):
         # Streaming infrastructure
         self._streaming_queue = None
         self._streaming_task = None
+        
+        # Health monitoring
+        self._connection_id = f"tastytrade_{self.account_id}"
+        streaming_health_manager.register_provider("tastytrade", self)
+        self._connection_metrics = streaming_health_manager.register_connection(
+            self._connection_id, "tastytrade", "websocket"
+        )
         
     async def _create_session(self) -> bool:
         """Create a new session with TastyTrade API."""
@@ -1455,12 +1463,19 @@ class TastyTradeProvider(BaseProvider):
             return False
 
     async def connect_streaming(self) -> bool:
-        """Connect to DXLink streaming service."""
+        """Connect to DXLink streaming service with health monitoring."""
         try:
+            # Update health status
+            streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.CONNECTING)
+            
             # Clean up any existing connection first
             if self._stream_connection:
                 try:
-                    await self._stream_connection.close()
+                    await TimeoutWrapper.execute(
+                        self._stream_connection.close(),
+                        timeout=5.0,
+                        operation_name="close_existing_connection"
+                    )
                 except:
                     pass
                 self._stream_connection = None
@@ -1470,8 +1485,13 @@ class TastyTradeProvider(BaseProvider):
             self._connection_ready.clear()
             
             # Get fresh quote token for DXLink authentication
-            if not await self._get_quote_token():
+            if not await TimeoutWrapper.execute(
+                self._get_quote_token(),
+                timeout=30.0,
+                operation_name="get_quote_token"
+            ):
                 logger.error("Failed to get quote token for streaming")
+                streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.FAILED)
                 return False
             
             # Create DXLink streaming connection with retry logic
@@ -1479,26 +1499,37 @@ class TastyTradeProvider(BaseProvider):
             for attempt in range(max_retries):
                 try:
                     logger.info(f"TastyTrade: Connection attempt {attempt + 1}/{max_retries}")
-                    self._stream_connection = await websockets.connect(
-                        self._dxlink_url,
-                        ping_interval=30,
-                        ping_timeout=10,
-                        close_timeout=5
+                    self._stream_connection = await TimeoutWrapper.execute(
+                        websockets.connect(
+                            self._dxlink_url,
+                            ping_interval=30,
+                            ping_timeout=10,
+                            close_timeout=5
+                        ),
+                        timeout=15.0,
+                        operation_name=f"connect_websocket_attempt_{attempt + 1}"
                     )
                     break
                 except Exception as e:
                     logger.warning(f"TastyTrade: Connection attempt {attempt + 1} failed: {e}")
+                    streaming_health_manager.record_error(self._connection_id, str(e))
                     if attempt == max_retries - 1:
                         raise
                     await asyncio.sleep(2 ** attempt)  # Exponential backoff
             
             # Execute DXLink setup sequence
-            if not await self._dxlink_streaming_setup():
+            if not await TimeoutWrapper.execute(
+                self._dxlink_streaming_setup(),
+                timeout=60.0,
+                operation_name="dxlink_setup"
+            ):
                 logger.error("DXLink streaming setup failed")
+                streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.FAILED)
                 return False
             
             self.is_connected = True
             self._connection_ready.set()
+            streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.CONNECTED)
             
             # Start the streaming data processing task
             await self._start_streaming_task()
@@ -1510,6 +1541,8 @@ class TastyTradeProvider(BaseProvider):
             logger.error(f"Error connecting to TastyTrade streaming: {e}")
             self.is_connected = False
             self._connection_ready.clear()
+            streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.FAILED)
+            streaming_health_manager.record_error(self._connection_id, str(e))
             return False
     
     async def disconnect_streaming(self) -> bool:
