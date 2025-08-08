@@ -149,6 +149,7 @@ class TradierProvider(BaseProvider):
         self._session_id = None
         self._stream_connection = None
         self._connection_ready = asyncio.Event()
+        self._subscribed_symbols = set()
         self._symbol_cache = SymbolLookupCache()
         self._lastday_price_cache = {}
         self._lastday_price_cache_date = None
@@ -1216,23 +1217,21 @@ class TradierProvider(BaseProvider):
             return False
     async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         """
-        Tradier doesn't support true unsubscribing, so we need to track what should be unsubscribed
-        and only subscribe to the remaining symbols when a new subscription is made.
+        Tradier doesn't support true unsubscribing. This method is called by the
+        streaming_manager before it calls subscribe_to_symbols with the new complete
+        list. Therefore, we only need to update our internal tracking here.
+        The streaming_manager will handle the actual re-subscription.
         """
-        logger.info(f"🗑️ Tradier: Marking {len(symbols)} symbols for unsubscription")
+        logger.info(f"🗑️ Tradier: Marking {len(symbols)} symbols for unsubscription (state tracking only)")
         
         # Remove from our tracked subscribed symbols
-        for symbol in symbols:
-            self._subscribed_symbols.discard(symbol)
+        if hasattr(self, '_subscribed_symbols'):
+            for symbol in symbols:
+                self._subscribed_symbols.discard(symbol)
         
-        # Since Tradier doesn't support true unsubscribing, we'll re-subscribe to only the remaining symbols
-        if self._subscribed_symbols:
-            logger.info(f"🔄 Tradier: Re-subscribing to remaining {len(self._subscribed_symbols)} symbols")
-            return await self.subscribe_to_symbols(list(self._subscribed_symbols))
-        else:
-            logger.info("🔄 Tradier: No symbols remaining, clearing all subscriptions")
-            # We can't truly clear all subscriptions in Tradier, but we've cleared our tracking
-            return True
+        # Return True as the operation is complete from this provider's perspective.
+        # The streaming_manager will follow up with a subscribe_to_symbols call.
+        return True
 
     def _parse_option_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
         """Parse option symbol to extract components."""
