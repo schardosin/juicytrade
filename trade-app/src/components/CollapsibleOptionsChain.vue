@@ -243,9 +243,10 @@
 </template>
 
 <script>
-import { ref, computed, reactive } from "vue";
+import { ref, computed, reactive, watch, onMounted, onUnmounted } from "vue";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
+import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
 export default {
   name: "CollapsibleOptionsChain",
@@ -298,6 +299,10 @@ export default {
     const expandedExpirations = ref(new Set());
     const liveOptionPrices = reactive(new Map());
     const liveOptionGreeks = reactive(new Map());
+
+    // Component registration system
+    const componentId = `CollapsibleOptionsChain-${Math.random().toString(36).substr(2, 9)}`;
+    const registeredSymbols = new Set();
 
     // Computed properties
     const expirationGroups = computed(() => {
@@ -356,6 +361,17 @@ export default {
         // Collapse expiration
         expandedExpirations.value.delete(expiration.date);
         emit("expiration-collapsed", expiration.date);
+
+        // Clean up the local caches for the collapsed expiration's symbols
+        if (expiration.optionsData && expiration.optionsData.length > 0) {
+          console.log(`🧹 Clearing local cache for ${expiration.optionsData.length} symbols from ${expiration.date}`);
+          expiration.optionsData.forEach(option => {
+            if (option.symbol) {
+              liveOptionPrices.delete(option.symbol);
+              liveOptionGreeks.delete(option.symbol);
+            }
+          });
+        }
       } else {
         // Expand expiration
         expandedExpirations.value.add(expiration.date);
@@ -387,11 +403,22 @@ export default {
       );
     };
 
+    // Single registration method per component to prevent double registration
+    const ensureSymbolRegistration = (symbol) => {
+      if (!registeredSymbols.has(symbol)) {
+        smartMarketDataStore.registerSymbolUsage(symbol, componentId);
+        registeredSymbols.add(symbol);
+      }
+    };
+
     const getLivePrice = (symbol) => {
       if (!symbol) return null;
 
       if (!liveOptionPrices.has(symbol)) {
-        // Call getOptionPrice only once to set up the subscription and heartbeat
+        // Ensure symbol is registered (only once per component)
+        ensureSymbolRegistration(symbol);
+        
+        // Call getOptionPrice only once to set up the subscription
         liveOptionPrices.set(symbol, getOptionPrice(symbol));
       }
       
@@ -432,6 +459,9 @@ export default {
       if (!symbol) return null;
 
       if (!liveOptionGreeks.has(symbol)) {
+        // Ensure symbol is registered (only once per component)
+        ensureSymbolRegistration(symbol);
+        
         // Call getOptionGreeks only once to set up the subscription
         liveOptionGreeks.set(symbol, getOptionGreeks(symbol));
       }
@@ -586,6 +616,48 @@ export default {
       // Emit event to parent to handle strike count change
       emit("strike-count-changed", strikeCount.value);
     };
+
+    // --- Component Registration System Lifecycle ---
+
+    const cleanupComponentRegistrations = () => {
+      console.log(`📝 Unregistering component ${componentId} with ${registeredSymbols.size} symbols`);
+      
+      // Unregister all symbols this component was using
+      for (const symbol of registeredSymbols) {
+        smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
+      }
+      
+      // Clear local tracking
+      registeredSymbols.clear();
+      liveOptionPrices.clear();
+      liveOptionGreeks.clear();
+    };
+
+    // Watch for the underlying symbol changing
+    watch(() => props.symbol, (newSymbol, oldSymbol) => {
+      console.log(`📝 CollapsibleOptionsChain: Symbol watch triggered - ${oldSymbol} → ${newSymbol}`);
+      console.log(`📝 Current registered symbols:`, Array.from(registeredSymbols));
+      console.log(`📝 Current symbol usage count:`, smartMarketDataStore.getRegistrationDebugInfo());
+      
+      if (newSymbol !== oldSymbol) {
+        console.log(`📝 Symbol changed from ${oldSymbol} to ${newSymbol}. Cleaning up component registrations.`);
+        
+        // Unregister all current symbols
+        cleanupComponentRegistrations();
+        
+        // Collapse all sections for the new symbol
+        expandedExpirations.value.clear();
+        
+        console.log(`📝 After cleanup - registered symbols:`, Array.from(registeredSymbols));
+        console.log(`📝 After cleanup - symbol usage count:`, smartMarketDataStore.getRegistrationDebugInfo());
+      }
+    }, { immediate: true });
+
+    // Clean up when the component is unmounted
+    onUnmounted(() => {
+      console.log(`📝 CollapsibleOptionsChain unmounted. Cleaning up component registrations.`);
+      cleanupComponentRegistrations();
+    });
 
     return {
       // State

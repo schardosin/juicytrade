@@ -26,14 +26,11 @@ class LatestValueCache:
         async with self._lock:
             symbol = market_data.symbol
             
-            # Set timestamp if missing
             if not market_data.timestamp_ms:
                 market_data.timestamp_ms = time.time() * 1000
             
-            # Direct update - no validation, no deduplication
             self._data[symbol] = market_data
             
-            # Notify callbacks of update
             for callback in self._update_callbacks:
                 try:
                     await callback(market_data)
@@ -42,609 +39,145 @@ class LatestValueCache:
             
             return True
     
-    
     async def get_latest(self, symbol: str) -> Optional[MarketData]:
         """Get the latest data for a symbol."""
         async with self._lock:
             return self._data.get(symbol)
     
-    async def get_all_latest(self) -> Dict[str, MarketData]:
-        """Get all latest data."""
-        async with self._lock:
-            return self._data.copy()
-    
-    async def get_fresh_data(self, max_age_seconds: float = 30.0) -> Dict[str, MarketData]:
-        """Get only fresh data (not older than max_age_seconds)."""
-        async with self._lock:
-            fresh_data = {}
-            for symbol, data in self._data.items():
-                if data.is_fresh(max_age_seconds):
-                    fresh_data[symbol] = data
-            return fresh_data
-    
-    async def clear(self):
-        """Clear all cached data."""
-        async with self._lock:
-            self._data.clear()
-    
-    async def remove_symbol(self, symbol: str):
-        """Remove data for a specific symbol."""
-        async with self._lock:
-            self._data.pop(symbol, None)
-    
     def add_update_callback(self, callback: callable):
         """Add callback to be called when data is updated."""
         self._update_callbacks.append(callback)
-    
-    def remove_update_callback(self, callback: callable):
-        """Remove update callback."""
-        if callback in self._update_callbacks:
-            self._update_callbacks.remove(callback)
-    
-    @property
-    def size(self) -> int:
-        """Get number of symbols in cache."""
-        return len(self._data)
 
 class StreamingManager:
     """
-    Streaming manager with latest-value cache, robust connection management,
-    health monitoring, automatic recovery, and graceful shutdown support.
+    Manages streaming provider connections and aggregates subscriptions from all clients.
     """
     
     def __init__(self):
         self._providers = {}
-        # Replace queue with latest-value cache
         self._latest_cache = LatestValueCache()
-        self._subscriptions: Dict[str, Set[str]] = {}
-        
-        # Enhanced subscription tracking
-        self._stock_subscriptions: Set[str] = set()
-        self._options_subscriptions: Set[str] = set()
-        self._persistent_subscriptions: Set[str] = set()
-        
-        # Connection management
+        self._provider_subscriptions: Set[str] = set()
         self._is_connected = False
         self._shutdown_event = asyncio.Event()
-        self._health_check_task = None
-        self._last_data_time = time.time()
-        self._connection_attempts = 0
-        self._max_connection_attempts = 5
-        
-        # Health monitoring
-        self._health_stats = {
-            'total_messages': 0,
-            'last_message_time': None,
-            'connection_uptime': 0,
-            'reconnection_count': 0,
-            'last_error': None,
-            'error_count': 0
-        }
         
     async def connect(self):
-        """Enhanced connection with health monitoring and retry logic"""
+        """Connects to all streaming providers specified in the configuration."""
         try:
-            logger.info("🔄 Starting enhanced streaming manager connection...")
-            
-            # Start the streaming health monitoring system
-            from .streaming_health_manager import streaming_health_manager
-            await streaming_health_manager.start_monitoring()
-            
+            logger.info("🔄 Starting streaming manager connection...")
             config = provider_config_manager.get_config()
             
-            # Connect streaming quotes provider with retry logic
-            quotes_provider_name = config.get("streaming_quotes")
-            if quotes_provider_name and quotes_provider_name not in self._providers:
-                provider = provider_manager._providers.get(quotes_provider_name)
-                if provider:
-                    # Set up cache callback instead of queue
-                    provider.set_streaming_cache(self._latest_cache)
-                    self._providers[quotes_provider_name] = provider
-                    
-                    # Enhanced connection with retry
-                    connected = await self._connect_with_retry(provider)
-                    if connected:
-                        logger.info(f"✅ Provider {quotes_provider_name} connected for quotes streaming")
-                        self._is_connected = True
-                        self._connection_attempts = 0
-                        
-                        # Start health monitoring
-                        self._health_check_task = asyncio.create_task(self._health_monitor())
-                        
-                        # Update health stats
-                        self._health_stats['connection_uptime'] = time.time()
-                    else:
-                        logger.error(f"❌ Failed to connect provider {quotes_provider_name} after {self._max_connection_attempts} attempts")
-                        return False
+            required_providers = set()
+            if config.get("streaming_quotes"):
+                required_providers.add(config["streaming_quotes"])
+            if config.get("streaming_greeks"):
+                required_providers.add(config["streaming_greeks"])
             
-            # Connect streaming Greeks provider (if different from quotes provider)
-            greeks_provider_name = config.get("streaming_greeks")
-            if (greeks_provider_name and 
-                greeks_provider_name != quotes_provider_name and 
-                greeks_provider_name not in self._providers):
-                
-                provider = provider_manager._providers.get(greeks_provider_name)
-                if provider:
-                    provider.set_streaming_cache(self._latest_cache)
-                    self._providers[greeks_provider_name] = provider
-                    
-                    # Enhanced connection with retry
-                    connected = await self._connect_with_retry(provider)
-                    if connected:
-                        logger.info(f"✅ Provider {greeks_provider_name} connected for Greeks streaming")
-                    else:
-                        logger.warning(f"⚠️ Failed to connect Greeks provider {greeks_provider_name}")
-                        # Don't fail the entire connection if Greeks provider fails
+            for provider_name in required_providers:
+                if provider_name and provider_name not in self._providers:
+                    provider = provider_manager._providers.get(provider_name)
+                    if provider:
+                        provider.set_streaming_cache(self._latest_cache)
+                        self._providers[provider_name] = provider
+                        connected = await self._connect_with_retry(provider)
+                        if connected:
+                            logger.info(f"✅ Provider {provider_name} connected for streaming.")
+                        else:
+                            logger.error(f"❌ Failed to connect provider {provider_name}.")
             
-            # Connect trade account provider (only if it's different from quotes/greeks providers)
-            # Trade account providers should only stream account data, not market quotes
-            trade_account_provider_name = config.get("trade_account")
-            if (trade_account_provider_name and 
-                trade_account_provider_name not in self._providers and
-                trade_account_provider_name != quotes_provider_name and
-                trade_account_provider_name != greeks_provider_name):
-                
-                provider = provider_manager._providers.get(trade_account_provider_name)
-                if provider:
-                    provider.set_streaming_cache(self._latest_cache)
-                    self._providers[trade_account_provider_name] = provider
-                    await provider.connect_streaming()
-                    logger.info(f"✅ Provider {trade_account_provider_name} connected for trade account streaming (positions/orders only)")
-            
-            # Log final provider configuration for debugging
-            connected_providers = list(self._providers.keys())
-            logger.info(f"✅ Enhanced streaming manager connected successfully")
-            logger.info(f"🔧 Connected providers: {connected_providers}")
-            logger.info(f"📊 Provider roles - Quotes: {quotes_provider_name}, Greeks: {greeks_provider_name}, Trade: {trade_account_provider_name}")
+            self._is_connected = any(p.is_streaming_connected() for p in self._providers.values())
+            logger.info(f"✅ Streaming manager connected. Active providers: {list(self._providers.keys())}")
             return True
-            
         except Exception as e:
-            logger.error(f"❌ Error connecting enhanced streaming manager: {e}")
-            self._health_stats['last_error'] = str(e)
-            self._health_stats['error_count'] += 1
+            logger.error(f"❌ Error connecting streaming manager: {e}")
             return False
-    
-    async def _connect_with_retry(self, provider, max_retries=None):
-        """Connect provider with exponential backoff retry logic"""
-        if max_retries is None:
-            max_retries = self._max_connection_attempts
-            
+
+    async def _connect_with_retry(self, provider, max_retries=3):
+        """Connects a provider with exponential backoff retry logic."""
         for attempt in range(max_retries):
             try:
-                self._connection_attempts = attempt + 1
                 logger.info(f"🔄 Connecting {provider.name} (attempt {attempt + 1}/{max_retries})")
-                
-                connected = await asyncio.wait_for(
-                    provider.connect_streaming(),
-                    timeout=15.0
-                )
-                
-                if connected:
-                    logger.info(f"✅ {provider.name} connected successfully")
+                if await provider.connect_streaming():
+                    logger.info(f"✅ {provider.name} connected successfully.")
                     return True
-                else:
-                    logger.warning(f"⚠️ {provider.name} connection returned False")
-                    
-            except asyncio.TimeoutError:
-                logger.warning(f"⚠️ Connection timeout for {provider.name} (attempt {attempt + 1})")
             except Exception as e:
                 logger.error(f"❌ Connection error for {provider.name}: {e}")
-                self._health_stats['last_error'] = str(e)
-                self._health_stats['error_count'] += 1
             
             if attempt < max_retries - 1:
-                # Exponential backoff with jitter
-                delay = min(2 ** attempt + (time.time() % 1), 30)  # Max 30 seconds
-                logger.info(f"⏳ Waiting {delay:.1f}s before retry...")
+                delay = min(2 ** attempt, 30)
+                logger.info(f"⏳ Waiting {delay}s before retry...")
                 await asyncio.sleep(delay)
-        
         return False
-    
-    async def _health_monitor(self):
-        """Monitor connection health and trigger recovery when needed"""
-        logger.info("🏥 Starting health monitor...")
+
+    async def update_global_subscriptions(self, client_subscriptions: Dict[any, Set[str]]):
+        """Aggregates all client subscriptions and updates the provider."""
+        # 1. Aggregate all symbols from all clients
+        global_new_symbols = set()
+        for client_subs in client_subscriptions.values():
+            global_new_symbols.update(client_subs)
+            
+        # 2. Calculate the difference
+        symbols_to_add = global_new_symbols - self._provider_subscriptions
+        symbols_to_remove = self._provider_subscriptions - global_new_symbols
         
-        try:
-            while not self._shutdown_event.is_set():
-                await asyncio.sleep(30)  # Check every 30 seconds
-                
-                current_time = time.time()
-                time_since_data = current_time - self._last_data_time
-                
-                # Check if we've received data recently
-                if time_since_data > 120:  # No data for 2 minutes
-                    logger.warning(f"⚠️ No streaming data received for {time_since_data:.0f} seconds")
-                    await self._attempt_recovery("no_data_timeout")
-                
-                # Check provider connection status
-                await self._check_provider_health()
-                
-                # Update uptime
-                if self._health_stats['connection_uptime']:
-                    uptime = current_time - self._health_stats['connection_uptime']
-                    if uptime > 300:  # Log uptime every 5 minutes
-                        logger.debug(f"📊 Streaming uptime: {uptime/60:.1f} minutes, "
-                                   f"messages: {self._health_stats['total_messages']}")
-                        
-        except asyncio.CancelledError:
-            logger.info("🛑 Health monitor cancelled")
-        except Exception as e:
-            logger.error(f"❌ Error in health monitor: {e}")
-            self._health_stats['last_error'] = str(e)
-            self._health_stats['error_count'] += 1
-    
-    async def _check_provider_health(self):
-        """Check health of all connected providers"""
-        try:
-            for provider_name, provider in self._providers.items():
-                if hasattr(provider, 'is_streaming_connected'):
-                    if not provider.is_streaming_connected():
-                        logger.warning(f"⚠️ Provider {provider_name} connection lost")
-                        await self._recover_provider(provider, provider_name)
-        except Exception as e:
-            logger.error(f"❌ Error checking provider health: {e}")
-    
-    async def _attempt_recovery(self, reason: str):
-        """Attempt to recover from connection issues with enhanced sleep/wake handling"""
-        try:
-            logger.info(f"🔄 Attempting recovery due to: {reason}")
-            self._health_stats['reconnection_count'] += 1
+        # 3. Unsubscribe from symbols that are no longer needed
+        if symbols_to_remove:
+            logger.info(f"🧹 Unsubscribing from {len(symbols_to_remove)} symbols.")
+            await self._unsubscribe_symbols_safe(list(symbols_to_remove))
+        
+        # 4. Subscribe to new symbols
+        if symbols_to_add:
+            logger.info(f"📡 Subscribing to {len(symbols_to_add)} new symbols.")
+            await self._subscribe_symbols_safe(list(symbols_to_add))
             
-            # For sleep/wake scenarios, be more aggressive with cleanup
-            if reason in ["system_wakeup", "no_data_timeout"]:
-                logger.info("🧹 Sleep/wake detected - performing aggressive connection cleanup")
-                
-                # Force disconnect all providers first to clear stale connections
-                for provider_name, provider in self._providers.items():
-                    try:
-                        logger.info(f"🛑 Force disconnecting {provider_name} for cleanup")
-                        await asyncio.wait_for(provider.disconnect_streaming(), timeout=5.0)
-                    except Exception as e:
-                        logger.warning(f"⚠️ Error force disconnecting {provider_name}: {e}")
-                
-                # Wait longer for cleanup after sleep/wake
-                await asyncio.sleep(2.0)
-            
-            # Try to reconnect all providers
-            for provider_name, provider in self._providers.items():
-                await self._recover_provider(provider, provider_name)
-                
-        except Exception as e:
-            logger.error(f"❌ Error during recovery attempt: {e}")
-            self._health_stats['last_error'] = str(e)
-            self._health_stats['error_count'] += 1
-    
-    async def _recover_provider(self, provider, provider_name: str):
-        """Recover a specific provider connection"""
-        try:
-            logger.info(f"🔄 Recovering provider {provider_name}...")
-            
-            # Disconnect first
+        # 5. Update the global state
+        self._provider_subscriptions = global_new_symbols
+        logger.info(f"Global subscriptions updated. Total: {len(self._provider_subscriptions)} symbols.")
+
+    async def _subscribe_symbols_safe(self, symbols: List[str]):
+        """Safely subscribes to symbols on all relevant providers."""
+        config = provider_config_manager.get_config()
+        quotes_provider_name = config.get("streaming_quotes")
+        
+        if quotes_provider_name and quotes_provider_name in self._providers:
+            provider = self._providers[quotes_provider_name]
             try:
-                await asyncio.wait_for(provider.disconnect_streaming(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning(f"⚠️ Disconnect timeout for {provider_name}")
+                provider_symbols = SymbolConverter.batch_convert_to_provider_format(symbols, quotes_provider_name)
+                await provider.subscribe_to_symbols(provider_symbols)
             except Exception as e:
-                logger.warning(f"⚠️ Error disconnecting {provider_name}: {e}")
-            
-            # Reconnect with retry
-            connected = await self._connect_with_retry(provider, max_retries=3)
-            if connected:
-                # Restore subscriptions
-                await self._restore_subscriptions(provider, provider_name)
-                logger.info(f"✅ Provider {provider_name} recovered successfully")
-            else:
-                logger.error(f"❌ Failed to recover provider {provider_name}")
-                
-        except Exception as e:
-            logger.error(f"❌ Error recovering provider {provider_name}: {e}")
-            self._health_stats['last_error'] = str(e)
-            self._health_stats['error_count'] += 1
-    
-    async def _restore_subscriptions(self, provider, provider_name: str):
-        """Restore subscriptions after provider reconnection"""
-        try:
-            all_symbols = list(self._stock_subscriptions | self._options_subscriptions)
-            if all_symbols:
-                logger.info(f"🔄 Restoring {len(all_symbols)} subscriptions for {provider_name}")
-                await provider.subscribe_to_symbols(all_symbols)
-                
-                # Update internal tracking
-                if "quotes" not in self._subscriptions:
-                    self._subscriptions["quotes"] = set()
-                self._subscriptions["quotes"].update(all_symbols)
-                
-                logger.info(f"✅ Subscriptions restored for {provider_name}")
-        except Exception as e:
-            logger.error(f"❌ Error restoring subscriptions for {provider_name}: {e}")
+                logger.error(f"❌ Error subscribing on {quotes_provider_name}: {e}")
+
+    async def _unsubscribe_symbols_safe(self, symbols: List[str]):
+        """Safely unsubscribes from symbols on all relevant providers."""
+        config = provider_config_manager.get_config()
+        quotes_provider_name = config.get("streaming_quotes")
+        
+        if quotes_provider_name and quotes_provider_name in self._providers:
+            provider = self._providers[quotes_provider_name]
+            if hasattr(provider, 'unsubscribe_from_symbols'):
+                try:
+                    provider_symbols = SymbolConverter.batch_convert_to_provider_format(symbols, quotes_provider_name)
+                    await provider.unsubscribe_from_symbols(provider_symbols)
+                except Exception as e:
+                    logger.error(f"❌ Error unsubscribing on {quotes_provider_name}: {e}")
+
+    def get_subscription_status(self) -> Dict[str, any]:
+        """Gets the current global subscription status."""
+        return {
+            "provider_subscriptions": list(self._provider_subscriptions),
+            "total_subscriptions": len(self._provider_subscriptions),
+            "is_connected": self._is_connected,
+        }
 
     async def disconnect(self):
-        """Enhanced disconnect with proper cleanup and timeout protection"""
-        try:
-            logger.info("🛑 Disconnecting enhanced streaming manager...")
-            
-            # Set shutdown event
-            self._shutdown_event.set()
-            
-            # Cancel health monitor
-            if self._health_check_task and not self._health_check_task.done():
-                self._health_check_task.cancel()
-                try:
-                    await asyncio.wait_for(self._health_check_task, timeout=3.0)
-                except (asyncio.TimeoutError, asyncio.CancelledError):
-                    pass
-            
-            # Disconnect all providers with timeout
-            disconnect_tasks = []
-            for provider_name, provider in self._providers.items():
-                disconnect_task = asyncio.create_task(
-                    self._disconnect_provider_with_timeout(provider, provider_name)
-                )
-                disconnect_tasks.append(disconnect_task)
-            
-            if disconnect_tasks:
-                await asyncio.wait_for(
-                    asyncio.gather(*disconnect_tasks, return_exceptions=True),
-                    timeout=10.0
-                )
-            
-            # Clear state
-            self._providers.clear()
-            self._subscriptions.clear()
-            self._stock_subscriptions.clear()
-            self._options_subscriptions.clear()
-            self._is_connected = False
-            
-            logger.info("✅ Enhanced streaming manager disconnected")
-            
-        except asyncio.TimeoutError:
-            logger.warning("⚠️ Streaming manager disconnect timeout")
-        except Exception as e:
-            logger.error(f"❌ Error disconnecting streaming manager: {e}")
-    
-    async def _disconnect_provider_with_timeout(self, provider, provider_name: str):
-        """Disconnect provider with timeout protection"""
-        try:
-            await asyncio.wait_for(provider.disconnect_streaming(), timeout=5.0)
-            logger.info(f"✅ Provider {provider_name} disconnected")
-        except asyncio.TimeoutError:
-            logger.warning(f"⚠️ Disconnect timeout for provider {provider_name}")
-        except Exception as e:
-            logger.error(f"❌ Error disconnecting provider {provider_name}: {e}")
+        """Disconnects all streaming providers."""
+        logger.info("🛑 Disconnecting streaming manager...")
+        self._shutdown_event.set()
+        disconnect_tasks = [p.disconnect_streaming() for p in self._providers.values()]
+        await asyncio.gather(*disconnect_tasks, return_exceptions=True)
+        self._providers.clear()
+        self._provider_subscriptions.clear()
+        self._is_connected = False
+        logger.info("✅ Streaming manager disconnected.")
 
-    async def get_latest_data(self, symbol: str) -> Optional[MarketData]:
-        """Get the latest data for a specific symbol from cache."""
-        try:
-            if self._shutdown_event.is_set():
-                return None
-            
-            return await self._latest_cache.get_latest(symbol)
-            
-        except Exception as e:
-            if not self._shutdown_event.is_set():
-                logger.error(f"❌ Error getting latest data for {symbol}: {e}")
-                self._health_stats['last_error'] = str(e)
-                self._health_stats['error_count'] += 1
-            return None
-    
-    async def get_all_latest_data(self) -> Dict[str, MarketData]:
-        """Get all latest data from cache."""
-        try:
-            if self._shutdown_event.is_set():
-                return {}
-            
-            return await self._latest_cache.get_all_latest()
-            
-        except Exception as e:
-            if not self._shutdown_event.is_set():
-                logger.error(f"❌ Error getting all latest data: {e}")
-                self._health_stats['last_error'] = str(e)
-                self._health_stats['error_count'] += 1
-            return {}
-    
-    async def get_fresh_data(self, max_age_seconds: float = 30.0) -> Dict[str, MarketData]:
-        """Get only fresh data from cache."""
-        try:
-            if self._shutdown_event.is_set():
-                return {}
-            
-            return await self._latest_cache.get_fresh_data(max_age_seconds)
-            
-        except Exception as e:
-            if not self._shutdown_event.is_set():
-                logger.error(f"❌ Error getting fresh data: {e}")
-                self._health_stats['last_error'] = str(e)
-                self._health_stats['error_count'] += 1
-            return {}
-    
-    # Enhanced subscription methods with better error handling
-    
-    async def replace_all_subscriptions_multi_stock(self, stock_symbols: List[str], option_symbols: List[str]):
-        """Enhanced subscription replacement with better error handling and recovery"""
-        try:
-            if self._shutdown_event.is_set():
-                logger.warning("⚠️ Shutdown in progress, ignoring subscription request")
-                return
-                
-            logger.info(f"🔄 Enhanced StreamingManager: Replacing all subscriptions - "
-                       f"stocks: {len(stock_symbols)}, options: {len(option_symbols)}")
-            
-            # Step 1: Unsubscribe from current symbols
-            all_current_symbols = list(self._stock_subscriptions | self._options_subscriptions)
-            
-            if all_current_symbols:
-                logger.info(f"🧹 Unsubscribing from {len(all_current_symbols)} current symbols")
-                await self._unsubscribe_symbols_safe(all_current_symbols)
-            
-            # Step 2: Subscribe to new symbols
-            all_new_symbols = stock_symbols + option_symbols
-            if all_new_symbols:
-                logger.info(f"📡 Subscribing to {len(all_new_symbols)} new symbols")
-                await self._subscribe_symbols_safe(all_new_symbols)
-            
-            # Step 3: Update tracking
-            old_stock_count = len(self._stock_subscriptions)
-            old_options_count = len(self._options_subscriptions)
-            
-            self._stock_subscriptions = set(stock_symbols)
-            self._options_subscriptions = set(option_symbols)
-            
-            logger.info(f"✅ All subscriptions replaced. Stocks: {old_stock_count} -> {len(stock_symbols)}, "
-                       f"Options: {old_options_count} -> {len(option_symbols)}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error in replace_all_subscriptions_multi_stock: {e}")
-            self._health_stats['last_error'] = str(e)
-            self._health_stats['error_count'] += 1
-    
-    async def _subscribe_symbols_safe(self, symbols: List[str]):
-        """Safe symbol subscription with error handling and recovery"""
-        try:
-            config = provider_config_manager.get_config()
-            quotes_provider_name = config.get("streaming_quotes")
-            greeks_provider_name = config.get("streaming_greeks")
-            
-            # Subscribe to quotes provider
-            if quotes_provider_name and quotes_provider_name in self._providers:
-                provider = self._providers[quotes_provider_name]
-                
-                # Check if provider is connected
-                if hasattr(provider, 'is_streaming_connected') and not provider.is_streaming_connected():
-                    logger.warning(f"⚠️ Provider {quotes_provider_name} not connected, attempting recovery")
-                    await self._recover_provider(provider, quotes_provider_name)
-                
-                # Convert symbols to provider format before subscribing
-                provider_symbols = SymbolConverter.batch_convert_to_provider_format(symbols, quotes_provider_name)
-                
-                # Log conversion for debugging
-                if provider_symbols != symbols:
-                    logger.info(f"🔄 Converted {len(symbols)} symbols for {quotes_provider_name} provider")
-                    logger.debug(f"Symbol conversion examples: {list(zip(symbols[:3], provider_symbols[:3]))}")
-                
-                # Subscribe with timeout
-                success = await asyncio.wait_for(
-                    provider.subscribe_to_symbols(provider_symbols),
-                    timeout=15.0
-                )
-                
-                if success:
-                    # Update internal tracking (store original symbols, not provider-specific ones)
-                    if "quotes" not in self._subscriptions:
-                        self._subscriptions["quotes"] = set()
-                    self._subscriptions["quotes"].update(symbols)
-                    logger.info(f"✅ Successfully subscribed to {len(symbols)} symbols on {quotes_provider_name}")
-                else:
-                    logger.warning(f"⚠️ Subscription returned False for {len(symbols)} symbols on {quotes_provider_name}")
-            
-            # Subscribe to Greeks provider for option symbols (if different from quotes provider)
-            if (greeks_provider_name and 
-                greeks_provider_name != quotes_provider_name and 
-                greeks_provider_name in self._providers):
-                
-                # Filter to only option symbols
-                option_symbols = [s for s in symbols if self._is_option_symbol(s)]
-                
-                if option_symbols:
-                    provider = self._providers[greeks_provider_name]
-                    
-                    # Check if provider is connected
-                    if hasattr(provider, 'is_streaming_connected') and not provider.is_streaming_connected():
-                        logger.warning(f"⚠️ Greeks provider {greeks_provider_name} not connected, attempting recovery")
-                        await self._recover_provider(provider, greeks_provider_name)
-                    
-                    # Convert symbols to provider format before subscribing
-                    provider_option_symbols = SymbolConverter.batch_convert_to_provider_format(option_symbols, greeks_provider_name)
-                    
-                    # Subscribe with timeout
-                    success = await asyncio.wait_for(
-                        provider.subscribe_to_symbols(provider_option_symbols),
-                        timeout=15.0
-                    )
-                    
-                    if success:
-                        # Update internal tracking for Greeks
-                        if "greeks" not in self._subscriptions:
-                            self._subscriptions["greeks"] = set()
-                        self._subscriptions["greeks"].update(option_symbols)
-                        logger.info(f"✅ Successfully subscribed to Greeks for {len(option_symbols)} option symbols on {greeks_provider_name}")
-                    else:
-                        logger.warning(f"⚠️ Greeks subscription returned False for {len(option_symbols)} option symbols on {greeks_provider_name}")
-                
-        except asyncio.TimeoutError:
-            logger.error(f"⚠️ Subscription timeout for {len(symbols)} symbols")
-            # Attempt recovery on timeout
-            await self._attempt_recovery("subscription_timeout")
-        except Exception as e:
-            logger.error(f"❌ Error subscribing to symbols: {e}")
-            self._health_stats['last_error'] = str(e)
-            self._health_stats['error_count'] += 1
-    
-    async def _unsubscribe_symbols_safe(self, symbols: List[str]):
-        """Safe symbol unsubscription with error handling"""
-        try:
-            config = provider_config_manager.get_config()
-            quotes_provider_name = config.get("streaming_quotes")
-            
-            if quotes_provider_name and quotes_provider_name in self._providers:
-                provider = self._providers[quotes_provider_name]
-                
-                if hasattr(provider, 'unsubscribe_from_symbols'):
-                    await asyncio.wait_for(
-                        provider.unsubscribe_from_symbols(symbols),
-                        timeout=10.0
-                    )
-                
-                # Update internal tracking
-                if "quotes" in self._subscriptions:
-                    self._subscriptions["quotes"] -= set(symbols)
-                    
-        except asyncio.TimeoutError:
-            logger.warning(f"⚠️ Unsubscription timeout for {len(symbols)} symbols")
-        except Exception as e:
-            logger.error(f"❌ Error unsubscribing from symbols: {e}")
-    
-    # Legacy methods for backward compatibility
-    
-    async def replace_all_subscriptions(self, underlying_symbol: str, option_symbols: List[str]):
-        """Legacy method - redirects to enhanced multi-stock version"""
-        await self.replace_all_subscriptions_multi_stock([underlying_symbol], option_symbols)
-    
-    def get_subscription_status(self) -> Dict[str, any]:
-        """Get current subscription status with enhanced health information"""
-        return {
-            "stock_subscriptions": list(self._stock_subscriptions),
-            "options_subscriptions": list(self._options_subscriptions),
-            "persistent_subscriptions": list(self._persistent_subscriptions),
-            "total_subscriptions": {
-                data_type: len(symbols) for data_type, symbols in self._subscriptions.items()
-            },
-            "is_connected": self._is_connected,
-            "health_stats": self._health_stats.copy(),
-            "connection_attempts": self._connection_attempts,
-            "shutdown_in_progress": self._shutdown_event.is_set()
-        }
-    
-    def get_health_stats(self) -> Dict[str, any]:
-        """Get detailed health statistics"""
-        current_time = time.time()
-        uptime = (current_time - self._health_stats['connection_uptime'] 
-                 if self._health_stats['connection_uptime'] else 0)
-        
-        return {
-            **self._health_stats,
-            "uptime_seconds": uptime,
-            "uptime_minutes": uptime / 60,
-            "is_connected": self._is_connected,
-            "active_providers": len(self._providers),
-            "cache_size": self._latest_cache.size,
-            "time_since_last_data": current_time - self._last_data_time
-        }
-    
-    def _is_option_symbol(self, symbol: str) -> bool:
-        """Check if symbol is an option symbol."""
-        # Standard OCC format check - option symbols are typically longer than 10 characters
-        # and contain expiration date and strike price information
-        return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
-
-# Create streaming manager instance
+# Singleton instance
 streaming_manager = StreamingManager()

@@ -247,6 +247,16 @@ class WebSocketStreamingClient {
     });
   }
 
+  async sendKeepalive(symbols = []) {
+    await this.connect();
+    
+    this.worker.postMessage({
+      command: "keepalive",
+      action: "keepalive",
+      symbols: symbols,
+    });
+  }
+
   isOptionSymbol(symbol) {
     return symbol && symbol.length > 10 && /\d{6}[CP]\d{8}/.test(symbol);
   }

@@ -1138,41 +1138,6 @@ async def get_all_watchlist_symbols():
         logger.error(f"Error getting all watchlist symbols: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# === Streaming Endpoints ===
-
-@app.post("/subscribe/stocks", response_model=ApiResponse)
-async def subscribe_stocks(request: SymbolRequest, background_tasks: BackgroundTasks):
-    """Subscribe to stock price streaming."""
-    try:
-        await streaming_manager.subscribe(request.symbols, ["quotes"])
-        # Start background task to handle streaming data
-        background_tasks.add_task(handle_streaming_data)
-        
-        return ApiResponse(
-            success=True,
-            data={"subscribed_symbols": request.symbols},
-            message=f"Subscribed to {len(request.symbols)} stock symbols"
-        )
-    except Exception as e:
-        logger.error(f"Error subscribing to stocks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/subscribe/options", response_model=ApiResponse)
-async def subscribe_options(request: SymbolRequest, background_tasks: BackgroundTasks):
-    """Subscribe to option price streaming."""
-    try:
-        await streaming_manager.subscribe(request.symbols, ["quotes"])
-        background_tasks.add_task(handle_streaming_data)
-        
-        return ApiResponse(
-            success=True,
-            data={"subscribed_symbols": request.symbols},
-            message=f"Subscribed to {len(request.symbols)} option symbols"
-        )
-    except Exception as e:
-        logger.error(f"Error subscribing to options: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 # === WebSocket Endpoint ===
 
 @app.websocket("/ws")
@@ -1210,11 +1175,7 @@ async def websocket_endpoint(websocket: WebSocket):
     except Exception as e:
         logger.error(f"❌ WebSocket error: {e}")
     finally:
-        manager.disconnect(websocket)
-
-# === Background Tasks ===
-# Note: Background streaming is now handled by the ConnectionManager
-# This eliminates the need for separate background tasks and prevents hanging issues
+        await manager.disconnect(websocket)
 
 # === Main Execution ===
 

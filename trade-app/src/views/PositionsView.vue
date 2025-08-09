@@ -372,6 +372,7 @@ import { useMarketData } from "../composables/useMarketData.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { useOrderManagement } from "../composables/useOrderManagement";
+import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
 export default {
   name: "PositionsView",
@@ -395,9 +396,21 @@ export default {
     // Use unified market data composable
     const { getPositions, refreshPositions } = useMarketData();
 
+    // Component registration system
+    const componentId = `PositionsView-${Math.random().toString(36).substr(2, 9)}`;
+    const registeredSymbols = new Set();
+
     // Smart Market Data integration - same pattern as other components
     const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
     const liveOptionPrices = reactive(new Map());
+
+    // Single registration method per component to prevent double registration
+    const ensureSymbolRegistration = (symbol) => {
+      if (!registeredSymbols.has(symbol)) {
+        smartMarketDataStore.registerSymbolUsage(symbol, componentId);
+        registeredSymbols.add(symbol);
+      }
+    };
 
     // Selected legs integration - same pattern as OptionsTrading
     const { selectedLegs, hasSelectedLegs, addLeg, removeLeg, clearAll } = useSelectedLegs();
@@ -527,6 +540,9 @@ export default {
       if (!symbol) return null;
 
       if (!liveOptionPrices.has(symbol)) {
+        // Ensure symbol is registered (only once per component)
+        ensureSymbolRegistration(symbol);
+        
         // Call getSmartOptionPrice only once to set up the subscription and heartbeat
         liveOptionPrices.set(symbol, getSmartOptionPrice(symbol));
       }
@@ -1391,6 +1407,34 @@ export default {
       { immediate: true }
     );
 
+    // Component cleanup system
+    const cleanupComponentRegistrations = () => {
+      console.log(`📝 PositionsView: Unregistering component ${componentId} with ${registeredSymbols.size} symbols`);
+      
+      // Unregister all symbols this component was using
+      for (const symbol of registeredSymbols) {
+        smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
+      }
+      
+      // Clear local tracking
+      registeredSymbols.clear();
+      liveOptionPrices.clear();
+    };
+
+    // Watch for symbol changes to clean up old registrations
+    watch(
+      () => currentSymbol.value,
+      (newSymbol, oldSymbol) => {
+        if (newSymbol !== oldSymbol) {
+          console.log(`📝 PositionsView: Symbol changed from ${oldSymbol} to ${newSymbol}. Cleaning up component registrations.`);
+          
+          // Unregister all current symbols
+          cleanupComponentRegistrations();
+        }
+      },
+      { immediate: true }
+    );
+
     // Lifecycle
     onMounted(async () => {
       // Set up centralized symbol selection listener
@@ -1398,6 +1442,12 @@ export default {
       
       // Store cleanup for unmount
       onUnmounted(cleanup);
+    });
+
+    // Clean up when the component is unmounted
+    onUnmounted(() => {
+      console.log(`📝 PositionsView unmounted. Cleaning up component registrations.`);
+      cleanupComponentRegistrations();
     });
 
     return {

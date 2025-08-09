@@ -233,7 +233,7 @@
 </template>
 
 <script>
-import { ref, computed, watch, reactive } from "vue";
+import { ref, computed, watch, reactive, onUnmounted } from "vue";
 import {
   calculateMultiLegProfitLoss,
   calculateBuyingPowerEffect,
@@ -243,6 +243,7 @@ import {
 } from "../services/optionsCalculator.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
+import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
 export default {
   name: "BottomTradingPanel",
@@ -269,10 +270,22 @@ export default {
       clearAll 
     } = useSelectedLegs();
 
+    // Component registration system
+    const componentId = `BottomTradingPanel-${Math.random().toString(36).substr(2, 9)}`;
+    const registeredSymbols = new Set();
+
     // Smart Market Data integration - same pattern as CollapsibleOptionsChain
     const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
     const liveOptionPrices = reactive(new Map());
     const lockedPrices = ref(new Map());
+
+    // Single registration method per component to prevent double registration
+    const ensureSymbolRegistration = (symbol) => {
+      if (!registeredSymbols.has(symbol)) {
+        smartMarketDataStore.registerSymbolUsage(symbol, componentId);
+        registeredSymbols.add(symbol);
+      }
+    };
 
     const limitPrice = ref(0);
     const selectedOrderType = ref("limit");
@@ -285,6 +298,9 @@ export default {
       if (!symbol) return null;
 
       if (!liveOptionPrices.has(symbol)) {
+        // Ensure symbol is registered (only once per component)
+        ensureSymbolRegistration(symbol);
+        
         // Call getSmartOptionPrice only once to set up the subscription and heartbeat
         liveOptionPrices.set(symbol, getSmartOptionPrice(symbol));
       }
@@ -723,6 +739,35 @@ export default {
       }
     );
 
+    // Component cleanup system
+    const cleanupComponentRegistrations = () => {
+      console.log(`📝 BottomTradingPanel: Unregistering component ${componentId} with ${registeredSymbols.size} symbols`);
+      
+      // Unregister all symbols this component was using
+      for (const symbol of registeredSymbols) {
+        smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
+      }
+      
+      // Clear local tracking
+      registeredSymbols.clear();
+      liveOptionPrices.clear();
+      lockedPrices.value.clear();
+    };
+
+    // Watch for symbol changes to clean up old registrations
+    watch(
+      () => props.symbol,
+      (newSymbol, oldSymbol) => {
+        if (newSymbol !== oldSymbol) {
+          console.log(`📝 BottomTradingPanel: Symbol changed from ${oldSymbol} to ${newSymbol}. Cleaning up component registrations.`);
+          
+          // Unregister all current symbols
+          cleanupComponentRegistrations();
+        }
+      },
+      { immediate: true }
+    );
+
     watch(
       selectedLegs,
       (newOptions, oldOptions) => {
@@ -741,6 +786,12 @@ export default {
       },
       { deep: true, immediate: true }
     );
+
+    // Clean up when the component is unmounted
+    onUnmounted(() => {
+      console.log(`📝 BottomTradingPanel unmounted. Cleaning up component registrations.`);
+      cleanupComponentRegistrations();
+    });
 
     return {
       limitPrice,

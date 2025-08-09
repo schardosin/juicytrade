@@ -299,6 +299,11 @@ export function useOptionsChainManager(
     subscribedSymbols.value.clear();
     expirationDates.value = [];
     error.value = null;
+    // After clearing data, wait for the next DOM update cycle before updating subscriptions.
+    // This ensures that computed properties like `allSubscribedSymbols` have been recalculated.
+    nextTick(() => {
+      updateSubscriptions();
+    });
   };
 
   /**

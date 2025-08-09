@@ -367,6 +367,10 @@ class SmartMarketDataStore {
     this.lastGreeksAccess = new Map(); // symbol -> timestamp
     this.activeGreeksSubscriptions = new Set(); // currently subscribed Greeks symbols
 
+    // Component registration system for precise subscription management
+    this.symbolUsageCount = new Map(); // symbol -> usage count
+    this.componentRegistrations = new Map(); // componentId -> Set<symbols>
+
     // REST API data management
     this.strategies = new Map(); // data source configurations
     this.loading = reactive(new Map()); // loading states
@@ -375,9 +379,8 @@ class SmartMarketDataStore {
     this.cache = new Map(); // TTL cache for on-demand data
 
     // Configuration
-    this.accessTimeout = 300000; // 5 minutes grace period
-    this.cleanupInterval = 60000; // Check every minute
-    this.heartbeatInterval = 20000; // Component heartbeat every 20 seconds
+    this.accessTimeout = 300000; // 5 minutes grace period for keep-alive determination
+    this.keepaliveInterval = 15000; // Send keep-alive every 15 seconds
     this.debounceDelay = 100; // 100ms debounce for backend updates
 
     // Internal state
@@ -397,8 +400,8 @@ class SmartMarketDataStore {
       lastRecoveryAttempt: null
     });
 
-    // Start automatic cleanup
-    this.startCleanupTimer();
+    // Start keep-alive system
+    this.startKeepaliveTimer();
 
     // Start Greeks periodic updates
     this.startGreeksPeriodicUpdates();
@@ -414,6 +417,9 @@ class SmartMarketDataStore {
 
     // Listen for system recovery events
     this.setupRecoveryListeners();
+
+    // Expose for debugging
+    window.smartMarketDataStore = this;
   }
 
   /**
@@ -848,56 +854,119 @@ class SmartMarketDataStore {
   }
 
   /**
-   * Start automatic cleanup timer
+   * Start keep-alive timer system
+   * Sends periodic keep-alive messages to maintain symbol subscriptions
    */
-  startCleanupTimer() {
+  startKeepaliveTimer() {
     setInterval(() => {
-      this.cleanupUnusedSymbols();
-      this.cleanupUnusedGreeks(); // Also cleanup Greeks
-    }, this.cleanupInterval);
+      this.sendKeepalive();
+    }, this.keepaliveInterval);
   }
 
   /**
-   * Clean up symbols that haven't been accessed recently
+   * Send keep-alive message for all actively registered symbols
    */
-  cleanupUnusedSymbols() {
-    const cutoff = Date.now() - this.accessTimeout;
-    const toUnsubscribe = [];
-
-    this.lastAccess.forEach((timestamp, symbol) => {
-      if (timestamp < cutoff) {
-        toUnsubscribe.push(symbol);
+  async sendKeepalive() {
+    // Use component registration system for precise keep-alive
+    const activeSymbols = Array.from(this.symbolUsageCount.keys());
+    
+    // Send keep-alive to backend if we have active symbols
+    if (activeSymbols.length > 0) {
+      try {
+        await webSocketClient.sendKeepalive(activeSymbols);
+        console.log(`💓 Sent keep-alive for ${activeSymbols.length} symbols (registered components)`);
+      } catch (error) {
+        console.error("❌ Failed to send keep-alive:", error);
       }
-    });
+    }
+  }
 
-    if (toUnsubscribe.length > 0) {
-      // Correctly call unsubscribeFromSymbol for each symbol individually
-      toUnsubscribe.forEach((symbol) => {
-        this.lastAccess.delete(symbol);
-        this.unsubscribeFromSymbol(symbol);
-      });
+  // ===== COMPONENT REGISTRATION SYSTEM =====
+
+  /**
+   * Register a component's usage of a symbol
+   * This creates a precise subscription that's immediately removed when component unmounts
+   */
+  registerSymbolUsage(symbol, componentId) {
+    if (!symbol || !componentId) return;
+
+    // Increment usage count
+    const currentCount = this.symbolUsageCount.get(symbol) || 0;
+    this.symbolUsageCount.set(symbol, currentCount + 1);
+
+    // Track which symbols this component is using
+    if (!this.componentRegistrations.has(componentId)) {
+      this.componentRegistrations.set(componentId, new Set());
+    }
+    this.componentRegistrations.get(componentId).add(symbol);
+
+    console.log(`📝 Registered ${symbol} for component ${componentId} (count: ${currentCount + 1})`);
+
+    // Ensure subscription if this is the first registration
+    if (currentCount === 0) {
+      this.ensureSubscription(symbol);
     }
   }
 
   /**
-   * Clean up Greeks that haven't been accessed recently (same pattern as prices)
+   * Unregister a component's usage of a symbol
+   * Decrements usage count and removes subscription if no components are using it
    */
-  cleanupUnusedGreeks() {
-    const cutoff = Date.now() - this.accessTimeout;
-    const toUnsubscribe = [];
+  unregisterSymbolUsage(symbol, componentId) {
+    if (!symbol || !componentId) return;
 
-    this.lastGreeksAccess.forEach((timestamp, symbol) => {
-      if (timestamp < cutoff) {
-        toUnsubscribe.push(symbol);
-      }
-    });
-
-    if (toUnsubscribe.length > 0) {
-      toUnsubscribe.forEach((symbol) => {
-        this.lastGreeksAccess.delete(symbol);
-        this.unsubscribeFromGreeks(symbol);
-      });
+    // Decrement usage count
+    const currentCount = this.symbolUsageCount.get(symbol) || 0;
+    if (currentCount <= 1) {
+      this.symbolUsageCount.delete(symbol);
+      // Remove from active subscriptions when no components are using it
+      this.unsubscribeFromSymbol(symbol);
+      console.log(`📝 Unregistered ${symbol} for component ${componentId} (removed - count: 0)`);
+    } else {
+      this.symbolUsageCount.set(symbol, currentCount - 1);
+      console.log(`📝 Unregistered ${symbol} for component ${componentId} (count: ${currentCount - 1})`);
     }
+
+    // Remove from component's registration list
+    const componentSymbols = this.componentRegistrations.get(componentId);
+    if (componentSymbols) {
+      componentSymbols.delete(symbol);
+      if (componentSymbols.size === 0) {
+        this.componentRegistrations.delete(componentId);
+      }
+    }
+  }
+
+  /**
+   * Unregister all symbols for a component (called on component unmount)
+   */
+  unregisterComponent(componentId) {
+    const componentSymbols = this.componentRegistrations.get(componentId);
+    if (!componentSymbols) return;
+
+    console.log(`📝 Unregistering component ${componentId} with ${componentSymbols.size} symbols`);
+
+    // Unregister each symbol this component was using
+    for (const symbol of componentSymbols) {
+      this.unregisterSymbolUsage(symbol, componentId);
+    }
+  }
+
+  /**
+   * Get debug information about component registrations
+   */
+  getRegistrationDebugInfo() {
+    return {
+      symbolUsageCount: Object.fromEntries(this.symbolUsageCount),
+      componentRegistrations: Object.fromEntries(
+        Array.from(this.componentRegistrations.entries()).map(([componentId, symbols]) => [
+          componentId,
+          Array.from(symbols)
+        ])
+      ),
+      totalRegisteredSymbols: this.symbolUsageCount.size,
+      totalComponents: this.componentRegistrations.size
+    };
   }
 
   /**

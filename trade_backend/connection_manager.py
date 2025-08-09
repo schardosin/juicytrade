@@ -2,19 +2,24 @@ import asyncio
 import logging
 import json
 import time
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Set
 from fastapi import WebSocket, WebSocketDisconnect
+
+from .config import settings
 
 logger = logging.getLogger(__name__)
 
 class ConnectionManager:
     """
-    WebSocket connection manager with proper lifecycle management,
-    health monitoring, and graceful shutdown support.
+    Manages WebSocket connections, including per-client subscriptions
+    and keep-alive tracking.
     """
     
     def __init__(self, streaming_manager, shutdown_manager):
         self.active_connections: List[WebSocket] = []
+        self.client_subscriptions: Dict[WebSocket, Set[str]] = {}
+        self.client_keepalives: Dict[WebSocket, float] = {}
+        self.symbol_keepalives: Dict[str, float] = {}  # Track per-symbol keep-alives
         self.is_shutting_down = False
         
         # Dependencies
@@ -24,407 +29,187 @@ class ConnectionManager:
         # Register to receive data updates from the streaming manager's cache
         self.streaming_manager._latest_cache.add_update_callback(self.broadcast_market_data)
         
-        # Health monitoring
-        self._connection_health: Dict[int, Dict] = {}
-        self._last_broadcast_time = time.time()
-        self._broadcast_count = 0
-        
-        # Performance tracking
-        self._stats = {
-            'total_connections': 0,
-            'total_messages_sent': 0,
-            'total_errors': 0,
-            'streaming_task_restarts': 0
-        }
-        
+        # Start background tasks
+        self._client_keepalive_task = asyncio.create_task(self._check_client_keepalives())
+        self._symbol_keepalive_task = asyncio.create_task(self._check_symbol_keepalives())
+
     async def connect(self, websocket: WebSocket):
-        """Enhanced WebSocket connection with health tracking and connection limit protection"""
+        """Accepts a new WebSocket connection and initializes its state."""
         if self.is_shutting_down:
-            logger.warning("🚫 Rejecting new connection - shutdown in progress")
             await websocket.close(code=1001, reason="Server shutting down")
             return
             
-        try:
-            # Check for stale connections before accepting new ones
-            await self._cleanup_stale_connections()
-            
-            # Validate connection limits to prevent Alpaca 429 errors
-            if len(self.active_connections) >= 5:  # Conservative limit for Alpaca
-                logger.warning(f"⚠️ Connection limit reached ({len(self.active_connections)}), cleaning up stale connections")
-                await self._cleanup_stale_connections()
-                
-                # If still at limit after cleanup, reject new connection
-                if len(self.active_connections) >= 5:
-                    logger.error("❌ Connection limit exceeded after cleanup - rejecting new connection")
-                    await websocket.close(code=1008, reason="Connection limit exceeded")
-                    return
-            
-            await websocket.accept()
-            self.active_connections.append(websocket)
-            self.shutdown_manager.register_websocket(websocket)
-            
-            # Initialize health tracking
-            connection_id = id(websocket)
-            self._connection_health[connection_id] = {
-                'connected_at': time.time(),
-                'last_message': time.time(),
-                'message_count': 0,
-                'error_count': 0
-            }
-            
-            self._stats['total_connections'] += 1
-            
-            logger.info(f"✅ WebSocket connected. Total connections: {len(self.active_connections)}")
-                
-        except Exception as e:
-            logger.error(f"❌ Error connecting WebSocket: {e}")
-            await self._cleanup_connection(websocket)
+        await websocket.accept()
+        self.active_connections.append(websocket)
+        self.client_subscriptions[websocket] = set()
+        self.client_keepalives[websocket] = time.time()
+        self.shutdown_manager.register_websocket(websocket)
+        logger.info(f"✅ WebSocket connected. Total connections: {len(self.active_connections)}")
     
-    def disconnect(self, websocket: WebSocket):
-        """Enhanced WebSocket disconnection with cleanup"""
-        try:
-            if websocket in self.active_connections:
-                self.active_connections.remove(websocket)
-                
-            # Cleanup health tracking
-            connection_id = id(websocket)
-            self._connection_health.pop(connection_id, None)
-            
-            # Unregister from shutdown manager
-            self.shutdown_manager.unregister_websocket(websocket)
-            
-            logger.info(f"🔌 WebSocket disconnected. Total connections: {len(self.active_connections)}")
-                
-        except Exception as e:
-            logger.error(f"❌ Error disconnecting WebSocket: {e}")
+    async def disconnect(self, websocket: WebSocket):
+        """Handles disconnection of a WebSocket client."""
+        if websocket in self.active_connections:
+            self.active_connections.remove(websocket)
+        
+        self.client_subscriptions.pop(websocket, None)
+        self.client_keepalives.pop(websocket, None)
+        self.shutdown_manager.unregister_websocket(websocket)
+        
+        # Notify the streaming manager to update global subscriptions
+        await self.streaming_manager.update_global_subscriptions(self.client_subscriptions)
+        
+        logger.info(f"🔌 WebSocket disconnected. Total connections: {len(self.active_connections)}")
     
-    async def _cleanup_connection(self, websocket: WebSocket):
-        """Clean up a failed connection"""
-        try:
-            if hasattr(websocket, 'client_state') and websocket.client_state.name != "DISCONNECTED":
-                await asyncio.wait_for(websocket.close(), timeout=2.0)
-        except (asyncio.TimeoutError, Exception):
-            pass  # Connection might already be closed or timeout
-        finally:
-            self.disconnect(websocket)
-    
-    async def _cleanup_stale_connections(self):
-        """Clean up stale or disconnected WebSocket connections"""
-        try:
-            stale_connections = []
-            current_time = time.time()
-            
-            if not self.active_connections:
-                return
-
-            for connection in self.active_connections[:]:  # Copy to avoid modification during iteration
-                connection_id = id(connection)
-                
-                # Check if connection is actually disconnected
-                try:
-                    if hasattr(connection, 'client_state'):
-                        if connection.client_state.name == "DISCONNECTED":
-                            stale_connections.append(connection)
-                            continue
-                    
-                    # Check for connections that haven't sent messages recently (stale)
-                    if connection_id in self._connection_health:
-                        last_message_time = self._connection_health[connection_id].get('last_message', 0)
-                        time_since_message = current_time - last_message_time
-                        
-                        # Consider connections stale if no activity for 5 minutes
-                        if time_since_message > 300:
-                            logger.info(f"🧹 Marking connection as stale (no activity for {time_since_message:.0f}s)")
-                            stale_connections.append(connection)
-                            continue
-                    
-                    # The ping test was causing issues due to 'WebSocket' object having no attribute 'ping'.
-                    # The library should handle keepalives automatically.
-                    # The check for last_message_time is a more reliable application-level health check.
-                        
-                except Exception as e:
-                    logger.warning(f"⚠️ Error checking connection health: {e}")
-                    stale_connections.append(connection)
-            
-            # Clean up stale connections
-            if stale_connections:
-                logger.info(f"🧹 Cleaning up {len(stale_connections)} stale connections")
-                cleanup_tasks = []
-                for conn in stale_connections:
-                    cleanup_tasks.append(asyncio.create_task(self._cleanup_connection(conn)))
-                
-                if cleanup_tasks:
-                    await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-                    
-                logger.info(f"✅ Cleaned up stale connections. Active connections: {len(self.active_connections)}")
-            
-        except Exception as e:
-            logger.error(f"❌ Error during stale connection cleanup: {e}")
-    
-    async def broadcast(self, message: dict):
-        """Enhanced broadcast with connection health checking and error handling"""
-        if not self.active_connections or self.is_shutting_down:
-            return
-            
-        disconnected = []
-        successful_sends = 0
-        current_time = time.time()
-        
-        for connection in self.active_connections[:]:  # Copy to avoid modification during iteration
-            try:
-                # Check connection state
-                if (hasattr(connection, 'client_state') and 
-                    connection.client_state.name != "CONNECTED"):
-                    disconnected.append(connection)
-                    continue
-                
-                # Send message with timeout
-                await asyncio.wait_for(connection.send_json(message), timeout=2.0)
-                successful_sends += 1
-                self._stats['total_messages_sent'] += 1
-                
-                # Update health tracking
-                connection_id = id(connection)
-                if connection_id in self._connection_health:
-                    self._connection_health[connection_id]['last_message'] = current_time
-                    self._connection_health[connection_id]['message_count'] += 1
-                    
-            except asyncio.TimeoutError:
-                logger.warning(f"⚠️ WebSocket send timeout")
-                disconnected.append(connection)
-                self._stats['total_errors'] += 1
-            except Exception as e:
-                logger.warning(f"⚠️ Failed to send message to WebSocket: {e}")
-                disconnected.append(connection)
-                self._stats['total_errors'] += 1
-        
-        # Clean up disconnected clients
-        cleanup_tasks = []
-        for conn in disconnected:
-            cleanup_tasks.append(asyncio.create_task(self._cleanup_connection(conn)))
-        
-        if cleanup_tasks:
-            await asyncio.gather(*cleanup_tasks, return_exceptions=True)
-        
-        # Update broadcast statistics
-        self._broadcast_count += 1
-        self._last_broadcast_time = current_time
-        
-        # Log broadcast statistics periodically
-        if self._broadcast_count % 100 == 0:
-            logger.debug(f"📊 Broadcast stats: {successful_sends}/{len(self.active_connections)} successful, "
-                        f"total messages: {self._stats['total_messages_sent']}, "
-                        f"errors: {self._stats['total_errors']}")
-
     async def broadcast_market_data(self, market_data):
-        """
-        Callback function to broadcast market data updates to all clients.
-        This is triggered by the LatestValueCache.
-        """
-        try:
-            # Determine message type based on data content
-            message_type = "price_update"
-            if hasattr(market_data, 'data_type'):
-                if market_data.data_type == "greeks":
-                    message_type = "greeks_update"
-            elif isinstance(market_data.data, dict):
-                # Check if data contains Greeks fields
-                greeks_fields = {'delta', 'gamma', 'theta', 'vega', 'implied_volatility'}
-                if greeks_fields.intersection(market_data.data.keys()):
-                    message_type = "greeks_update"
+        """Broadcasts market data only to clients subscribed to the symbol."""
+        if self.is_shutting_down:
+            return
 
-            # Format the message and broadcast
-            message = {
-                "type": message_type,
-                "symbol": market_data.symbol,
-                "data": market_data.data,
-                "timestamp": market_data.timestamp
-            }
-            await self.broadcast(message)
+        message_type = "price_update"
+        if hasattr(market_data, 'data_type') and market_data.data_type == "greeks":
+            message_type = "greeks_update"
+
+        message = {
+            "type": message_type,
+            "symbol": market_data.symbol,
+            "data": market_data.data,
+            "timestamp": market_data.timestamp
+        }
+
+        # Create a list of tasks to send messages concurrently
+        send_tasks = []
+        for connection, subscriptions in self.client_subscriptions.items():
+            if market_data.symbol in subscriptions:
+                send_tasks.append(self._send_json_safe(connection, message))
+        
+        if send_tasks:
+            await asyncio.gather(*send_tasks)
+
+    async def _send_json_safe(self, websocket: WebSocket, message: dict):
+        """Safely sends a JSON message to a single client."""
+        try:
+            await websocket.send_json(message)
+        except (WebSocketDisconnect, RuntimeError):
+            await self._cleanup_connection(websocket)
         except Exception as e:
-            logger.error(f"❌ Error in broadcast_market_data: {e}")
+            logger.error(f"Error sending message to client: {e}")
+            await self._cleanup_connection(websocket)
+
+    async def _cleanup_connection(self, websocket: WebSocket):
+        """Gracefully cleans up a single connection."""
+        logger.info(f"🧹 Cleaning up connection: {id(websocket)}")
+        try:
+            await websocket.close()
+        except Exception:
+            pass  # Ignore errors on close, connection is likely already dead
+        finally:
+            await self.disconnect(websocket)
 
     async def handle_websocket_message(self, websocket: WebSocket, data: dict):
-        """Enhanced WebSocket message handling with better error handling"""
+        """Handles incoming messages from a WebSocket client."""
         if self.is_shutting_down:
-            await websocket.send_json({
-                "type": "error",
-                "message": "Server is shutting down"
-            })
             return
-            
-        try:
-            message_type = data.get("type")
-            
-            # Update connection health
-            connection_id = id(websocket)
-            if connection_id in self._connection_health:
-                self._connection_health[connection_id]['last_message'] = time.time()
-            
-            # Skip processing if no message type (common on initial connection)
-            if message_type is None:
-                logger.debug("📝 Received message without type field - likely connection initialization")
-                return
-            
-            # Handle different message types
-            if message_type == "subscribe_smart_replace_all":
-                await self._handle_smart_subscription(websocket, data)
-            elif message_type == "subscribe_replace_all":
-                await self._handle_unified_subscription(websocket, data)
-            elif message_type == "subscribe_persistent":
-                await self._handle_persistent_subscription(websocket, data)
-            elif message_type == "get_subscription_status":
-                await self._handle_subscription_status(websocket)
-            elif message_type == "ping":
-                await self._handle_ping(websocket)
-            elif message_type == "get_connection_stats":
-                await self._handle_connection_stats(websocket)
-            else:
-                logger.warning(f"⚠️ Unknown message type: {message_type}")
-                await websocket.send_json({
-                    "type": "error",
-                    "message": f"Unknown message type: {message_type}"
-                })
-                
-        except Exception as e:
-            logger.error(f"❌ Error handling WebSocket message: {e}")
-            try:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": f"Error processing message: {str(e)}"
-                })
-            except:
-                # If we can't send error message, connection is probably dead
-                await self._cleanup_connection(websocket)
-    
+
+        # Any message from the client serves as a keep-alive
+        self.client_keepalives[websocket] = time.time()
+
+        message_type = data.get("type")
+        if message_type == "subscribe_smart_replace_all":
+            await self._handle_smart_subscription(websocket, data)
+        elif message_type == "keepalive":
+            await self._handle_keepalive(websocket, data)
+        else:
+            logger.warning(f"⚠️ Unknown message type: {message_type}")
+
     async def _handle_smart_subscription(self, websocket: WebSocket, data: dict):
-        """Handle smart subscription replacement"""
-        try:
-            stock_symbols = data.get("stock_symbols", [])
-            option_symbols = data.get("option_symbols", [])
+        """Updates the subscription set for a specific client."""
+        stock_symbols = set(data.get("stock_symbols", []))
+        option_symbols = set(data.get("option_symbols", []))
+        all_symbols = stock_symbols.union(option_symbols)
+        
+        # Initialize symbol keep-alives for new symbols
+        current_time = time.time()
+        for symbol in all_symbols:
+            if symbol not in self.symbol_keepalives:
+                self.symbol_keepalives[symbol] = current_time
+        
+        self.client_subscriptions[websocket] = all_symbols
+        logger.info(f"Client {id(websocket)} subscribed to {len(all_symbols)} symbols.")
+        
+        # Notify the streaming manager to update its global subscription list
+        await self.streaming_manager.update_global_subscriptions(self.client_subscriptions)
+        
+        await self._send_json_safe(websocket, {
+            "type": "subscription_confirmed",
+            "stock_symbols": list(stock_symbols),
+            "option_symbols": list(option_symbols)
+        })
+
+    async def _handle_keepalive(self, websocket: WebSocket, data: dict):
+        """Handles a keep-alive message from the client."""
+        symbols = set(data.get("symbols", []))
+        current_time = time.time()
+        
+        # Update client keep-alive
+        self.client_keepalives[websocket] = current_time
+        
+        # Update symbol keep-alives
+        for symbol in symbols:
+            self.symbol_keepalives[symbol] = current_time
+        
+        # Update client subscriptions
+        self.client_subscriptions[websocket] = symbols
+        
+        logger.debug(f"Received keep-alive from {id(websocket)} for {len(symbols)} symbols.")
+        await self._send_json_safe(websocket, {"type": "pong"})
+
+    async def _check_client_keepalives(self):
+        """Periodically checks for stale clients and disconnects them."""
+        while not self.is_shutting_down:
+            await asyncio.sleep(300)  # Check every 5 minutes for client timeouts
             
-            logger.info(f"🔄 WebSocket: Smart subscription - stocks: {len(stock_symbols)}, options: {len(option_symbols)}")
+            stale_clients = []
+            current_time = time.time()
+            client_timeout = 300  # 5 minutes for client timeout
             
-            await self.streaming_manager.replace_all_subscriptions_multi_stock(stock_symbols, option_symbols)
+            for client, last_seen in self.client_keepalives.items():
+                if current_time - last_seen > client_timeout:
+                    logger.info(f"Client {id(client)} timed out. Last seen {current_time - last_seen:.0f}s ago.")
+                    stale_clients.append(client)
             
-            await websocket.send_json({
-                "type": "subscription_confirmed",
-                "subscription_type": "smart_replace_all",
-                "stock_symbols": stock_symbols,
-                "option_symbols": option_symbols,
-                "message": f"Smart subscriptions replaced - stocks: {len(stock_symbols)}, options: {len(option_symbols)}"
-            })
+            if stale_clients:
+                cleanup_tasks = [self._cleanup_connection(client) for client in stale_clients]
+                await asyncio.gather(*cleanup_tasks)
+
+    async def _check_symbol_keepalives(self):
+        """Periodically checks for stale symbols and removes them from subscriptions."""
+        while not self.is_shutting_down:
+            await asyncio.sleep(1)  # Check every second for symbol timeouts
             
-        except Exception as e:
-            logger.error(f"❌ Error handling smart subscription: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Error handling smart subscription: {str(e)}"
-            })
-    
-    async def _handle_unified_subscription(self, websocket: WebSocket, data: dict):
-        """Handle unified subscription replacement"""
-        try:
-            underlying_symbol = data.get("underlying_symbol")
-            option_symbols = data.get("option_symbols", [])
+            current_time = time.time()
+            symbol_timeout = settings.subscription_keepalive_timeout
+            stale_symbols = []
             
-            logger.info(f"🔄 WebSocket: Unified subscription - underlying: {underlying_symbol}, options: {len(option_symbols)}")
+            # Find symbols that haven't received keep-alives
+            for symbol, last_seen in self.symbol_keepalives.items():
+                if current_time - last_seen > symbol_timeout:
+                    logger.info(f"Symbol {symbol} timed out. Last keep-alive {current_time - last_seen:.0f}s ago.")
+                    stale_symbols.append(symbol)
             
-            if underlying_symbol:
-                await self.streaming_manager.replace_all_subscriptions(underlying_symbol, option_symbols)
-                await websocket.send_json({
-                    "type": "subscription_confirmed",
-                    "subscription_type": "all_replace",
-                    "underlying_symbol": underlying_symbol,
-                    "option_symbols": option_symbols,
-                    "message": f"All subscriptions replaced - underlying: {underlying_symbol}, options: {len(option_symbols)}"
-                })
-            
-        except Exception as e:
-            logger.error(f"❌ Error handling unified subscription: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Error handling unified subscription: {str(e)}"
-            })
-    
-    async def _handle_persistent_subscription(self, websocket: WebSocket, data: dict):
-        """Handle persistent subscription (for orders, positions, etc.)"""
-        try:
-            symbols = data.get("symbols", [])
-            
-            logger.info(f"🔄 WebSocket: Persistent subscription - symbols: {symbols}")
-            
-            # Ensure persistent subscriptions for background data
-            if hasattr(self.streaming_manager, 'ensure_persistent_subscriptions'):
-                await self.streaming_manager.ensure_persistent_subscriptions(symbols)
-            
-            await websocket.send_json({
-                "type": "subscription_confirmed",
-                "subscription_type": "persistent",
-                "symbols": symbols,
-                "message": f"Persistent subscriptions ensured for {len(symbols)} symbols"
-            })
-            
-        except Exception as e:
-            logger.error(f"❌ Error handling persistent subscription: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Error handling persistent subscription: {str(e)}"
-            })
-    
-    async def _handle_subscription_status(self, websocket: WebSocket):
-        """Handle subscription status request"""
-        try:
-            status = self.streaming_manager.get_subscription_status()
-            await websocket.send_json({
-                "type": "subscription_status",
-                "data": status
-            })
-        except Exception as e:
-            logger.error(f"❌ Error handling subscription status: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Error getting subscription status: {str(e)}"
-            })
-    
-    async def _handle_ping(self, websocket: WebSocket):
-        """Handle ping message"""
-        try:
-            await websocket.send_json({
-                "type": "pong",
-                "timestamp": time.time()
-            })
-        except Exception as e:
-            logger.error(f"❌ Error handling ping: {e}")
-    
-    async def _handle_connection_stats(self, websocket: WebSocket):
-        """Handle connection statistics request"""
-        try:
-            connection_id = id(websocket)
-            connection_health = self._connection_health.get(connection_id, {})
-            
-            stats = {
-                "connection_count": len(self.active_connections),
-                "is_streaming": self.is_streaming,
-                "connection_health": connection_health,
-                "manager_stats": self._stats,
-                "last_broadcast_time": self._last_broadcast_time,
-                "broadcast_count": self._broadcast_count
-            }
-            
-            await websocket.send_json({
-                "type": "connection_stats",
-                "data": stats
-            })
-        except Exception as e:
-            logger.error(f"❌ Error handling connection stats: {e}")
-    
-    def get_stats(self) -> dict:
-        """Get connection manager statistics"""
-        return {
-            "active_connections": len(self.active_connections),
-            "is_shutting_down": self.is_shutting_down,
-            "stats": self._stats.copy(),
-            "last_broadcast_time": self._last_broadcast_time,
-            "broadcast_count": self._broadcast_count
-        }
+            if stale_symbols:
+                # Remove stale symbols from all client subscriptions
+                subscriptions_changed = False
+                for client, subscriptions in self.client_subscriptions.items():
+                    original_size = len(subscriptions)
+                    subscriptions.difference_update(stale_symbols)
+                    if len(subscriptions) != original_size:
+                        subscriptions_changed = True
+                        logger.info(f"Removed {original_size - len(subscriptions)} stale symbols from client {id(client)}")
+                
+                # Clean up symbol keep-alive tracking
+                for symbol in stale_symbols:
+                    self.symbol_keepalives.pop(symbol, None)
+                
+                # Update global subscriptions if any changes were made
+                if subscriptions_changed:
+                    await self.streaming_manager.update_global_subscriptions(self.client_subscriptions)

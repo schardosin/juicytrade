@@ -44,8 +44,9 @@
 </template>
 
 <script>
-import { computed, watch } from "vue";
+import { computed, watch, onMounted, onUnmounted } from "vue";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
+import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
 export default {
   name: "SymbolHeader",
@@ -107,14 +108,30 @@ export default {
   },
   emits: ["trade-mode-changed"],
   setup(props) {
+    // Component registration system
+    const componentId = `SymbolHeader-${Math.random().toString(36).substr(2, 9)}`;
+    const registeredSymbols = new Set();
+
     // Smart Market Data integration
     const { getStockPrice, getPreviousClose, getDebugInfo } = useSmartMarketData();
+
+    // Single registration method per component to prevent double registration
+    const ensureSymbolRegistration = (symbol) => {
+      if (!registeredSymbols.has(symbol)) {
+        smartMarketDataStore.registerSymbolUsage(symbol, componentId);
+        registeredSymbols.add(symbol);
+      }
+    };
 
     // Get live price data when smart pricing is enabled and symbol is available
     const livePrice = computed(() => {
       if (!props.enableSmartPricing || !props.currentSymbol) {
         return null;
       }
+      
+      // Ensure symbol is registered for component tracking
+      ensureSymbolRegistration(props.currentSymbol);
+      
       return getStockPrice(props.currentSymbol);
     });
 
@@ -179,16 +196,38 @@ export default {
       "after-hours": props.marketStatus === "After Hours",
     }));
 
-    // Debug logging for development
+    // Component cleanup system
+    const cleanupComponentRegistrations = () => {
+      console.log(`📝 SymbolHeader: Unregistering component ${componentId} with ${registeredSymbols.size} symbols`);
+      
+      // Unregister all symbols this component was using
+      for (const symbol of registeredSymbols) {
+        smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
+      }
+      
+      // Clear local tracking
+      registeredSymbols.clear();
+    };
+
+    // Watch for symbol changes to clean up old registrations
     watch(
       () => props.currentSymbol,
       (newSymbol, oldSymbol) => {
-        if (newSymbol && newSymbol !== oldSymbol && props.enableSmartPricing) {
-
+        if (newSymbol !== oldSymbol) {
+          console.log(`📝 SymbolHeader: Symbol changed from ${oldSymbol} to ${newSymbol}. Cleaning up component registrations.`);
+          
+          // Unregister all current symbols
+          cleanupComponentRegistrations();
         }
       },
       { immediate: true }
     );
+
+    // Clean up when the component is unmounted
+    onUnmounted(() => {
+      console.log(`📝 SymbolHeader unmounted. Cleaning up component registrations.`);
+      cleanupComponentRegistrations();
+    });
 
     // Watch for live price updates
     watch(

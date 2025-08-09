@@ -756,7 +756,19 @@ export default {
       updateMarketStatus(isOpen ? "Market Open" : "Market Closed");
     }
     updateMarketStatusNow(); // run immediately on load
-    setInterval(updateMarketStatusNow, 60000); // check every minute
+    const marketStatusInterval = setInterval(updateMarketStatusNow, 60000); // check every minute
+
+    // Store cleanup for unmount
+    const cleanupOnUnmounted = () => {
+      clearInterval(marketStatusInterval);
+      if (optionsManager) {
+        optionsManager.clearAllData();
+      }
+    };
+
+    onUnmounted(() => {
+      cleanupOnUnmounted();
+    });
 
     return {
       // Reactive data

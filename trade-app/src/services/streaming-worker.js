@@ -277,6 +277,19 @@ self.onmessage = (event) => {
       console.log("🚑 Force recovery requested");
       triggerRecovery();
       break;
+    case 'keepalive':
+      const keepaliveMessage = JSON.stringify({
+        type: 'keepalive',
+        symbols: event.data.symbols
+      });
+      
+      if (socket && socket.readyState === WebSocket.OPEN) {
+        socket.send(keepaliveMessage);
+      } else {
+        console.log('[streaming-worker] WebSocket not open. Queuing keepalive message.');
+        messageQueue.push(keepaliveMessage);
+      }
+      break;
     case 'get_status':
       postMessage({
         type: 'status_info',
