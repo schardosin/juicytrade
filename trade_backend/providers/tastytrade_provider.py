@@ -1590,7 +1590,7 @@ class TastyTradeProvider(BaseProvider):
     
     async def subscribe_to_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         """Subscribe to real-time data for symbols via DXLink using correct streamer symbols."""
-        logger.info(f"TastyTrade: subscribe_to_symbols called with {len(symbols)} symbols")
+        logger.info(f"TastyTrade: subscribe_to_symbols called with {len(symbols)} symbols, data_types: {data_types}")
         
         try:
             # Check if connection is healthy, reconnect if needed
@@ -1600,6 +1600,10 @@ class TastyTradeProvider(BaseProvider):
             
             # Wait for connection to be ready
             await self._connection_ready.wait()
+            
+            # Default to both Quote and Greeks if no data_types specified (backward compatibility)
+            if data_types is None:
+                data_types = ["Quote", "Greeks"]
             
             # Prepare subscriptions using correct streaming symbols
             subscriptions = []
@@ -1613,14 +1617,16 @@ class TastyTradeProvider(BaseProvider):
                     streaming_symbol = symbol  # Stock symbols use as-is
                     logger.debug(f"TastyTrade: Using stock symbol as-is: {streaming_symbol}")
                 
-                # Add Quote subscription for prices
-                subscriptions.append({
-                    "type": "Quote",
-                    "symbol": streaming_symbol
-                })
+                # Add Quote subscription only if requested
+                if "Quote" in data_types:
+                    subscriptions.append({
+                        "type": "Quote",
+                        "symbol": streaming_symbol
+                    })
+                    logger.debug(f"TastyTrade: Added Quote subscription for {streaming_symbol}")
                 
-                # Add Greeks subscription for option symbols
-                if self._is_option_symbol(symbol):
+                # Add Greeks subscription for option symbols only if requested
+                if "Greeks" in data_types and self._is_option_symbol(symbol):
                     subscriptions.append({
                         "type": "Greeks",
                         "symbol": streaming_symbol
@@ -1635,7 +1641,7 @@ class TastyTradeProvider(BaseProvider):
                 "add": subscriptions
             }
             
-            logger.debug(f"TastyTrade: Sending subscription message with {len(subscriptions)} subscriptions")
+            logger.info(f"TastyTrade: Sending subscription message with {len(subscriptions)} subscriptions for data_types: {data_types}")
             await self._stream_connection.send(json.dumps(subscription_msg))
             
             # Update subscribed symbols

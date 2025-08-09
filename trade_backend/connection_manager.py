@@ -29,9 +29,9 @@ class ConnectionManager:
         # Register to receive data updates from the streaming manager's cache
         self.streaming_manager._latest_cache.add_update_callback(self.broadcast_market_data)
         
-        # Start background tasks
-        self._client_keepalive_task = asyncio.create_task(self._check_client_keepalives())
-        self._symbol_keepalive_task = asyncio.create_task(self._check_symbol_keepalives())
+        # Background tasks will be started when the first connection is made
+        self._client_keepalive_task = None
+        self._symbol_keepalive_task = None
 
     async def connect(self, websocket: WebSocket):
         """Accepts a new WebSocket connection and initializes its state."""
@@ -44,6 +44,14 @@ class ConnectionManager:
         self.client_subscriptions[websocket] = set()
         self.client_keepalives[websocket] = time.time()
         self.shutdown_manager.register_websocket(websocket)
+        
+        # Start background tasks if this is the first connection
+        if len(self.active_connections) == 1:
+            if self._client_keepalive_task is None or self._client_keepalive_task.done():
+                self._client_keepalive_task = asyncio.create_task(self._check_client_keepalives())
+            if self._symbol_keepalive_task is None or self._symbol_keepalive_task.done():
+                self._symbol_keepalive_task = asyncio.create_task(self._check_symbol_keepalives())
+        
         logger.info(f"✅ WebSocket connected. Total connections: {len(self.active_connections)}")
     
     async def disconnect(self, websocket: WebSocket):

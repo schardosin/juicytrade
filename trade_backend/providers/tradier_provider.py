@@ -785,10 +785,13 @@ class TradierProvider(BaseProvider):
             resp = requests.get(url, headers=headers)
             resp.raise_for_status()
             data = resp.json()
-            
-            positions = data.get("positions", {}).get("position", [])
-            if isinstance(positions, dict):
-                positions = [positions]
+            positions_data = data.get("positions", {})
+            if isinstance(positions_data, dict):
+                positions = positions_data.get("position", [])
+                if isinstance(positions, dict):
+                    positions = [positions]
+            else:
+                positions = []
             
             result = []
             for position in positions:
@@ -1687,10 +1690,6 @@ class TradierProvider(BaseProvider):
             self._log_error("_get_current_prices", e)
             return {}
     
-    def _group_positions_by_order_chains(self, positions: List[Position], 
-                                       history: List[HistoricalTrade], 
-                                       current_orders: List[Order]) -> List[PositionGroup]:
-        """Group positions by their originating orders using current orders and historical data."""
         try:
             from ..utils.optionsStrategies import detectStrategy
             from datetime import datetime, timedelta

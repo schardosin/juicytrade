@@ -985,10 +985,9 @@ class SmartMarketDataStore {
       this.updateData('positions', data);
     });
 
-    // Connect and ensure persistent subscriptions
+    // Connect to WebSocket
     try {
       await webSocketClient.connect();
-      webSocketClient.ensurePersistentSubscriptions(["orders", "positions"]);
     } catch (error) {
       console.error("❌ Failed to connect to WebSocket via worker:", error);
     }

@@ -122,9 +122,47 @@ async def get_provider_config():
 
 @app.put("/providers/config", response_model=ApiResponse)
 async def update_provider_config(new_config: Dict[str, Any]):
-    """Update provider routing configuration."""
-    provider_config_manager.update_config(new_config)
-    return ApiResponse(success=True, message="Provider config updated.")
+    """Update provider routing configuration and automatically restart streaming."""
+    try:
+        # Update configuration
+        provider_config_manager.update_config(new_config)
+        
+        # Check if streaming-related configuration changed
+        streaming_keys = ["streaming_quotes", "streaming_greeks"]
+        config_changed = any(key in new_config for key in streaming_keys)
+        
+        if config_changed:
+            logger.info("🔄 Streaming configuration changed, restarting streaming connections...")
+            
+            # Restart streaming with new configuration
+            restart_success = await streaming_manager.restart_with_new_config()
+            
+            if restart_success:
+                return ApiResponse(
+                    success=True, 
+                    message="Provider config updated and streaming restarted successfully.",
+                    data={"streaming_restarted": True}
+                )
+            else:
+                return ApiResponse(
+                    success=True,
+                    message="Provider config updated, but streaming restart failed. Manual restart may be required.",
+                    data={"streaming_restarted": False, "warning": "Streaming restart failed"}
+                )
+        else:
+            return ApiResponse(
+                success=True, 
+                message="Provider config updated (no streaming restart needed).",
+                data={"streaming_restarted": False}
+            )
+            
+    except Exception as e:
+        logger.error(f"Error updating provider config: {e}")
+        return ApiResponse(
+            success=False,
+            message=f"Failed to update provider config: {str(e)}",
+            data={"error": str(e)}
+        )
 
 @app.post("/providers/config/reset", response_model=ApiResponse)
 async def reset_provider_config():

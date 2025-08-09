@@ -224,14 +224,6 @@ class WebSocketStreamingClient {
     };
   }
 
-  async ensurePersistentSubscriptions(dataTypes = ["orders", "positions"]) {
-    await this.connect();
-    this.worker.postMessage({
-      command: "subscribe_persistent",
-      type: "subscribe_persistent",
-      data_types: dataTypes,
-    });
-  }
 
   async replaceAllSubscriptions(symbols = []) {
     await this.connect();

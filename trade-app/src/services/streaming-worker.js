@@ -246,13 +246,6 @@ self.onmessage = (event) => {
         messageQueue.push(messageToSend);
       }
       break;
-    case 'subscribe_persistent':
-      if (socket && socket.readyState === WebSocket.OPEN) {
-        socket.send(JSON.stringify(event.data));
-      } else {
-        console.error("Cannot send persistent subscription, WebSocket is not open.");
-      }
-      break;
     case 'subscribe_replace_all':
       const { stock_symbols, option_symbols } = event.data;
       
