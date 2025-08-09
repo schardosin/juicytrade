@@ -422,9 +422,16 @@ export default {
 
     // Calculate comprehensive P&L analysis using centralized calculator
     const profitLossAnalysis = computed(() => {
+      const legsWithLivePrices = selectedLegs.value.map(leg => {
+        const livePrice = getLivePrice(leg.symbol);
+        return {
+          ...leg,
+          current_price: livePrice ? livePrice.price ?? leg.current_price : leg.current_price,
+        };
+      });
       return calculateMultiLegProfitLoss(
-        selectedLegs.value,
-        selectedLegs.value, // Use same data for both params
+        legsWithLivePrices,
+        legsWithLivePrices, // Use same data for both params
         props.underlyingPrice
       );
     });
@@ -773,11 +780,6 @@ export default {
             "🔓 Auto-unlocking because price was locked and options changed"
           );
           priceLocked.value = false;
-        }
-
-        if (!priceLocked.value) {
-          // Always display limit price as positive in UI
-          limitPrice.value = parseFloat(Math.abs(netPremiumPerCombination.value).toFixed(2));
         }
       },
       { deep: true, immediate: true }

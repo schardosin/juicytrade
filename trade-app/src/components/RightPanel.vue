@@ -260,7 +260,7 @@
 </template>
 
 <script>
-import { ref, computed, watch, onMounted } from "vue";
+import { ref, computed, watch, onMounted, reactive } from "vue";
 import RightPanelSection from "./RightPanelSection.vue";
 import QuoteDetailsSection from "./QuoteDetailsSection.vue";
 import PayoffChart from "./PayoffChart.vue";
@@ -268,6 +268,8 @@ import ActivitySection from "./ActivitySection.vue";
 import WatchlistSection from "./WatchlistSection.vue";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
+import { useSmartMarketData } from "../composables/useSmartMarketData.js";
+import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
 
 export default {
@@ -326,12 +328,33 @@ export default {
     // Use unified market data composable and centralized selected legs
     const { getPositionsForSymbol } = useMarketData();
     const { selectedLegs } = useSelectedLegs();
+    const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
+    const liveOptionPrices = reactive(new Map());
+    const componentId = `RightPanel-${Math.random().toString(36).substr(2, 9)}`;
+    const registeredSymbols = new Set();
 
     const activeSection = ref("overview");
     const isExpanded = ref(false);
     const existingPositions = ref([]);
     const checkedPositions = ref(new Set());
     const internalChartData = ref(null); // Internal chart data state
+
+    const ensureSymbolRegistration = (symbol) => {
+      if (!registeredSymbols.has(symbol)) {
+        smartMarketDataStore.registerSymbolUsage(symbol, componentId);
+        registeredSymbols.add(symbol);
+      }
+    };
+
+    const getLivePrice = (symbol) => {
+      if (!symbol) return null;
+
+      if (!liveOptionPrices.has(symbol)) {
+        ensureSymbolRegistration(symbol);
+        liveOptionPrices.set(symbol, getSmartOptionPrice(symbol));
+      }
+      return liveOptionPrices.get(symbol)?.value;
+    };
 
     const toggleSection = (section) => {
       if (activeSection.value === section && isExpanded.value) {
@@ -463,44 +486,12 @@ export default {
 
       // Add selected legs from centralized store as new positions (allow duplicates for closing positions)
       selectedLegs.value.forEach((leg, index) => {
-        // Look up current market price from options chain data
-        const chainOption = props.optionsChainData.find(
-          (opt) => opt.symbol === leg.symbol
-        );
-
-        let currentPrice = leg.current_price || 0;
-        let avgEntryPrice = 0;
-        let unrealizedPL = 0;
-
-        if (chainOption) {
-          // Use ask price for long positions, bid price for short positions
-          const entryPrice =
-            leg.side === "buy" ? chainOption.ask : chainOption.bid;
-          const marketPrice =
-            leg.side === "buy" ? chainOption.bid : chainOption.ask; // Current market price for exit
-
-          currentPrice = marketPrice || entryPrice || leg.current_price || 0;
-          avgEntryPrice = entryPrice || 0;
-
-          // Calculate unrealized P&L
-          if (avgEntryPrice > 0) {
-            const qty =
-              leg.side === "buy" ? leg.quantity : -leg.quantity;
-            // For long positions: (current_price - entry_price) * qty * 100
-            // For short positions: (entry_price - current_price) * |qty| * 100
-            if (qty > 0) {
-              // Long position
-              unrealizedPL = (currentPrice - avgEntryPrice) * qty * 100;
-            } else {
-              // Short position
-              unrealizedPL =
-                (avgEntryPrice - currentPrice) * Math.abs(qty) * 100;
-            }
-          }
+        const livePrice = getLivePrice(leg.symbol);
+        let currentPrice = 0;
+        if (livePrice) {
+            currentPrice = livePrice.price ?? 0;
         } else {
-          // Use leg data if no chain option found
-          currentPrice = leg.current_price || ((leg.bid + leg.ask) / 2) || 0;
-          avgEntryPrice = leg.side === "buy" ? leg.ask : leg.bid;
+            currentPrice = leg.current_price || ((leg.bid + leg.ask) / 2) || 0;
         }
 
         positions.push({
@@ -512,8 +503,8 @@ export default {
           option_type: leg.type,
           expiry_date: leg.expiry,
           current_price: currentPrice,
-          avg_entry_price: avgEntryPrice,
-          unrealized_pl: unrealizedPL,
+          avg_entry_price: leg.avg_entry_price,
+          unrealized_pl: 0,
           isExisting: false,
           isSelected: true,
         });

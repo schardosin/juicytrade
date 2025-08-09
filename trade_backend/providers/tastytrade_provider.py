@@ -1782,6 +1782,17 @@ class TastyTradeProvider(BaseProvider):
         """Check if symbol is an option symbol using TastyTrade format."""
         # TastyTrade uses OCC format similar to other providers
         return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
+
+    def _normalize_option_type(self, option_type: str) -> str:
+        """Normalize option type to 'call' or 'put'."""
+        if not option_type:
+            return "call"  # Default
+        lower_type = option_type.lower()
+        if lower_type == "c" or lower_type == "call":
+            return "call"
+        if lower_type == "p" or lower_type == "put":
+            return "put"
+        return "call" # Fallback
     
     def _get_provider_type(self) -> str:
         """Override to return 'tastytrade' for symbol conversion."""
@@ -1901,7 +1912,7 @@ class TastyTradeProvider(BaseProvider):
                 underlying_symbol=raw_contract.get("underlying-symbol", ""),
                 expiration_date=raw_contract.get("expiration-date", ""),
                 strike_price=float(raw_contract.get("strike-price", 0)),
-                type=raw_contract.get("option-type", "").lower(),
+                type=self._normalize_option_type(raw_contract.get("option-type", "")),
                 bid=price_info.get("bid"),
                 ask=price_info.get("ask"),
                 close_price=price_info.get("close"),

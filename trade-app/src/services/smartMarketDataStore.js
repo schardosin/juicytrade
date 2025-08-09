@@ -1000,13 +1000,19 @@ class SmartMarketDataStore {
     const { symbol } = data;
     if (!symbol) return;
 
-    // Fast path - direct price extraction
-    const price = data.price || data.data?.last || data.data?.mid;
+    // Extract bid/ask first
     const bid = data.data?.bid;
     const ask = data.data?.ask;
+    const last = data.data?.last;
 
-    // Calculate mid price if needed (optimized)
-    const finalPrice = price || (bid && ask ? (bid + ask) * 0.5 : null);
+    // Prioritize mid price calculation from bid/ask when both are available
+    let finalPrice = null;
+    if (bid && ask) {
+      finalPrice = (bid + ask) * 0.5;
+    } else {
+      // Fall back to other price fields if bid/ask not available
+      finalPrice = data.price || last || data.data?.mid;
+    }
 
     if (!finalPrice) return; // Skip if no valid price
 
@@ -1015,6 +1021,7 @@ class SmartMarketDataStore {
       price: finalPrice,
       bid,
       ask,
+      last,
       timestamp: Date.now(),
     };
 
