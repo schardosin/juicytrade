@@ -1090,6 +1090,11 @@ registerSymbolUsage(symbol, componentId) {
 - **Registration:** Options symbols for live pricing and Greeks
 - **Cleanup:** Symbol change, expiration collapse, component unmount
 
+#### ✅ **WatchlistSection.vue**
+- **Symbols:** 5-20+ stock symbols from active watchlist
+- **Registration:** Active watchlist symbols for live price display
+- **Cleanup:** Watchlist change and component unmount
+
 ### Performance Impact
 
 #### **Before (5-Minute Timeout System):**

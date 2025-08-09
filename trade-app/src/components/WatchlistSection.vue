@@ -205,12 +205,25 @@
 </template>
 
 <script>
-import { ref, computed, nextTick, watch } from "vue";
+import { ref, computed, nextTick, watch, onUnmounted } from "vue";
 import { useWatchlist } from "../composables/useWatchlist.js";
+import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
 export default {
   name: "WatchlistSection",
   setup() {
+    // Component registration system
+    const componentId = `WatchlistSection-${Math.random().toString(36).substr(2, 9)}`;
+    const registeredSymbols = new Set();
+
+    // Single registration method per component to prevent double registration
+    const ensureSymbolRegistration = (symbol) => {
+      if (!registeredSymbols.has(symbol)) {
+        smartMarketDataStore.registerSymbolUsage(symbol, componentId);
+        registeredSymbols.add(symbol);
+      }
+    };
+
     // Watchlist composable
     const {
       watchlists,
@@ -402,6 +415,33 @@ export default {
       );
     };
 
+    // Component cleanup system
+    const cleanupComponentRegistrations = () => {
+      console.log(`📝 WatchlistSection: Unregistering component ${componentId} with ${registeredSymbols.size} symbols`);
+      
+      // Unregister all symbols this component was using
+      for (const symbol of registeredSymbols) {
+        smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
+      }
+      
+      // Clear local tracking
+      registeredSymbols.clear();
+    };
+
+    // Watch for active watchlist changes to clean up old registrations
+    watch(
+      activeSymbols,
+      (newSymbols, oldSymbols) => {
+        if (newSymbols !== oldSymbols) {
+          console.log(`📝 WatchlistSection: Active symbols changed. Cleaning up component registrations.`);
+          
+          // Unregister all current symbols
+          cleanupComponentRegistrations();
+        }
+      },
+      { immediate: true }
+    );
+
     // Focus dialog inputs when opened
     watch(showCreateDialog, (show) => {
       if (show) {
@@ -409,6 +449,12 @@ export default {
           watchlistNameInput.value?.focus();
         });
       }
+    });
+
+    // Clean up when the component is unmounted
+    onUnmounted(() => {
+      console.log(`📝 WatchlistSection unmounted. Cleaning up component registrations.`);
+      cleanupComponentRegistrations();
     });
 
     return {
