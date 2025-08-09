@@ -644,8 +644,7 @@ export default {
     };
 
     // Enhanced connection status event handlers
-    const handleConnectionStatusUpdate = (event) => {
-      const status = event.detail || event;
+    const handleConnectionStatusUpdate = (status) => {
       console.log('🔄 Connection status update:', status);
       
       // Map worker status to our connection state
@@ -697,6 +696,26 @@ export default {
       }
     };
 
+    // Set up WebSocket status listener
+    const setupWebSocketStatusListener = () => {
+      if (webSocketClient.worker) {
+        // Listen for status messages from the worker
+        const originalOnMessage = webSocketClient.worker.onmessage;
+        webSocketClient.worker.onmessage = (event) => {
+          // Call original handler first
+          if (originalOnMessage) {
+            originalOnMessage.call(webSocketClient.worker, event);
+          }
+          
+          // Handle status updates for TopBar
+          const { type, message } = event.data;
+          if (type === 'status') {
+            handleConnectionStatusUpdate(message);
+          }
+        };
+      }
+    };
+
     // Lifecycle hooks
     onMounted(() => {
       // Initial account display update
@@ -705,9 +724,22 @@ export default {
       // Set up enhanced connection status listeners
       window.addEventListener('websocket-recovery', handleRecoveryEvent);
       
+      // Set up WebSocket status listener
+      setupWebSocketStatusListener();
+      
       // Listen for data updates to track freshness
       webSocketClient.onPriceUpdate(handleDataReceived);
       webSocketClient.onGreeksUpdate(handleDataReceived);
+      
+      // Initialize connection if not already connected
+      if (!webSocketClient.isConnected.value) {
+        webSocketClient.connect().catch(error => {
+          console.error('❌ Failed to connect WebSocket:', error);
+        });
+      } else {
+        // If already connected, update status immediately
+        handleConnectionStatusUpdate('connected');
+      }
     });
 
     // Watch for reactive data changes and update display
