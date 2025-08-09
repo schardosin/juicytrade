@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
 
     # WebSocket settings
-    subscription_keepalive_timeout: int = 20 # 5 minutes default
+    subscription_keepalive_timeout: int = 60 # 1 minute default
     
     class Config:
         env_file = ".env"

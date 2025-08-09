@@ -210,16 +210,42 @@ function scheduleReconnect(url) {
 }
 
 function disconnect() {
-  console.log("🔌 Manually disconnecting WebSocket");
+  console.log("🔌 Manually disconnecting WebSocket - preventing all reconnection");
+  
+  // CRITICAL: Set this FIRST to prevent any reconnection attempts
   isManuallyDisconnected = true;
+  
+  // Clear all timers and intervals immediately
   clearConnectionTimers();
   
+  // Clear any pending reconnection timeouts
+  if (typeof reconnectTimeoutId !== 'undefined' && reconnectTimeoutId) {
+    clearTimeout(reconnectTimeoutId);
+    reconnectTimeoutId = null;
+  }
+  
+  // Close WebSocket connection immediately
   if (socket) {
-    socket.close();
+    try {
+      socket.close(1000, "Manual disconnect - worker terminating");
+      console.log("🔌 WebSocket closed with normal closure code");
+    } catch (error) {
+      console.warn("⚠️ Error closing WebSocket:", error);
+    }
     socket = null;
   }
   
+  // Clear all subscriptions and queued messages
+  subscriptions.clear();
+  messageQueue.length = 0;
+  
+  // Reset connection state
+  reconnectAttempts = 0;
+  lastDataReceived = Date.now();
+  
   updateConnectionState(CONNECTION_STATES.DISCONNECTED);
+  
+  console.log("✅ Worker disconnect complete - all cleanup finished");
 }
 
 self.onmessage = (event) => {

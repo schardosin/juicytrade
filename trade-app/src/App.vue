@@ -9,11 +9,12 @@
 </template>
 
 <script>
-import { watch } from "vue";
+import { watch, onMounted, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
 import { useSelectedLegs } from "./composables/useSelectedLegs.js";
 import NotificationContainer from "./components/notifications/NotificationContainer.vue";
 import SystemRecoveryIndicator from "./components/SystemRecoveryIndicator.vue";
+import webSocketClient from "./services/webSocketClient.js";
 
 export default {
   name: "App",
@@ -35,6 +36,60 @@ export default {
         }
       }
     );
+
+    // Critical: Add page unload handlers to prevent zombie workers
+    const handlePageUnload = (event) => {
+      console.log("🚨 Page unloading - performing immediate cleanup");
+      
+      // Immediately disconnect WebSocket client and terminate worker
+      try {
+        webSocketClient.disconnect();
+        console.log("✅ WebSocket client disconnected on page unload");
+      } catch (error) {
+        console.error("❌ Error during page unload cleanup:", error);
+      }
+      
+      // Don't prevent page unload, just cleanup
+      return undefined;
+    };
+
+    const handleBeforeUnload = (event) => {
+      console.log("⚠️ Page about to unload - starting cleanup");
+      handlePageUnload(event);
+      // Don't show confirmation dialog
+      return undefined;
+    };
+
+    const handleVisibilityChange = () => {
+      if (document.hidden) {
+        console.log("👁️ Page became hidden - potential cleanup needed");
+        // Don't disconnect immediately on hidden, but prepare for cleanup
+        // This handles cases where the page is hidden but not closed
+      }
+    };
+
+    onMounted(() => {
+      // Add multiple cleanup handlers for different scenarios
+      window.addEventListener('beforeunload', handleBeforeUnload);
+      window.addEventListener('unload', handlePageUnload);
+      window.addEventListener('pagehide', handlePageUnload);
+      document.addEventListener('visibilitychange', handleVisibilityChange);
+      
+      console.log("🛡️ Page unload handlers registered - zombie worker prevention active");
+    });
+
+    onUnmounted(() => {
+      // Clean up event listeners
+      window.removeEventListener('beforeunload', handleBeforeUnload);
+      window.removeEventListener('unload', handlePageUnload);
+      window.removeEventListener('pagehide', handlePageUnload);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+      
+      // Final cleanup
+      handlePageUnload();
+      
+      console.log("🧹 App unmounted - cleanup completed");
+    });
 
     return {};
   },

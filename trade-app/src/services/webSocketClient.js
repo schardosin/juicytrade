@@ -370,7 +370,7 @@ class WebSocketStreamingClient {
     });
   }
 
-  // Enhanced disconnect with worker cleanup
+  // Enhanced disconnect with immediate worker cleanup
   disconnect() {
     console.log("🔌 Disconnecting WebSocket client...");
     
@@ -381,26 +381,39 @@ class WebSocketStreamingClient {
       this.resolveConnection = null;
     }
     
+    // Clear any connection timeout
+    if (this.connectionTimeout) {
+      clearTimeout(this.connectionTimeout);
+      this.connectionTimeout = null;
+    }
+    
     if (this.worker) {
       // Send disconnect command to worker first
       try {
         this.worker.postMessage({ command: 'disconnect' });
+        console.log("📤 Disconnect command sent to worker");
       } catch (error) {
         console.warn('⚠️ Failed to send disconnect command to worker:', error);
       }
       
-      // Terminate worker after a brief delay
-      setTimeout(() => {
-        if (this.worker) {
-          this.worker.terminate();
-          this.worker = null;
-        }
-      }, 100);
+      // CRITICAL FIX: Terminate worker IMMEDIATELY - no delay!
+      try {
+        this.worker.terminate();
+        this.worker = null;
+        console.log("💀 Worker terminated immediately");
+      } catch (error) {
+        console.error('❌ Failed to terminate worker:', error);
+        // Force null the worker reference even if termination failed
+        this.worker = null;
+      }
     }
     
+    // Clear all state
     this.isConnected.value = false;
     this.connectionPromise = null;
-    console.log("✅ WebSocket client disconnected and worker terminated.");
+    this.subscribedSymbols.clear();
+    
+    console.log("✅ WebSocket client disconnected and worker terminated immediately.");
   }
 }
 

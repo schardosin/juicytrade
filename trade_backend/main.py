@@ -1188,6 +1188,15 @@ async def websocket_endpoint(websocket: WebSocket):
                 # Wait for client messages with timeout to allow shutdown checking
                 data = await asyncio.wait_for(websocket.receive_json(), timeout=1.0)
                 
+                # Validate data before processing
+                if data is None:
+                    logger.warning("⚠️ Received None data from WebSocket client")
+                    continue
+                
+                if not isinstance(data, dict):
+                    logger.warning(f"⚠️ Received non-dict data from WebSocket client: {type(data)}")
+                    continue
+                
                 # Handle message through enhanced connection manager
                 await manager.handle_websocket_message(websocket, data)
                 

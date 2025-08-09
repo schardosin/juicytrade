@@ -26,6 +26,7 @@ The backend is designed to support multiple brokerage providers, with a clear di
 - **Live & Paper Trading**: Separate configurations for live and paper trading accounts, allowing for flexible testing and trading strategies.
 - **Sleep-Resistant WebSocket Architecture**: Advanced Web Worker-based real-time streaming that continues operating when browser loses focus or computer sleeps, with automatic recovery from network issues and system wake events.
 - **Connection Limit Protection**: Robust connection management with automatic cleanup of stale WebSocket connections, preventing "connection limit exceeded" errors after sleep/wake cycles. Features exponential backoff retry logic and proactive connection validation.
+- **Zombie Worker Prevention** ⭐ *CRITICAL*: Comprehensive Web Worker lifecycle management system that prevents background workers from persisting after browser close, eliminating performance degradation and resource conflicts through immediate cleanup on page unload.
 - **Streaming Health Monitoring** ⭐ *NEW*: Comprehensive real-time connection monitoring system with automatic recovery, health metrics tracking, and proactive connection management for all streaming providers.
 - **Live Option and Stock Price Streaming**: Real-time price updates via WebSockets, with a dedicated streaming service that maintains persistent connections to the data provider.
 - **Options Chain**: A detailed options chain display with live bid/ask prices, greeks, and other relevant data.
