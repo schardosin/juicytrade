@@ -349,28 +349,38 @@ export default {
       renameWatchlistName.value = "";
     };
 
-    // Price formatting and data methods
+    // Price formatting and data methods with registration
     const getSymbolPrice = (symbol) => {
+      // Ensure symbol is registered when accessed
+      ensureSymbolRegistration(symbol);
       const data = getSymbolData(symbol);
       return data.value?.price || 0;
     };
 
     const getSymbolBid = (symbol) => {
+      // Ensure symbol is registered when accessed
+      ensureSymbolRegistration(symbol);
       const data = getSymbolData(symbol);
       return data.value?.bid || 0;
     };
 
     const getSymbolAsk = (symbol) => {
+      // Ensure symbol is registered when accessed
+      ensureSymbolRegistration(symbol);
       const data = getSymbolData(symbol);
       return data.value?.ask || 0;
     };
 
     const getSymbolChange = (symbol) => {
+      // Ensure symbol is registered when accessed
+      ensureSymbolRegistration(symbol);
       const data = getSymbolData(symbol);
       return data.value?.change || 0;
     };
 
     const getSymbolChangePercent = (symbol) => {
+      // Ensure symbol is registered when accessed
+      ensureSymbolRegistration(symbol);
       const data = getSymbolData(symbol);
       return data.value?.changePercent || 0;
     };
@@ -417,8 +427,6 @@ export default {
 
     // Component cleanup system
     const cleanupComponentRegistrations = () => {
-      console.log(`📝 WatchlistSection: Unregistering component ${componentId} with ${registeredSymbols.size} symbols`);
-      
       // Unregister all symbols this component was using
       for (const symbol of registeredSymbols) {
         smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
@@ -433,8 +441,6 @@ export default {
       activeSymbols,
       (newSymbols, oldSymbols) => {
         if (newSymbols !== oldSymbols) {
-          console.log(`📝 WatchlistSection: Active symbols changed. Cleaning up component registrations.`);
-          
           // Unregister all current symbols
           cleanupComponentRegistrations();
         }
@@ -453,7 +459,6 @@ export default {
 
     // Clean up when the component is unmounted
     onUnmounted(() => {
-      console.log(`📝 WatchlistSection unmounted. Cleaning up component registrations.`);
       cleanupComponentRegistrations();
     });
 

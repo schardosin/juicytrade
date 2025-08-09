@@ -741,8 +741,6 @@ export default {
 
     // Component cleanup system
     const cleanupComponentRegistrations = () => {
-      console.log(`📝 BottomTradingPanel: Unregistering component ${componentId} with ${registeredSymbols.size} symbols`);
-      
       // Unregister all symbols this component was using
       for (const symbol of registeredSymbols) {
         smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
@@ -759,8 +757,6 @@ export default {
       () => props.symbol,
       (newSymbol, oldSymbol) => {
         if (newSymbol !== oldSymbol) {
-          console.log(`📝 BottomTradingPanel: Symbol changed from ${oldSymbol} to ${newSymbol}. Cleaning up component registrations.`);
-          
           // Unregister all current symbols
           cleanupComponentRegistrations();
         }
@@ -789,7 +785,6 @@ export default {
 
     // Clean up when the component is unmounted
     onUnmounted(() => {
-      console.log(`📝 BottomTradingPanel unmounted. Cleaning up component registrations.`);
       cleanupComponentRegistrations();
     });
 

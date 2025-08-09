@@ -620,8 +620,6 @@ export default {
     // --- Component Registration System Lifecycle ---
 
     const cleanupComponentRegistrations = () => {
-      console.log(`📝 Unregistering component ${componentId} with ${registeredSymbols.size} symbols`);
-      
       // Unregister all symbols this component was using
       for (const symbol of registeredSymbols) {
         smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
@@ -634,28 +632,18 @@ export default {
     };
 
     // Watch for the underlying symbol changing
-    watch(() => props.symbol, (newSymbol, oldSymbol) => {
-      console.log(`📝 CollapsibleOptionsChain: Symbol watch triggered - ${oldSymbol} → ${newSymbol}`);
-      console.log(`📝 Current registered symbols:`, Array.from(registeredSymbols));
-      console.log(`📝 Current symbol usage count:`, smartMarketDataStore.getRegistrationDebugInfo());
-      
+    watch(() => props.symbol, (newSymbol, oldSymbol) => {      
       if (newSymbol !== oldSymbol) {
-        console.log(`📝 Symbol changed from ${oldSymbol} to ${newSymbol}. Cleaning up component registrations.`);
-        
         // Unregister all current symbols
         cleanupComponentRegistrations();
         
         // Collapse all sections for the new symbol
-        expandedExpirations.value.clear();
-        
-        console.log(`📝 After cleanup - registered symbols:`, Array.from(registeredSymbols));
-        console.log(`📝 After cleanup - symbol usage count:`, smartMarketDataStore.getRegistrationDebugInfo());
+        expandedExpirations.value.clear();        
       }
     }, { immediate: true });
 
     // Clean up when the component is unmounted
     onUnmounted(() => {
-      console.log(`📝 CollapsibleOptionsChain unmounted. Cleaning up component registrations.`);
       cleanupComponentRegistrations();
     });
 

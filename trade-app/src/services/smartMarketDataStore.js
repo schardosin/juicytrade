@@ -874,8 +874,7 @@ class SmartMarketDataStore {
     if (activeSymbols.length > 0) {
       try {
         await webSocketClient.sendKeepalive(activeSymbols);
-        console.log(`💓 Sent keep-alive for ${activeSymbols.length} symbols (registered components)`);
-      } catch (error) {
+     } catch (error) {
         console.error("❌ Failed to send keep-alive:", error);
       }
     }
@@ -900,8 +899,6 @@ class SmartMarketDataStore {
     }
     this.componentRegistrations.get(componentId).add(symbol);
 
-    console.log(`📝 Registered ${symbol} for component ${componentId} (count: ${currentCount + 1})`);
-
     // Ensure subscription if this is the first registration
     if (currentCount === 0) {
       this.ensureSubscription(symbol);
@@ -921,10 +918,8 @@ class SmartMarketDataStore {
       this.symbolUsageCount.delete(symbol);
       // Remove from active subscriptions when no components are using it
       this.unsubscribeFromSymbol(symbol);
-      console.log(`📝 Unregistered ${symbol} for component ${componentId} (removed - count: 0)`);
     } else {
       this.symbolUsageCount.set(symbol, currentCount - 1);
-      console.log(`📝 Unregistered ${symbol} for component ${componentId} (count: ${currentCount - 1})`);
     }
 
     // Remove from component's registration list
@@ -943,8 +938,6 @@ class SmartMarketDataStore {
   unregisterComponent(componentId) {
     const componentSymbols = this.componentRegistrations.get(componentId);
     if (!componentSymbols) return;
-
-    console.log(`📝 Unregistering component ${componentId} with ${componentSymbols.size} symbols`);
 
     // Unregister each symbol this component was using
     for (const symbol of componentSymbols) {

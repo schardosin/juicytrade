@@ -88,7 +88,6 @@ export function useWatchlist() {
       watchlists.value = data.watchlists;
       activeWatchlistId.value = data.active_watchlist;
 
-      console.log(`📋 Loaded ${data.total_watchlists} watchlists`);
     } catch (err) {
       error.value = err.message;
       console.error("Error loading watchlists:", err);

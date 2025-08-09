@@ -329,9 +329,7 @@ export function useOptionsChainManager(
   /**
    * Refresh all data after system recovery
    */
-  const refreshAllData = async () => {
-    console.log('🔄 Refreshing all options chain data after recovery...');
-    
+  const refreshAllData = async () => {    
     try {
       // Reload expiration dates
       await loadExpirationDates();
@@ -345,7 +343,6 @@ export function useOptionsChainManager(
       // Update subscriptions
       await updateSubscriptions();
       
-      console.log('✅ Options chain data refresh completed');
     } catch (error) {
       console.error('❌ Error refreshing options chain data:', error);
     }
