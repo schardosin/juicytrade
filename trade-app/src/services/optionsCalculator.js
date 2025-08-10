@@ -184,7 +184,11 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
   // For defined risk strategies, calculate max profit/loss based on limit price
   if (isDefinedRisk(positions)) {
     const netCalls = positions.filter(p => p.option_type === 'call').reduce((sum, p) => sum + p.qty, 0);
+    const netPuts = positions.filter(p => p.option_type === 'put').reduce((sum, p) => sum + p.qty, 0);
+
     if (netCalls > 0) {
+        maxProfit = Infinity;
+    } else if (netPuts > 0) {
         maxProfit = Infinity;
     } else if (limitPrice) {
       const { callSpreadWidth, putSpreadWidth } = getSpreadWidths(positions);
