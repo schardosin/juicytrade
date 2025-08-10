@@ -635,6 +635,7 @@ export default {
         symbol: props.symbol,
         expiry: expiry,
         legs: selectedLegs.value.map((leg) => {
+          const livePrice = getLivePrice(leg.symbol);
           return {
             symbol: leg.symbol,
             displaySymbol: leg.symbol,
@@ -646,6 +647,8 @@ export default {
             date: formatDate(leg.expiry),
             expiry: leg.expiry,
             price: leg.current_price || ((leg.bid + leg.ask) / 2) || 0,
+            bid: livePrice?.bid ?? leg.bid,
+            ask: livePrice?.ask ?? leg.ask,
           };
         }),
         orderType: selectedOrderType.value,
