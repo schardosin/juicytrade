@@ -452,14 +452,17 @@ export default {
       const creditDebitInfo = getCreditDebitInfo(analysis.netPremium);
       const bpEffect = calculateBuyingPowerEffect(analysis);
 
+      const maxProfit = analysis.maxProfit === Infinity ? '∞' : formatCurrency(Math.abs(analysis.maxProfit), 0);
+      const maxLoss = analysis.maxLoss === -Infinity ? '∞' : formatCurrency(Math.abs(analysis.maxLoss), 0);
+
       return {
         pop: 59, // Placeholder - would need probability calculation
         ext: formatCurrency(Math.abs(analysis.maxProfit), 0),
         p50: null, // Placeholder
         delta: greeks.value.delta,
         theta: greeks.value.theta,
-        maxProfit: formatCurrency(Math.abs(analysis.maxProfit), 0),
-        maxLoss: formatCurrency(Math.abs(analysis.maxLoss), 0),
+        maxProfit: maxProfit,
+        maxLoss: maxLoss,
         bpEff: formatCurrency(bpEffect, 0),
       };
     });

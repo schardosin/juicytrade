@@ -182,21 +182,34 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
   let maxLoss = Math.min(...payoffs);
 
   // For defined risk strategies, calculate max profit/loss based on limit price
-  if (isDefinedRisk(positions) && limitPrice) {
-    const { callSpreadWidth, putSpreadWidth } = getSpreadWidths(positions);
-    const isCredit = limitPrice > 0;
+  if (isDefinedRisk(positions)) {
+    if (limitPrice) {
+      const { callSpreadWidth, putSpreadWidth } = getSpreadWidths(positions);
+      const isCredit = limitPrice > 0;
 
-    if (isCredit) {
-      maxProfit = limitPrice * 100;
-      // For credit spreads, max loss is the width of the spread minus the credit received
-      const spreadWidth = callSpreadWidth || putSpreadWidth;
-      maxLoss = (spreadWidth - limitPrice) * 100;
-    } else {
-      // Debit spread
-      maxLoss = Math.abs(limitPrice * 100);
-      const spreadWidth = callSpreadWidth || putSpreadWidth;
-      maxProfit = (spreadWidth * 100) - maxLoss;
+      if (isCredit) {
+        maxProfit = limitPrice * 100;
+        // For credit spreads, max loss is the width of the spread minus the credit received
+        const spreadWidth = callSpreadWidth || putSpreadWidth;
+        maxLoss = (spreadWidth - limitPrice) * 100;
+      } else {
+        // Debit spread
+        maxLoss = Math.abs(limitPrice * 100);
+        const spreadWidth = callSpreadWidth || putSpreadWidth;
+        maxProfit = (spreadWidth * 100) - maxLoss;
+      }
     }
+  } else {
+    // Undefined risk
+    const longCalls = positions.some(p => p.qty > 0 && p.option_type === 'call');
+    const shortCalls = positions.some(p => p.qty < 0 && p.option_type === 'call');
+    const longPuts = positions.some(p => p.qty > 0 && p.option_type === 'put');
+    const shortPuts = positions.some(p => p.qty < 0 && p.option_type === 'put');
+
+    if (longCalls && !shortCalls) maxProfit = Infinity;
+    if (shortCalls && !longCalls) maxLoss = -Infinity;
+    if (longPuts && !shortPuts) maxProfit = Infinity;
+    if (shortPuts && !longPuts) maxLoss = -Infinity;
   }
 
   // Find break-even points
