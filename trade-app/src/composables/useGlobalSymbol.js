@@ -85,7 +85,7 @@ const persistSymbolData = () => {
   }
 };
 
-import { DateTime } from "luxon";
+import MarketHoursUtil from "../utils/marketHours.js";
 
 // Global symbol management composable
 export function useGlobalSymbol(options = {}) {
@@ -165,17 +165,7 @@ export function useGlobalSymbol(options = {}) {
 
   // Global market status updater (runs always)
   function updateMarketStatusNow() {
-    const now = DateTime.now().setZone("America/New_York");
-    const day = now.weekday; // 1=Monday, 7=Sunday
-    const hour = now.hour;
-    const minute = now.minute;
-    // US market open: Mon-Fri, 9:30am-4:00pm ET
-    const isWeekday = day >= 1 && day <= 5;
-    const isOpen = isWeekday && (
-      (hour > 9 || (hour === 9 && minute >= 30)) &&
-      (hour < 16)
-    );
-    globalSymbolState.marketStatus = isOpen ? "Market Open" : "Market Closed";
+    globalSymbolState.marketStatus = MarketHoursUtil.getMarketStatusText();
   }
   updateMarketStatusNow();
   setInterval(updateMarketStatusNow, 60000);

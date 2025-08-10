@@ -7,6 +7,7 @@ import {
 } from "vue";
 import webSocketClient from "./webSocketClient.js";
 import api from "./api.js";
+import MarketHoursUtil from "../utils/marketHours.js";
 
 /**
  * Data Health Monitor - Monitors the health of all data sources
@@ -25,6 +26,13 @@ class DataHealthMonitor {
       await webSocketClient.connect();
     } catch (error) {
       console.warn("⚠️ Initial WebSocket connection failed, will retry via health monitoring");
+    }
+    
+    // Log initial market status
+    const marketStatus = MarketHoursUtil.getMarketStatus();
+    console.log(`🏁 Health monitoring started at ${marketStatus.timeString} - Market: ${marketStatus.status}`);
+    if (!marketStatus.isOpen) {
+      console.log('📊 Data freshness checks will be skipped during off-market hours');
     }
     
     // Start periodic health checks
@@ -48,12 +56,20 @@ class DataHealthMonitor {
     // Don't try to connect during health checks - just check current status
     // Connection attempts should be handled by recovery, not health checks
 
+    const marketStatus = MarketHoursUtil.getMarketStatus();
+    console.log(`🕐 Health check at ${marketStatus.timeString} - Market: ${marketStatus.status}`);
+
     const checks = [
-      this.checkWebSocketHealth(),
-      this.checkAPIHealth(),
-      this.checkGreeksHealth(),
-      this.checkDataFreshness()
+      this.checkWebSocketHealth()
     ];
+
+    // Only perform data freshness checks during market hours
+    if (marketStatus.isOpen) {
+      checks.push(this.checkGreeksHealth());
+      checks.push(this.checkDataFreshness());
+    } else {
+      console.log('📊 Skipping data freshness checks - market is closed');
+    }
 
     const results = await Promise.allSettled(checks);
     const failedChecks = results.filter(result => result.status === 'rejected');
@@ -90,31 +106,29 @@ class DataHealthMonitor {
     // Connection attempts should be handled by recovery, not health checks
   }
 
-  async checkAPIHealth() {
-    try {
-      // Simple health check - try to get next market date
-      await api.getNextMarketDate();
-    } catch (error) {
-      throw new Error(`API health check failed: ${error.message}`);
-    }
-  }
-
   async checkGreeksHealth() {
     if (this.store.activeGreeksSubscriptions.size > 0) {
       const oldestGreeks = Math.min(...Array.from(this.store.optionGreeks.values())
         .map(g => g.timestamp || 0));
       
-      // Greeks should be updated within 2 minutes
-      if (Date.now() - oldestGreeks > 120000) {
-        throw new Error("Greeks data is stale");
+      // Greeks should be updated within 2 minutes during market hours
+      const staleThreshold = Date.now() - 120000; // 2 minutes
+      if (oldestGreeks < staleThreshold) {
+        const ageMinutes = Math.round((Date.now() - oldestGreeks) / 60000);
+        throw new Error(`Greeks data is stale (${ageMinutes} minutes old)`);
       }
     }
   }
 
   async checkDataFreshness() {
-    // Check if price data is fresh (within 5 minutes for active subscriptions)
+    // Check if price data is fresh (within 5 minutes for active subscriptions during market hours)
     const cutoff = Date.now() - 300000; // 5 minutes
     let staleCount = 0;
+    const totalSubscriptions = this.store.activeSubscriptions.size;
+
+    if (totalSubscriptions === 0) {
+      return; // No subscriptions to check
+    }
 
     this.store.activeSubscriptions.forEach(symbol => {
       const priceData = this.store.stockPrices.get(symbol) || this.store.optionPrices.get(symbol);
@@ -123,8 +137,9 @@ class DataHealthMonitor {
       }
     });
 
-    if (staleCount > this.store.activeSubscriptions.size * 0.5) {
-      throw new Error(`Too many stale prices: ${staleCount}/${this.store.activeSubscriptions.size}`);
+    if (staleCount > totalSubscriptions * 0.5) {
+      const ageMinutes = Math.round((Date.now() - cutoff) / 60000);
+      throw new Error(`Too many stale prices: ${staleCount}/${totalSubscriptions} (older than ${ageMinutes} minutes)`);
     }
   }
 }
