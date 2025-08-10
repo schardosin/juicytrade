@@ -133,9 +133,9 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
   const maxStrike = Math.max(...strikes);
   const strikeRange = maxStrike - minStrike;
 
-  // Create price range for analysis (extend beyond strikes)
-  const lowerBound = Math.floor(minStrike - strikeRange * 0.3);
-  const upperBound = Math.ceil(maxStrike + strikeRange * 0.3);
+  // Create price range for analysis (extend beyond strikes, lower to 0 for accuracy with puts)
+  const lowerBound = 0;
+  const upperBound = Math.ceil(Math.max(underlyingPrice * 2, maxStrike + strikeRange * 2));
   const step = strikeRange > 50 ? (strikeRange > 100 ? 5 : 2) : 1;
 
   const prices = [];
@@ -177,48 +177,40 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
     payoffs.push(totalPayoff);
   }
 
+  // Calculate natural net premium
+  const naturalNet = calculateNetPremium(positions);
+
+  // Determine if strategy is credit or debit based on natural
+  const isCredit = naturalNet > 0;
+
+  // Calculate effective net based on limit price
+  let effectiveNet = naturalNet;
+  if (limitPrice != null) {
+    effectiveNet = isCredit ? limitPrice : -limitPrice;
+  }
+
+  // Calculate adjustment
+  const adjustment = (effectiveNet - naturalNet) * 100;
+
+  // Apply adjustment to payoffs
+  for (let i = 0; i < payoffs.length; i++) {
+    payoffs[i] += adjustment;
+  }
+
   // Find max profit and max loss
   let maxProfit = Math.max(...payoffs);
   let maxLoss = Math.min(...payoffs);
 
-  // For defined risk strategies, calculate max profit/loss based on limit price
-  if (isDefinedRisk(positions)) {
-    const netCalls = positions.filter(p => p.option_type === 'call').reduce((sum, p) => sum + p.qty, 0);
-    const netPuts = positions.filter(p => p.option_type === 'put').reduce((sum, p) => sum + p.qty, 0);
+  // Calculate net calls and puts for unlimited overrides
+  const netCalls = positions.filter(p => p.option_type === 'call').reduce((sum, p) => sum + p.qty, 0);
+  const netPuts = positions.filter(p => p.option_type === 'put').reduce((sum, p) => sum + p.qty, 0);
 
-    if (netCalls > 0) {
-        maxProfit = Infinity;
-    } else if (netPuts > 0) {
-        maxProfit = Infinity;
-    } else if (limitPrice) {
-      const { callSpreadWidth, putSpreadWidth } = getSpreadWidths(positions);
-      const naturalPremium = calculateNetPremium(positions);
-      const isCredit = naturalPremium > 0;
-
-      if (isCredit) {
-        maxProfit = limitPrice * 100;
-        // For credit spreads, max loss is the width of the spread minus the credit received
-        const spreadWidth = callSpreadWidth || putSpreadWidth;
-        maxLoss = (spreadWidth - limitPrice) * 100;
-      } else {
-        // Debit spread
-        maxLoss = Math.abs(limitPrice) * 100;
-        const spreadWidth = callSpreadWidth || putSpreadWidth;
-        maxProfit = (spreadWidth * 100) - maxLoss;
-      }
-    }
-  } else {
-    // Undefined risk
-    const netCalls = positions.filter(p => p.option_type === 'call').reduce((sum, p) => sum + p.qty, 0);
-    const netPuts = positions.filter(p => p.option_type === 'put').reduce((sum, p) => sum + p.qty, 0);
-
-    if (netCalls < 0) maxLoss = -Infinity;
-    if (netPuts < 0) maxLoss = -Infinity;
-
-    // Cap profit on credit trades
-    if (limitPrice > 0) {
-      maxProfit = limitPrice * 100;
-    }
+  // Override for unlimited potential
+  if (netCalls > 0 || netPuts > 0) {
+    maxProfit = Infinity;
+  }
+  if (netCalls < 0 || netPuts < 0) {
+    maxLoss = -Infinity;
   }
 
   // Find break-even points
@@ -228,7 +220,7 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
   const currentPL = positions.reduce(
     (sum, pos) => sum + (pos.unrealized_pl || 0),
     0
-  );
+  ) + adjustment;
 
   return {
     maxProfit: formatNumber(maxProfit),
@@ -246,32 +238,6 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
  * @param {Array} payoffs - Payoff array
  * @returns {Array} Break-even points
  */
-function isDefinedRisk(positions) {
-  const longCalls = positions.filter(p => p.qty > 0 && p.option_type === 'call').reduce((sum, p) => sum + p.qty, 0);
-  const shortCalls = positions.filter(p => p.qty < 0 && p.option_type === 'call').reduce((sum, p) => sum + Math.abs(p.qty), 0);
-  const longPuts = positions.filter(p => p.qty > 0 && p.option_type === 'put').reduce((sum, p) => sum + p.qty, 0);
-  const shortPuts = positions.filter(p => p.qty < 0 && p.option_type === 'put').reduce((sum, p) => sum + Math.abs(p.qty), 0);
-
-  return longCalls >= shortCalls && longPuts >= shortPuts;
-}
-
-function getSpreadWidths(positions) {
-  const calls = positions.filter(p => p.option_type === 'call');
-  const puts = positions.filter(p => p.option_type === 'put');
-
-  let callSpreadWidth = 0;
-  if (calls.length === 2) {
-    callSpreadWidth = Math.abs(calls[0].strike_price - calls[1].strike_price);
-  }
-
-  let putSpreadWidth = 0;
-  if (puts.length === 2) {
-    putSpreadWidth = Math.abs(puts[0].strike_price - puts[1].strike_price);
-  }
-
-  return { callSpreadWidth, putSpreadWidth };
-}
-
 function findBreakEvenPoints(prices, payoffs) {
   const breakEvenPoints = [];
 
@@ -314,6 +280,8 @@ export function calculateBuyingPowerEffect(analysis) {
  */
 export function formatNumber(value, decimals = 2) {
   if (typeof value !== "number" || isNaN(value)) return 0;
+  if (value === Infinity) return Infinity;
+  if (value === -Infinity) return -Infinity;
   return Math.round(value * Math.pow(10, decimals)) / Math.pow(10, decimals);
 }
 
