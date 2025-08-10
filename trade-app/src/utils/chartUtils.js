@@ -400,23 +400,23 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
     // Single leg: create much wider range to show full P&L spectrum
     const singleStrike = minStrike;
 
-    // Use a much wider range to show both profit and loss areas
+    // Use a much wider range to show both profit and loss areas (10x increase)
     let range;
     if (singleStrike < 50) {
-      range = Math.max(singleStrike * 0.8, 25); // 80% range for low-priced stocks
+      range = Math.max(singleStrike * 8.0, 250); // 800% range for low-priced stocks (10x increase)
     } else if (singleStrike < 200) {
-      range = Math.max(singleStrike * 0.5, 50); // 50% range for mid-priced stocks
+      range = Math.max(singleStrike * 5.0, 500); // 500% range for mid-priced stocks (10x increase)
     } else {
-      range = Math.max(singleStrike * 0.3, 100); // 30% range for high-priced stocks
+      range = Math.max(singleStrike * 3.0, 1000); // 300% range for high-priced stocks (10x increase)
     }
 
     lowerBound = Math.floor(singleStrike - range);
     upperBound = Math.ceil(singleStrike + range);
     step = range > 200 ? 5 : range > 100 ? 2 : 1;
   } else {
-    // Multi-leg: significantly expand the range to show full profit/loss spectrum
-    const baseExtension = Math.max(strikeRange * 0.5, 50); // At least 50% extension or $50
-    const maxExtension = Math.min(baseExtension, 200); // Cap at $200 for very wide spreads
+    // Multi-leg: significantly expand the range to show full profit/loss spectrum (10x increase)
+    const baseExtension = Math.max(strikeRange * 5.0, 500); // At least 500% extension or $500 (10x increase)
+    const maxExtension = Math.min(baseExtension, 2000); // Cap at $2000 for very wide spreads (10x increase)
 
     lowerBound = Math.floor(minStrike - maxExtension);
     upperBound = Math.ceil(maxStrike + maxExtension);
@@ -440,7 +440,14 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
     }
   }
 
-  const prices = [];
+  // Ensure all strike prices are included in the data points for accuracy
+  const priceSet = new Set(strikes);
+
+  for (let price = lowerBound; price <= upperBound; price += step) {
+    priceSet.add(price);
+  }
+
+  const prices = Array.from(priceSet).sort((a, b) => a - b);
   const payoffs = [];
 
   // Calculate net credit/debit for the strategy
@@ -460,7 +467,7 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
   // Separate existing and new positions for mixed scenario handling
   const existingPositions = optionPositions.filter(pos => pos.isExisting);
   const newPositions = optionPositions.filter(pos => !pos.isExisting);
-  
+
   // Calculate net credit for existing positions only (using actual trade prices)
   const existingNetCredit = existingPositions.reduce((sum, pos) => {
     const premium = pos.avg_entry_price || 0;
@@ -482,9 +489,7 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
   }, 0);
 
 
-  for (let price = lowerBound; price <= upperBound; price += step) {
-    prices.push(price);
-
+  for (const price of prices) {
     let totalPayoff = 0;
 
     // Calculate payoff for each position at this price
