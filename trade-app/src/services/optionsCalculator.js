@@ -112,7 +112,7 @@ function calculateNetPremium(positions) {
   return positions.reduce((total, position) => {
     // For long positions: we pay premium (negative cost basis)
     // For short positions: we receive premium (positive cost basis)
-    return total - position.cost_basis / 100; // Convert back to per-share basis
+    return total + position.cost_basis / 100; // Convert back to per-share basis
   }, 0);
 }
 
@@ -183,9 +183,13 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
 
   // For defined risk strategies, calculate max profit/loss based on limit price
   if (isDefinedRisk(positions)) {
-    if (limitPrice) {
+    const netCalls = positions.filter(p => p.option_type === 'call').reduce((sum, p) => sum + p.qty, 0);
+    if (netCalls > 0) {
+        maxProfit = Infinity;
+    } else if (limitPrice) {
       const { callSpreadWidth, putSpreadWidth } = getSpreadWidths(positions);
-      const isCredit = limitPrice > 0;
+      const naturalPremium = calculateNetPremium(positions);
+      const isCredit = naturalPremium > 0;
 
       if (isCredit) {
         maxProfit = limitPrice * 100;
@@ -194,22 +198,23 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
         maxLoss = (spreadWidth - limitPrice) * 100;
       } else {
         // Debit spread
-        maxLoss = Math.abs(limitPrice * 100);
+        maxLoss = Math.abs(limitPrice) * 100;
         const spreadWidth = callSpreadWidth || putSpreadWidth;
         maxProfit = (spreadWidth * 100) - maxLoss;
       }
     }
   } else {
     // Undefined risk
-    const longCalls = positions.some(p => p.qty > 0 && p.option_type === 'call');
-    const shortCalls = positions.some(p => p.qty < 0 && p.option_type === 'call');
-    const longPuts = positions.some(p => p.qty > 0 && p.option_type === 'put');
-    const shortPuts = positions.some(p => p.qty < 0 && p.option_type === 'put');
+    const netCalls = positions.filter(p => p.option_type === 'call').reduce((sum, p) => sum + p.qty, 0);
+    const netPuts = positions.filter(p => p.option_type === 'put').reduce((sum, p) => sum + p.qty, 0);
 
-    if (longCalls && !shortCalls) maxProfit = Infinity;
-    if (shortCalls && !longCalls) maxLoss = -Infinity;
-    if (longPuts && !shortPuts) maxProfit = Infinity;
-    if (shortPuts && !longPuts) maxLoss = -Infinity;
+    if (netCalls < 0) maxLoss = -Infinity;
+    if (netPuts < 0) maxLoss = -Infinity;
+
+    // Cap profit on credit trades
+    if (limitPrice > 0) {
+      maxProfit = limitPrice * 100;
+    }
   }
 
   // Find break-even points
@@ -243,7 +248,7 @@ function isDefinedRisk(positions) {
   const longPuts = positions.filter(p => p.qty > 0 && p.option_type === 'put').reduce((sum, p) => sum + p.qty, 0);
   const shortPuts = positions.filter(p => p.qty < 0 && p.option_type === 'put').reduce((sum, p) => sum + Math.abs(p.qty), 0);
 
-  return longCalls === shortCalls && longPuts === shortPuts;
+  return longCalls >= shortCalls && longPuts >= shortPuts;
 }
 
 function getSpreadWidths(positions) {

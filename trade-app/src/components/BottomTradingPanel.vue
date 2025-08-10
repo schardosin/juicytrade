@@ -351,74 +351,24 @@ export default {
       return getOptionPriceLive(selection, priceType);
     };
 
-    // Net premium PER COMBINATION (not multiplied by quantity)
-    const netPremiumPerCombination = computed(() => {
-      let total = 0;
-      selectedLegs.value.forEach((selection) => {
-        // Use locked price if locked, otherwise use live/static data
-        let price;
-        if (priceLocked.value && lockedPrices.value.has(selection.symbol)) {
-          price = lockedPrices.value.get(selection.symbol)?.price ?? 0;
-        } else {
-          // Use current price from leg data
-          price = selection.current_price || ((selection.bid || 0) + (selection.ask || 0)) / 2;
-        }
-        const premium = selection.side === "buy" ? -price : price;
-        // Don't multiply by quantity - this is per combination
-        total += premium;
-      });
-      return total;
-    });
+    // Ratio-aware price calculation
+    const netPrice = (priceType) => {
+      if (!selectedLegs.value.length) return 0;
 
-    // Total premium for all combinations (multiplied by quantity)
-    const totalPremium = computed(() => {
-      // Get the minimum quantity to determine how many combinations we have
-      const minQuantity = Math.min(...selectedLegs.value.map(opt => opt.quantity));
-      return netPremiumPerCombination.value * minQuantity;
-    });
+      const total = selectedLegs.value.reduce((acc, leg) => {
+        const price = getOptionPriceLive(leg, priceType);
+        const signedPrice = leg.side === 'buy' ? -price : price;
+        return acc + (signedPrice * leg.quantity);
+      }, 0);
 
-    // BID price display PER COMBINATION (always live, never locked)
-    const bidPricePerCombination = computed(() => {
-      let total = 0;
-      selectedLegs.value.forEach((selection) => {
-        const price =
-          selection.side === "buy"
-            ? getOptionPriceLive(selection, "ask")
-            : getOptionPriceLive(selection, "bid");
-        const premium = selection.side === "buy" ? -price : price;
-        // Don't multiply by quantity - this is per combination
-        total += premium;
-      });
-      return total.toFixed(2);
-    });
+      const minQty = Math.min(...selectedLegs.value.map(leg => leg.quantity));
+      return total / minQty;
+    };
 
-    // ASK price display PER COMBINATION (always live, never locked)
-    const askPricePerCombination = computed(() => {
-      let total = 0;
-      selectedLegs.value.forEach((selection) => {
-        const price =
-          selection.side === "buy"
-            ? getOptionPriceLive(selection, "bid")
-            : getOptionPriceLive(selection, "ask");
-        const premium = selection.side === "buy" ? -price : price;
-        // Don't multiply by quantity - this is per combination
-        total += premium;
-      });
-      return total.toFixed(2);
-    });
+    const bidPrice = computed(() => netPrice('bid'));
+    const askPrice = computed(() => netPrice('ask'));
+    const midPrice = computed(() => (bidPrice.value + askPrice.value) / 2);
 
-    // MID price PER COMBINATION
-    const midPricePerCombination = computed(() => {
-      return (
-        (parseFloat(bidPricePerCombination.value) + parseFloat(askPricePerCombination.value)) /
-        2
-      ).toFixed(2);
-    });
-
-    // Legacy aliases for template compatibility
-    const bidPrice = bidPricePerCombination;
-    const askPrice = askPricePerCombination;
-    const midPrice = midPricePerCombination;
 
     // Calculate comprehensive P&L analysis using centralized calculator
     const profitLossAnalysis = computed(() => {
@@ -811,8 +761,6 @@ export default {
       priceProgressPercent,
       leftProgressPercent,
       rightProgressPercent,
-      netPremiumPerCombination,
-      totalPremium,
       handleCancel,
       handleReviewSend,
       incrementPrice,
