@@ -49,32 +49,36 @@
           </div>
           <div
             v-if="
-              chartData.breakEvenPoints && chartData.breakEvenPoints.length > 0
+              calculatedInfo.breakEvenPoints && calculatedInfo.breakEvenPoints.length > 0
             "
           >
             <strong>Break-Even Points:</strong>
             <span>
               {{
-                chartData.breakEvenPoints
+                calculatedInfo.breakEvenPoints
                   .map((p) => "$" + p.toFixed(2))
                   .join(", ")
               }}
             </span>
           </div>
-          <div v-if="chartData.maxProfit !== undefined">
+          <div v-if="calculatedInfo.maxProfit !== undefined">
             <strong>Max Profit:</strong>
-            <span class="profit">${{ chartData.maxProfit.toFixed(2) }}</span>
+            <span class="profit">
+              {{ calculatedInfo.maxProfit === Infinity ? 'Unlimited' : '$' + calculatedInfo.maxProfit.toFixed(2) }}
+            </span>
           </div>
-          <div v-if="chartData.maxLoss !== undefined">
+          <div v-if="calculatedInfo.maxLoss !== undefined">
             <strong>Max Loss:</strong>
-            <span class="loss">${{ chartData.maxLoss.toFixed(2) }}</span>
+            <span class="loss">
+              {{ calculatedInfo.maxLoss === Infinity ? 'Unlimited' : '$' + calculatedInfo.maxLoss.toFixed(2) }}
+            </span>
           </div>
-          <div v-if="chartData.currentUnrealizedPL !== undefined">
+          <div v-if="calculatedInfo.currentUnrealizedPL !== undefined">
             <strong>Current Unrealized P&L:</strong>
             <span
-              :class="chartData.currentUnrealizedPL >= 0 ? 'profit' : 'loss'"
+              :class="calculatedInfo.currentUnrealizedPL >= 0 ? 'profit' : 'loss'"
             >
-              ${{ chartData.currentUnrealizedPL.toFixed(2) }}
+              ${{ calculatedInfo.currentUnrealizedPL.toFixed(2) }}
             </span>
           </div>
         </div>
@@ -84,7 +88,7 @@
 </template>
 
 <script>
-import { ref, watch, nextTick, onMounted, onUnmounted } from "vue";
+import { ref, watch, nextTick, onMounted, onUnmounted, shallowRef } from "vue";
 import { Chart, registerables } from "chart.js";
 import zoomPlugin from "chartjs-plugin-zoom";
 import { createMultiLegChartConfig } from "../utils/chartUtils";
@@ -130,7 +134,7 @@ export default {
   },
   setup(props) {
     const chartCanvas = ref(null);
-    const chart = ref(null);
+    const chart = shallowRef(null);
 
     // Enhanced state management for interaction tracking
     const chartState = ref({
@@ -140,6 +144,13 @@ export default {
       viewCenter: null, // Strike price at center of view
       viewRange: null, // Price range width
       lastInteraction: null,
+    });
+
+    const calculatedInfo = ref({
+      maxProfit: undefined,
+      maxLoss: undefined,
+      breakEvenPoints: [],
+      currentUnrealizedPL: undefined,
     });
 
     const pendingUpdate = ref(null);
@@ -262,6 +273,99 @@ export default {
       }, 100); // 100ms debounce
     };
 
+    const computeFromChart = () => {
+      if (!chart.value) return;
+
+      const datasets = chart.value.data.datasets;
+      const positionDataset = datasets.find((d) => d.label.startsWith("Position Payoff"));
+
+      if (positionDataset) {
+        let labels = chart.value.data.labels;
+        let payoffs = positionDataset.data;
+
+        // Ensure labels are numbers
+        labels = labels.map(Number);
+
+        // Compute maxProfit and maxLoss from data points
+        let maxP = Number.NEGATIVE_INFINITY;
+        let minL = Number.POSITIVE_INFINITY;
+        for (const y of payoffs) {
+          if (y > maxP) maxP = y;
+          if (y < minL) minL = y;
+        }
+
+        let tempMaxProfit = maxP > 0 ? maxP : 0;
+        let tempMaxLoss = minL < 0 ? -minL : 0;
+
+        // Detect unlimited profit/loss based on end slopes
+        if (labels.length >= 2) {
+          const leftSlope =
+            (payoffs[1] - payoffs[0]) / (labels[1] - labels[0]);
+          const rightSlope =
+            (payoffs[payoffs.length - 1] - payoffs[payoffs.length - 2]) /
+            (labels[labels.length - 1] - labels[labels.length - 2]);
+
+          if (leftSlope > 0) {
+            tempMaxProfit = Infinity;
+          } else if (leftSlope < 0) {
+            tempMaxLoss = Infinity;
+          }
+
+          if (rightSlope > 0) {
+            tempMaxProfit = Infinity;
+          } else if (rightSlope < 0) {
+            tempMaxLoss = Infinity;
+          }
+        }
+
+        calculatedInfo.value.maxProfit = tempMaxProfit;
+        calculatedInfo.value.maxLoss = tempMaxLoss;
+
+        // Compute break-even points
+        const bePoints = [];
+        for (let i = 1; i < payoffs.length; i++) {
+          const y1 = payoffs[i - 1];
+          const y2 = payoffs[i];
+          if (y1 * y2 <= 0) {
+            let p;
+            if (y1 === 0) {
+              p = labels[i - 1];
+            } else if (y2 === 0) {
+              p = labels[i];
+            } else {
+              const ratio = -y1 / (y2 - y1);
+              p = labels[i - 1] + ratio * (labels[i] - labels[i - 1]);
+            }
+            bePoints.push(p);
+          }
+        }
+        calculatedInfo.value.breakEvenPoints = bePoints.sort((a, b) => a - b);
+
+        // Compute current unrealized P&L with interpolation/extrapolation
+        const currX = props.underlyingPrice;
+        let currY;
+        if (currX <= labels[0]) {
+          const slopeLeft = (payoffs[1] - payoffs[0]) / (labels[1] - labels[0]);
+          currY = payoffs[0] + slopeLeft * (currX - labels[0]);
+        } else if (currX >= labels[labels.length - 1]) {
+          const slopeRight =
+            (payoffs[payoffs.length - 1] - payoffs[payoffs.length - 2]) /
+            (labels[labels.length - 1] - labels[labels.length - 2]);
+          currY =
+            payoffs[payoffs.length - 1] + slopeRight * (currX - labels[labels.length - 1]);
+        } else {
+          for (let i = 1; i < labels.length; i++) {
+            if (labels[i - 1] <= currX && currX <= labels[i]) {
+              const ratio = (currX - labels[i - 1]) / (labels[i] - labels[i - 1]);
+              currY = payoffs[i - 1] + ratio * (payoffs[i] - payoffs[i - 1]);
+              break;
+            }
+          }
+        }
+        calculatedInfo.value.currentUnrealizedPL = currY;
+      }
+    };
+
     // Unified chart update function
     const performChartUpdate = async (chartData, underlyingPrice) => {
       if (
@@ -282,14 +386,20 @@ export default {
           await updateChartData();
         }
 
-        // Restore view state after update
+        await nextTick();
+
+        // Restore view state or reset if no saved state
         if (
-          chartState.value.viewCenter !== null &&
-          chartState.value.viewRange !== null
+          chartState.value.viewCenter === null &&
+          chartState.value.viewRange === null
         ) {
-          await nextTick();
+          chart.value.resetZoom();
+          console.log("🔄 Resetting zoom to apply new scale suggestions");
+        } else {
           restoreViewState();
         }
+
+        computeFromChart();
       } catch (error) {
         console.error("Error in performChartUpdate:", error);
         // Fallback to chart recreation
@@ -342,7 +452,16 @@ export default {
           chart.value = new Chart(chartCanvas.value, config);
           // Restore view state after chart is created
           await nextTick();
-          restoreViewState();
+          if (
+            chartState.value.viewCenter === null &&
+            chartState.value.viewRange === null
+          ) {
+            chart.value.resetZoom();
+            console.log("🔄 Initial reset zoom for new chart");
+          } else {
+            restoreViewState();
+          }
+          computeFromChart();
         } else {
           console.error(
             "PayoffChart: Chart.js not created - missing ctx or config",
@@ -380,6 +499,23 @@ export default {
               config.options.plugins.annotation.annotations;
           }
 
+          // Update y-scale options to adjust range based on new data
+          if (config.options.scales?.y) {
+            chart.value.options.scales.y = { ...config.options.scales.y };
+          }
+
+          // Update x-scale suggestedMin/Max if present (for resetZoom to use new values)
+          if (config.options.scales?.x) {
+            if ("suggestedMin" in config.options.scales.x) {
+              chart.value.options.scales.x.suggestedMin =
+                config.options.scales.x.suggestedMin;
+            }
+            if ("suggestedMax" in config.options.scales.x) {
+              chart.value.options.scales.x.suggestedMax =
+                config.options.scales.x.suggestedMax;
+            }
+          }
+
           // Update the chart without animation to avoid interrupting user interactions
           chart.value.update("none");
         }
@@ -390,13 +526,26 @@ export default {
       }
     };
 
-    // Watch for changes in chart data or underlying price - now using debounced updates
+    // Separate watches for better control
     watch(
-      [() => props.chartData, () => props.underlyingPrice],
-      ([newChartData, newUnderlyingPrice]) => {
-        if (newChartData && newUnderlyingPrice !== null) {
-          debouncedUpdate(newChartData, newUnderlyingPrice);
-        } else if (!newChartData) {
+      () => props.chartData,
+      (newChartData) => {
+        if (newChartData) {
+          // Reset view state on chartData change (strategy switch)
+          chartState.value.viewCenter = null;
+          chartState.value.viewRange = null;
+          // Force recreation on chartData change to ensure full config refresh
+          if (chart.value) {
+            saveViewState();
+            chart.value.destroy();
+            chart.value = null;
+            console.log("🗑️ Destroying and recreating chart due to chartData change");
+          }
+          console.log("🔄 Resetting view state due to chartData change");
+          if (props.underlyingPrice !== null) {
+            debouncedUpdate(newChartData, props.underlyingPrice);
+          }
+        } else {
           if (chart.value) {
             chart.value.destroy();
             chart.value = null;
@@ -404,6 +553,16 @@ export default {
         }
       },
       { deep: true, immediate: true }
+    );
+
+    watch(
+      () => props.underlyingPrice,
+      (newUnderlyingPrice) => {
+        if (props.chartData && newUnderlyingPrice !== null) {
+          debouncedUpdate(props.chartData, newUnderlyingPrice);
+        }
+      },
+      { immediate: true }
     );
 
     // Initial chart creation
@@ -449,6 +608,7 @@ export default {
     return {
       chartCanvas,
       chartState,
+      calculatedInfo,
       zoomIn,
       zoomOut,
       resetZoom,
