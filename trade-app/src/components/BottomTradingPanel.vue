@@ -426,13 +426,16 @@ export default {
         const livePrice = getLivePrice(leg.symbol);
         return {
           ...leg,
+          bid: livePrice?.bid ?? leg.bid,
+          ask: livePrice?.ask ?? leg.ask,
           current_price: livePrice ? livePrice.price ?? leg.current_price : leg.current_price,
         };
       });
       return calculateMultiLegProfitLoss(
         legsWithLivePrices,
         legsWithLivePrices, // Use same data for both params
-        props.underlyingPrice
+        props.underlyingPrice,
+        limitPrice.value
       );
     });
 

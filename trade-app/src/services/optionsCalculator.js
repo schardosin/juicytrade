@@ -13,7 +13,8 @@
 export function calculateMultiLegProfitLoss(
   selectedOptions,
   optionsData,
-  underlyingPrice
+  underlyingPrice,
+  limitPrice
 ) {
   if (!selectedOptions || selectedOptions.length === 0) {
     return {
@@ -33,7 +34,11 @@ export function calculateMultiLegProfitLoss(
   const netPremium = calculateNetPremium(positions);
 
   // Generate payoff analysis
-  const payoffAnalysis = generatePayoffAnalysis(positions, underlyingPrice);
+  const payoffAnalysis = generatePayoffAnalysis(
+    positions,
+    underlyingPrice,
+    limitPrice
+  );
 
   return {
     maxProfit: payoffAnalysis.maxProfit,
@@ -117,7 +122,7 @@ function calculateNetPremium(positions) {
  * @param {Number} underlyingPrice - Current underlying price
  * @returns {Object} Payoff analysis
  */
-function generatePayoffAnalysis(positions, underlyingPrice) {
+function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
   if (!positions || positions.length === 0) {
     return { maxProfit: 0, maxLoss: 0, breakEvenPoints: [], currentPL: 0 };
   }
@@ -173,8 +178,26 @@ function generatePayoffAnalysis(positions, underlyingPrice) {
   }
 
   // Find max profit and max loss
-  const maxProfit = Math.max(...payoffs);
-  const maxLoss = Math.min(...payoffs);
+  let maxProfit = Math.max(...payoffs);
+  let maxLoss = Math.min(...payoffs);
+
+  // For defined risk strategies, calculate max profit/loss based on limit price
+  if (isDefinedRisk(positions) && limitPrice) {
+    const { callSpreadWidth, putSpreadWidth } = getSpreadWidths(positions);
+    const isCredit = limitPrice > 0;
+
+    if (isCredit) {
+      maxProfit = limitPrice * 100;
+      // For credit spreads, max loss is the width of the spread minus the credit received
+      const spreadWidth = callSpreadWidth || putSpreadWidth;
+      maxLoss = (spreadWidth - limitPrice) * 100;
+    } else {
+      // Debit spread
+      maxLoss = Math.abs(limitPrice * 100);
+      const spreadWidth = callSpreadWidth || putSpreadWidth;
+      maxProfit = (spreadWidth * 100) - maxLoss;
+    }
+  }
 
   // Find break-even points
   const breakEvenPoints = findBreakEvenPoints(prices, payoffs);
@@ -201,6 +224,32 @@ function generatePayoffAnalysis(positions, underlyingPrice) {
  * @param {Array} payoffs - Payoff array
  * @returns {Array} Break-even points
  */
+function isDefinedRisk(positions) {
+  const longCalls = positions.filter(p => p.qty > 0 && p.option_type === 'call').reduce((sum, p) => sum + p.qty, 0);
+  const shortCalls = positions.filter(p => p.qty < 0 && p.option_type === 'call').reduce((sum, p) => sum + Math.abs(p.qty), 0);
+  const longPuts = positions.filter(p => p.qty > 0 && p.option_type === 'put').reduce((sum, p) => sum + p.qty, 0);
+  const shortPuts = positions.filter(p => p.qty < 0 && p.option_type === 'put').reduce((sum, p) => sum + Math.abs(p.qty), 0);
+
+  return longCalls === shortCalls && longPuts === shortPuts;
+}
+
+function getSpreadWidths(positions) {
+  const calls = positions.filter(p => p.option_type === 'call');
+  const puts = positions.filter(p => p.option_type === 'put');
+
+  let callSpreadWidth = 0;
+  if (calls.length === 2) {
+    callSpreadWidth = Math.abs(calls[0].strike_price - calls[1].strike_price);
+  }
+
+  let putSpreadWidth = 0;
+  if (puts.length === 2) {
+    putSpreadWidth = Math.abs(puts[0].strike_price - puts[1].strike_price);
+  }
+
+  return { callSpreadWidth, putSpreadWidth };
+}
+
 function findBreakEvenPoints(prices, payoffs) {
   const breakEvenPoints = [];
 
