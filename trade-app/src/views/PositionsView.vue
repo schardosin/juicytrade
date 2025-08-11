@@ -553,29 +553,29 @@ export default {
     // Get current market price (mid of bid/ask) for P/L calculation
     const getLegCurrentPrice = (leg) => {
       if (leg.asset_class !== "us_option") return leg.current_price || 0;
-      
+
       const livePrice = getLivePrice(leg.symbol);
 
-      // If we have live prices with both bid and ask, use them
-      if (livePrice?.bid > 0 && livePrice?.ask > 0) {
-        return (livePrice.bid + livePrice.ask) / 2;
+      // Prioritize live prices, but fall back to leg's static data
+      const bid = livePrice?.bid ?? leg.bid;
+      const ask = livePrice?.ask ?? leg.ask;
+
+      // If both bid and ask are present and positive, use mid-price
+      if (bid > 0 && ask > 0) {
+        return (bid + ask) / 2;
       }
 
-      // Fall back to original option data for mid price calculation
-      if (leg.bid > 0 && leg.ask > 0) {
-        return (leg.bid + leg.ask) / 2;
+      // If only one side is positive, use that side
+      if (bid > 0) return bid;
+      if (ask > 0) return ask;
+      
+      // If both are explicitly zero, the option is worthless
+      if (bid === 0 && ask === 0) {
+        return 0;
       }
 
-      // If we have live price with only one side, use it
-      if (livePrice?.bid > 0) return livePrice.bid;
-      if (livePrice?.ask > 0) return livePrice.ask;
-
-      // Fall back to original data with only one side
-      if (leg.bid > 0) return leg.bid;
-      if (leg.ask > 0) return leg.ask;
-
-      // Final fallback to current_price, last_price, or entry price
-      return leg.current_price || leg.last_price || leg.avg_entry_price || 0;
+      // Fallback to other price fields, but NOT entry price
+      return leg.current_price || leg.last_price || 0;
     };
 
     // Calculate live P/L for individual leg
@@ -584,17 +584,18 @@ export default {
       const entryPrice = leg.avg_entry_price || 0;
 
       // If we don't have entry price, we can't calculate P/L
-      if (entryPrice === 0) return 0;
-
-      // If current price is 0, use entry price (no P/L change)
-      const priceToUse = currentPrice > 0 ? currentPrice : entryPrice;
+      if (entryPrice === 0 && leg.asset_class === 'us_option') return 0;
 
       // For options: (current_price - entry_price) * quantity * 100 (contract multiplier)
       // For stocks: (current_price - entry_price) * quantity
       const multiplier = leg.asset_class === "us_option" ? 100 : 1;
-      const priceDiff = priceToUse - entryPrice;
-
+      
       // For short positions (negative quantity), P/L is inverted
+      // The formula is: (current - entry) * qty
+      // Example short: (0 - 0.50) * -1 = 0.50 (profit)
+      // Example long: (1.0 - 0.50) * 1 = 0.50 (profit)
+      const priceDiff = currentPrice - entryPrice;
+
       return priceDiff * leg.qty * multiplier;
     };
 
