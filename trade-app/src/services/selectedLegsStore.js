@@ -141,6 +141,40 @@ class SelectedLegsStore {
   }
 
   /**
+   * Replace a leg with a new one, preserving quantity and side.
+   * @param {string} oldSymbol - The symbol of the leg to replace.
+   * @param {Object} newLegData - The data for the new leg.
+   */
+  replaceLeg(oldSymbol, newLegData) {
+    const oldLeg = this.legs.get(oldSymbol);
+    if (!oldLeg) {
+      console.warn(`Leg not found for replacement: ${oldSymbol}`);
+      return false;
+    }
+
+    if (!newLegData || !newLegData.symbol) {
+      console.warn('Invalid new leg data provided to replaceLeg:', newLegData);
+      return false;
+    }
+
+    // Preserve quantity and side from the old leg
+    const preservedData = {
+      ...newLegData,
+      quantity: oldLeg.quantity,
+      side: oldLeg.side,
+      source: oldLeg.source, // Preserve the original source
+    };
+
+    // Remove the old leg
+    this.removeLeg(oldSymbol);
+
+    // Add the new leg
+    this.addLeg(preservedData, preservedData.source);
+    
+    return true;
+  }
+
+  /**
    * Clear all selected legs
    */
   clearAllLegs() {

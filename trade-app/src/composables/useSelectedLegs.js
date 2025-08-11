@@ -34,6 +34,10 @@ export function useSelectedLegs() {
     updateQuantity: (symbol, quantity) => {
       return selectedLegsStore.updateLegQuantity(symbol, quantity);
     },
+
+    replaceLeg: (oldSymbol, newLegData) => {
+      return selectedLegsStore.replaceLeg(oldSymbol, newLegData);
+    },
     
     clearAll: () => {
       selectedLegsStore.clearAllLegs();

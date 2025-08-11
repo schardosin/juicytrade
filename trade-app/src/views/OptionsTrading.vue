@@ -80,6 +80,7 @@
       :visible="showBottomPanel"
       :symbol="currentSymbol"
       :underlyingPrice="currentPrice"
+      :moveStrike="optionsManager.moveStrike"
       @review-send="onReviewAndSend"
       @price-adjusted="onPriceAdjusted"
     />

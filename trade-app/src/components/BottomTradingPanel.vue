@@ -44,8 +44,8 @@
       <div class="control-group">
         <span class="control-label">Strike</span>
         <div class="control-buttons">
-          <button class="ctrl-btn">⬆</button>
-          <button class="ctrl-btn">⬇</button>
+          <button class="ctrl-btn" @click="moveStrikeUp">⬆</button>
+          <button class="ctrl-btn" @click="moveStrikeDown">⬇</button>
         </div>
       </div>
       <div class="control-group">
@@ -260,6 +260,10 @@ export default {
       type: Number,
       default: null,
     },
+    moveStrike: {
+      type: Function,
+      default: () => {},
+    }
   },
   emits: ["review-send", "price-adjusted"],
   setup(props, { emit }) {
@@ -267,7 +271,8 @@ export default {
       selectedLegs, 
       hasSelectedLegs, 
       updateQuantity, 
-      clearAll 
+      clearAll,
+      replaceLeg,
     } = useSelectedLegs();
 
     // Component registration system
@@ -590,6 +595,54 @@ export default {
       });
     };
 
+    const moveStrikeUp = () => {
+      // Base set: selected legs or all if none explicitly selected
+      const baseLegsToUpdate =
+        internalSelectedLegs.value.length > 0
+          ? selectedLegs.value.filter((leg) =>
+              internalSelectedLegs.value.includes(leg.symbol)
+            )
+          : selectedLegs.value;
+
+      // Collision-safe order for moving to LOWER strikes:
+      // process lower strikes first (ascending), so destinations free up correctly
+      const legsToUpdate = [...baseLegsToUpdate].sort(
+        (a, b) =>
+          (a.strike_price ?? a.strike ?? 0) - (b.strike_price ?? b.strike ?? 0)
+      );
+
+      legsToUpdate.forEach((leg) => {
+        const newLeg = props.moveStrike(leg.symbol, "up");
+        if (newLeg) {
+          replaceLeg(leg.symbol, newLeg);
+        }
+      });
+    };
+
+    const moveStrikeDown = () => {
+      // Base set: selected legs or all if none explicitly selected
+      const baseLegsToUpdate =
+        internalSelectedLegs.value.length > 0
+          ? selectedLegs.value.filter((leg) =>
+              internalSelectedLegs.value.includes(leg.symbol)
+            )
+          : selectedLegs.value;
+
+      // Collision-safe order for moving to HIGHER strikes:
+      // process higher strikes first (descending), so destinations free up correctly
+      const legsToUpdate = [...baseLegsToUpdate].sort(
+        (a, b) =>
+          (b.strike_price ?? b.strike ?? 0) - (a.strike_price ?? a.strike ?? 0)
+      );
+
+      legsToUpdate.forEach((leg) => {
+        const newLeg = props.moveStrike(leg.symbol, "down");
+        if (newLeg) {
+          replaceLeg(leg.symbol, newLeg);
+        }
+      });
+    };
+
     const togglePriceLock = () => {
       if (!priceLocked.value) {
         // Locking - cache current live prices for all selected options
@@ -772,6 +825,8 @@ export default {
       decrementQuantity,
       toggleLegSelection,
       togglePriceLock,
+      moveStrikeUp,
+      moveStrikeDown,
     };
   },
 };

@@ -348,10 +348,54 @@ export function useOptionsChainManager(
     }
   };
 
-  // ===== Watchers =====
+    /**
+   * Move strike price up or down for a given option symbol.
+   * @param {string} optionSymbol - The symbol of the option to move.
+   * @param {string} direction - 'up' (lower strike) or 'down' (higher strike).
+   * @returns {Object|null} The new option data or null if not found.
+   */
+  const moveStrike = (optionSymbol, direction) => {
+    const currentOption = getOptionBySymbol(optionSymbol);
+    if (!currentOption) {
+      console.warn(`moveStrike: Option not found for symbol ${optionSymbol}`);
+      return null;
+    }
 
-  // Watch for symbol changes
-  watch(
+    const { expiration_date, type, strike_price } = currentOption;
+    const allOptionsForExpiration = getOptionsForExpiration(expiration_date);
+
+    const isCall = type.toLowerCase().startsWith('c');
+
+    const sameTypeStrikes = allOptionsForExpiration
+      .filter(opt => opt.type.toLowerCase().startsWith(isCall ? 'c' : 'p'))
+      .sort((a, b) => a.strike_price - b.strike_price);
+
+    const currentIndex = sameTypeStrikes.findIndex(opt => opt.strike_price === strike_price);
+
+    if (currentIndex === -1) {
+      console.warn(`moveStrike: Current strike not found in chain for ${optionSymbol}`);
+      return null;
+    }
+
+    let newIndex;
+    if (direction === 'up') { // Lower strike
+      newIndex = currentIndex - 1;
+    } else { // 'down', higher strike
+      newIndex = currentIndex + 1;
+    }
+
+    if (newIndex >= 0 && newIndex < sameTypeStrikes.length) {
+      return sameTypeStrikes[newIndex];
+    }
+
+    console.log(`moveStrike: No further strike available in direction '${direction}' for ${optionSymbol}`);
+    return null;
+  };
+
+    // ===== Watchers =====
+  
+    // Watch for symbol changes
+    watch(
     symbol,
     async (newSymbol, oldSymbol) => {
       if (newSymbol !== oldSymbol) {
@@ -393,5 +437,6 @@ export function useOptionsChainManager(
     clearAllData,
     updateStrikeCount,
     refreshAllData,
+    moveStrike,
   };
 }
