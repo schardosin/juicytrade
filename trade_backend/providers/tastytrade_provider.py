@@ -1659,31 +1659,42 @@ class TastyTradeProvider(BaseProvider):
     
     async def unsubscribe_from_symbols(self, symbols: List[str], data_types: List[str] = None) -> bool:
         """Unsubscribe from real-time data for symbols via DXLink."""
-        logger.info(f"TastyTrade: unsubscribe_from_symbols called with {len(symbols)} symbols")
+        logger.info(f"TastyTrade: unsubscribe_from_symbols called with {len(symbols)} symbols and data_types: {data_types}")
         
         try:
             if not self.is_connected:
                 return True  # Already disconnected
-            
+
+            # If no data_types are specified, default to both for backward compatibility
+            if data_types is None:
+                data_types = ["Quote", "Greeks"]
+
             # Convert symbols to TastyTrade format and prepare unsubscriptions
             subscriptions = []
             
             for symbol in symbols:
-                # Convert to TastyTrade format if needed
-                tastytrade_symbol = self.convert_symbol_to_provider_format(symbol)
-                
-                # Remove Quote subscription
-                subscriptions.append({
-                    "type": "Quote",
-                    "symbol": tastytrade_symbol
-                })
-                
-                # Remove Greeks subscription for option symbols
+                # Convert to streaming symbol format for DXLink
                 if self._is_option_symbol(symbol):
+                    streaming_symbol = self._convert_to_streamer_symbol(symbol)
+                    logger.debug(f"TastyTrade: Using streamer symbol for unsubscription: {streaming_symbol}")
+                else:
+                    streaming_symbol = symbol  # Stock symbols use as-is
+                
+                if "Quote" in data_types:
+                    subscriptions.append({
+                        "type": "Quote",
+                        "symbol": streaming_symbol
+                    })
+                
+                if "Greeks" in data_types and self._is_option_symbol(symbol):
                     subscriptions.append({
                         "type": "Greeks",
-                        "symbol": tastytrade_symbol
+                        "symbol": streaming_symbol
                     })
+            
+            if not subscriptions:
+                logger.info("TastyTrade: No subscriptions to remove.")
+                return True
             
             # Send unsubscription message
             unsubscription_msg = {

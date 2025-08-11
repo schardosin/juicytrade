@@ -237,9 +237,13 @@ class StreamingManager:
     async def _unsubscribe_greeks_safe(self, symbols: List[str]):
         """Safely unsubscribes from Greeks data on Greeks providers."""
         for provider_name, provider in self._greeks_providers.items():
-            # For now, we don't unsubscribe from Greeks separately since they often come with quotes
-            # This could be enhanced in the future if providers support separate Greeks unsubscription
-            logger.debug(f"Greeks unsubscription not implemented for {provider_name}")
+            if hasattr(provider, 'unsubscribe_from_symbols'):
+                try:
+                    provider_symbols = SymbolConverter.batch_convert_to_provider_format(symbols, provider_name)
+                    await provider.unsubscribe_from_symbols(provider_symbols, data_types=["Greeks"])
+                    logger.info(f"✅ Unsubscribed from Greeks-only streaming on {provider_name}: {len(symbols)} symbols")
+                except Exception as e:
+                    logger.error(f"❌ Error unsubscribing Greeks on {provider_name}: {e}")
 
     def get_subscription_status(self) -> Dict[str, any]:
         """Gets the current global subscription status."""
