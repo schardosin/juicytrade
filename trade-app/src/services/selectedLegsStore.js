@@ -46,13 +46,24 @@ class SelectedLegsStore {
     const quantity = legData.quantity || (source === 'positions' ? 
       Math.abs(legData.original_quantity || 1) : 1);
 
+    const side = legData.side || 'buy';
+    // Always generate action based on source - ignore any action passed in legData
+    let action;
+    if (source === 'positions') {
+      action = side === 'buy' ? 'buy_to_close' : 'sell_to_close';
+    } else {
+      action = side === 'buy' ? 'buy_to_open' : 'sell_to_open';
+    }
+
+
     // Create complete leg object
     const leg = {
       // Core identification
       symbol: legData.symbol,
       
       // Trading details
-      side: legData.side || 'buy',
+      side: side,
+      action: action,
       quantity: Math.max(1, quantity),
       
       // Option details

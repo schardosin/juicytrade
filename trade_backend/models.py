@@ -54,6 +54,7 @@ class Order(BaseModel):
     symbol: str
     asset_class: str
     side: str  # "buy" or "sell"
+    action: Optional[str] = None
     order_type: str  # "market", "limit", etc.
     qty: float
     filled_qty: float
@@ -158,6 +159,7 @@ class OrderRequest(BaseModel):
 
 class MultiLegOrderRequest(BaseModel):
     legs: List[Dict[str, Any]]
+    action: Optional[str] = None
     qty: int = 1
     order_type: str = "limit"
     time_in_force: str = "day"

@@ -886,10 +886,6 @@ export default {
       return "--";
     };
 
-    const formatLegAction = (leg) => {
-      return leg.qty > 0 ? "BTO" : "STO";
-    };
-
     const getLegTypeClass = (leg) => {
       // Color based on buy/sell (positive qty = green, negative qty = red)
       return {
@@ -899,10 +895,9 @@ export default {
     };
 
     const getLegActionClass = (leg) => {
-      const action = formatLegAction(leg);
       return {
-        "bto-action": action === "BTO",
-        "sto-action": action === "STO",
+        "bto-action": leg.qty > 0,
+        "sto-action": leg.qty < 0,
       };
     };
 
@@ -1471,7 +1466,6 @@ export default {
       formatLegStrike,
       formatLegType,
       formatLegDays,
-      formatLegAction,
       getLegTypeClass,
       getLegActionClass,
       isLegITM,

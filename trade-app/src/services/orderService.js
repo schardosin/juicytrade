@@ -105,22 +105,9 @@ class OrderService {
   formatLegs(legs) {
     return legs.map((leg) => ({
       symbol: leg.symbol,
-      side: this.formatSide(leg.side),
+      side: leg.action,
       qty: parseInt(leg.ratio_qty || leg.quantity || 1),
     }));
-  }
-
-  /**
-   * Format side for API (convert to backend format)
-   * @param {string} side - Order side (buy/sell)
-   * @returns {string} Formatted side
-   */
-  formatSide(side) {
-    const sideMap = {
-      buy: "buy_to_open",
-      sell: "sell_to_open",
-    };
-    return sideMap[side.toLowerCase()] || side;
   }
 
   /**

@@ -251,15 +251,26 @@ export default {
     const formattedLegs = computed(() => {
       if (!props.orderData?.legs) return [];
 
-      return props.orderData.legs.map((leg) => ({
-        action: leg.side === "buy" ? "Buy" : "Sell",
-        symbol: leg.displaySymbol || leg.symbol,
-        date: leg.date || formatExpiry(props.orderData.expiry),
-        type: leg.type || "Call",
-        strike: leg.strike_price || leg.strike || "-",
-        priceValue: (leg.price || 0).toFixed(2),
-        quantity: leg.ratio_qty || leg.quantity || 1,
-      }));
+      return props.orderData.legs.map((leg) => {
+        let action = "BTO";
+        if (leg.action === "buy_to_open") action = "BTO";
+        else if (leg.action === "buy_to_close") action = "BTC";
+        else if (leg.action === "sell_to_open") action = "STO";
+        else if (leg.action === "sell_to_close") action = "STC";
+        else if (leg.side === 'buy') action = 'BTO';
+        else if (leg.side === 'sell') action = 'STO';
+
+
+        return {
+          action: action,
+          symbol: leg.displaySymbol || leg.symbol,
+          date: leg.date || formatExpiry(props.orderData.expiry),
+          type: leg.type || "Call",
+          strike: leg.strike_price || leg.strike || "-",
+          priceValue: (leg.price || 0).toFixed(2),
+          quantity: leg.ratio_qty || leg.quantity || 1,
+        };
+      });
     });
 
     // Check if order can be confirmed
@@ -595,12 +606,14 @@ export default {
   text-align: center;
 }
 
-.leg-action.buy {
+.leg-action.bto,
+.leg-action.btc {
   background-color: var(--options-selected-buy);
   color: var(--color-success);
 }
 
-.leg-action.sell {
+.leg-action.sto,
+.leg-action.stc {
   background-color: var(--options-selected-sell);
   color: var(--color-danger);
 }

@@ -1089,8 +1089,6 @@ class TradierProvider(BaseProvider):
     async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a multi-leg trading order."""
         try:
-            logger.info(f"🔄 Tradier: Placing multi-leg order with data: {order_data}")
-            
             order_url = f"{self.base_url}/v1/accounts/{self.account_id}/orders"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
@@ -1116,16 +1114,14 @@ class TradierProvider(BaseProvider):
 
             for i, leg in enumerate(order_data["legs"]):
                 payload[f"option_symbol[{i}]"] = leg["symbol"]
-                payload[f"side[{i}]"] = leg["side"]
+                side = leg.get("side")
+                
+                payload[f"side[{i}]"] = side.lower()
                 payload[f"quantity[{i}]"] = str(leg["qty"])
-
-            logger.info(f"📤 Tradier: Sending payload to broker: {payload}")
 
             resp = requests.post(order_url, headers=headers, data=payload)
             resp.raise_for_status()
             order_response = resp.json()
-            
-            logger.info(f"📥 Tradier: Broker response: {order_response}")
             
             order_id = order_response.get("order", {}).get("id")
             if order_id:

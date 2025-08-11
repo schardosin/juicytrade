@@ -440,13 +440,19 @@ export default {
           }
         }
 
+        let action = "BTO";
+        if (leg.action === "buy_to_open") action = "BTO";
+        if (leg.action === "buy_to_close") action = "BTC";
+        if (leg.action === "sell_to_open") action = "STO";
+        if (leg.action === "sell_to_close") action = "STC";
+
         return {
           symbol: leg.symbol,
           quantity: leg.quantity,
           date: formatDate(leg.expiry),
           strike: (leg.strike_price || leg.strike)?.toString() || "-",
           type: leg.type?.charAt(0).toUpperCase() || "P",
-          action: leg.side === "buy" ? "BTO" : "STO",
+          action: action,
           price: price.toFixed(2),
         };
       });
@@ -693,6 +699,7 @@ export default {
             symbol: leg.symbol,
             displaySymbol: leg.symbol,
             side: leg.side,
+            action: leg.action,
             quantity: leg.quantity,
             ratio_qty: leg.quantity,
             type: leg.type || "Call",
@@ -704,6 +711,7 @@ export default {
             ask: livePrice?.ask ?? leg.ask,
           };
         }),
+        action: selectedLegs.value.length > 0 ? selectedLegs.value[0].action : null,
         orderType: selectedOrderType.value,
         timeInForce: selectedTimeInForce.value,
         limitPrice: brokerLimitPrice,
@@ -1045,12 +1053,14 @@ export default {
   text-align: center;
 }
 
-.leg-action.bto {
+.leg-action.bto,
+.leg-action.btc {
   background-color: rgba(0, 200, 81, 0.2);
   color: #00c851;
 }
 
-.leg-action.sto {
+.leg-action.sto,
+.leg-action.stc {
   background-color: rgba(255, 68, 68, 0.2);
   color: #ff4444;
 }
