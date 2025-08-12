@@ -135,6 +135,7 @@ export default {
   setup(props) {
     const chartCanvas = ref(null);
     const chart = shallowRef(null);
+    const previousChartData = ref(null);
 
     // Enhanced state management for interaction tracking
     const chartState = ref({
@@ -201,7 +202,7 @@ export default {
       console.log("🔒 Chart updates frozen - user is panning");
     };
 
-    const onPanEnd = () => {
+    const onPanComplete = () => {
       chartState.value.isPanning = false;
       saveViewState(); // Save the new position
 
@@ -227,7 +228,7 @@ export default {
       console.log("🔒 Chart updates frozen - user is zooming");
     };
 
-    const onZoomEnd = () => {
+    const onZoomComplete = () => {
       chartState.value.isZooming = false;
       saveViewState(); // Save the new zoom level
 
@@ -248,16 +249,44 @@ export default {
     // Apply pending updates when chart is unfrozen
     const applyPendingUpdate = async () => {
       if (pendingUpdate.value && !chartState.value.frozenUpdates) {
-        const { chartData, underlyingPrice } = pendingUpdate.value;
+        const pendingType = pendingUpdate.value.type;
         pendingUpdate.value = null;
 
-        console.log("📊 Applying pending chart update");
-        await performChartUpdate(chartData, underlyingPrice);
+        console.log("📊 Applying pending chart update of type:", pendingType);
+
+        if (pendingType === 'full') {
+          await performChartUpdate();
+        } else if (pendingType === 'minor') {
+          await performMinorUpdate();
+        } else if (pendingType === 'price') {
+          minimalPriceUpdate();
+        }
       }
     };
 
-    // Debounced update function
-    const debouncedUpdate = (chartData, underlyingPrice) => {
+    // Check if chartData change is minor (only prices changed, structure same)
+    const isMinorChartDataUpdate = (newData, prevData) => {
+      if (!prevData || !newData.legs || !prevData.legs || newData.legs.length !== prevData.legs.length) {
+        return false;
+      }
+      for (let i = 0; i < newData.legs.length; i++) {
+        const newLeg = newData.legs[i];
+        const prevLeg = prevData.legs[i];
+        // Compare structural fields; adjust based on your leg properties (e.g., strike, type, position/side, quantity)
+        if (
+          newLeg.strike !== prevLeg.strike ||
+          newLeg.type !== prevLeg.type ||
+          newLeg.position !== prevLeg.position ||
+          newLeg.quantity !== prevLeg.quantity
+        ) {
+          return false;
+        }
+      }
+      return true;
+    };
+
+    // Debounced update functions
+    const debouncedUpdate = (updateType) => {
       if (updateDebounceTimer.value) {
         clearTimeout(updateDebounceTimer.value);
       }
@@ -265,12 +294,36 @@ export default {
       updateDebounceTimer.value = setTimeout(() => {
         if (chartState.value.frozenUpdates) {
           // Store as pending update
-          pendingUpdate.value = { chartData, underlyingPrice };
-          console.log("⏸️ Chart update queued - user is interacting");
+          pendingUpdate.value = { type: updateType };
+          console.log(`⏸️ ${updateType} chart update queued - user is interacting`);
         } else {
-          performChartUpdate(chartData, underlyingPrice);
+          if (updateType === 'full') {
+            performChartUpdate();
+          } else if (updateType === 'minor') {
+            performMinorUpdate();
+          } else if (updateType === 'price') {
+            minimalPriceUpdate();
+          }
         }
-      }, 100); // 100ms debounce
+      }, 200); // 200ms debounce
+    };
+
+    // Minimal update for price-only changes (update annotations only)
+    const minimalPriceUpdate = () => {
+      if (!chart.value || props.underlyingPrice === null || props.underlyingPrice === undefined) return;
+
+      try {
+        // Regenerate only the annotations part with new price
+        const config = createMultiLegChartConfig(props.chartData, props.underlyingPrice);
+        if (config.options?.plugins?.annotation?.annotations) {
+          chart.value.options.plugins.annotation.annotations = config.options.plugins.annotation.annotations;
+        }
+        chart.value.update("none");
+        computeFromChart();
+      } catch (error) {
+        console.warn("Minimal price update failed, falling back to full update:", error);
+        performChartUpdate();
+      }
     };
 
     const computeFromChart = () => {
@@ -366,13 +419,13 @@ export default {
       }
     };
 
-    // Unified chart update function
-    const performChartUpdate = async (chartData, underlyingPrice) => {
+    // Unified full chart update function (for major chartData changes or initial)
+    const performChartUpdate = async () => {
       if (
         !chartCanvas.value ||
-        !chartData ||
-        underlyingPrice === null ||
-        underlyingPrice === undefined
+        !props.chartData ||
+        props.underlyingPrice === null ||
+        props.underlyingPrice === undefined
       ) {
         return;
       }
@@ -407,6 +460,63 @@ export default {
       }
     };
 
+    // Minor update for chartData changes (mutate data in place for smoothness)
+    const performMinorUpdate = async () => {
+      if (
+        !chart.value ||
+        !props.chartData ||
+        props.underlyingPrice === null ||
+        props.underlyingPrice === undefined
+      ) {
+        return;
+      }
+
+      try {
+        saveViewState(); // Save current view
+
+        const config = createMultiLegChartConfig(props.chartData, props.underlyingPrice);
+
+        if (config.data.labels.length !== chart.value.data.labels.length) {
+          console.warn("Labels length changed, falling back to full update");
+          await performChartUpdate();
+          return;
+        }
+
+        // Mutate existing datasets data in place
+        config.data.datasets.forEach((newDs, j) => {
+          const ds = chart.value.data.datasets[j];
+          if (ds && ds.label === newDs.label) { // Match by label
+            newDs.data.forEach((y, k) => {
+              ds.data[k] = y;
+            });
+          }
+        });
+
+        // Update annotations
+        if (config.options?.plugins?.annotation?.annotations) {
+          chart.value.options.plugins.annotation.annotations = config.options.plugins.annotation.annotations;
+        }
+
+        // Update y-scale options
+        if (config.options.scales?.y) {
+          chart.value.options.scales.y = { ...config.options.scales.y };
+        }
+
+        // Restore view state (using zoomScale)
+        restoreViewState();
+
+        // No need for additional update, as zoomScale handles it
+
+        await nextTick();
+
+        computeFromChart();
+      } catch (error) {
+        console.error("Error in performMinorUpdate:", error);
+        // Fallback to full update
+        await performChartUpdate();
+      }
+    };
+
     const createChart = async () => {
       if (
         !chartCanvas.value ||
@@ -428,7 +538,6 @@ export default {
       try {
         // Only destroy if chart exists
         if (chart.value) {
-          saveViewState();
           chart.value.destroy();
           chart.value = null;
         }
@@ -441,11 +550,17 @@ export default {
         );
 
         // Add interaction callbacks to the config
-        if (config && config.options) {
-          config.options.onPanStart = onPanStart;
-          config.options.onPanEnd = onPanEnd;
-          config.options.onZoomStart = onZoomStart;
-          config.options.onZoomEnd = onZoomEnd;
+        if (config && config.options && config.options.plugins && config.options.plugins.zoom) {
+          config.options.plugins.zoom.pan = {
+            ...config.options.plugins.zoom.pan,
+            onPanStart,
+            onPanComplete,
+          };
+          config.options.plugins.zoom.zoom = {
+            ...config.options.plugins.zoom.zoom,
+            onZoomStart,
+            onZoomComplete,
+          };
         }
 
         if (ctx && config) {
@@ -483,14 +598,15 @@ export default {
       }
 
       try {
-        // Update chart data without destroying the chart
+        // Update existing chart with full config (for major changes)
         const config = createMultiLegChartConfig(
           props.chartData,
           props.underlyingPrice
         );
 
         if (config && config.data) {
-          // Update datasets
+          // Update labels and datasets
+          chart.value.data.labels = config.data.labels;
           chart.value.data.datasets = config.data.datasets;
 
           // Update the vertical line annotation for current price
@@ -506,17 +622,13 @@ export default {
 
           // Update x-scale suggestedMin/Max if present (for resetZoom to use new values)
           if (config.options.scales?.x) {
-            if ("suggestedMin" in config.options.scales.x) {
-              chart.value.options.scales.x.suggestedMin =
-                config.options.scales.x.suggestedMin;
-            }
-            if ("suggestedMax" in config.options.scales.x) {
-              chart.value.options.scales.x.suggestedMax =
-                config.options.scales.x.suggestedMax;
-            }
+            chart.value.options.scales.x.suggestedMin =
+              config.options.scales.x.suggestedMin;
+            chart.value.options.scales.x.suggestedMax =
+              config.options.scales.x.suggestedMax;
           }
 
-          // Update the chart without animation to avoid interrupting user interactions
+          // Update the chart without animation
           chart.value.update("none");
         }
       } catch (err) {
@@ -531,25 +643,33 @@ export default {
       () => props.chartData,
       (newChartData) => {
         if (newChartData) {
-          // Reset view state on chartData change (strategy switch)
-          chartState.value.viewCenter = null;
-          chartState.value.viewRange = null;
-          // Force recreation on chartData change to ensure full config refresh
-          if (chart.value) {
-            saveViewState();
-            chart.value.destroy();
-            chart.value = null;
-            console.log("🗑️ Destroying and recreating chart due to chartData change");
+          const prev = previousChartData.value;
+          const isMinor = isMinorChartDataUpdate(newChartData, prev);
+
+          let updateType = 'full';
+
+          if (isMinor) {
+            updateType = 'minor';
+            console.log("📈 Minor chartData update (prices only) - preserving view");
+          } else {
+            // Reset view state on major changes (legs change)
+            chartState.value.viewCenter = null;
+            chartState.value.viewRange = null;
+            console.log("🔄 Resetting view state due to major chartData change");
           }
-          console.log("🔄 Resetting view state due to chartData change");
+
           if (props.underlyingPrice !== null) {
-            debouncedUpdate(newChartData, props.underlyingPrice);
+            debouncedUpdate(updateType);
           }
+
+          // Update previous after handling
+          previousChartData.value = JSON.parse(JSON.stringify(newChartData)); // Deep copy
         } else {
           if (chart.value) {
             chart.value.destroy();
             chart.value = null;
           }
+          previousChartData.value = null;
         }
       },
       { deep: true, immediate: true }
@@ -559,7 +679,7 @@ export default {
       () => props.underlyingPrice,
       (newUnderlyingPrice) => {
         if (props.chartData && newUnderlyingPrice !== null) {
-          debouncedUpdate(props.chartData, newUnderlyingPrice);
+          debouncedUpdate('price');
         }
       },
       { immediate: true }
@@ -570,6 +690,7 @@ export default {
       if (props.chartData && props.underlyingPrice !== null) {
         await nextTick();
         await createChart();
+        previousChartData.value = JSON.parse(JSON.stringify(props.chartData));
       }
     });
 
