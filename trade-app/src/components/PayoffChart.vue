@@ -318,6 +318,17 @@ export default {
         if (config.options?.plugins?.annotation?.annotations) {
           chart.value.options.plugins.annotation.annotations = config.options.plugins.annotation.annotations;
         }
+
+        // Ensure the customCrosshair plugin uses latest arrays for accurate tooltip values
+        try {
+          if (!chart.value.options) chart.value.options = {};
+          if (!chart.value.options.plugins) chart.value.options.plugins = {};
+          chart.value.options.plugins.customCrosshair =
+            config.options?.plugins?.customCrosshair || { prices: [], payoffs: [] };
+        } catch (e) {
+          console.warn("Could not sync customCrosshair plugin options (price update):", e);
+        }
+
         chart.value.update("none");
         computeFromChart();
       } catch (error) {
@@ -431,6 +442,11 @@ export default {
       }
 
       try {
+        // If we already have a chart, save the current view before changing data so we can restore it.
+        if (chart.value) {
+          saveViewState();
+        }
+
         if (!chart.value) {
           // Create new chart if it doesn't exist
           await createChart();
@@ -441,15 +457,44 @@ export default {
 
         await nextTick();
 
-        // Restore view state or reset if no saved state
-        if (
-          chartState.value.viewCenter === null &&
-          chartState.value.viewRange === null
+        // If a strikes-changed event requested applying the suggested window once,
+        // apply it explicitly here. Small delay is added to ensure Chart.js has
+        // finished processing the new data before we call zoomScale. This addresses
+        // cases where the chart only visually updates after a subsequent price tick
+        // or user interaction.
+        if (chartState.value.applySuggestedOnce) {
+          try {
+            const suggestedMin = chart.value.options?.scales?.x?.suggestedMin;
+            const suggestedMax = chart.value.options?.scales?.x?.suggestedMax;
+            if (typeof suggestedMin === "number" && typeof suggestedMax === "number") {
+              // Give Chart.js one animation frame to settle
+              await new Promise((resolve) => setTimeout(resolve, 10));
+              chart.value.zoomScale("x", { min: suggestedMin, max: suggestedMax }, "none");
+              // Force a no-op update to ensure rendering
+              try { chart.value.update("none"); } catch (e) { /* ignore */ }
+
+              // Save the applied view so future updates preserve it
+              chartState.value.viewCenter = (suggestedMin + suggestedMax) / 2;
+              chartState.value.viewRange = suggestedMax - suggestedMin;
+              console.log("🔄 Applied suggested window after strikes changed:", suggestedMin, suggestedMax);
+            } else {
+              // Fallback — nothing to apply
+              console.log("⚠️ applySuggestedOnce set but suggestedMin/Max missing");
+            }
+          } catch (err) {
+            console.warn("Could not apply suggested window:", err);
+          } finally {
+            chartState.value.applySuggestedOnce = false;
+          }
+        } else if (
+          chartState.value.viewCenter !== null &&
+          chartState.value.viewRange !== null
         ) {
-          chart.value.resetZoom();
-          console.log("🔄 Resetting zoom to apply new scale suggestions");
-        } else {
           restoreViewState();
+        } else {
+          // No saved view state — leave the current viewport alone.
+          // Initial chart creation will call resetZoom() to apply suggestedMin/suggestedMax.
+          console.log("ℹ️ No saved view state - leaving chart viewport unchanged");
         }
 
         computeFromChart();
@@ -502,10 +547,26 @@ export default {
           chart.value.options.scales.y = { ...config.options.scales.y };
         }
 
+ // Keep custom plugin data (crosshair/tooltip) in sync with the new arrays so
+        // the plugin interpolates against the latest payoffs/prices instead of stale data.
+        try {
+          if (!chart.value.options) chart.value.options = {};
+          if (!chart.value.options.plugins) chart.value.options.plugins = {};
+          chart.value.options.plugins.customCrosshair =
+            config.options?.plugins?.customCrosshair || { prices: [], payoffs: [] };
+        } catch (e) {
+          console.warn("Could not sync customCrosshair plugin options (minor update):", e);
+        }
+
         // Restore view state (using zoomScale)
         restoreViewState();
 
-        // No need for additional update, as zoomScale handles it
+        // Force a no-op update after applying view so plugin/render state is consistent
+        try {
+          chart.value.update("none");
+        } catch (e) {
+          // ignore
+        }
 
         await nextTick();
 
@@ -571,8 +632,37 @@ export default {
             chartState.value.viewCenter === null &&
             chartState.value.viewRange === null
           ) {
-            chart.value.resetZoom();
-            console.log("🔄 Initial reset zoom for new chart");
+            // Prefer applying the suggested initial window explicitly instead of resetZoom,
+            // because resetZoom may rely on scriptable min/max in some configs.
+            try {
+              const suggestedMin =
+                chart.value.options?.scales?.x?.suggestedMin;
+              const suggestedMax =
+                chart.value.options?.scales?.x?.suggestedMax;
+              if (
+                typeof suggestedMin === "number" &&
+                typeof suggestedMax === "number"
+              ) {
+                // Apply the initial viewport to place strikes where we want them.
+                chart.value.zoomScale("x", { min: suggestedMin, max: suggestedMax }, "none");
+                console.log(
+                  "🔄 Applied suggested initial x window:",
+                  suggestedMin,
+                  suggestedMax
+                );
+              } else {
+                // Fallback to resetZoom if suggested values not present
+                chart.value.resetZoom();
+                console.log("🔄 Fallback resetZoom for new chart");
+              }
+            } catch (err) {
+              console.warn("Error applying suggested initial window, falling back to resetZoom:", err);
+              try {
+                chart.value.resetZoom();
+              } catch (e) {
+                /* ignore */
+              }
+            }
           } else {
             restoreViewState();
           }
@@ -628,6 +718,18 @@ export default {
               config.options.scales.x.suggestedMax;
           }
 
+          // Keep custom plugin data (crosshair/tooltip) in sync with the new arrays so
+          // the plugin interpolates against the latest payoffs/prices instead of stale data.
+          try {
+            if (!chart.value.options) chart.value.options = {};
+            if (!chart.value.options.plugins) chart.value.options.plugins = {};
+            chart.value.options.plugins.customCrosshair =
+              config.options?.plugins?.customCrosshair || { prices: [], payoffs: [] };
+          } catch (e) {
+            // non-fatal - continue
+            console.warn("Could not sync customCrosshair plugin options:", e);
+          }
+
           // Update the chart without animation
           chart.value.update("none");
         }
@@ -646,19 +748,36 @@ export default {
           const prev = previousChartData.value;
           const isMinor = isMinorChartDataUpdate(newChartData, prev);
 
-          let updateType = 'full';
+          // Determine if strikes changed (selection of new legs should trigger a full re-centering)
+          const prevStrikes = prev && prev.strikes ? JSON.stringify(prev.strikes) : null;
+          const newStrikes = newChartData && newChartData.strikes ? JSON.stringify(newChartData.strikes) : null;
+          const strikesChanged = prevStrikes !== newStrikes;
 
-          if (isMinor) {
-            updateType = 'minor';
-            console.log("📈 Minor chartData update (prices only) - preserving view");
-          } else {
-            // Reset view state on major changes (legs change)
+          // If strikes changed, force a full update and apply the suggested initial window.
+          if (strikesChanged) {
+            console.log("🧭 Strikes changed — forcing full chart update and applying suggested view");
+            // Clear any saved user view so we apply the strike-derived suggested window
             chartState.value.viewCenter = null;
             chartState.value.viewRange = null;
-            console.log("🔄 Resetting view state due to major chartData change");
-          }
+            chartState.value.applySuggestedOnce = true;
 
-          if (props.underlyingPrice !== null) {
+            // Ensure updates are not blocked by interaction flags (selection is not a pan/zoom).
+            chartState.value.frozenUpdates = false;
+            pendingUpdate.value = null;
+
+            // Immediately perform a full update to apply the suggested window
+            // (bypass debounce so the view updates right after selection).
+            performChartUpdate();
+          } else {
+            // Normal path: decide between minor/full based on structural changes
+            let updateType = 'full';
+            if (isMinor) {
+              updateType = 'minor';
+              console.log("📈 Minor chartData update (prices only) - preserving view");
+            } else {
+              updateType = 'full';
+              console.log("🔄 Major chartData change detected - preserving user's view");
+            }
             debouncedUpdate(updateType);
           }
 

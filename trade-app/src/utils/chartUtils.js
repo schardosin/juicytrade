@@ -579,6 +579,7 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
     currentUnrealizedPL,
     netCredit,
     positionCount: optionPositions.length,
+    strikes, // expose original strike prices so the chart can compute a better initial view
   };
 
   // Debug logging removed for production
@@ -710,10 +711,61 @@ export function createChartConfig(chartData, underlyingPrice) {
 export function createMultiLegChartConfig(chartData, underlyingPrice) {
   const { prices, payoffs, maxProfit, maxLoss, positionCount } = chartData;
 
+  // Compute suggested initial x window (used as suggestedMin/suggestedMax so we don't force re-centering on every update)
+  const currentPrice = underlyingPrice;
+  const pMin = Math.min(...prices);
+  const pMax = Math.max(...prices);
+
+  // If available, use the strategy's actual strike positions to compute a tighter, more meaningful initial view.
+  // Requirement: place outer strikes near positions 2 and 6 of a 7-part division (so strikes are toward inner edges).
+  let suggestedMin;
+  let suggestedMax;
+  let strikeSpan = pMax - pMin;
+
+  if (chartData && chartData.strikes && chartData.strikes.length >= 2) {
+    const sMin = Math.min(...chartData.strikes);
+    const sMax = Math.max(...chartData.strikes);
+    strikeSpan = Math.max(sMax - sMin, 1); // avoid zero
+
+    // Derivation:
+    // We want sMin at ~1/6 from left and sMax at ~5/6 from left (positions 2 and 6 7).
+    // baseRange = sMax - sMin = (4/6) * width = (2/3) * width => width = baseRange * (3/2) = 1.5 * baseRange
+    const width = strikeSpan * 1.5;
+
+    // Symmetric padding to place strikes at ~2/7 and ~6/7 positions:
+    // pad = (width - baseRange) / 2 = (1.5 - 1)/2 * baseRange = 0.25 *Range
+    const pad = Math.max(0.25 * strikeSpan, 5); // ensure minimum padding
+
+    suggestedMin = Math.floor(sMin - pad);
+    suggestedMax = Math.ceil(sMax + pad);
+
+    // Debug logging to verify computed initial window during development
+    try {
+      // eslint-disable-next-line no-console
+      console.log("[createMultiLegChartConfig] strikes:", chartData.strikes);
+      // eslint-disable-next-line no-console
+      console.log(
+        "[createMultiLegChartConfig] sMin, sMax, strikeSpan, pad, suggestedMin, suggestedMax:",
+        sMin,
+        sMax,
+        strikeSpan,
+        pad,
+        suggestedMin,
+        suggestedMax
+      );
+    } catch (e) {
+      /* ignore logging errors */
+    }
+  } else {
+    // Fallback: center around current price with a small fixed range
+    const initialRange = 15; // $15 on each side by default
+    suggestedMin = Math.max(currentPrice - initialRange, pMin);
+    suggestedMax = Math.min(currentPrice + initialRange, pMax);
+  }
+
   // Calculate strikes for initial zoom range
   const strikes = [];
   // Extract strikes from the prices array - we'll use a reasonable range around current price
-  const currentPrice = underlyingPrice;
 
   // Data preparation code remains the same
   const chartPoints = prices.map((price, index) => ({
@@ -882,7 +934,7 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
 
   return {
     type: "line",
-    data: { datasets },
+    data: { labels: prices, datasets },
     plugins: [customCrosshairPlugin],
     options: {
       responsive: true,
@@ -953,9 +1005,13 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
             },
           },
           limits: {
+            // Use strike-based limits when possible so the allowed pan/zoom range is focused
+            // around the strategy legs instead of the full expanded prices array.
+            // These limits are intentionally wider than the suggested view, but much smaller
+            // than the full prices extent which made tight strategies invisible.
             x: {
-              min: Math.min(...prices) - 50,
-              max: Math.max(...prices) + 50,
+              min: typeof suggestedMin === "number" ? Math.floor(suggestedMin - Math.max((Math.max(...chartData.strikes || [suggestedMin]) - Math.min(...chartData.strikes || [suggestedMax])) * 2, 50)) : Math.min(...prices) - 50,
+              max: typeof suggestedMax === "number" ? Math.ceil(suggestedMax + Math.max((Math.max(...chartData.strikes || [suggestedMin]) - Math.min(...chartData.strikes || [suggestedMax])) * 2, 50)) : Math.max(...prices) + 50,
             },
             // Remove Y limits to prevent vertical zoom/pan
           },
@@ -966,25 +1022,11 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
           type: "linear",
           title: { display: true, text: "Underlying Price at Expiry ($)" },
           grid: { display: true, color: "rgba(0, 0, 0, 0.1)" },
-          // Set initial view to be tightly focused around current price
-          min: function (context) {
-            const currentPrice = underlyingPrice;
-
-            // Use a fixed range that makes sense for options trading
-            // Most options strategies work within a $15-25 range for initial analysis
-            const initialRange = 15; // Fixed $15 range on each side
-
-            return Math.max(currentPrice - initialRange, Math.min(...prices));
-          },
-          max: function (context) {
-            const currentPrice = underlyingPrice;
-
-            // Use a fixed range that makes sense for options trading
-            // Most options strategies work within a $15-25 range for initial analysis
-            const initialRange = 15; // Fixed $15 range on each side
-
-            return Math.min(currentPrice + initialRange, Math.max(...prices));
-          },
+          // Use static suggestedMin/suggestedMax so the chart does not re-center on every data update.
+          // suggestedMin/suggestedMax provide a sensible default for resetZoom, but they won't override
+          // the user's pan/zoom during normal updates.
+          suggestedMin: suggestedMin,
+          suggestedMax: suggestedMax,
         },
         y: {
           title: { display: true, text: "Profit / Loss ($)" },
