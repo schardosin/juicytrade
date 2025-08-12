@@ -529,9 +529,7 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
     // Handle mixed scenario: apply adjustedNetCredit only to new positions
     if (adjustedNetCredit !== null && newPositions.length > 0) {
       // Calculate the difference between adjusted and original net credit for new positions only
-      // FIXED: Multiply by minimum quantity to account for multiple contracts
-      const minQuantity = Math.min(...optionPositions.map(pos => Math.abs(pos.qty)));
-      const newCreditAdjustment = (adjustedNetCredit - newNetCredit) * 100 * minQuantity;
+      const newCreditAdjustment = (adjustedNetCredit - newNetCredit) * 100;
       totalPayoff += newCreditAdjustment;
       
       // Note: existing positions already use their actual entry prices in the calculation above
@@ -896,8 +894,9 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
       }
 
       // 4. Draw the Text Box with Price and P&L
-      const priceText = `$${xVal.toFixed(2)}`;
-      const plText = `P&L: $${yVal.toFixed(2)}`;
+      // Round tooltip numbers to integer values for a stable, flat display
+      const priceText = `$${Math.round(xVal)}`;
+      const plText = `P&L: $${Math.round(yVal)}`;
       ctx.font = "bold 12px sans-serif";
       const priceWidth = ctx.measureText(priceText).width;
       const plWidth = ctx.measureText(plText).width;
@@ -1027,10 +1026,22 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
           // the user's pan/zoom during normal updates.
           suggestedMin: suggestedMin,
           suggestedMax: suggestedMax,
+          ticks: {
+            // Show integer tick labels for cleaner, more stable axis rendering
+            callback: function(value) {
+              return Math.round(value);
+            },
+          },
         },
         y: {
           title: { display: true, text: "Profit / Loss ($)" },
           grid: { display: true, color: "rgba(0, 0, 0, 0.1)" },
+          ticks: {
+            // Show integer tick labels for cleaner, more stable axis rendering
+            callback: function(value) {
+              return Math.round(value);
+            },
+          },
           // Dynamically adjust Y-axis based on visible X-axis range
           min: function (context) {
             const chart = context.chart;

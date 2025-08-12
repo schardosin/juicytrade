@@ -168,6 +168,8 @@ export default {
     // Use centralized selected legs (positions loaded globally by useGlobalSymbol)
     const { selectedLegs, clearAll: clearSelectedLegs } = useSelectedLegs();
 
+    const activePositions = ref([]);
+
     // Use centralized options chain manager
     const optionsManager = useOptionsChainManager(
       computed(() => globalSymbolState.currentSymbol),
@@ -240,7 +242,7 @@ export default {
     // Computed property to determine which section to show in right panel
     const rightPanelSection = computed(() => {
       // If options are selected, show analysis section, otherwise null (let user choose)
-      return selectedLegs.value.length > 0 ? "analysis" : null;
+      return selectedLegs.value.length > 0 || activePositions.value.length > 0 ? "analysis" : null;
     });
 
     // Methods
@@ -386,6 +388,7 @@ export default {
 
     const clearAllSelections = () => {
       clearSelectedLegs();
+      activePositions.value = [];
       chartData.value = null;
       showBottomPanel.value = false;
       isRightPanelExpanded.value = false;
@@ -518,78 +521,8 @@ export default {
     };
 
     const onPositionsChanged = (checkedPositions) => {
-      // Update chart data based on checked positions
-      if (checkedPositions.length === 0) {
-        updateChartData([]); // Use unified function with empty array
-        return;
-      }
-
-      try {
-        // Convert checked positions to chart format
-        const positions = checkedPositions.map((position) => {
-          return {
-            symbol: position.symbol,
-            asset_class: "us_option",
-            side: position.qty > 0 ? "long" : "short",
-            qty: position.qty, // Keep the original signed quantity
-            strike_price: position.strike_price,
-            option_type:
-              position.option_type?.toUpperCase() ||
-              position.type?.toUpperCase(),
-            expiry_date: position.expiry_date || position.expiry,
-            current_price: position.current_price,
-            avg_entry_price: position.avg_entry_price,
-            cost_basis: position.avg_entry_price * Math.abs(position.qty) * 100,
-            market_value: position.current_price * position.qty * 100,
-            unrealized_pl: position.unrealized_pl || 0,
-            underlying_symbol: currentSymbol.value,
-            is_synthetic: !position.isExisting, // Existing positions are not synthetic
-            isExisting: position.isExisting, // Pass through the existing flag
-          };
-        });
-
-        // Determine how to handle adjustedNetCredit based on position mix
-        const hasExistingPositions = positions.some(pos => pos.isExisting);
-        const hasNewPositions = positions.some(pos => !pos.isExisting);
-        
-        let effectiveAdjustedNetCredit = null;
-        
-        if (hasExistingPositions && hasNewPositions) {
-          // Mixed scenario: existing + new positions
-          // Use adjustedNetCredit only for the new positions
-          // The chart generation will handle this by applying adjustedNetCredit
-          // only to new positions while using actual prices for existing ones
-          effectiveAdjustedNetCredit = adjustedNetCredit.value;
-        } else if (hasExistingPositions && !hasNewPositions) {
-          // Only existing positions: use null to calculate from actual prices
-          effectiveAdjustedNetCredit = null;
-        } else if (!hasExistingPositions && hasNewPositions) {
-          // Only new positions: use adjustedNetCredit for limit price functionality
-          effectiveAdjustedNetCredit = adjustedNetCredit.value;
-        }
-
-        try {
-          const payoffData = generateMultiLegPayoff(
-            positions,
-            currentPrice.value,
-            effectiveAdjustedNetCredit
-          );
-
-          // Force reactivity by creating a new object reference
-          chartData.value = {
-            ...payoffData,
-            timestamp: Date.now(), // Add timestamp to ensure object reference changes
-          };
-        } catch (error) {
-          console.error("Error generating payoff chart:", error);
-          chartData.value = null;
-        }
-      } catch (error) {
-        console.error("Error updating chart data from positions:", error);
-        console.error("Error details:", error.stack);
-        // Ensure chart is cleared on error
-        chartData.value = null;
-      }
+      activePositions.value = checkedPositions;
+      // The watcher on activePositions will handle the update.
     };
 
     // CollapsibleOptionsChain event handlers - now using centralized manager
@@ -693,53 +626,41 @@ export default {
     });
 
     // Watchers
-    // Note: Chart generation is now handled entirely by RightPanel via onPositionsChanged
-    // The selectedOptions watcher has been removed to prevent conflicts
 
-    // Watch for underlying price changes to update chart
-    watch(currentPrice, (newPrice, oldPrice) => {
-      if (newPrice !== oldPrice && chartData.value) {
-        // Regenerate chart data with new underlying price
-        if (selectedLegs.value.length > 0) {
-          updateChartData(); // This will use selectedLegs
+    let chartUpdateDebounceTimer = null;
+    const debouncedUpdateChartData = () => {
+      clearTimeout(chartUpdateDebounceTimer);
+      chartUpdateDebounceTimer = setTimeout(() => {
+        updateChartData(activePositions.value);
+      }, 50); // 50ms debounce to prevent flicker from rapid state changes
+    };
+
+    // This single watcher now handles all chart updates.
+    // It reacts to changes in selected legs, checked positions, price, and adjusted credit.
+    watch(
+      [selectedLegs, activePositions, currentPrice, adjustedNetCredit],
+      () => {
+        debouncedUpdateChartData();
+        
+        const hasLegsForChart = selectedLegs.value.length > 0 || activePositions.value.length > 0;
+        const hasLegsForTicket = selectedLegs.value.length > 0;
+
+        showBottomPanel.value = hasLegsForTicket;
+        
+        if (hasLegsForChart) {
+          isRightPanelExpanded.value = true;
         } else {
-          // If we have chart data from positions, we need to trigger a positions update
-          // The chart will automatically update via the PayoffChart watcher
+          isRightPanelExpanded.value = false;
         }
-      }
-    });
-
-    // Watch for adjusted net credit changes to update chart
-    watch(adjustedNetCredit, (newCredit, oldCredit) => {      
-      if (newCredit !== oldCredit && (chartData.value || selectedLegs.value.length > 0)) {
-        // Regenerate chart data with new adjusted net credit
-        updateChartData();
-      }
-    });
+      },
+      { deep: true, immediate: true }
+    );
 
     watch(selectedExpiry, (newExpiry, oldExpiry) => {
       if (newExpiry && newExpiry !== oldExpiry) {
         onExpiryChange();
       }
     });
-
-    // Show/hide bottom panel and expand right panel based on selected legs
-    watch(
-      selectedLegs,
-      (newLegs) => {
-        const hasLegs = newLegs.length > 0;
-        showBottomPanel.value = hasLegs;
-        
-        // Auto-expand right panel to Analysis tab when legs are selected
-        if (hasLegs) {
-          isRightPanelExpanded.value = true;
-        } else {
-          // Auto-collapse when no legs selected
-          isRightPanelExpanded.value = false;
-        }
-      },
-      { immediate: true }
-    );
 
 
     // Watch for time and update marketStatus accordingly (use US/Eastern time)
