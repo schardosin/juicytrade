@@ -2452,109 +2452,150 @@ class TastyTradeProvider(BaseProvider):
         recovery_attempt = 0
         max_recovery_attempts = 5
         
-        while not self._shutdown_event.is_set():
-            try:
-                # Main streaming loop
-                while self.is_connected and self._stream_connection:
-                    try:
-                        # Wait for incoming messages
-                        message = await asyncio.wait_for(self._stream_connection.recv(), timeout=30.0)
-                        data = json.loads(message)
+        # Start periodic keepalive task
+        keepalive_task = asyncio.create_task(self._periodic_keepalive())
+        
+        try:
+            while not self._shutdown_event.is_set():
+                try:
+                    # Main streaming loop
+                    while self.is_connected and self._stream_connection:
+                        try:
+                            # Wait for incoming messages with shorter timeout
+                            message = await asyncio.wait_for(self._stream_connection.recv(), timeout=10.0)
+                            data = json.loads(message)
+                            
+                            # Update health manager that we received data
+                            streaming_health_manager.record_data_received(self._connection_id)
+                            
+                            logger.debug(f"TastyTrade: Received message type: {data.get('type')}")
+                            
+                            if data.get("type") == "FEED_DATA":
+                                # Process both Quote and Greeks events from the feed data
+                                feed_data = data.get("data", [])
+                                logger.debug(f"TastyTrade: Processing FEED_DATA with {len(feed_data)} items")
+                                await self._process_feed_events(feed_data)
+                            elif data.get("type") == "KEEPALIVE":
+                                # Acknowledge keepalive from server
+                                logger.debug("TastyTrade: Received keepalive from server")
+                            else:
+                                logger.debug(f"TastyTrade: Received non-FEED_DATA message: {data}")
+                            
+                            # Reset recovery attempt counter on successful data processing
+                            recovery_attempt = 0
+                            
+                        except asyncio.TimeoutError:
+                            # Timeout is normal - the periodic keepalive task handles keepalives
+                            logger.debug("TastyTrade: Streaming timeout (normal - keepalive task handles connection maintenance)")
+                            continue
                         
-                        # Update health manager that we received data
-                        streaming_health_manager.record_data_received(self._connection_id)
-                        
-                        logger.debug(f"TastyTrade: Received message type: {data.get('type')}")
-                        
-                        if data.get("type") == "FEED_DATA":
-                            # Process both Quote and Greeks events from the feed data
-                            feed_data = data.get("data", [])
-                            logger.debug(f"TastyTrade: Processing FEED_DATA with {len(feed_data)} items")
-                            await self._process_feed_events(feed_data)
-                        else:
-                            logger.debug(f"TastyTrade: Received non-FEED_DATA message: {data}")
-                        
-                        # Reset recovery attempt counter on successful data processing
-                        recovery_attempt = 0
-                        
-                    except asyncio.TimeoutError:
-                        logger.debug("TastyTrade: Streaming timeout, sending keepalive ping")
-                        # Send keepalive ping
-                        if self._stream_connection:
-                            try:
-                                await self._stream_connection.ping()
-                                logger.debug("TastyTrade: Keepalive ping successful")
-                            except Exception as e:
-                                logger.warning(f"TastyTrade: Keepalive ping failed: {e}")
-                                # Ping failure indicates connection issues - trigger recovery
-                                await self._handle_connection_loss("Keepalive ping failed", current_subscriptions)
+                        except websockets.exceptions.ConnectionClosed as e:
+                            # WebSocket connection was closed
+                            close_code = getattr(e, 'code', None)
+                            close_reason = getattr(e, 'reason', 'Unknown')
+                            
+                            if close_code == 1000:
+                                logger.warning(f"TastyTrade: Connection closed normally by server (code: {close_code}, reason: {close_reason})")
+                            else:
+                                logger.error(f"TastyTrade: Connection closed unexpectedly (code: {close_code}, reason: {close_reason})")
+                            
+                            # All connection closures should trigger recovery
+                            await self._handle_connection_loss(f"WebSocket closed (code: {close_code})", current_subscriptions)
+                            break
+                            
+                        except json.JSONDecodeError as e:
+                            logger.error(f"TastyTrade: Invalid JSON received: {e}")
+                            # JSON errors are not connection issues - continue processing
+                            continue
+                            
+                        except Exception as e:
+                            logger.error(f"TastyTrade: Error processing streaming message: {e}")
+                            # Check if this is a connection-related error
+                            error_str = str(e).lower()
+                            if any(keyword in error_str for keyword in ['connection', 'socket', 'network', 'timeout', 'closed']):
+                                await self._handle_connection_loss(f"Connection error: {e}", current_subscriptions)
                                 break
-                        continue
+                            else:
+                                # Non-connection error - log and continue
+                                streaming_health_manager.record_error(self._connection_id, str(e))
+                                continue
+                    
+                    # If we exit the inner loop, attempt recovery
+                    if not self._shutdown_event.is_set() and recovery_attempt < max_recovery_attempts:
+                        recovery_attempt += 1
+                        logger.info(f"TastyTrade: Attempting recovery #{recovery_attempt}/{max_recovery_attempts}")
                         
-                    except websockets.exceptions.ConnectionClosed as e:
-                        # WebSocket connection was closed
-                        close_code = getattr(e, 'code', None)
-                        close_reason = getattr(e, 'reason', 'Unknown')
-                        
-                        if close_code == 1000:
-                            logger.warning(f"TastyTrade: Connection closed normally by server (code: {close_code}, reason: {close_reason})")
+                        # Attempt to recover the connection
+                        if await self._attempt_connection_recovery(current_subscriptions, recovery_attempt):
+                            logger.info("TastyTrade: Recovery successful, resuming streaming")
+                            continue
                         else:
-                            logger.error(f"TastyTrade: Connection closed unexpectedly (code: {close_code}, reason: {close_reason})")
-                        
-                        # All connection closures should trigger recovery
-                        await self._handle_connection_loss(f"WebSocket closed (code: {close_code})", current_subscriptions)
+                            logger.error(f"TastyTrade: Recovery attempt #{recovery_attempt} failed")
+                            
+                            # Wait before next attempt with exponential backoff
+                            delay = min(5.0 * (2 ** (recovery_attempt - 1)), 60.0)
+                            logger.info(f"TastyTrade: Waiting {delay:.1f}s before next recovery attempt")
+                            await asyncio.sleep(delay)
+                    else:
+                        # Max recovery attempts reached or shutdown requested
+                        if recovery_attempt >= max_recovery_attempts:
+                            logger.error("TastyTrade: Max recovery attempts reached, stopping streaming processor")
                         break
                         
-                    except json.JSONDecodeError as e:
-                        logger.error(f"TastyTrade: Invalid JSON received: {e}")
-                        # JSON errors are not connection issues - continue processing
-                        continue
-                        
-                    except Exception as e:
-                        logger.error(f"TastyTrade: Error processing streaming message: {e}")
-                        # Check if this is a connection-related error
-                        error_str = str(e).lower()
-                        if any(keyword in error_str for keyword in ['connection', 'socket', 'network', 'timeout', 'closed']):
-                            await self._handle_connection_loss(f"Connection error: {e}", current_subscriptions)
-                            break
-                        else:
-                            # Non-connection error - log and continue
-                            streaming_health_manager.record_error(self._connection_id, str(e))
-                            continue
-                
-                # If we exit the inner loop, attempt recovery
-                if not self._shutdown_event.is_set() and recovery_attempt < max_recovery_attempts:
-                    recovery_attempt += 1
-                    logger.info(f"TastyTrade: Attempting recovery #{recovery_attempt}/{max_recovery_attempts}")
+                except asyncio.CancelledError:
+                    logger.info("TastyTrade: Streaming processor cancelled")
+                    break
+                except Exception as e:
+                    logger.error(f"TastyTrade: Fatal error in streaming processor: {e}")
+                    streaming_health_manager.record_error(self._connection_id, f"Fatal error: {e}")
                     
-                    # Attempt to recover the connection
-                    if await self._attempt_connection_recovery(current_subscriptions, recovery_attempt):
-                        logger.info("TastyTrade: Recovery successful, resuming streaming")
-                        continue
-                    else:
-                        logger.error(f"TastyTrade: Recovery attempt #{recovery_attempt} failed")
-                        
-                        # Wait before next attempt with exponential backoff
-                        delay = min(5.0 * (2 ** (recovery_attempt - 1)), 60.0)
-                        logger.info(f"TastyTrade: Waiting {delay:.1f}s before next recovery attempt")
-                        await asyncio.sleep(delay)
+                    # Wait before attempting recovery
+                    await asyncio.sleep(5.0)
+                    
+        finally:
+            # Cancel keepalive task
+            if keepalive_task and not keepalive_task.done():
+                keepalive_task.cancel()
+                try:
+                    await keepalive_task
+                except asyncio.CancelledError:
+                    pass
+                    
+        logger.info("TastyTrade: Streaming data processor stopped")
+    
+    async def _periodic_keepalive(self):
+        """Send periodic DXLink keepalive messages to maintain connection."""
+        logger.info("TastyTrade: Starting periodic keepalive task")
+        
+        try:
+            while not self._shutdown_event.is_set():
+                # Wait for 30 seconds between keepalives
+                await asyncio.sleep(30.0)
+                
+                # Only send keepalive if we're connected
+                if self.is_connected and self._stream_connection:
+                    try:
+                        keepalive_msg = {
+                            "type": "KEEPALIVE",
+                            "channel": 0
+                        }
+                        await self._stream_connection.send(json.dumps(keepalive_msg))
+                        logger.debug("TastyTrade: Periodic DXLink keepalive sent")
+                    except Exception as e:
+                        logger.warning(f"TastyTrade: Periodic keepalive failed: {e}")
+                        # Don't trigger recovery here - let the main loop handle it
+                        break
                 else:
-                    # Max recovery attempts reached or shutdown requested
-                    if recovery_attempt >= max_recovery_attempts:
-                        logger.error("TastyTrade: Max recovery attempts reached, stopping streaming processor")
+                    # Not connected, stop keepalive task
+                    logger.debug("TastyTrade: Not connected, stopping keepalive task")
                     break
                     
-            except asyncio.CancelledError:
-                logger.info("TastyTrade: Streaming processor cancelled")
-                break
-            except Exception as e:
-                logger.error(f"TastyTrade: Fatal error in streaming processor: {e}")
-                streaming_health_manager.record_error(self._connection_id, f"Fatal error: {e}")
-                
-                # Wait before attempting recovery
-                await asyncio.sleep(5.0)
-                
-        logger.info("TastyTrade: Streaming data processor stopped")
+        except asyncio.CancelledError:
+            logger.info("TastyTrade: Periodic keepalive task cancelled")
+        except Exception as e:
+            logger.error(f"TastyTrade: Error in periodic keepalive task: {e}")
+        finally:
+            logger.info("TastyTrade: Periodic keepalive task stopped")
     
     async def _process_feed_events(self, feed_data: List):
         """Process FEED_DATA events and send to streaming cache or queue."""

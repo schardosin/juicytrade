@@ -1533,8 +1533,8 @@ class TradierProvider(BaseProvider):
     async def get_positions_enhanced(self) -> Dict[str, Any]:
         """Get enhanced positions grouped by date_acquired (same order timing)."""
         try:
-            logger.info("🔍 Getting enhanced positions grouped by acquisition date...")
-            
+            logger.debug("🔍 Getting enhanced positions grouped by acquisition date...")
+
             # 1. Get current positions only (no additional API calls needed)
             current_positions = await self.get_positions()
             if not current_positions:
@@ -1543,8 +1543,8 @@ class TradierProvider(BaseProvider):
             
             # 2. Group by date_acquired instead of expensive order chain analysis
             symbol_groups = await self._create_date_based_hierarchical_groups(current_positions)
-            
-            logger.info(f"✅ Created {len(symbol_groups)} symbol groups using date_acquired grouping")
+
+            logger.debug(f"✅ Created {len(symbol_groups)} symbol groups using date_acquired grouping")
             return {"enhanced": True, "symbol_groups": symbol_groups}
             
         except Exception as e:
@@ -1573,27 +1573,27 @@ class TradierProvider(BaseProvider):
                 "limit": 1000
             }
             
-            logger.info(f"🔍 Requesting history from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
+            logger.debug(f"🔍 Requesting history from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
             
             resp = requests.get(url, headers=headers, params=params)
             resp.raise_for_status()
             data = resp.json()
             
-            logger.info(f"📊 Raw history response keys: {list(data.keys())}")
+            logger.debug(f"📊 Raw history response keys: {list(data.keys())}")
             
             # Log the actual history structure for debugging
             if "history" in data:
                 history_data = data["history"]
-                logger.info(f"📊 History data type: {type(history_data)}")
+                logger.debug(f"📊 History data type: {type(history_data)}")
                 if isinstance(history_data, dict):
-                    logger.info(f"📊 History dict keys: {list(history_data.keys())}")
+                    logger.debug(f"📊 History dict keys: {list(history_data.keys())}")
                     if not history_data:
-                        logger.info("📊 History dict is empty - no trade data available")
+                        logger.debug("📊 History dict is empty - no trade data available")
                 elif isinstance(history_data, list):
-                    logger.info(f"📊 History list length: {len(history_data)}")
+                    logger.debug(f"📊 History list length: {len(history_data)}")
                 else:
-                    logger.info(f"📊 History data: {history_data}")
-            
+                    logger.debug(f"📊 History data: {history_data}")
+
             # Extract history data - try different response structures
             events = []
             if "history" in data:
@@ -2348,7 +2348,7 @@ class TradierProvider(BaseProvider):
         try:
             from datetime import datetime
             
-            logger.info("📊 Creating date-based hierarchical symbol groups")
+            logger.debug("📊 Creating date-based hierarchical symbol groups")
             
             # Step 1: Group positions by underlying symbol first
             symbol_groups = {}
@@ -2383,7 +2383,7 @@ class TradierProvider(BaseProvider):
                     "strategies": strategies
                 })
             
-            logger.info(f"✅ Created {len(result)} date-based symbol groups")
+            logger.debug(f"✅ Created {len(result)} date-based symbol groups")
             return result
             
         except Exception as e:
@@ -2395,7 +2395,7 @@ class TradierProvider(BaseProvider):
         try:
             from datetime import datetime
             
-            logger.info(f"📊 Grouping {len(positions)} positions by date_acquired")
+            logger.debug(f"📊 Grouping {len(positions)} positions by date_acquired")
             
             # Group by date_acquired
             date_groups = {}
@@ -2422,7 +2422,7 @@ class TradierProvider(BaseProvider):
                 
                 date_groups[date_key].append(position)
             
-            logger.info(f"📊 Created {len(date_groups)} date-based groups")
+            logger.debug(f"📊 Created {len(date_groups)} date-based groups")
             
             # Convert to strategy format
             strategies = []
@@ -2449,7 +2449,7 @@ class TradierProvider(BaseProvider):
                 }
                 strategies.append(strategy)
             
-            logger.info(f"📊 Created {len(strategies)} strategies from date grouping")
+            logger.debug(f"📊 Created {len(strategies)} strategies from date grouping")
             return strategies
             
         except Exception as e:
