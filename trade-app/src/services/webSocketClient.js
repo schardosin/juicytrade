@@ -411,9 +411,7 @@ class WebSocketStreamingClient {
     // Clear all state
     this.isConnected.value = false;
     this.connectionPromise = null;
-    this.subscribedSymbols.clear();
-    
-    console.log("✅ WebSocket client disconnected and worker terminated immediately.");
+    this.subscribedSymbols.clear();    
   }
 }
 

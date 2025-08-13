@@ -645,8 +645,6 @@ export default {
 
     // Enhanced connection status event handlers
     const handleConnectionStatusUpdate = (status) => {
-      console.log('🔄 Connection status update:', status);
-      
       // Map worker status to our connection state
       switch (status) {
         case 'connecting':

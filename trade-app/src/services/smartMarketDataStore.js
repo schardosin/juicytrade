@@ -30,7 +30,6 @@ class DataHealthMonitor {
     
     // Log initial market status
     const marketStatus = MarketHoursUtil.getMarketStatus();
-    console.log(`🏁 Health monitoring started at ${marketStatus.timeString} - Market: ${marketStatus.status}`);
     if (!marketStatus.isOpen) {
       console.log('📊 Data freshness checks will be skipped during off-market hours');
     }
@@ -57,8 +56,6 @@ class DataHealthMonitor {
     // Connection attempts should be handled by recovery, not health checks
 
     const marketStatus = MarketHoursUtil.getMarketStatus();
-    console.log(`🕐 Health check at ${marketStatus.timeString} - Market: ${marketStatus.status}`);
-
     const checks = [
       this.checkWebSocketHealth()
     ];
@@ -99,7 +96,7 @@ class DataHealthMonitor {
 
   async checkWebSocketHealth() {
     const wsStatus = webSocketClient.getConnectionStatus();
-    if (!wsStatus.isConnected) {
+    if (!wsStatus.isConnected.value) {
       throw new Error("WebSocket not connected");
     }
     // Don't try to connect during health checks - just check status
@@ -454,7 +451,7 @@ class SmartMarketDataStore {
     // Listen for WebSocket recovery events
     window.addEventListener('websocket-recovered', (event) => {
       console.log('🎉 WebSocket recovery detected, performing data refresh');
-      this.recoveryManager.executeRecovery('websocket_disconnected', event.detail);
+      this.performHealthCheck();
     });
 
     // Listen for page visibility changes (sleep/wake detection)
@@ -470,9 +467,9 @@ class SmartMarketDataStore {
         
         // If hidden for more than 30 seconds, likely system sleep
         if (hiddenDuration > 30000) {
-          console.log('😴 Detected potential system sleep/wake cycle, triggering recovery');
+          console.log('😴 Detected potential system sleep/wake cycle, performing health check');
           setTimeout(() => {
-            this.recoveryManager.executeRecovery('system_wakeup');
+            this.performHealthCheck();
           }, 2000); // Longer delay for system to stabilize after wake
         } else {
           // Short absence, just check connection health
@@ -799,7 +796,6 @@ class SmartMarketDataStore {
     const shouldUseAPI = await this.shouldUseGreeksAPI();
     
     if (!shouldUseAPI) {
-      console.log("📊 Streaming Greeks available - skipping API call");
       return; // Streaming Greeks are available, don't make API calls
     }
 

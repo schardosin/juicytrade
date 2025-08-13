@@ -73,9 +73,7 @@ export default {
       window.addEventListener('beforeunload', handleBeforeUnload);
       window.addEventListener('unload', handlePageUnload);
       window.addEventListener('pagehide', handlePageUnload);
-      document.addEventListener('visibilitychange', handleVisibilityChange);
-      
-      console.log("🛡️ Page unload handlers registered - zombie worker prevention active");
+      document.addEventListener('visibilitychange', handleVisibilityChange);      
     });
 
     onUnmounted(() => {

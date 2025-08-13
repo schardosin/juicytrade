@@ -40,7 +40,6 @@ function connect(url) {
   socket = new WebSocket(url);
 
   socket.onopen = () => {
-    console.log("🔌 WebSocket connected successfully");
     reconnectAttempts = 0; // Reset on successful connection
     lastDataReceived = Date.now();
     
@@ -127,7 +126,6 @@ function unsubscribe(symbols) {
 // Helper functions for connection monitoring
 function updateConnectionState(newState) {
   if (connectionState !== newState) {
-    console.log(`🔄 Connection state: ${connectionState} → ${newState}`);
     connectionState = newState;
     postMessage({ type: 'status', message: newState });
   }
