@@ -738,16 +738,17 @@ export default {
         if (oldPositions) {
           const oldIds = new Set(oldPositions.map(pos => pos.id));
           newPositions.forEach((pos) => {
-            // Only auto-check if this is a completely new position
-            if (!oldIds.has(pos.id) && (pos.isSelected || pos.isExisting)) {
+            // Only auto-check if this is a completely new position AND it's a selected leg (new trade)
+            // Do NOT auto-check existing positions - let user manually check them if they want to see impact
+            if (!oldIds.has(pos.id) && pos.isSelected && !pos.isExisting) {
               checkedPositions.value.add(pos.id);
               hasNewPositions = true;
             }
           });
         } else {
-          // Initial load - check all positions
+          // Initial load - only check selected legs (new trades), NOT existing positions
           newPositions.forEach((pos) => {
-            if (pos.isSelected || pos.isExisting) {
+            if (pos.isSelected && !pos.isExisting) {
               checkedPositions.value.add(pos.id);
               hasNewPositions = true;
             }
@@ -1194,6 +1195,20 @@ export default {
 .enhanced-position-row.selected-position {
   background-color: rgba(0, 123, 255, 0.1);
   border-left: 3px solid #007bff;
+}
+
+.enhanced-position-row.existing-position {
+  background-color: rgba(255, 193, 7, 0.05);
+  border-left: 3px solid rgba(255, 193, 7, 0.3);
+}
+
+.enhanced-position-row.existing-position .position-qty {
+  color: rgba(255, 193, 7, 0.9);
+}
+
+.enhanced-position-row.existing-position .expiry-date {
+  background-color: rgba(255, 193, 7, 0.1);
+  border: 1px solid rgba(255, 193, 7, 0.3);
 }
 
 .position-checkbox {
