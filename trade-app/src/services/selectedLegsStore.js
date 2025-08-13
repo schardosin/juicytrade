@@ -101,13 +101,7 @@ class SelectedLegsStore {
    */
   removeLeg(symbol) {
     if (this.legs.has(symbol)) {
-      const leg = this.legs.get(symbol);
       this.legs.delete(symbol);
-      
-      console.log(`🗑️ Removed leg:`, {
-        symbol: symbol,
-        source: leg.source
-      });
       
       return true;
     }

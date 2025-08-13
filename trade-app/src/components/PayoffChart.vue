@@ -476,7 +476,6 @@ export default {
               // Save the applied view so future updates preserve it
               chartState.value.viewCenter = (suggestedMin + suggestedMax) / 2;
               chartState.value.viewRange = suggestedMax - suggestedMin;
-              console.log("🔄 Applied suggested window after strikes changed:", suggestedMin, suggestedMax);
             } else {
               // Fallback — nothing to apply
               console.log("⚠️ applySuggestedOnce set but suggestedMin/Max missing");
@@ -645,11 +644,6 @@ export default {
               ) {
                 // Apply the initial viewport to place strikes where we want them.
                 chart.value.zoomScale("x", { min: suggestedMin, max: suggestedMax }, "none");
-                console.log(
-                  "🔄 Applied suggested initial x window:",
-                  suggestedMin,
-                  suggestedMax
-                );
               } else {
                 // Fallback to resetZoom if suggested values not present
                 chart.value.resetZoom();
@@ -755,7 +749,6 @@ export default {
 
           // If strikes changed, force a full update and apply the suggested initial window.
           if (strikesChanged) {
-            console.log("🧭 Strikes changed — forcing full chart update and applying suggested view");
             // Clear any saved user view so we apply the strike-derived suggested window
             chartState.value.viewCenter = null;
             chartState.value.viewRange = null;
@@ -773,10 +766,8 @@ export default {
             let updateType = 'full';
             if (isMinor) {
               updateType = 'minor';
-              console.log("📈 Minor chartData update (prices only) - preserving view");
             } else {
               updateType = 'full';
-              console.log("🔄 Major chartData change detected - preserving user's view");
             }
             debouncedUpdate(updateType);
           }

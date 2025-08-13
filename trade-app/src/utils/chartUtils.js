@@ -736,24 +736,6 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
 
     suggestedMin = Math.floor(sMin - pad);
     suggestedMax = Math.ceil(sMax + pad);
-
-    // Debug logging to verify computed initial window during development
-    try {
-      // eslint-disable-next-line no-console
-      console.log("[createMultiLegChartConfig] strikes:", chartData.strikes);
-      // eslint-disable-next-line no-console
-      console.log(
-        "[createMultiLegChartConfig] sMin, sMax, strikeSpan, pad, suggestedMin, suggestedMax:",
-        sMin,
-        sMax,
-        strikeSpan,
-        pad,
-        suggestedMin,
-        suggestedMax
-      );
-    } catch (e) {
-      /* ignore logging errors */
-    }
   } else {
     // Fallback: center around current price with a small fixed range
     const initialRange = 15; // $15 on each side by default
