@@ -56,31 +56,39 @@ class DataHealthMonitor {
     // Connection attempts should be handled by recovery, not health checks
 
     const marketStatus = MarketHoursUtil.getMarketStatus();
-    const checks = [
-      this.checkWebSocketHealth()
-    ];
+    const checkPromises = {
+      websocket: this.checkWebSocketHealth(),
+      greeks: marketStatus.isOpen ? this.checkGreeksHealth() : Promise.resolve(),
+      dataFreshness: marketStatus.isOpen ? this.checkDataFreshness() : Promise.resolve(),
+    };
 
-    // Only perform data freshness checks during market hours
-    if (marketStatus.isOpen) {
-      checks.push(this.checkGreeksHealth());
-      checks.push(this.checkDataFreshness());
-    } else {
-      console.log('📊 Skipping data freshness checks - market is closed');
-    }
+    const results = await Promise.allSettled(Object.values(checkPromises));
+    const checkNames = Object.keys(checkPromises);
+    const failedChecks = [];
 
-    const results = await Promise.allSettled(checks);
-    const failedChecks = results.filter(result => result.status === 'rejected');
+    results.forEach((result, index) => {
+      if (result.status === 'rejected') {
+        failedChecks.push({
+          name: checkNames[index],
+          reason: result.reason.message,
+        });
+      }
+    });
 
     if (failedChecks.length > 0) {
       console.warn(`⚠️ Health check failures: ${failedChecks.length}/${results.length}`);
+      failedChecks.forEach(failure => {
+        console.warn(`   - ${failure.name}: ${failure.reason}`);
+      });
+
       this.store.systemState.isHealthy = false;
       this.store.systemState.failedComponents.clear();
-      failedChecks.forEach((failure, index) => {
-        this.store.systemState.failedComponents.add(`check_${index}`);
+      failedChecks.forEach(failure => {
+        this.store.systemState.failedComponents.add(failure.name);
       });
-      
+
       // If WebSocket is unhealthy, trigger recovery
-      if (failedChecks.some(f => f.reason?.message?.includes('WebSocket'))) {
+      if (failedChecks.some(f => f.name === 'websocket')) {
         console.log('🚑 WebSocket health check failed, triggering recovery');
         setTimeout(() => {
           this.store.recoveryManager.executeRecovery('websocket_disconnected');
