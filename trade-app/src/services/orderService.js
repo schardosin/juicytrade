@@ -6,7 +6,46 @@ import api from "./api";
  */
 class OrderService {
   /**
-   * Place an order with standardized payload structure
+   * Preview an order to get cost estimates and validation
+   * @param {Object} orderData - Order configuration
+   * @returns {Promise<Object>} Preview result
+   */
+  async previewOrder(orderData) {
+    try {
+      const orderPayload = this.buildOrderPayload(orderData);
+      console.log("OrderService: Previewing order with payload:", orderPayload);
+
+      const result = await api.previewOrder(orderPayload);
+
+      if (result.success && result.data.status === 'ok') {
+        console.log("OrderService: Order preview successful:", result);
+        return {
+          success: true,
+          preview: result.data,
+          message: "Order preview generated successfully",
+        };
+      } else {
+        const errorMessage = result.data?.validation_errors?.[0] || result.error || "Unknown error";
+        console.error("OrderService: Order preview failed:", errorMessage);
+        return {
+          success: false,
+          error: errorMessage,
+          message: `Order preview failed: ${errorMessage}`,
+          preview: result.data,
+        };
+      }
+    } catch (error) {
+      console.error("OrderService: Order preview error:", error);
+      return {
+        success: false,
+        error: error.message,
+        message: `Order preview failed: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Place an order with smart routing (single-leg vs multi-leg)
    * @param {Object} orderData - Order configuration
    * @returns {Promise<Object>} Order result
    */
@@ -15,15 +54,23 @@ class OrderService {
       const orderPayload = this.buildOrderPayload(orderData);
       console.log("OrderService: Placing order with payload:", orderPayload);
 
-      const result = await api.placeButterflyOrder(orderPayload);
+      // Determine order type and route accordingly
+      const orderType = this.determineOrderType(orderPayload.legs);
+      let result;
+
+      if (orderType === 'single-leg') {
+        result = await api.placeSingleLegOrder(orderPayload);
+      } else {
+        result = await api.placeMultiLegOrder(orderPayload);
+      }
 
       if (result.success) {
         console.log("OrderService: Order placed successfully:", result);
         return {
           success: true,
-          order: result.order,
-          message: `Order submitted successfully! Order ID: ${
-            result.order?.id || "N/A"
+          order: result.data,
+          message: `${orderType} order submitted successfully! Order ID: ${
+            result.data?.id || "N/A"
           }`,
         };
       } else {
@@ -41,6 +88,101 @@ class OrderService {
         error: error.message,
         message: `Order submission failed: ${error.message}`,
       };
+    }
+  }
+
+  /**
+   * Place a single-leg order
+   * @param {Object} orderData - Order configuration
+   * @returns {Promise<Object>} Order result
+   */
+  async placeSingleLegOrder(orderData) {
+    try {
+      const orderPayload = this.buildOrderPayload(orderData);
+      console.log("OrderService: Placing single-leg order with payload:", orderPayload);
+
+      const result = await api.placeSingleLegOrder(orderPayload);
+
+      if (result.success) {
+        console.log("OrderService: Single-leg order placed successfully:", result);
+        return {
+          success: true,
+          order: result.data,
+          message: `Single-leg order submitted successfully! Order ID: ${
+            result.data?.id || "N/A"
+          }`,
+        };
+      } else {
+        console.error("OrderService: Single-leg order failed:", result.error);
+        return {
+          success: false,
+          error: result.error || "Unknown error",
+          message: `Single-leg order failed: ${result.error || "Unknown error"}`,
+        };
+      }
+    } catch (error) {
+      console.error("OrderService: Single-leg order submission error:", error);
+      return {
+        success: false,
+        error: error.message,
+        message: `Single-leg order submission failed: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Place a multi-leg order
+   * @param {Object} orderData - Order configuration
+   * @returns {Promise<Object>} Order result
+   */
+  async placeMultiLegOrder(orderData) {
+    try {
+      const orderPayload = this.buildOrderPayload(orderData);
+      console.log("OrderService: Placing multi-leg order with payload:", orderPayload);
+
+      const result = await api.placeMultiLegOrder(orderPayload);
+
+      if (result.success) {
+        console.log("OrderService: Multi-leg order placed successfully:", result);
+        return {
+          success: true,
+          order: result.data,
+          message: `Multi-leg order submitted successfully! Order ID: ${
+            result.data?.id || "N/A"
+          }`,
+        };
+      } else {
+        console.error("OrderService: Multi-leg order failed:", result.error);
+        return {
+          success: false,
+          error: result.error || "Unknown error",
+          message: `Multi-leg order failed: ${result.error || "Unknown error"}`,
+        };
+      }
+    } catch (error) {
+      console.error("OrderService: Multi-leg order submission error:", error);
+      return {
+        success: false,
+        error: error.message,
+        message: `Multi-leg order submission failed: ${error.message}`,
+      };
+    }
+  }
+
+  /**
+   * Determine if order is single-leg or multi-leg
+   * @param {Array} legs - Order legs
+   * @returns {string} 'single-leg' or 'multi-leg'
+   */
+  determineOrderType(legs) {
+    if (!legs || legs.length === 0) {
+      throw new Error('No legs provided');
+    }
+    
+    if (legs.length === 1) {
+      return 'single-leg';
+    } else {
+      return 'multi-leg';
     }
   }
 

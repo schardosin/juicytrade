@@ -1086,6 +1086,107 @@ class TradierProvider(BaseProvider):
             self._log_error("place_order", e)
             raise
 
+    async def preview_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Preview an order to get cost estimates and validation."""
+        try:
+            order_url = f"{self.base_url}/v1/accounts/{self.account_id}/orders"
+            headers = {
+                "Authorization": f"Bearer {self.api_key}",
+                "Accept": "application/json"
+            }
+
+            # Determine if single-leg or multi-leg order
+            legs = order_data.get("legs", [])
+            if len(legs) == 1:
+                # Single-leg order preview
+                leg = legs[0]
+                parsed = self._parse_option_symbol(leg["symbol"])
+                if not parsed:
+                    raise Exception(f"Invalid option symbol: {leg['symbol']}")
+
+                payload = {
+                    "class": "option",
+                    "symbol": parsed["underlying"],
+                    "option_symbol": leg["symbol"],
+                    "side": leg["side"],
+                    "quantity": str(leg["qty"]),
+                    "type": order_data.get("order_type", "limit"),
+                    "duration": order_data.get("time_in_force", "day"),
+                    "preview": "true"
+                }
+
+                if order_data.get("limit_price"):
+                    payload["price"] = f"{abs(order_data['limit_price']):.2f}"
+
+            else:
+                # Multi-leg order preview
+                underlying_symbol = self._parse_option_symbol(legs[0]["symbol"])["underlying"]
+                limit_price = order_data.get("limit_price", 0)
+                order_type = "debit" if limit_price > 0 else "credit"
+
+                payload = {
+                    "class": "multileg",
+                    "symbol": underlying_symbol,
+                    "type": order_type,
+                    "duration": order_data.get("time_in_force", "day"),
+                    "price": f"{abs(limit_price):.2f}",
+                    "preview": "true"
+                }
+
+                for i, leg in enumerate(legs):
+                    payload[f"option_symbol[{i}]"] = leg["symbol"]
+                    payload[f"side[{i}]"] = leg["side"].lower()
+                    payload[f"quantity[{i}]"] = str(leg["qty"])
+
+            resp = requests.post(order_url, headers=headers, data=payload)
+            resp.raise_for_status()
+            preview_response = resp.json()
+
+            # Extract preview data
+            order_preview = preview_response.get("order", {})
+            if order_preview.get("status") == "ok":
+                return {
+                    "status": "ok",
+                    "commission": float(order_preview.get("commission", 0)),
+                    "cost": float(order_preview.get("cost", 0)),
+                    "fees": float(order_preview.get("fees", 0)),
+                    "order_cost": float(order_preview.get("order_cost", 0)),
+                    "margin_change": float(order_preview.get("margin_change", 0)),
+                    "buying_power_effect": float(order_preview.get("order_cost", 0)),
+                    "day_trades": int(order_preview.get("day_trades", 0)),
+                    "validation_errors": [],
+                    "estimated_total": float(order_preview.get("cost", 0))
+                }
+            else:
+                return {
+                    "status": "error",
+                    "validation_errors": [preview_response['errors']['error']] if 'errors' in preview_response else ["Unknown error"],
+                    "commission": 0,
+                    "cost": 0,
+                    "fees": 0,
+                    "order_cost": 0,
+                    "margin_change": 0,
+                    "buying_power_effect": 0,
+                    "day_trades": 0,
+                    "estimated_total": 0
+                }
+
+        except Exception as e:
+            logger.error(f"❌ Tradier: preview_order failed: {e}")
+            self._log_error("preview_order", e)
+            return {
+                "status": "error",
+                "validation_errors": [f"Preview failed: {str(e)}"],
+                "commission": 0,
+                "cost": 0,
+                "fees": 0,
+                "order_cost": 0,
+                "margin_change": 0,
+                "buying_power_effect": 0,
+                "day_trades": 0,
+                "estimated_total": 0
+            }
+
     async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a multi-leg trading order."""
         try:

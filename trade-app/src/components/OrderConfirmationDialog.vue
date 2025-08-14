@@ -109,7 +109,7 @@
             </h2>
 
             <!-- Trade Details Grid -->
-            <div class="trade-details-grid">
+            <div v-if="!hasPreviewError" class="trade-details-grid">
               <div class="detail-row">
                 <span class="detail-label">Stock BP</span>
                 <span class="detail-value"
@@ -148,11 +148,17 @@
 
               <div class="detail-row">
                 <span class="detail-label">Comm. + Est. Fees</span>
-                <span class="detail-value"
-                  >2.00 + 1.56 <span class="detail-unit">db</span></span
-                >
+                <span class="detail-value" v-if="previewLoading">
+                  <span class="loading-text">Loading...</span>
+                </span>
+                <span class="detail-value" v-else>
+                  {{ getCommissionAndFees() }} <span class="detail-unit">db</span>
+                </span>
                 <span class="detail-label">Estimated Total</span>
-                <span class="detail-value">{{ getEstimatedTotal() }}</span>
+                <span class="detail-value" v-if="previewLoading">
+                  <span class="loading-text">Loading...</span>
+                </span>
+                <span class="detail-value" v-else>{{ getEstimatedTotal() }}</span>
               </div>
 
               <div class="detail-row">
@@ -163,10 +169,17 @@
                 >
               </div>
             </div>
+            <!-- Preview Error Message -->
+            <div v-else class="preview-error-message">
+              <p><strong>⚠️ Order Preview Failed</strong></p>
+              <p v-if="previewData && previewData.validation_errors">{{ previewData.validation_errors[0] }}</p>
+              <p v-else-if="previewError">{{ previewError }}</p>
+              <p v-else>An unknown error occurred during the preview.</p>
+            </div>
           </div>
 
           <!-- Warning Message -->
-          <div class="warning-message">
+          <div v-if="!isMarketOpen" class="warning-message">
             ⚠️ Your order will begin working during next valid session.
           </div>
         </div>
@@ -190,7 +203,7 @@
 </template>
 
 <script>
-import { ref, computed, watch } from "vue";
+import { ref, computed, watch, onMounted } from "vue";
 import {
   calculateMultiLegProfitLoss,
   calculateBuyingPowerEffect,
@@ -198,6 +211,8 @@ import {
   getCreditDebitInfo,
   calculateGreeks,
 } from "../services/optionsCalculator.js";
+import orderService from "../services/orderService.js";
+import MarketHoursUtil from "../utils/marketHours.js";
 
 export default {
   name: "OrderConfirmationDialog",
@@ -218,6 +233,9 @@ export default {
   emits: ["hide", "confirm", "cancel", "edit", "clear-selections"],
   setup(props, { emit }) {
     const editableOrderPrice = ref(0);
+    const previewData = ref(null);
+    const previewLoading = ref(false);
+    const previewError = ref(null);
 
     // Calculate comprehensive P&L analysis using centralized calculator
     const profitLossAnalysis = computed(() => {
@@ -273,9 +291,52 @@ export default {
       });
     });
 
+    // Fetch order preview when dialog opens
+    const fetchOrderPreview = async () => {
+      if (!props.orderData) return;
+      
+      previewLoading.value = true;
+      previewError.value = null;
+      
+      try {
+        console.log("Fetching order preview...");
+        const result = await orderService.previewOrder(props.orderData);
+        
+        if (result.success) {
+          previewData.value = result.preview;
+          console.log("Order preview successful:", result.preview);
+        } else {
+          previewError.value = result.message || "Preview failed";
+          console.error("Order preview failed:", result.error);
+        }
+      } catch (error) {
+        previewError.value = error.message || "Preview failed";
+        console.error("Order preview error:", error);
+      } finally {
+        previewLoading.value = false;
+      }
+    };
+
+    // Watch for dialog visibility changes to fetch preview
+    watch(() => props.visible, (newVisible) => {
+      if (newVisible && props.orderData) {
+        fetchOrderPreview();
+      }
+    });
+
+    // Check if there is a preview error
+    const hasPreviewError = computed(() => {
+      return previewError.value || (previewData.value && previewData.value.status === 'error');
+    });
+
+    // Check if the market is open
+    const isMarketOpen = computed(() => {
+      return MarketHoursUtil.isMarketOpen();
+    });
+
     // Check if order can be confirmed
     const canConfirm = computed(() => {
-      return props.orderData && !props.loading;
+      return props.orderData && !props.loading && !previewLoading.value && !hasPreviewError.value;
     });
 
     // Helper methods
@@ -307,7 +368,14 @@ export default {
     };
 
     const getEstimatedCost = () => {
-      // Use the display limit price for UI (always positive)
+      // Use preview data if available, otherwise fallback to UI calculations
+      if (previewData.value && previewData.value.status === 'ok') {
+        const orderCost = previewData.value.order_cost || 0;
+        const label = orderCost >= 0 ? "db" : "cr";
+        return `${formatCurrency(Math.abs(orderCost))} ${label}`;
+      }
+      
+      // Fallback to UI calculations
       const displayPrice =
         props.orderData?.displayLimitPrice ||
         Math.abs(
@@ -319,7 +387,14 @@ export default {
     };
 
     const getEstimatedTotal = () => {
-      // Use the display limit price for UI (always positive)
+      // Use preview data if available, otherwise fallback to UI calculations
+      if (previewData.value && previewData.value.status === 'ok') {
+        const estimatedTotal = previewData.value.estimated_total || 0;
+        const label = estimatedTotal >= 0 ? "db" : "cr";
+        return `${formatCurrency(Math.abs(estimatedTotal))} ${label}`;
+      }
+      
+      // Fallback to UI calculations
       const displayPrice =
         props.orderData?.displayLimitPrice ||
         Math.abs(
@@ -333,8 +408,25 @@ export default {
     };
 
     const getBPEffect = () => {
-      // For BP effect, use the max loss from our analysis
+      // Use preview data if available, otherwise fallback to P&L analysis
+      if (previewData.value && previewData.value.status === 'ok') {
+        return formatCurrency(Math.abs(previewData.value.buying_power_effect || 0));
+      }
+      
+      // Fallback to P&L analysis
       return formatCurrency(profitLossAnalysis.value.maxLoss);
+    };
+
+    const getCommissionAndFees = () => {
+      // Use preview data if available
+      if (previewData.value && previewData.value.status === 'ok') {
+        const commission = previewData.value.commission || 0;
+        const fees = previewData.value.fees || 0;
+        return `${formatCurrency(commission)} + ${formatCurrency(fees)}`;
+      }
+      
+      // Fallback to estimated values
+      return "2.00 + 1.56";
     };
 
     // Format expiry date
@@ -382,6 +474,11 @@ export default {
 
     return {
       editableOrderPrice,
+      previewData,
+      previewLoading,
+      previewError,
+      hasPreviewError,
+      isMarketOpen,
       formattedLegs,
       canConfirm,
       profitLossAnalysis,
@@ -392,6 +489,7 @@ export default {
       getEstimatedCost,
       getEstimatedTotal,
       getBPEffect,
+      getCommissionAndFees,
       formatCurrency,
       formatExpiry,
       handleCancel,
@@ -677,6 +775,35 @@ export default {
 
 .positive {
   color: var(--color-success);
+}
+
+.loading-text {
+  color: var(--text-tertiary);
+  font-style: italic;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.preview-error-message {
+  background-color: rgba(255, 82, 82, 0.1);
+  border: 1px solid rgba(255, 82, 82, 0.3);
+  color: var(--color-danger);
+  padding: 12px;
+  border-radius: 4px;
+  font-size: 13px;
+  margin-top: 12px;
+}
+
+.preview-error-message p {
+  margin: 0;
+}
+
+.preview-error-message p:first-child {
+  margin-bottom: 8px;
 }
 
 /* Warning Message */

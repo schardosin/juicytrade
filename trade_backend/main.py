@@ -891,6 +891,42 @@ async def place_order(order_request: OrderRequest):
         logger.error(f"Error placing order: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.post("/orders/preview", response_model=ApiResponse)
+async def preview_order(order_request: MultiLegOrderRequest):
+    """Preview an order to get cost estimates and validation."""
+    try:
+        preview_data = await provider_manager.preview_order(order_request.dict())
+        if preview_data:
+            success = preview_data.get('status') == 'ok'
+            message = "Order preview generated successfully." if success else "Order preview failed."
+            return ApiResponse(
+                success=success,
+                data=preview_data,
+                message=message
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to generate order preview.")
+    except Exception as e:
+        logger.error(f"Error previewing order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/orders/single-leg", response_model=ApiResponse)
+async def place_single_leg_order(order_request: OrderRequest):
+    """Place a new single-leg option order."""
+    try:
+        order = await provider_manager.place_order(order_request.dict())
+        if order:
+            return ApiResponse(
+                success=True,
+                data=order.dict(),
+                message="Single-leg order placed successfully."
+            )
+        else:
+            raise HTTPException(status_code=500, detail="Failed to place single-leg order.")
+    except Exception as e:
+        logger.error(f"Error placing single-leg order: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.post("/orders/multi-leg", response_model=ApiResponse)
 async def place_multi_leg_order(order_request: MultiLegOrderRequest):
     """Place a new multi-leg trading order."""

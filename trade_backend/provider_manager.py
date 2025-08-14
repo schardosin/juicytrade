@@ -242,6 +242,12 @@ class ProviderManager:
             return await provider.place_order(order_data)
         return None
 
+    async def preview_order(self, order_data: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        provider = self._get_provider("trade_account")
+        if provider:
+            return await provider.preview_order(order_data)
+        return None
+
     async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Optional[Order]:
         provider = self._get_provider("trade_account")
         if provider:

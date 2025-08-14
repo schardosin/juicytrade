@@ -319,8 +319,36 @@ export const api = {
     }
   },
 
-  // Place multi-leg order (updated to use correct backend endpoint)
-  async placeButterflyOrder(orderPayload) {
+  // Preview order to get cost estimates and validation
+  async previewOrder(orderPayload) {
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/orders/preview`,
+        orderPayload
+      );
+      return response.data;
+    } catch (error) {
+      console.error("Error previewing order:", error);
+      throw error;
+    }
+  },
+
+  // Place single-leg option order
+  async placeSingleLegOrder(orderPayload) {
+    try {
+      const response = await axios.post(
+        `${API_BASE_URL}/orders/single-leg`,
+        orderPayload
+      );
+      return response.data;
+    } catch (error) {
+      console.error("Error placing single-leg order:", error);
+      throw error;
+    }
+  },
+
+  // Place multi-leg order (renamed from placeButterflyOrder for clarity)
+  async placeMultiLegOrder(orderPayload) {
     try {
       const response = await axios.post(
         `${API_BASE_URL}/orders/multi-leg`,
@@ -331,6 +359,12 @@ export const api = {
       console.error("Error placing multi-leg order:", error);
       throw error;
     }
+  },
+
+  // Deprecated: Use placeMultiLegOrder instead
+  async placeButterflyOrder(orderPayload) {
+    console.warn('placeButterflyOrder is deprecated, use placeMultiLegOrder instead');
+    return this.placeMultiLegOrder(orderPayload);
   },
 
   // Get current open positions
