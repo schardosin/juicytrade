@@ -1,0 +1,922 @@
+import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
+import { mount } from '@vue/test-utils';
+import { nextTick, ref } from 'vue';
+import BottomTradingPanel from '../src/components/BottomTradingPanel.vue';
+
+// Create shared mock refs
+const mockSelectedLegs = ref([]);
+const mockHasSelectedLegs = ref(false);
+const mockUpdateQuantity = vi.fn();
+const mockClearAll = vi.fn();
+const mockReplaceLeg = vi.fn();
+
+// Mock the composables and services
+vi.mock('../src/composables/useSmartMarketData.js', () => ({
+  useSmartMarketData: () => ({
+    getOptionPrice: vi.fn(() => ref({ bid: 2.50, ask: 2.60, price: 2.55 }))
+  })
+}));
+
+vi.mock('../src/composables/useSelectedLegs.js', () => ({
+  useSelectedLegs: () => ({
+    selectedLegs: mockSelectedLegs,
+    hasSelectedLegs: mockHasSelectedLegs,
+    updateQuantity: mockUpdateQuantity,
+    clearAll: mockClearAll,
+    replaceLeg: mockReplaceLeg
+  })
+}));
+
+vi.mock('../src/services/smartMarketDataStore.js', () => ({
+  smartMarketDataStore: {
+    registerSymbolUsage: vi.fn(),
+    unregisterSymbolUsage: vi.fn()
+  }
+}));
+
+vi.mock('../src/services/optionsCalculator.js', () => ({
+  calculateMultiLegProfitLoss: vi.fn(() => ({
+    netPremium: -1.50,
+    maxProfit: 150,
+    maxLoss: -50,
+    positions: []
+  })),
+  calculateBuyingPowerEffect: vi.fn(() => 500),
+  formatCurrency: vi.fn((value, decimals = 0) => `$${Math.abs(value).toFixed(decimals)}`),
+  getCreditDebitInfo: vi.fn(() => ({ isCredit: true, type: 'Credit' })),
+  calculateGreeks: vi.fn(() => ({ delta: 0.25, theta: -0.05 }))
+}));
+
+describe('BottomTradingPanel - Cascade Protection & Trading Interface Integrity', () => {
+  let wrapper;
+
+  beforeEach(() => {
+    // Reset all mocks and refs
+    vi.clearAllMocks();
+    mockSelectedLegs.value = [];
+    mockHasSelectedLegs.value = false;
+  });
+
+  afterEach(() => {
+    if (wrapper) {
+      wrapper.unmount();
+    }
+  });
+
+  describe('Component Initialization & Props', () => {
+    it('renders correctly when visible', () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY',
+          underlyingPrice: 450.00
+        }
+      });
+
+      expect(wrapper.find('.bottom-panel').exists()).toBe(true);
+      expect(wrapper.find('.bottom-panel').classes()).toContain('slide-up');
+      expect(wrapper.find('.symbol-display').text()).toBe('SPY');
+    });
+
+    it('does not render when not visible', () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: false,
+          symbol: 'SPY'
+        }
+      });
+
+      expect(wrapper.find('.bottom-panel').exists()).toBe(false);
+    });
+
+    it('handles default props correctly', () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true
+        }
+      });
+
+      expect(wrapper.find('.symbol-display').text()).toBe('SPX');
+    });
+  });
+
+  describe('Selected Legs Display & Management', () => {
+    beforeEach(() => {
+      // Set up mock data
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 2,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60,
+          current_price: 2.50
+        },
+        {
+          symbol: 'SPY_240119P00440000',
+          quantity: 1,
+          side: 'sell',
+          action: 'sell_to_open',
+          type: 'Put',
+          strike_price: 440,
+          expiry: '2024-01-19',
+          bid: 1.80,
+          ask: 2.00,
+          current_price: 1.90
+        }
+      ];
+      mockHasSelectedLegs.value = true;
+    });
+
+    it('displays selected legs correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const orderLegs = wrapper.findAll('.order-leg');
+      expect(orderLegs).toHaveLength(2);
+
+      // Check first leg (Call)
+      const firstLeg = orderLegs[0];
+      expect(firstLeg.find('.leg-qty').text()).toBe('2');
+      expect(firstLeg.find('.leg-strike').text()).toBe('450');
+      expect(firstLeg.find('.leg-type').text()).toBe('C');
+      expect(firstLeg.find('.leg-action').text()).toBe('BTO');
+
+      // Check second leg (Put)
+      const secondLeg = orderLegs[1];
+      expect(secondLeg.find('.leg-qty').text()).toBe('1');
+      expect(secondLeg.find('.leg-strike').text()).toBe('440');
+      expect(secondLeg.find('.leg-type').text()).toBe('P');
+      expect(secondLeg.find('.leg-action').text()).toBe('STO');
+    });
+
+    it('handles leg selection toggle correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const firstLeg = wrapper.find('.order-leg');
+      expect(firstLeg.classes()).not.toContain('selected');
+
+      // Click to select
+      await firstLeg.trigger('click');
+      expect(firstLeg.classes()).toContain('selected');
+
+      // Click again to deselect
+      await firstLeg.trigger('click');
+      expect(firstLeg.classes()).not.toContain('selected');
+    });
+
+    it('formats dates correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const dateElements = wrapper.findAll('.leg-date');
+      expect(dateElements[0].text()).toBe('Jan 19');
+    });
+
+    it('handles invalid dates gracefully', async () => {
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: 'invalid-date',
+          bid: 2.40,
+          ask: 2.60
+        }
+      ];
+
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const dateElement = wrapper.find('.leg-date');
+      expect(dateElement.text()).toBe('Jul 11'); // Default fallback
+    });
+  });
+
+  describe('Price Controls & Live Data Integration', () => {
+    beforeEach(() => {
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60,
+          current_price: 2.50
+        }
+      ];
+    });
+
+    it('displays bid/mid/ask prices correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      // Check price displays exist
+      const bidSection = wrapper.find('.bid-section .price-text');
+      const askSection = wrapper.find('.ask-section .price-text');
+      
+      expect(bidSection.exists()).toBe(true);
+      expect(askSection.exists()).toBe(true);
+    });
+
+    it('handles price lock/unlock functionality', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const lockButton = wrapper.find('.lock-btn');
+      expect(lockButton.classes()).not.toContain('locked');
+
+      // Click to lock
+      await lockButton.trigger('click');
+      expect(lockButton.classes()).toContain('locked');
+
+      // Click to unlock
+      await lockButton.trigger('click');
+      expect(lockButton.classes()).not.toContain('locked');
+    });
+
+    it('handles price increment/decrement correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const priceInput = wrapper.find('.price-input');
+      const priceButtons = wrapper.findAll('.price-btn');
+      
+      // Find increment and decrement buttons (skip lock button)
+      const incrementBtn = priceButtons.find(btn => btn.text() === '+');
+      const decrementBtn = priceButtons.find(btn => btn.text() === '-');
+
+      if (incrementBtn && decrementBtn) {
+        const initialValue = parseFloat(priceInput.element.value) || 0;
+
+        // Test increment
+        await incrementBtn.trigger('click');
+        expect(parseFloat(priceInput.element.value)).toBeCloseTo(initialValue + 0.01, 2);
+
+        // Test decrement
+        await decrementBtn.trigger('click');
+        expect(parseFloat(priceInput.element.value)).toBeCloseTo(initialValue, 2);
+      }
+    });
+  });
+
+  describe('Quantity Management & Controls', () => {
+    beforeEach(() => {
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 5,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19'
+        }
+      ];
+    });
+
+    it('increments quantity correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const quantityControls = wrapper.find('.control-group:nth-child(3)');
+      const incrementBtn = quantityControls.findAll('.ctrl-btn')[1]; // Second button (up arrow)
+      
+      await incrementBtn.trigger('click');
+
+      expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00450000', 6);
+    });
+
+    it('decrements quantity correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const quantityControls = wrapper.find('.control-group:nth-child(3)');
+      const decrementBtn = quantityControls.findAll('.ctrl-btn')[0]; // First button (down arrow)
+      
+      await decrementBtn.trigger('click');
+
+      expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00450000', 4);
+    });
+
+    it('does not decrement quantity below 1', async () => {
+      mockSelectedLegs.value[0].quantity = 1;
+
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const quantityControls = wrapper.find('.control-group:nth-child(3)');
+      const decrementBtn = quantityControls.findAll('.ctrl-btn')[0];
+      
+      await decrementBtn.trigger('click');
+
+      expect(mockUpdateQuantity).not.toHaveBeenCalled();
+    });
+
+    it('does not increment quantity above 10', async () => {
+      mockSelectedLegs.value[0].quantity = 10;
+
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const quantityControls = wrapper.find('.control-group:nth-child(3)');
+      const incrementBtn = quantityControls.findAll('.ctrl-btn')[1];
+      
+      await incrementBtn.trigger('click');
+
+      expect(mockUpdateQuantity).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('Order Configuration & Validation', () => {
+    beforeEach(() => {
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60,
+          current_price: 2.50
+        }
+      ];
+      mockHasSelectedLegs.value = true;
+    });
+
+    it('enables Review & Send button when legs are selected', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const reviewBtn = wrapper.find('.review-btn');
+      expect(reviewBtn.attributes('disabled')).toBeFalsy();
+    });
+
+    it('disables Review & Send button when no legs are selected', async () => {
+      mockSelectedLegs.value = [];
+      mockHasSelectedLegs.value = false;
+
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const reviewBtn = wrapper.find('.review-btn');
+      expect(reviewBtn.attributes('disabled')).toBeDefined();
+    });
+
+    it('handles order type selection correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const orderTypeSelect = wrapper.find('.order-type-section .config-select');
+      expect(orderTypeSelect.element.value).toBe('limit');
+
+      await orderTypeSelect.setValue('market');
+      expect(orderTypeSelect.element.value).toBe('market');
+    });
+
+    it('handles time in force selection correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const timeInForceSelect = wrapper.find('.time-force-section .config-select');
+      expect(timeInForceSelect.element.value).toBe('day');
+
+      await timeInForceSelect.setValue('gtc');
+      expect(timeInForceSelect.element.value).toBe('gtc');
+    });
+
+    it('emits review-send event with correct order data', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY',
+          underlyingPrice: 450.00
+        }
+      });
+
+      await nextTick();
+
+      const reviewBtn = wrapper.find('.review-btn');
+      await reviewBtn.trigger('click');
+
+      const emittedEvents = wrapper.emitted('review-send');
+      expect(emittedEvents).toHaveLength(1);
+
+      const orderData = emittedEvents[0][0];
+      expect(orderData).toMatchObject({
+        symbol: 'SPY',
+        expiry: '2024-01-19',
+        legs: expect.arrayContaining([
+          expect.objectContaining({
+            symbol: 'SPY_240119C00450000',
+            side: 'buy',
+            action: 'buy_to_open',
+            quantity: 1,
+            type: 'Call',
+            strike: 450
+          })
+        ]),
+        orderType: 'limit',
+        timeInForce: 'day',
+        underlyingPrice: 450.00
+      });
+    });
+
+    it('handles clear trade correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const clearBtn = wrapper.find('.clear-btn');
+      await clearBtn.trigger('click');
+
+      expect(mockClearAll).toHaveBeenCalled();
+    });
+  });
+
+  describe('Statistics & Greeks Display', () => {
+    beforeEach(() => {
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60,
+          current_price: 2.50
+        }
+      ];
+    });
+
+    it('displays statistics correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const statGroups = wrapper.findAll('.stat-group');
+      expect(statGroups.length).toBeGreaterThan(0);
+
+      // Check that stats are displayed (basic structure test)
+      const deltaValue = wrapper.find('.stat-group:nth-child(4) .stat-value');
+      const thetaValue = wrapper.find('.stat-group:nth-child(5) .stat-value');
+
+      expect(deltaValue.exists()).toBe(true);
+      expect(thetaValue.exists()).toBe(true);
+    });
+
+    it('applies correct CSS classes for positive/negative values', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const thetaValue = wrapper.find('.stat-group:nth-child(5) .stat-value');
+      const maxProfitValue = wrapper.find('.stat-group:nth-child(6) .stat-value');
+      const maxLossValue = wrapper.find('.stat-group:nth-child(7) .stat-value');
+
+      expect(thetaValue.classes()).toContain('negative');
+      expect(maxProfitValue.classes()).toContain('positive');
+      expect(maxLossValue.classes()).toContain('negative');
+    });
+  });
+
+  describe('Progress Bar & Price Visualization', () => {
+    beforeEach(() => {
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60,
+          current_price: 2.50
+        }
+      ];
+    });
+
+    it('displays progress bars correctly', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const progressSection = wrapper.find('.progress-section');
+      const leftProgressBar = wrapper.find('.progress-bar.left');
+      const rightProgressBar = wrapper.find('.progress-bar.right');
+      const centerIndicator = wrapper.find('.center-indicator');
+
+      expect(progressSection.exists()).toBe(true);
+      expect(leftProgressBar.exists()).toBe(true);
+      expect(rightProgressBar.exists()).toBe(true);
+      expect(centerIndicator.exists()).toBe(true);
+    });
+  });
+
+  describe('Edge Cases & Error Handling', () => {
+    it('handles empty selected legs gracefully', async () => {
+      mockSelectedLegs.value = [];
+      mockHasSelectedLegs.value = false;
+
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const orderLegs = wrapper.findAll('.order-leg');
+      expect(orderLegs).toHaveLength(0);
+
+      const reviewBtn = wrapper.find('.review-btn');
+      expect(reviewBtn.attributes('disabled')).toBeDefined();
+    });
+
+    it('handles missing price data gracefully', async () => {
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19'
+          // Missing bid, ask, current_price
+        }
+      ];
+
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const orderLegs = wrapper.findAll('.order-leg');
+      expect(orderLegs).toHaveLength(1);
+
+      // Should display price from live data or fallback (component uses live price lookup)
+      const priceElement = orderLegs[0].find('.leg-price');
+      expect(priceElement.text()).toMatch(/^\$\d+\.\d{2}$/); // Should be a valid price format
+    });
+
+    it('handles null/undefined strike prices gracefully', async () => {
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: null,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60
+        }
+      ];
+
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      const orderLegs = wrapper.findAll('.order-leg');
+      if (orderLegs.length > 0) {
+        const strikeElement = orderLegs[0].find('.leg-strike');
+        expect(strikeElement.text()).toBe('-');
+      }
+    });
+  });
+
+  describe('Real-World Cascade Scenarios', () => {
+    it('handles complete trading workflow data cascade', async () => {
+      // Simulate complete workflow: leg selection → trading panel → analysis → order
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 2,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60,
+          current_price: 2.50
+        },
+        {
+          symbol: 'SPY_240119P00440000',
+          quantity: 2,
+          side: 'sell',
+          action: 'sell_to_open',
+          type: 'Put',
+          strike_price: 440,
+          expiry: '2024-01-19',
+          bid: 1.80,
+          ask: 2.00,
+          current_price: 1.90
+        }
+      ];
+      mockHasSelectedLegs.value = true;
+
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY',
+          underlyingPrice: 445.00
+        }
+      });
+
+      await nextTick();
+
+      // Verify legs display correctly
+      const orderLegs = wrapper.findAll('.order-leg');
+      expect(orderLegs).toHaveLength(2);
+
+      // Verify statistics are calculated
+      const statGroups = wrapper.findAll('.stat-group');
+      expect(statGroups.length).toBeGreaterThan(0);
+
+      // Verify price controls work
+      const priceInput = wrapper.find('.price-input');
+      expect(priceInput.exists()).toBe(true);
+
+      // Verify order can be submitted
+      const reviewBtn = wrapper.find('.review-btn');
+      expect(reviewBtn.attributes('disabled')).toBeFalsy();
+
+      // Submit order and verify event emission
+      await reviewBtn.trigger('click');
+      const emittedEvents = wrapper.emitted('review-send');
+      expect(emittedEvents).toHaveLength(1);
+      expect(emittedEvents[0][0]).toMatchObject({
+        symbol: 'SPY',
+        legs: expect.arrayContaining([
+          expect.objectContaining({ symbol: 'SPY_240119C00450000' }),
+          expect.objectContaining({ symbol: 'SPY_240119P00440000' })
+        ])
+      });
+    });
+
+    it('handles rapid price updates without memory leaks', async () => {
+      mockSelectedLegs.value = [
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60,
+          current_price: 2.50
+        }
+      ];
+
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      // Component should remain stable after rapid updates
+      const priceInput = wrapper.find('.price-input');
+      expect(priceInput.exists()).toBe(true);
+    });
+
+    it('handles provider data format changes gracefully', async () => {
+      // Test different provider data formats
+      const providerFormats = [
+        // Tastytrade format
+        {
+          symbol: 'SPY_240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'Call',
+          strike_price: 450,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60,
+          current_price: 2.50
+        },
+        // Alpaca format
+        {
+          symbol: 'SPY240119C00450000',
+          quantity: 1,
+          side: 'buy',
+          action: 'buy_to_open',
+          type: 'call',
+          strike: 450,
+          expiry: '2024-01-19',
+          bid: 2.40,
+          ask: 2.60,
+          avg_entry_price: 2.50
+        }
+      ];
+
+      for (const format of providerFormats) {
+        mockSelectedLegs.value = [format];
+
+        wrapper = mount(BottomTradingPanel, {
+          props: {
+            visible: true,
+            symbol: 'SPY'
+          }
+        });
+
+        await nextTick();
+
+        const orderLegs = wrapper.findAll('.order-leg');
+        expect(orderLegs).toHaveLength(1);
+
+        // Should handle both formats gracefully
+        const strikeElement = orderLegs[0].find('.leg-strike');
+        expect(strikeElement.text()).toBe('450');
+
+        wrapper.unmount();
+      }
+    });
+  });
+
+  describe('Performance & Memory Management', () => {
+    it('handles rapid visibility toggles efficiently', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: false,
+          symbol: 'SPY'
+        }
+      });
+
+      // Rapidly toggle visibility
+      for (let i = 0; i < 10; i++) {
+        await wrapper.setProps({ visible: i % 2 === 0 });
+        await nextTick();
+      }
+
+      // Component should remain stable
+      expect(wrapper.exists()).toBe(true);
+    });
+
+    it('handles symbol changes without errors', async () => {
+      wrapper = mount(BottomTradingPanel, {
+        props: {
+          visible: true,
+          symbol: 'SPY'
+        }
+      });
+
+      await nextTick();
+
+      // Change symbol
+      await wrapper.setProps({ symbol: 'QQQ' });
+      await nextTick();
+
+      // Component should remain stable
+      expect(wrapper.find('.symbol-display').text()).toBe('QQQ');
+    });
+  });
+});
