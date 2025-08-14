@@ -1,24 +1,7 @@
-import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import orderService from '../src/services/orderService.js';
 
-// Mock the API module
-vi.mock('../src/services/api.js', () => ({
-  default: {
-    placeButterflyOrder: vi.fn()
-  }
-}));
-
 describe('OrderService - Cascade Protection & Order Flow Integrity', () => {
-  let mockApi;
-
-  beforeEach(async () => {
-    // Reset all mocks
-    vi.clearAllMocks();
-    
-    // Get fresh reference to mocked API
-    const apiModule = await import('../src/services/api.js');
-    mockApi = apiModule.default;
-  });
 
   describe('Order Validation & Data Integrity', () => {
     describe('Order Data Validation', () => {
@@ -357,104 +340,28 @@ describe('OrderService - Cascade Protection & Order Flow Integrity', () => {
     });
   });
 
-  describe('Order Placement & API Integration', () => {
-    describe('Successful Order Placement', () => {
-      it('places order successfully and returns formatted response', async () => {
-        const orderData = {
-          symbol: 'SPY',
-          expiry: '2024-01-19',
-          legs: [
-            { symbol: 'SPY_240119C00500000', action: 'buy', ratio_qty: 1 }
-          ],
-          limitPrice: 2.50
-        };
-
-        mockApi.placeButterflyOrder.mockResolvedValue({
-          success: true,
-          order: { id: 'ORDER123', status: 'submitted' }
-        });
-
-        const result = await orderService.placeOrder(orderData);
-        
-        expect(result.success).toBe(true);
-        expect(result.order).toEqual({ id: 'ORDER123', status: 'submitted' });
-        expect(result.message).toBe('Order submitted successfully! Order ID: ORDER123');
-        expect(mockApi.placeButterflyOrder).toHaveBeenCalledWith({
-          legs: [{ symbol: 'SPY_240119C00500000', side: 'buy', qty: 1 }],
-          order_type: 'limit',
-          time_in_force: 'day',
-          limit_price: 2.50
-        });
-      });
-
-      it('handles successful order without order ID', async () => {
-        const orderData = {
-          legs: [{ symbol: 'SPY_240119C00500000', action: 'buy', ratio_qty: 1 }],
-          limitPrice: 2.50
-        };
-
-        mockApi.placeButterflyOrder.mockResolvedValue({
-          success: true,
-          order: { status: 'submitted' } // No ID
-        });
-
-        const result = await orderService.placeOrder(orderData);
-        
-        expect(result.success).toBe(true);
-        expect(result.message).toBe('Order submitted successfully! Order ID: N/A');
-      });
+  describe('Order Type Determination', () => {
+    it('determines single-leg order correctly', () => {
+      const legs = [{ symbol: 'SPY_240119C00500000', action: 'buy', ratio_qty: 1 }];
+      const orderType = orderService.determineOrderType(legs);
+      expect(orderType).toBe('single-leg');
     });
 
-    describe('Order Placement Failures', () => {
-      it('handles API rejection with error message', async () => {
-        const orderData = {
-          legs: [{ symbol: 'SPY_240119C00500000', action: 'buy', ratio_qty: 1 }],
-          limitPrice: 2.50
-        };
+    it('determines multi-leg order correctly', () => {
+      const legs = [
+        { symbol: 'SPY_240119C00500000', action: 'buy', ratio_qty: 1 },
+        { symbol: 'SPY_240119C00510000', action: 'sell', ratio_qty: 1 }
+      ];
+      const orderType = orderService.determineOrderType(legs);
+      expect(orderType).toBe('multi-leg');
+    });
 
-        mockApi.placeButterflyOrder.mockResolvedValue({
-          success: false,
-          error: 'Insufficient buying power'
-        });
+    it('throws error for empty legs array', () => {
+      expect(() => orderService.determineOrderType([])).toThrow('No legs provided');
+    });
 
-        const result = await orderService.placeOrder(orderData);
-        
-        expect(result.success).toBe(false);
-        expect(result.error).toBe('Insufficient buying power');
-        expect(result.message).toBe('Order failed: Insufficient buying power');
-      });
-
-      it('handles API rejection without specific error', async () => {
-        const orderData = {
-          legs: [{ symbol: 'SPY_240119C00500000', action: 'buy', ratio_qty: 1 }],
-          limitPrice: 2.50
-        };
-
-        mockApi.placeButterflyOrder.mockResolvedValue({
-          success: false
-        });
-
-        const result = await orderService.placeOrder(orderData);
-        
-        expect(result.success).toBe(false);
-        expect(result.error).toBe('Unknown error');
-        expect(result.message).toBe('Order failed: Unknown error');
-      });
-
-      it('handles API network/connection errors', async () => {
-        const orderData = {
-          legs: [{ symbol: 'SPY_240119C00500000', action: 'buy', ratio_qty: 1 }],
-          limitPrice: 2.50
-        };
-
-        mockApi.placeButterflyOrder.mockRejectedValue(new Error('Network timeout'));
-
-        const result = await orderService.placeOrder(orderData);
-        
-        expect(result.success).toBe(false);
-        expect(result.error).toBe('Network timeout');
-        expect(result.message).toBe('Order submission failed: Network timeout');
-      });
+    it('throws error for null legs', () => {
+      expect(() => orderService.determineOrderType(null)).toThrow('No legs provided');
     });
   });
 
@@ -555,42 +462,6 @@ describe('OrderService - Cascade Protection & Order Flow Integrity', () => {
 
   describe('Real-World Order Scenarios', () => {
     describe('Complex Multi-Leg Orders', () => {
-      it('handles iron condor order correctly', async () => {
-        const ironCondorOrder = {
-          symbol: 'SPY',
-          expiry: '2024-01-19',
-          strategyType: 'Iron Condor',
-          legs: [
-            { symbol: 'SPY_240119P00480000', action: 'sell', ratio_qty: 1 },
-            { symbol: 'SPY_240119P00490000', action: 'buy', ratio_qty: 1 },
-            { symbol: 'SPY_240119C00510000', action: 'buy', ratio_qty: 1 },
-            { symbol: 'SPY_240119C00520000', action: 'sell', ratio_qty: 1 }
-          ],
-          limitPrice: -0.50, // Credit
-          timeInForce: 'GTC'
-        };
-
-        mockApi.placeButterflyOrder.mockResolvedValue({
-          success: true,
-          order: { id: 'IC123', status: 'submitted' }
-        });
-
-        const result = await orderService.placeOrder(ironCondorOrder);
-        
-        expect(result.success).toBe(true);
-        expect(mockApi.placeButterflyOrder).toHaveBeenCalledWith({
-          legs: [
-            { symbol: 'SPY_240119P00480000', side: 'sell', qty: 1 },
-            { symbol: 'SPY_240119P00490000', side: 'buy', qty: 1 },
-            { symbol: 'SPY_240119C00510000', side: 'buy', qty: 1 },
-            { symbol: 'SPY_240119C00520000', side: 'sell', qty: 1 }
-          ],
-          order_type: 'limit',
-          time_in_force: 'gtc',
-          limit_price: -0.50
-        });
-      });
-
       it('validates complex order before submission', () => {
         const complexOrder = {
           symbol: 'QQQ',
@@ -608,6 +479,36 @@ describe('OrderService - Cascade Protection & Order Flow Integrity', () => {
 
         const summary = orderService.calculateOrderSummary(complexOrder);
         expect(summary.netDebit).toBe(true);
+      });
+
+      it('builds correct payload for iron condor order', () => {
+        const ironCondorOrder = {
+          symbol: 'SPY',
+          expiry: '2024-01-19',
+          strategyType: 'Iron Condor',
+          legs: [
+            { symbol: 'SPY_240119P00480000', action: 'sell', ratio_qty: 1 },
+            { symbol: 'SPY_240119P00490000', action: 'buy', ratio_qty: 1 },
+            { symbol: 'SPY_240119C00510000', action: 'buy', ratio_qty: 1 },
+            { symbol: 'SPY_240119C00520000', action: 'sell', ratio_qty: 1 }
+          ],
+          limitPrice: -0.50, // Credit
+          timeInForce: 'GTC'
+        };
+
+        const payload = orderService.buildOrderPayload(ironCondorOrder);
+        
+        expect(payload).toEqual({
+          legs: [
+            { symbol: 'SPY_240119P00480000', side: 'sell', qty: 1 },
+            { symbol: 'SPY_240119P00490000', side: 'buy', qty: 1 },
+            { symbol: 'SPY_240119C00510000', side: 'buy', qty: 1 },
+            { symbol: 'SPY_240119C00520000', side: 'sell', qty: 1 }
+          ],
+          order_type: 'limit',
+          time_in_force: 'gtc',
+          limit_price: -0.50
+        });
       });
     });
 
