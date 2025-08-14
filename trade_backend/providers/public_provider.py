@@ -477,6 +477,116 @@ class PublicProvider(BaseProvider):
             self._log_error("place_order", e)
             raise
 
+    async def preview_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Preview a trading order."""
+        token = await self._get_access_token()
+        if not token:
+            raise Exception("Failed to get access token")
+
+        legs = order_data.get("legs", [])
+        if len(legs) == 1:
+            url = f"{self.base_url}/userapigateway/trading/{self.account_id}/preflight/single-leg"
+            leg = legs[0]
+            order_side, open_close_indicator = self._map_order_side(leg["side"])
+            instrument_type = self._get_instrument_type(leg["symbol"])
+            
+            payload = {
+                "instrument": {
+                    "symbol": leg["symbol"],
+                    "type": instrument_type
+                },
+                "orderSide": order_side,
+                "orderType": order_data["order_type"].upper(),
+                "expiration": {
+                    "timeInForce": self._map_time_in_force(order_data["time_in_force"])
+                },
+                "quantity": str(leg["qty"]),
+                "limitPrice": str(abs(order_data["limit_price"]))
+            }
+            if open_close_indicator:
+                payload["openCloseIndicator"] = open_close_indicator
+        else:
+            url = f"{self.base_url}/userapigateway/trading/{self.account_id}/preflight/multi-leg"
+            
+            legs_payload = []
+            for leg in legs:
+                order_side, open_close_indicator = self._map_order_side(leg["side"])
+                instrument_type = self._get_instrument_type(leg["symbol"])
+                leg_payload = {
+                    "instrument": {
+                        "symbol": leg["symbol"],
+                        "type": instrument_type
+                    },
+                    "side": order_side,
+                    "ratioQuantity": int(leg["qty"])
+                }
+                if open_close_indicator:
+                    leg_payload["openCloseIndicator"] = open_close_indicator
+                legs_payload.append(leg_payload)
+
+            payload = {
+                "orderType": order_data["order_type"].upper(),
+                "expiration": {
+                    "timeInForce": self._map_time_in_force(order_data["time_in_force"]),
+                    "expirationTime": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
+                },
+                "quantity": str(order_data.get("qty", 1)),
+                "limitPrice": str(order_data["limit_price"]),
+                "legs": legs_payload
+            }
+
+        headers = {
+            'Authorization': f'Bearer {token}',
+            'Content-Type': 'application/json'
+        }
+
+        try:
+            response = requests.post(url, headers=headers, json=payload)
+            response.raise_for_status()
+            preview_response = response.json()
+
+            margin_impact = preview_response.get("marginImpact") or {}
+            
+            regulatory_fees = preview_response.get("regulatoryFees", {})
+            total_regulatory_fees = sum(float(fee) for fee in regulatory_fees.values() if fee)
+            estimated_index_option_fee = float(preview_response.get("estimatedIndexOptionFee", 0))
+            total_fees = total_regulatory_fees + estimated_index_option_fee
+
+            return {
+                "status": "ok",
+                "commission": float(preview_response.get("estimatedCommission") or 0),
+                "cost": float(preview_response.get("estimatedCost", 0)),
+                "fees": total_fees,
+                "order_cost": float(preview_response.get("orderValue", 0)),
+                "margin_change": float(margin_impact.get("marginUsageImpact", 0)),
+                "buying_power_effect": float(preview_response.get("buyingPowerRequirement", 0)),
+                "day_trades": 0, # Not provided
+                "validation_errors": [],
+                "estimated_total": float(preview_response.get("estimatedCost", 0))
+            }
+        except requests.exceptions.RequestException as e:
+            self._log_error("preview_order", e)
+            # Try to extract error message from JSON response if available
+            error_message = str(e)
+            if hasattr(e, "response") and e.response is not None:
+                try:
+                    error_json = e.response.json()
+                    error_message = error_json.get("message", str(e))
+                except Exception:
+                    error_message = e.response.text or str(e)
+            return {
+                "status": "error",
+                "validation_errors": [f"Preview failed: {error_message}"],
+                "commission": 0,
+                "cost": 0,
+                "fees": 0,
+                "order_cost": 0,
+                "margin_change": 0,
+                "buying_power_effect": 0,
+                "day_trades": 0,
+                "estimated_total": 0
+            }
+
     async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a multi-leg trading order."""
         token = await self._get_access_token()
