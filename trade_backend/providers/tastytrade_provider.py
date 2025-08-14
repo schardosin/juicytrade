@@ -1399,6 +1399,77 @@ class TastyTradeProvider(BaseProvider):
             self._log_error("place_order", e)
             raise
 
+    async def preview_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Preview a multi-leg trading order using the dry-run endpoint."""
+        try:
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+
+            tastytrade_order = self._transform_to_tastytrade_multi_leg_order(order_data)
+            
+            url = f"{self.base_url}/accounts/{self.account_id}/orders/dry-run"
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "juicytrade/1.0"
+            }
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(url, headers=headers, json=tastytrade_order)
+                response.raise_for_status()
+                
+                data = response.json().get("data", {})
+                
+                warnings = data.get("warnings", [])
+                if warnings:
+                    # Filter out informational warnings
+                    error_warnings = [w for w in warnings if w.get("message") not in ["Your order will begin working during next valid session."]]
+                    if error_warnings:
+                        return {
+                            "status": "error",
+                            "validation_errors": [w.get("message") for w in error_warnings],
+                            "commission": 0,
+                            "cost": 0,
+                            "fees": 0,
+                            "order_cost": 0,
+                            "margin_change": 0,
+                            "buying_power_effect": 0,
+                            "day_trades": 0,
+                            "estimated_total": 0
+                        }
+                
+                fee_calculation = data.get("fee-calculation", {})
+                buying_power_effect = data.get("buying-power-effect", {})
+                
+                return {
+                    "status": "ok",
+                    "commission": float(fee_calculation.get("commission", 0)),
+                    "cost": float(data.get("order", {}).get("price", 0)),
+                    "fees": float(fee_calculation.get("total-fees", 0)) - float(fee_calculation.get("commission", 0)),
+                    "order_cost": float(data.get("order", {}).get("price", 0)),
+                    "margin_change": float(buying_power_effect.get("change-in-margin-requirement", 0)),
+                    "buying_power_effect": float(buying_power_effect.get("impact", 0)),
+                    "day_trades": 0, # Not provided in dry-run
+                    "validation_errors": [],
+                    "estimated_total": float(fee_calculation.get("total-fees", 0)) + float(data.get("order", {}).get("price", 0))
+                }
+
+        except Exception as e:
+            self._log_error("preview_order", e)
+            return {
+                "status": "error",
+                "validation_errors": [f"Preview failed: {str(e)}"],
+                "commission": 0,
+                "cost": 0,
+                "fees": 0,
+                "order_cost": 0,
+                "margin_change": 0,
+                "buying_power_effect": 0,
+                "day_trades": 0,
+                "estimated_total": 0
+            }
+
     async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a multi-leg trading order."""
         try:

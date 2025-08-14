@@ -1025,6 +1025,22 @@ class AlpacaProvider(BaseProvider):
             self._log_error("place_order", e)
             raise
 
+    async def preview_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
+        """Preview a multi-leg trading order."""
+        return {
+            "status": "ok",
+            "preview_not_available": True,
+            "validation_errors": [],
+            "commission": 0,
+            "cost": 0,
+            "fees": 0,
+            "order_cost": 0,
+            "margin_change": 0,
+            "buying_power_effect": 0,
+            "day_trades": 0,
+            "estimated_total": 0
+        }
+
     async def place_multi_leg_order(self, order_data: Dict[str, Any]) -> Order:
         """Place a multi-leg trading order."""
         try:

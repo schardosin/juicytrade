@@ -170,11 +170,15 @@
               </div>
             </div>
             <!-- Preview Error Message -->
-            <div v-else class="preview-error-message">
+            <div v-if="hasPreviewError" class="preview-error-message">
               <p><strong>⚠️ Order Preview Failed</strong></p>
               <p v-if="previewData && previewData.validation_errors">{{ previewData.validation_errors[0] }}</p>
               <p v-else-if="previewError">{{ previewError }}</p>
               <p v-else>An unknown error occurred during the preview.</p>
+            </div>
+            <!-- Preview Not Available Message -->
+            <div v-if="isPreviewNotAvailable" class="warning-message">
+              ⚠️ Order preview is not available for this broker.
             </div>
           </div>
 
@@ -326,7 +330,11 @@ export default {
 
     // Check if there is a preview error
     const hasPreviewError = computed(() => {
-      return previewError.value || (previewData.value && previewData.value.status === 'error');
+      return previewError.value || (previewData.value && previewData.value.status === 'error' && !previewData.value.preview_not_available);
+    });
+
+    const isPreviewNotAvailable = computed(() => {
+      return previewData.value && previewData.value.preview_not_available;
     });
 
     // Check if the market is open
@@ -369,10 +377,12 @@ export default {
 
     const getEstimatedCost = () => {
       // Use preview data if available, otherwise fallback to UI calculations
-      if (previewData.value && previewData.value.status === 'ok') {
+      if (previewData.value && previewData.value.status === 'ok' && !isPreviewNotAvailable.value) {
         const orderCost = previewData.value.order_cost || 0;
         const label = orderCost >= 0 ? "db" : "cr";
         return `${formatCurrency(Math.abs(orderCost))} ${label}`;
+      } else if (hasPreviewError.value || isPreviewNotAvailable.value) {
+        return "--";
       }
       
       // Fallback to UI calculations
@@ -388,10 +398,12 @@ export default {
 
     const getEstimatedTotal = () => {
       // Use preview data if available, otherwise fallback to UI calculations
-      if (previewData.value && previewData.value.status === 'ok') {
+      if (previewData.value && previewData.value.status === 'ok' && !isPreviewNotAvailable.value) {
         const estimatedTotal = previewData.value.estimated_total || 0;
         const label = estimatedTotal >= 0 ? "db" : "cr";
         return `${formatCurrency(Math.abs(estimatedTotal))} ${label}`;
+      } else if (hasPreviewError.value || isPreviewNotAvailable.value) {
+        return "--";
       }
       
       // Fallback to UI calculations
@@ -409,8 +421,10 @@ export default {
 
     const getBPEffect = () => {
       // Use preview data if available, otherwise fallback to P&L analysis
-      if (previewData.value && previewData.value.status === 'ok') {
+      if (previewData.value && previewData.value.status === 'ok' && !isPreviewNotAvailable.value) {
         return formatCurrency(Math.abs(previewData.value.buying_power_effect || 0));
+      } else if (hasPreviewError.value || isPreviewNotAvailable.value) {
+        return "--";
       }
       
       // Fallback to P&L analysis
@@ -419,10 +433,12 @@ export default {
 
     const getCommissionAndFees = () => {
       // Use preview data if available
-      if (previewData.value && previewData.value.status === 'ok') {
+      if (previewData.value && previewData.value.status === 'ok' && !isPreviewNotAvailable.value) {
         const commission = previewData.value.commission || 0;
         const fees = previewData.value.fees || 0;
         return `${formatCurrency(commission)} + ${formatCurrency(fees)}`;
+      } else if (hasPreviewError.value || isPreviewNotAvailable.value) {
+        return "--";
       }
       
       // Fallback to estimated values
@@ -478,6 +494,7 @@ export default {
       previewLoading,
       previewError,
       hasPreviewError,
+      isPreviewNotAvailable,
       isMarketOpen,
       formattedLegs,
       canConfirm,

@@ -259,6 +259,7 @@ export default {
               "partially_filled",
               "held",
               "pending",
+              "unknown",
               "open",
               "submitted"
             ].includes(status);
@@ -633,6 +634,7 @@ export default {
         "partially_filled",
         "held",
         "pending",
+        "unknown",
         "open",
         "submitted",
         "pending_cancel",

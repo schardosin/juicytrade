@@ -1147,6 +1147,7 @@ class TradierProvider(BaseProvider):
             if order_preview.get("status") == "ok":
                 return {
                     "status": "ok",
+                    "preview_not_available": False,
                     "commission": float(order_preview.get("commission", 0)),
                     "cost": float(order_preview.get("cost", 0)),
                     "fees": float(order_preview.get("fees", 0)),
