@@ -68,21 +68,6 @@ class BaseProvider(ABC):
         pass
     
     @abstractmethod
-    async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
-        """
-        Get options chain for a symbol and expiration date.
-        
-        Args:
-            symbol: Underlying symbol
-            expiry: Expiration date in YYYY-MM-DD format
-            option_type: Optional filter for "call" or "put"
-            
-        Returns:
-            List of OptionContract objects
-        """
-        pass
-    
-    @abstractmethod
     async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
         """
         Get basic options chain (no Greeks) for fast loading, ATM-focused.

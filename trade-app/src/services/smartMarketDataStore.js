@@ -113,8 +113,20 @@ class DataHealthMonitor {
 
   async checkGreeksHealth() {
     if (this.store.activeGreeksSubscriptions.size > 0) {
-      const oldestGreeks = Math.min(...Array.from(this.store.optionGreeks.values())
-        .map(g => g.timestamp || 0));
+      const timestamps = [];
+      for (const symbol of this.store.activeGreeksSubscriptions) {
+        const greekData = this.store.optionGreeks.get(symbol);
+        if (greekData) {
+          timestamps.push(greekData.timestamp || 0);
+        }
+      }
+
+      // If we have subscriptions but no data yet for any of them, don't fail.
+      if (timestamps.length === 0) {
+        return;
+      }
+
+      const oldestGreeks = Math.min(...timestamps);
 
       // Greeks should be updated within 5 minutes during market hours
       const staleThreshold = Date.now() - 300000; // 5 minutes

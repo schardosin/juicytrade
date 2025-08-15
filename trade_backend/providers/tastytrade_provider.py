@@ -724,74 +724,67 @@ class TastyTradeProvider(BaseProvider):
             self._log_error(f"get_expiration_dates for {symbol}", e)
             return []
     
-    async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None, root_symbol: Optional[str] = None) -> List[OptionContract]:
-        """Get options chain for a symbol and expiration date with pricing data."""
-        try:
-            if not await self._ensure_valid_session():
-                raise Exception("Failed to authenticate with TastyTrade")
-            
-            # 1. Get basic option contracts
-            url = f"{self.base_url}/option-chains/{symbol}"
-            headers = {
-                "Authorization": self._session_token,
-                "Accept": "application/json, text/plain, */*",
-                "User-Agent": "juicytrade/1.0"
-            }
-            
-            params = {}
-            if root_symbol:
-                params['root-symbol'] = root_symbol
-
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, headers=headers, params=params)
-                response.raise_for_status()
-                
-                data = response.json()
-                items = data.get("data", {}).get("items", [])
-                
-                # Filter contracts
-                filtered_contracts = []
-                option_symbols = []
-                for item in items:
-                    # Filter by expiry if specified
-                    if expiry and item.get("expiration-date") != expiry:
-                        continue
-                    
-                    # Filter by option type if specified
-                    if option_type and item.get("option-type") != option_type.upper():
-                        continue
-                    
-                    filtered_contracts.append(item)
-                    option_symbols.append(item.get("symbol", ""))
-                
-                if not filtered_contracts:
-                    return []
-                
-                # 2. Get pricing data for the filtered contracts
-                pricing_data = await self._get_option_quotes(option_symbols)
-                
-                # 3. Transform contracts with pricing data
-                result = []
-                for item in filtered_contracts:
-                    transformed_contract = self._transform_tastytrade_option_contract(item, pricing_data)
-                    if transformed_contract:
-                        result.append(transformed_contract)
-                
-                return result
-                
-        except Exception as e:
-            self._log_error(f"get_options_chain for {symbol} {expiry}", e)
-            return []
-    
     async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
         """Fast loading - basic options data without Greeks, ATM-focused by strike count."""
         try:
             # Determine the symbol to use for the API call. Use underlying_symbol if provided, otherwise use symbol.
             api_symbol = underlying_symbol if underlying_symbol else symbol
 
-            # Get options chain filtered by root symbol at the API level.
-            # The 'symbol' parameter is the root symbol we want to filter by.
-            contracts = await self.get_options_chain(api_symbol, expiry, root_symbol=symbol)
+            if not await self._ensure_valid_session():
+                raise Exception("Failed to authenticate with TastyTrade")
+
+            # 1. Get basic option contracts
+            url = f"{self.base_url}/option-chains/{api_symbol}"
+            headers = {
+                "Authorization": self._session_token,
+                "Accept": "application/json, text/plain, */*",
+                "User-Agent": "juicytrade/1.0"
+            }
+
+            params = {}
+            if symbol:
+                params['root-symbol'] = symbol
+
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+
+                data = response.json()
+                items = data.get("data", {}).get("items", [])
+
+                # Determine type filter, for tastytrade monthly is called regular
+                typeFilter = type.lower()
+                if type.lower() == 'monthly':
+                    typeFilter = 'regular'
+
+                # Filter contracts
+                filtered_contracts_raw = []
+                option_symbols = []
+                for item in items:
+                    # Filter by expiry if specified
+                    if expiry and item.get("expiration-date") != expiry:
+                        continue
+
+                    # The 'type' parameter from the frontend refers to 'weekly' or 'monthly',
+                    # which is 'expiration-type' in TastyTrade's response.
+                    if type and item.get("expiration-type", "").lower() != typeFilter:
+                        continue
+
+                    filtered_contracts_raw.append(item)
+                    option_symbols.append(item.get("symbol", ""))
+
+                if not filtered_contracts_raw:
+                    return []
+
+                # 2. Get pricing data for the filtered contracts
+                pricing_data = await self._get_option_quotes(option_symbols)
+                
+                # 3. Transform contracts with pricing data
+                contracts = []
+                for item in filtered_contracts_raw:
+                    transformed_contract = self._transform_tastytrade_option_contract(item, pricing_data)
+                    if transformed_contract:
+                        contracts.append(transformed_contract)
 
             if not contracts:
                 return []
@@ -813,44 +806,44 @@ class TastyTradeProvider(BaseProvider):
                     underlying_price = (quote.bid + quote.ask) / 2 if quote and quote.bid and quote.ask else None
                 except:
                     underlying_price = None
-            
+
             # Smart filtering - focus on ATM strikes by count
             if underlying_price and contracts:
                 # Get all unique strikes and sort them
                 strikes = sorted(list(set(contract.strike_price for contract in contracts)))
-                
+
                 # Find the ATM strike (closest to underlying price)
                 atm_strike = min(strikes, key=lambda x: abs(x - underlying_price))
                 atm_index = strikes.index(atm_strike)
-                
+
                 # Calculate how many strikes to take on each side
                 strikes_per_side = strike_count // 2
-                
+
                 # Get the range of strikes around ATM
                 start_index = max(0, atm_index - strikes_per_side)
                 end_index = min(len(strikes), atm_index + strikes_per_side + 1)
-                
+
                 # Select strikes in the range
                 selected_strikes = set(strikes[start_index:end_index])
-                
+
                 # Filter contracts to only include selected strikes
                 filtered_contracts = [
-                    contract for contract in contracts 
+                    contract for contract in contracts
                     if contract.strike_price in selected_strikes
                 ]
-                
+
                 contracts = filtered_contracts
-            
+
             # Transform to basic format (remove Greeks for faster loading)
             result = []
             for contract in contracts:
                 basic_contract = self._transform_to_basic_contract(contract)
                 if basic_contract:
                     result.append(basic_contract)
-            
+
             logger.info(f"TastyTrade: Returning {len(result)} basic options for {symbol} {expiry}")
             return result
-            
+
         except Exception as e:
             self._log_error(f"get_options_chain_basic for {symbol} {expiry}", e)
             return []

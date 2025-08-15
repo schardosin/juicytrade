@@ -215,23 +215,6 @@ export const api = {
     }
   },
 
-  // Get options chain
-  async getOptionsChain(symbol, expiry, strategyType) {
-    try {
-      const response = await axios.get(`${API_BASE_URL}/options_chain`, {
-        params: {
-          symbol,
-          expiry: expiry,
-          strategy_type: strategyType,
-        },
-      });
-      return response.data.data;
-    } catch (error) {
-      console.error("Error fetching options chain:", error);
-      throw error;
-    }
-  },
-
   // Get basic options chain (fast loading, no Greeks)
   async getOptionsChainBasic(
     symbol,

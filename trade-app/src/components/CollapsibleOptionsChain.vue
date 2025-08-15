@@ -59,7 +59,10 @@
           <!-- Date Display -->
           <div class="date-display">
             <span class="date-label">{{ expiration.label }}</span>
-            <span v-if="expiration.isMonthly" class="monthly-badge">Monthly</span>
+            <div class="badge-container">
+              <span v-if="expiration.isMonthly" class="monthly-badge">M</span>
+              <span v-else class="weekly-badge">W</span>
+            </div>
           </div>
 
           <!-- Days to Expiry -->
@@ -810,6 +813,7 @@ export default {
   cursor: pointer;
   transition: var(--transition-normal);
   border-bottom: 1px solid var(--border-secondary);
+  position: relative;
 }
 
 .expiration-header:hover {
@@ -839,13 +843,21 @@ export default {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  min-width: 120px;
+  min-width: 150px;
 }
 
 .date-label {
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
+  width: 100px;
+  text-align: left;
+}
+
+.badge-container {
+  width: 30px;
+  display: flex;
+  justify-content: center;
 }
 
 .monthly-badge {
@@ -856,7 +868,6 @@ export default {
   padding: 2px 6px;
   border-radius: var(--radius-sm);
   text-transform: uppercase;
-  margin-left: 8px;
 }
 
 .weekly-badge {
@@ -870,21 +881,27 @@ export default {
 }
 
 .days-display {
-  min-width: 40px;
-  text-align: center;
+  min-width: 50px;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
 }
 
 .days-label {
-  font-size: var(--font-size-sm);
+  font-size: var(--font-size-md);
   color: var(--text-secondary);
   background-color: var(--bg-quaternary);
-  padding: 2px 6px;
-  border-radius: var(--radius-sm);
+  padding: 4px 8px;
+  border-radius: var(--radius-md);
+  line-height: 1;
 }
 
 .iv-display {
-  flex: 1;
   text-align: right;
+  margin-left: auto;
 }
 
 .iv-label {

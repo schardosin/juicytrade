@@ -185,12 +185,6 @@ class ProviderManager:
             return await provider.get_stock_quote(symbol)
         return None
 
-    async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
-        provider = self._get_provider("options_chain")
-        if provider:
-            return await provider.get_options_chain(symbol, expiry, option_type)
-        return []
-
     async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
         provider = self._get_provider("options_chain")
         if provider:

@@ -470,39 +470,6 @@ async def get_expiration_dates(symbol: str):
         logger.error(f"Error getting expiration dates: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/options_chain", response_model=ApiResponse)
-async def get_options_chain(symbol: str, expiry: str, strategy_type: Optional[str] = None):
-    """Get options chain for a symbol and expiration date - no price data (streaming provides prices)."""
-    try:
-        # Map strategy_type to option_type if needed
-        option_type = None
-        if strategy_type:
-            if "CALL" in strategy_type.upper():
-                option_type = "call"
-            elif "PUT" in strategy_type.upper():
-                option_type = "put"
-        
-        contracts = await provider_manager.get_options_chain(symbol, expiry, option_type)
-        
-        # Convert to dict format and remove price data for performance
-        contracts_data = []
-        for contract in contracts:
-            contract_dict = contract.dict()
-            # Remove price-related fields - UI gets these from streaming
-            price_fields = ['price', 'bid', 'ask', 'last', 'mark', 'bid_size', 'ask_size', 'volume', 'open_interest']
-            for field in price_fields:
-                contract_dict.pop(field, None)
-            contracts_data.append(contract_dict)
-        
-        return ApiResponse(
-            success=True,
-            data=contracts_data,
-            message=f"Retrieved {len(contracts)} option contracts (no price data - use streaming)"
-        )
-    except Exception as e:
-        logger.error(f"Error getting options chain: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
 @app.get("/options_chain_basic", response_model=ApiResponse)
 async def get_options_chain_basic(
     symbol: str, 
