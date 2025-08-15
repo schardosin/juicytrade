@@ -631,7 +631,12 @@ export default {
     const debouncedUpdateChartData = () => {
       clearTimeout(chartUpdateDebounceTimer);
       chartUpdateDebounceTimer = setTimeout(() => {
-        updateChartData(activePositions.value);
+        // Use activePositions only when there are checked rows; otherwise defer to selectedLegs.
+        const positionsArg =
+          activePositions.value && activePositions.value.length > 0
+            ? activePositions.value
+            : null;
+        updateChartData(positionsArg);
       }, 50); // 50ms debounce to prevent flicker from rapid state changes
     };
 

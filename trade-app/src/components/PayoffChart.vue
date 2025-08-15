@@ -266,19 +266,11 @@ export default {
 
     // Check if chartData change is minor (only prices changed, structure same)
     const isMinorChartDataUpdate = (newData, prevData) => {
-      if (!prevData || !newData.legs || !prevData.legs || newData.legs.length !== prevData.legs.length) {
+      if (!prevData || !newData.strikes || !prevData.strikes || newData.strikes.length !== prevData.strikes.length) {
         return false;
       }
-      for (let i = 0; i < newData.legs.length; i++) {
-        const newLeg = newData.legs[i];
-        const prevLeg = prevData.legs[i];
-        // Compare structural fields; adjust based on your leg properties (e.g., strike, type, position/side, quantity)
-        if (
-          newLeg.strike !== prevLeg.strike ||
-          newLeg.type !== prevLeg.type ||
-          newLeg.position !== prevLeg.position ||
-          newLeg.quantity !== prevLeg.quantity
-        ) {
+      for (let i = 0; i < newData.strikes.length; i++) {
+        if (newData.strikes[i] !== prevData.strikes[i]) {
           return false;
         }
       }
@@ -738,7 +730,7 @@ export default {
     watch(
       () => props.chartData,
       (newChartData) => {
-        if (newChartData) {
+        if (newChartData && newChartData.prices && newChartData.prices.length > 0) {
           const prev = previousChartData.value;
           const isMinor = isMinorChartDataUpdate(newChartData, prev);
 

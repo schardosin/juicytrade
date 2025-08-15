@@ -766,6 +766,29 @@ export default {
       { deep: true }
     );
 
+    // Ensure parent clears any cached/checked positions when there are no rows to show
+    // This prevents stale "fake legs" from continuing to drive the payoff chart.
+    watch(
+      () => allPositions.value.length,
+      (len) => {
+        if (len === 0) {
+          checkedPositions.value.clear();
+          emit("positions-changed", []);
+        }
+      }
+    );
+
+    // Defensive: if parent clears chartData, also clear any checked state
+    // so a subsequent selection starts from a clean slate.
+    watch(
+      () => props.chartData,
+      (val) => {
+        if (!val) {
+          checkedPositions.value.clear();
+        }
+      }
+    );
+
     // Watch for position data changes (reactive updates from global store)
     // This single watcher handles both symbol changes and position data updates
     watch(
@@ -841,12 +864,9 @@ export default {
 
     });
 
-    // Computed property to use either internal chart data or prop
-    const chartData = computed(() => {
-      // Prioritize internal chart data (from selected positions)
-      // Fall back to prop chart data (from parent component like OptionsTrading)
-      return internalChartData.value || props.chartData;
-    });
+    // Chart data is solely controlled by the parent (OptionsTrading)
+    // Avoid any internal caching here to prevent stale charts when no legs are selected.
+    const chartData = computed(() => props.chartData);
 
     return {
       activeSection,
