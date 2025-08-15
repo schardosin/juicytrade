@@ -508,12 +508,14 @@ async def get_options_chain_basic(
     symbol: str, 
     expiry: str, 
     underlying_price: Optional[float] = None,
-    strike_count: int = 20
+    strike_count: int = 20,
+    type: Optional[str] = None,
+    underlying_symbol: Optional[str] = None
 ):
     """Fast options chain loading - basic data only, ATM-focused by strike count, no price data."""
     try:
         contracts = await provider_manager.get_options_chain_basic(
-            symbol, expiry, underlying_price, strike_count
+            symbol, expiry, underlying_price, strike_count, type, underlying_symbol
         )
         
         # Convert to dict format and remove price data for performance

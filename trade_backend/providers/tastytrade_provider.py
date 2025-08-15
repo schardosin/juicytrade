@@ -670,7 +670,7 @@ class TastyTradeProvider(BaseProvider):
             return {}
     
     async def get_expiration_dates(self, symbol: str) -> List[str]:
-        """Get available expiration dates for options on a symbol."""
+        """Get available expiration dates for options on a symbol with universal enhanced structure."""
         try:
             if not await self._ensure_valid_session():
                 raise Exception("Failed to authenticate with TastyTrade")
@@ -689,17 +689,42 @@ class TastyTradeProvider(BaseProvider):
                 data = response.json()
                 items = data.get("data", {}).get("items", [])
                 
-                # Extract unique expiration dates
-                expiry_dates = list(set(item.get("expiration-date") for item in items if item.get("expiration-date")))
-                expiry_dates.sort()
+                # Always return enhanced structure for all symbols
+                enhanced_dates = []
+                # Group by expiration date and root symbol
+                date_symbol_map = {}
                 
-                return expiry_dates
+                for item in items:
+                    exp_date = item.get("expiration-date")
+                    root_symbol = item.get("root-symbol", symbol)
+                    exp_type = item.get("expiration-type", "Standard")
+                    
+                    if exp_date:
+                        key = f"{exp_date}-{root_symbol}"
+                        if key not in date_symbol_map:
+                            # Determine type based on expiration type from TastyTrade
+                            if exp_type == "Weekly":
+                                symbol_type = "weekly"
+                            else:
+                                symbol_type = "monthly"  # Standard, Monthly, etc.
+                            
+                            date_symbol_map[key] = {
+                                "date": exp_date,
+                                "symbol": root_symbol,
+                                "type": symbol_type
+                            }
+                
+                # Convert to list and sort by date, then by symbol
+                enhanced_dates = list(date_symbol_map.values())
+                enhanced_dates.sort(key=lambda x: (x["date"], x["symbol"]))
+                
+                return enhanced_dates
                 
         except Exception as e:
             self._log_error(f"get_expiration_dates for {symbol}", e)
             return []
     
-    async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
+    async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None, root_symbol: Optional[str] = None) -> List[OptionContract]:
         """Get options chain for a symbol and expiration date with pricing data."""
         try:
             if not await self._ensure_valid_session():
@@ -709,12 +734,16 @@ class TastyTradeProvider(BaseProvider):
             url = f"{self.base_url}/option-chains/{symbol}"
             headers = {
                 "Authorization": self._session_token,
-                "Accept": "application/json",
+                "Accept": "application/json, text/plain, */*",
                 "User-Agent": "juicytrade/1.0"
             }
             
+            params = {}
+            if root_symbol:
+                params['root-symbol'] = root_symbol
+
             async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.get(url, headers=headers)
+                response = await client.get(url, headers=headers, params=params)
                 response.raise_for_status()
                 
                 data = response.json()
@@ -754,19 +783,33 @@ class TastyTradeProvider(BaseProvider):
             self._log_error(f"get_options_chain for {symbol} {expiry}", e)
             return []
     
-    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
         """Fast loading - basic options data without Greeks, ATM-focused by strike count."""
         try:
-            # Get full options chain first
-            contracts = await self.get_options_chain(symbol, expiry)
-            
+            # Determine the symbol to use for the API call. Use underlying_symbol if provided, otherwise use symbol.
+            api_symbol = underlying_symbol if underlying_symbol else symbol
+
+            # Get options chain filtered by root symbol at the API level.
+            # The 'symbol' parameter is the root symbol we want to filter by.
+            contracts = await self.get_options_chain(api_symbol, expiry, root_symbol=symbol)
+
             if not contracts:
                 return []
-            
+
+            # Explicitly filter by root_symbol as the API might not be precise enough
+            contracts = [
+                contract for contract in contracts if contract.root_symbol.upper() == symbol.upper()
+            ]
+            logger.info(f"TastyTrade: Filtered to {len(contracts)} contracts for root symbol {symbol}")
+
+            if not contracts:
+                return []
+
             # Get underlying price if not provided
             if underlying_price is None:
                 try:
-                    quote = await self.get_stock_quote(symbol)
+                    # Use api_symbol to get quote for the underlying
+                    quote = await self.get_stock_quote(api_symbol)
                     underlying_price = (quote.bid + quote.ask) / 2 if quote and quote.bid and quote.ask else None
                 except:
                     underlying_price = None
@@ -805,6 +848,7 @@ class TastyTradeProvider(BaseProvider):
                 if basic_contract:
                     result.append(basic_contract)
             
+            logger.info(f"TastyTrade: Returning {len(result)} basic options for {symbol} {expiry}")
             return result
             
         except Exception as e:
@@ -2011,6 +2055,7 @@ class TastyTradeProvider(BaseProvider):
                 expiration_date=raw_contract.get("expiration-date", ""),
                 strike_price=float(raw_contract.get("strike-price", 0)),
                 type=self._normalize_option_type(raw_contract.get("option-type", "")),
+                root_symbol=raw_contract.get("root-symbol", ""),  # Use root-symbol directly from API
                 bid=price_info.get("bid"),
                 ask=price_info.get("ask"),
                 close_price=price_info.get("close"),
@@ -2036,6 +2081,7 @@ class TastyTradeProvider(BaseProvider):
                 expiration_date=contract.expiration_date,
                 strike_price=contract.strike_price,
                 type=contract.type,
+                root_symbol=contract.root_symbol,  # Preserve root_symbol
                 bid=contract.bid,
                 ask=contract.ask,
                 close_price=contract.close_price,

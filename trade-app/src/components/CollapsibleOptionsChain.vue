@@ -59,6 +59,7 @@
           <!-- Date Display -->
           <div class="date-display">
             <span class="date-label">{{ expiration.label }}</span>
+            <span v-if="expiration.isMonthly" class="monthly-badge">Monthly</span>
           </div>
 
           <!-- Days to Expiry -->
@@ -306,7 +307,13 @@ export default {
 
     // Computed properties
     const expirationGroups = computed(() => {
-      return props.expirationDates.map((dateStr) => {
+      return props.expirationDates.map((expirationEntry) => {
+        // Always expect enhanced format - object with date, symbol, type
+        const dateStr = expirationEntry.date;
+        const symbol = expirationEntry.symbol;
+        const type = expirationEntry.type;
+        const isMonthly = (type === 'monthly');
+
         const [year, month, day] = dateStr.split("-").map(Number);
         const date = new Date(Date.UTC(year, month - 1, day));
         const today = new Date();
@@ -319,12 +326,18 @@ export default {
           Math.ceil(timeDiff / (1000 * 60 * 60 * 24))
         );
 
-        const optionsData = props.optionsDataByExpiration[dateStr] || [];
+        // Create unique key for this expiration entry
+        const uniqueKey = `${dateStr}-${type}-${symbol}`;
+
+        const optionsData = props.optionsDataByExpiration[uniqueKey] || [];
         const hasLoaded = optionsData.length > 0;
-        const isLoading = expandedExpirations.value.has(dateStr) && !hasLoaded;
+        const isLoading = expandedExpirations.value.has(uniqueKey) && !hasLoaded;
 
         return {
           date: dateStr,
+          uniqueKey: uniqueKey,
+          symbol: symbol,
+          type: type,
           label: date.toLocaleDateString("en-US", {
             month: "short",
             day: "numeric",
@@ -335,10 +348,11 @@ export default {
             timeZone: "UTC",
           }),
           daysToExpiry,
-          isExpanded: expandedExpirations.value.has(dateStr),
-          isLoading,
+          isExpanded: expandedExpirations.value.has(uniqueKey),
+          isLoading: expandedExpirations.value.has(uniqueKey) && !hasLoaded,
           hasLoaded,
           optionsData,
+          isMonthly,
           // Static IV data to avoid unnecessary re-renders
           ivData: {
             rank: 45.2,
@@ -358,13 +372,12 @@ export default {
       const wasExpanded = expiration.isExpanded;
 
       if (wasExpanded) {
-        // Collapse expiration
-        expandedExpirations.value.delete(expiration.date);
-        emit("expiration-collapsed", expiration.date);
+        // Collapse expiration - use uniqueKey for tracking
+        expandedExpirations.value.delete(expiration.uniqueKey);
+        emit("expiration-collapsed", expiration.uniqueKey);
 
         // Clean up the local caches for the collapsed expiration's symbols
         if (expiration.optionsData && expiration.optionsData.length > 0) {
-          console.log(`🧹 Clearing local cache for ${expiration.optionsData.length} symbols from ${expiration.date}`);
           expiration.optionsData.forEach(option => {
             if (option.symbol) {
               liveOptionPrices.delete(option.symbol);
@@ -373,9 +386,9 @@ export default {
           });
         }
       } else {
-        // Expand expiration
-        expandedExpirations.value.add(expiration.date);
-        emit("expiration-expanded", expiration.date);
+        // Expand expiration - use uniqueKey for tracking but pass clean date and symbol info
+        expandedExpirations.value.add(expiration.uniqueKey);
+        emit("expiration-expanded", expiration.uniqueKey, expiration);
       }
     };
 
@@ -612,7 +625,6 @@ export default {
 
     // Strike count change handler
     const onStrikeCountChange = () => {
-      console.log(`🔄 Strike count changed to: ${strikeCount.value}`);
       // Emit event to parent to handle strike count change
       emit("strike-count-changed", strikeCount.value);
     };
@@ -834,6 +846,17 @@ export default {
   font-size: var(--font-size-md);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
+}
+
+.monthly-badge {
+  background-color: var(--color-info);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+  margin-left: 8px;
 }
 
 .weekly-badge {

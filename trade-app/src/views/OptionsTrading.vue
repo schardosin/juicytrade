@@ -275,7 +275,9 @@ export default {
           expirationDates.value = response;
 
           // Also create formatted dates for backward compatibility
-          const dates = response.map((dateStr) => {
+          const dates = response.map((expirationEntry) => {
+            // Handle both old string format and new object format
+            const dateStr = typeof expirationEntry === 'string' ? expirationEntry : expirationEntry.date;
             const [year, month, day] = dateStr.split("-").map(Number);
             const date = new Date(Date.UTC(year, month - 1, day));
             const today = new Date();
@@ -526,8 +528,8 @@ export default {
     };
 
     // CollapsibleOptionsChain event handlers - now using centralized manager
-    const onExpirationExpanded = async (expirationDate) => {
-      await optionsManager.expandExpiration(expirationDate);
+    const onExpirationExpanded = async (expirationKey, expirationData) => {
+      await optionsManager.expandExpiration(expirationKey, expirationData);
     };
 
     const onExpirationCollapsed = (expirationDate) => {

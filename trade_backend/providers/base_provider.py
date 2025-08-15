@@ -83,15 +83,17 @@ class BaseProvider(ABC):
         pass
     
     @abstractmethod
-    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
         """
         Get basic options chain (no Greeks) for fast loading, ATM-focused.
         
         Args:
-            symbol: Underlying symbol
+            symbol: Options symbol (e.g., "SPXW", "NDXP")
             expiry: Expiration date in YYYY-MM-DD format
             underlying_price: Current underlying price for ATM filtering
             strike_count: Number of strikes around ATM to include (default 20)
+            type: Expiration type ("monthly", "weekly") for filtering
+            underlying_symbol: Underlying symbol (e.g., "SPX", "NDX") for reference
             
         Returns:
             List of OptionContract objects without Greeks

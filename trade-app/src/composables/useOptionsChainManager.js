@@ -104,8 +104,8 @@ export function useOptionsChainManager(
   // Get all currently subscribed option symbols
   const allSubscribedSymbols = computed(() => {
     const symbols = [];
-    expandedExpirations.value.forEach((expiration) => {
-      const options = dataByExpiration.value[expiration];
+    expandedExpirations.value.forEach((expirationKey) => {
+      const options = dataByExpiration.value[expirationKey];
       if (options && Array.isArray(options)) {
         options.forEach((option) => {
           if (option.symbol) {
@@ -130,6 +130,7 @@ export function useOptionsChainManager(
       error.value = null;
 
       const dates = await api.getAvailableExpirations(symbol.value);
+      
       if (dates && dates.length > 0) {
         expirationDates.value = dates;
       } else {
@@ -146,53 +147,55 @@ export function useOptionsChainManager(
   };
 
   /**
-   * Load options data for a specific expiration
+   * Load options data for a specific expiration using the correct symbol and type
    */
-  const loadOptionsForExpiration = async (expiration) => {
-    if (!symbol.value || !expiration) return;
-
+  const loadOptionsForExpiration = async (expirationKey, expirationData) => {
+    if (!expirationKey || !expirationData) return;
+  
+    const { date, symbol: requestSymbol, type: requestType } = expirationData;
+  
     try {
       // Set loading state for this expiration
       dataByExpiration.value = {
         ...dataByExpiration.value,
-        [expiration]: [], // Empty array indicates loading
+        [expirationKey]: [], // Empty array indicates loading
       };
-
+  
       const chain = await api.getOptionsChainBasic(
-        symbol.value,
-        expiration,
+        requestSymbol,
+        date,
         underlyingPrice.value,
-        strikeCount.value
+        strikeCount.value,
+        requestType,
+        symbol.value
       );
-
+  
       if (chain && chain.length > 0) {
         const processedChain = chain.map((option) => ({
           ...option,
           strike_price: parseFloat(option.strike_price),
           bid: parseFloat(option.bid || option.close_price || 0),
           ask: parseFloat(option.ask || option.close_price || 0),
-          expiration_date: expiration,
+          expiration_date: date,
         }));
-
+  
         // Store the processed data
         dataByExpiration.value = {
           ...dataByExpiration.value,
-          [expiration]: processedChain,
+          [expirationKey]: processedChain,
         };
-
       } else {
         // No options found
         dataByExpiration.value = {
           ...dataByExpiration.value,
-          [expiration]: [],
+          [expirationKey]: [],
         };
-        console.log(`⚠️ No options found for ${expiration}`);
       }
     } catch (err) {
-      console.error(`Error loading options for ${expiration}:`, err);
+      console.error(`Error loading options for ${expirationKey}:`, err);
       dataByExpiration.value = {
         ...dataByExpiration.value,
-        [expiration]: [],
+        [expirationKey]: [],
       };
     }
   };
@@ -200,15 +203,15 @@ export function useOptionsChainManager(
   /**
    * Expand an expiration (load data and subscribe to prices)
    */
-  const expandExpiration = async (expiration) => {
+  const expandExpiration = async (expirationKey, expirationData = null) => {
     // Add to expanded set
-    expandedExpirations.value.add(expiration);
-
+    expandedExpirations.value.add(expirationKey);
+  
     // Load data if not already loaded
-    if (!dataByExpiration.value[expiration]) {
-      await loadOptionsForExpiration(expiration);
+    if (!dataByExpiration.value[expirationKey]) {
+      await loadOptionsForExpiration(expirationKey, expirationData);
     }
-
+  
     // Update websocket subscriptions
     await updateSubscriptions();
   };
@@ -286,8 +289,8 @@ export function useOptionsChainManager(
   /**
    * Get all options for a specific expiration
    */
-  const getOptionsForExpiration = (expiration) => {
-    return dataByExpiration.value[expiration] || [];
+  const getOptionsForExpiration = (expirationKey) => {
+    return dataByExpiration.value[expirationKey] || [];
   };
 
   /**
@@ -310,7 +313,6 @@ export function useOptionsChainManager(
    * Update strike count and reload expanded expirations
    */
   const updateStrikeCount = async (newStrikeCount) => {
-    console.log(`🎯 Updating strike count to: ${newStrikeCount}`);
     strikeCount.value = newStrikeCount;
 
     // Persist the new strike count to localStorage
@@ -318,8 +320,16 @@ export function useOptionsChainManager(
 
     // Reload all expanded expirations with new strike count
     const expandedList = Array.from(expandedExpirations.value);
-    for (const expiration of expandedList) {
-      await loadOptionsForExpiration(expiration);
+    for (const expirationKey of expandedList) {
+      // Extract the actual date from the expiration key (format: "2025-08-18-weekly")
+      let actualDate;
+      if (expirationKey.includes('-weekly') || expirationKey.includes('-monthly')) {
+        const parts = expirationKey.split('-');
+        actualDate = parts.slice(0, 3).join('-'); // Get "2025-08-18" from "2025-08-18-weekly"
+      } else {
+        actualDate = expirationKey;
+      }
+      await loadOptionsForExpiration(actualDate);
     }
 
     // Update subscriptions
@@ -336,8 +346,16 @@ export function useOptionsChainManager(
       
       // Reload all expanded expirations
       const expandedList = Array.from(expandedExpirations.value);
-      for (const expiration of expandedList) {
-        await loadOptionsForExpiration(expiration);
+      for (const expirationKey of expandedList) {
+        // Extract the actual date from the expiration key (format: "2025-08-18-weekly")
+        let actualDate;
+        if (expirationKey.includes('-weekly') || expirationKey.includes('-monthly')) {
+          const parts = expirationKey.split('-');
+          actualDate = parts.slice(0, 3).join('-'); // Get "2025-08-18" from "2025-08-18-weekly"
+        } else {
+          actualDate = expirationKey;
+        }
+        await loadOptionsForExpiration(actualDate);
       }
       
       // Update subscriptions

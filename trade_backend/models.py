@@ -16,6 +16,7 @@ class OptionContract(BaseModel):
     expiration_date: str
     strike_price: float
     type: str  # "call" or "put"
+    root_symbol: Optional[str] = None  # Root symbol from provider (e.g., SPXW, SPY)
     bid: Optional[float] = None
     ask: Optional[float] = None
     close_price: Optional[float] = None

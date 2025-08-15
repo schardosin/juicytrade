@@ -237,7 +237,9 @@ export const api = {
     symbol,
     expiry,
     underlyingPrice = null,
-    strikeCount = 20
+    strikeCount = 20,
+    type = null,
+    underlyingSymbol = null
   ) {
     return await circuitBreaker.execute(async () => {
       return await withRetry(async () => {
@@ -249,6 +251,14 @@ export const api = {
 
         if (underlyingPrice !== null) {
           params.underlying_price = underlyingPrice;
+        }
+
+        if (type !== null) {
+          params.type = type;
+        }
+
+        if (underlyingSymbol !== null) {
+          params.underlying_symbol = underlyingSymbol;
         }
 
         const response = await apiClient.get(`${API_BASE_URL}/options_chain_basic`, {
