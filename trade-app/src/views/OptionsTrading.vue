@@ -631,12 +631,10 @@ export default {
     const debouncedUpdateChartData = () => {
       clearTimeout(chartUpdateDebounceTimer);
       chartUpdateDebounceTimer = setTimeout(() => {
-        // Use activePositions only when there are checked rows; otherwise defer to selectedLegs.
-        const positionsArg =
-          activePositions.value && activePositions.value.length > 0
-            ? activePositions.value
-            : null;
-        updateChartData(positionsArg);
+        // Pass activePositions directly (including empty array) so an explicit "no checked positions"
+        // from the RightPanel results in chart clearing. updateChartData treats [] as an explicit
+        // empty selection and will set chartData to null.
+        updateChartData(activePositions.value);
       }, 50); // 50ms debounce to prevent flicker from rapid state changes
     };
 

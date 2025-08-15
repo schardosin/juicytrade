@@ -472,7 +472,7 @@ export default {
 
           const positionData = {
             ...position,
-            id: position.symbol || position.id,
+            id: `existing:${position.symbol || position.id}`,
             current_price: currentPrice,
             unrealized_pl: unrealizedPL,
             isExisting: true,
@@ -495,7 +495,7 @@ export default {
         }
 
         positions.push({
-          id: `${leg.symbol}_selected_${index}`, // Unique ID to allow duplicates
+          id: `selected:${leg.symbol}`, // Stable namespaced id for selected legs
           symbol: leg.symbol,
           asset_class: "us_option", // Required for chart
           qty: leg.side === "buy" ? leg.quantity : -leg.quantity,
