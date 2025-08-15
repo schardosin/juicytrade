@@ -344,10 +344,7 @@ export default {
           label: date.toLocaleDateString("en-US", {
             month: "short",
             day: "numeric",
-            year:
-              date.getUTCFullYear() !== today.getFullYear()
-                ? "numeric"
-                : undefined,
+            year: "numeric",
             timeZone: "UTC",
           }),
           daysToExpiry,
