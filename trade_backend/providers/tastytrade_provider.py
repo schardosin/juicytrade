@@ -1442,17 +1442,31 @@ class TastyTradeProvider(BaseProvider):
                 fee_calculation = data.get("fee-calculation", {})
                 buying_power_effect = data.get("buying-power-effect", {})
                 
+                price_effect = data.get("order", {}).get("price-effect", "")
+                order_price = float(data.get("order", {}).get("price", 0))
+                total_fees = float(fee_calculation.get("total-fees", 0))
+                commission = float(fee_calculation.get("commission", 0))
+                fees = total_fees - commission
+                margin_change = float(buying_power_effect.get("change-in-margin-requirement", 0))
+                buying_power_impact = float(buying_power_effect.get("impact", 0))
+
+                # Calculate estimated_total based on price-effect
+                if price_effect.lower() == "credit":
+                    estimated_total = (order_price * 100) - total_fees
+                else:
+                    estimated_total = (order_price * 100) + total_fees
+
                 return {
                     "status": "ok",
-                    "commission": float(fee_calculation.get("commission", 0)),
-                    "cost": float(data.get("order", {}).get("price", 0)),
-                    "fees": float(fee_calculation.get("total-fees", 0)) - float(fee_calculation.get("commission", 0)),
-                    "order_cost": float(data.get("order", {}).get("price", 0)),
-                    "margin_change": float(buying_power_effect.get("change-in-margin-requirement", 0)),
-                    "buying_power_effect": float(buying_power_effect.get("impact", 0)),
+                    "commission": commission,
+                    "cost": order_price,
+                    "fees": fees,
+                    "order_cost": order_price,
+                    "margin_change": margin_change,
+                    "buying_power_effect": buying_power_impact,
                     "day_trades": 0, # Not provided in dry-run
                     "validation_errors": [],
-                    "estimated_total": float(fee_calculation.get("total-fees", 0)) + float(data.get("order", {}).get("price", 0))
+                    "estimated_total": estimated_total
                 }
 
         except Exception as e:

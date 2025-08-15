@@ -8,7 +8,6 @@
         <div class="trade-title">
           <span class="trade-icon">⚡</span>
           <span>Trade</span>
-          <span class="quick-analysis">📊 Quick Analysis</span>
         </div>
         <div class="trade-actions">
           <button class="clear-trade-btn" @click="handleCancel">
@@ -111,17 +110,17 @@
             <!-- Trade Details Grid -->
             <div v-if="!hasPreviewError" class="trade-details-grid">
               <div class="detail-row">
-                <span class="detail-label">Stock BP</span>
+                <span class="detail-label">Buying Power</span>
                 <span class="detail-value"
                   >${{
                     orderData?.underlyingPrice?.toFixed(2) || "441.50"
                   }}</span
                 >
-                <span class="detail-label">Option BP</span>
+
+              <span class="detail-label">Estimated BP Effect</span>
                 <span class="detail-value"
-                  >${{
-                    orderData?.underlyingPrice?.toFixed(2) || "441.50"
-                  }}</span
+                  >Reduced by
+                  <span class="positive">${{ getBPEffect() }}</span></span
                 >
               </div>
 
@@ -161,13 +160,6 @@
                 <span class="detail-value" v-else>{{ getEstimatedTotal() }}</span>
               </div>
 
-              <div class="detail-row">
-                <span class="detail-label">Estimated BP Effect</span>
-                <span class="detail-value"
-                  >Reduced by
-                  <span class="positive">${{ getBPEffect() }}</span></span
-                >
-              </div>
             </div>
             <!-- Preview Error Message -->
             <div v-if="hasPreviewError" class="preview-error-message">
@@ -376,11 +368,13 @@ export default {
     };
 
     const getEstimatedCost = () => {
+      const netPremium = props.orderData?.netPremium || 0;
+      const label = netPremium >= 0 ? "cr" : "db";
+
       // Use preview data if available, otherwise fallback to UI calculations
       if (previewData.value && previewData.value.status === 'ok' && !isPreviewNotAvailable.value) {
         const orderCost = previewData.value.order_cost || 0;
-        const label = orderCost >= 0 ? "db" : "cr";
-        return `${formatCurrency(Math.abs(orderCost))} ${label}`;
+        return `${formatCurrency(Math.abs(orderCost) * 100)} ${label}`;
       } else if (hasPreviewError.value || isPreviewNotAvailable.value) {
         return "--";
       }
@@ -391,16 +385,16 @@ export default {
         Math.abs(
           props.orderData?.limitPrice || props.orderData?.netPremium || 0
         );
-      const netPremium = props.orderData?.netPremium || 0;
-      const label = netPremium >= 0 ? "cr" : "db";
-      return `${formatCurrency(displayPrice)} ${label}`;
+      return `${formatCurrency(displayPrice * 100)} ${label}`;
     };
 
     const getEstimatedTotal = () => {
+      const netPremium = props.orderData?.netPremium || 0;
+      const label = netPremium >= 0 ? "cr" : "db";
+
       // Use preview data if available, otherwise fallback to UI calculations
       if (previewData.value && previewData.value.status === 'ok' && !isPreviewNotAvailable.value) {
         const estimatedTotal = previewData.value.estimated_total || 0;
-        const label = estimatedTotal >= 0 ? "db" : "cr";
         return `${formatCurrency(Math.abs(estimatedTotal))} ${label}`;
       } else if (hasPreviewError.value || isPreviewNotAvailable.value) {
         return "--";
@@ -412,10 +406,8 @@ export default {
         Math.abs(
           props.orderData?.limitPrice || props.orderData?.netPremium || 0
         );
-      const netPremium = props.orderData?.netPremium || 0;
-      const label = netPremium >= 0 ? "cr" : "db";
       const fees = 3.56; // 2.00 + 1.56
-      const total = displayPrice + fees;
+      const total = displayPrice * 100 + fees;
       return `${formatCurrency(total)} ${label}`;
     };
 

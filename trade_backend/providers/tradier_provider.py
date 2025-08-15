@@ -1151,12 +1151,12 @@ class TradierProvider(BaseProvider):
                     "commission": float(order_preview.get("commission", 0)),
                     "cost": float(order_preview.get("cost", 0)),
                     "fees": float(order_preview.get("fees", 0)),
-                    "order_cost": float(order_preview.get("order_cost", 0)),
+                    "order_cost": float(order_preview.get("order_cost", 0)) / 100,
                     "margin_change": float(order_preview.get("margin_change", 0)),
-                    "buying_power_effect": float(order_preview.get("order_cost", 0)),
+                    "buying_power_effect": float(order_preview.get("cost", 0)),
                     "day_trades": int(order_preview.get("day_trades", 0)),
                     "validation_errors": [],
-                    "estimated_total": float(order_preview.get("cost", 0))
+                    "estimated_total": float(order_preview.get("order_cost", 0)) + float(order_preview.get("commission", 0)) + float(order_preview.get("fees", 0))
                 }
             else:
                 return {

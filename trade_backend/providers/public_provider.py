@@ -549,7 +549,8 @@ class PublicProvider(BaseProvider):
             
             regulatory_fees = preview_response.get("regulatoryFees", {})
             total_regulatory_fees = sum(float(fee) for fee in regulatory_fees.values() if fee)
-            estimated_index_option_fee = float(preview_response.get("estimatedIndexOptionFee", 0))
+            estimated_index_option_fee_raw = preview_response.get("estimatedIndexOptionFee", 0)
+            estimated_index_option_fee = float(estimated_index_option_fee_raw) if estimated_index_option_fee_raw is not None else 0.0
             total_fees = total_regulatory_fees + estimated_index_option_fee
 
             return {
@@ -557,7 +558,7 @@ class PublicProvider(BaseProvider):
                 "commission": float(preview_response.get("estimatedCommission") or 0),
                 "cost": float(preview_response.get("estimatedCost", 0)),
                 "fees": total_fees,
-                "order_cost": float(preview_response.get("orderValue", 0)),
+                "order_cost": (float(preview_response.get("orderValue", 0)) / 100),
                 "margin_change": float(margin_impact.get("marginUsageImpact", 0)),
                 "buying_power_effect": float(preview_response.get("buyingPowerRequirement", 0)),
                 "day_trades": 0, # Not provided
