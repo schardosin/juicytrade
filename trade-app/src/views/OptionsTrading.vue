@@ -156,7 +156,6 @@ export default {
             await fetchExpirationDates(symbolData.symbol);
 
             if (selectedExpiry.value) {
-              await fetchOptionsChain(symbolData.symbol, selectedExpiry.value);
               onExpiryChange();
             }
           } catch (error) {
@@ -314,33 +313,12 @@ export default {
       }
     };
 
-    const fetchOptionsChain = async (symbol, expiry) => {
-      if (!symbol || !expiry) return;
-
-      try {
-        const chain = await api.getOptionsChain(symbol, expiry, "ALL");
-        if (chain && chain.length > 0) {
-          optionsChainData.value = chain.map((option) => ({
-            ...option,
-            strike_price: parseFloat(option.strike_price),
-            bid: parseFloat(option.bid || option.close_price || 0),
-            ask: parseFloat(option.ask || option.close_price || 0),
-          }));
-        }
-      } catch (error) {
-        console.error("Error fetching options chain:", error);
-        optionsChainData.value = [];
-      }
-    };
-
     // The startStreaming logic is now handled globally by the SmartMarketDataStore
     // when it is initialized in main.js. We can remove this local function.
     // The onPriceUpdate logic is also handled inside the store.
 
     const onExpiryChange = async () => {
       if (selectedExpiry.value) {
-        await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
-
         // The subscription logic is now handled automatically by the
         // CollapsibleOptionsChain component via the SmartMarketDataStore.
         // No need to manually subscribe here.
@@ -506,7 +484,6 @@ export default {
         await fetchExpirationDates(symbol.symbol);
 
         if (selectedExpiry.value) {
-          await fetchOptionsChain(symbol.symbol, selectedExpiry.value);
           onExpiryChange();
         }
       } catch (error) {
@@ -592,7 +569,6 @@ export default {
       await fetchSymbolData(currentSymbol.value);
       await fetchExpirationDates(currentSymbol.value);
       if (selectedExpiry.value) {
-        await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
         onExpiryChange();
       }
 
@@ -608,7 +584,6 @@ export default {
           
           // If we had a selected expiry, refresh its options chain
           if (selectedExpiry.value) {
-            await fetchOptionsChain(currentSymbol.value, selectedExpiry.value);
           }
           
           // Refresh options manager data

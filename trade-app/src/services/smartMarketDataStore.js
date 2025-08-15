@@ -115,9 +115,9 @@ class DataHealthMonitor {
     if (this.store.activeGreeksSubscriptions.size > 0) {
       const oldestGreeks = Math.min(...Array.from(this.store.optionGreeks.values())
         .map(g => g.timestamp || 0));
-      
-      // Greeks should be updated within 2 minutes during market hours
-      const staleThreshold = Date.now() - 120000; // 2 minutes
+
+      // Greeks should be updated within 5 minutes during market hours
+      const staleThreshold = Date.now() - 300000; // 5 minutes
       if (oldestGreeks < staleThreshold) {
         const ageMinutes = Math.round((Date.now() - oldestGreeks) / 60000);
         throw new Error(`Greeks data is stale (${ageMinutes} minutes old)`);
