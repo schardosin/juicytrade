@@ -325,7 +325,7 @@ class AlpacaProvider(BaseProvider):
                 {
                     "date": exp_date,
                     "symbol": symbol,
-                    "type": "monthly"  # Alpaca does not distinguish between weekly and monthly
+                    "type": "unknown"  # Alpaca does not distinguish between weekly and monthly
                 }
                 for exp_date in sorted_dates
             ]
@@ -1422,18 +1422,26 @@ class AlpacaProvider(BaseProvider):
         return None
     
     def _extract_expiry_from_symbol(self, symbol: str) -> Optional[str]:
-        """Extract expiration date from option symbol (e.g., SPY250711C00582000 -> 2025-07-11)."""
+        """
+        Extract expiration date from option symbol (e.g., SPY250711C00582000 -> 2025-07-11).
+        Handles underlying symbols of variable length by parsing from the end.
+        """
         try:
-            if len(symbol) >= 9:
-                # Extract date part from symbol (positions 3-8: YYMMDD)
-                date_part = symbol[3:9]
-                
+            # Option symbol format: [root][YYMMDD][C/P][strike]
+            # The date is always the 6 digits immediately before the C/P character (which is always 1 char, C or P)
+            # The strike is always 8 digits at the end
+            # So: ...[YYMMDD][C/P][strike:8]
+            if len(symbol) >= 15:
+                # Find the strike part (last 8 chars)
+                strike_part = symbol[-8:]
+                # The C/P character is just before the strike
+                cp_index = -9
+                # The date part is the 6 chars before the C/P
+                date_part = symbol[cp_index-6:cp_index]
                 if len(date_part) == 6 and date_part.isdigit():
                     year = 2000 + int(date_part[:2])
                     month = int(date_part[2:4])
                     day = int(date_part[4:6])
-                    
-                    # Validate date components
                     if 1 <= month <= 12 and 1 <= day <= 31:
                         return f"{year}-{month:02d}-{day:02d}"
         except Exception as e:
