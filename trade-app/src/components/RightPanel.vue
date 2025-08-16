@@ -868,6 +868,17 @@ export default {
     // Avoid any internal caching here to prevent stale charts when no legs are selected.
     const chartData = computed(() => props.chartData);
 
+    watch(
+      selectedLegs,
+      (newLegs) => {
+        if (newLegs.length === 0) {
+          checkedPositions.value.clear();
+          emit("positions-changed", []);
+        }
+      },
+      { deep: true }
+    );
+
     return {
       activeSection,
       isExpanded,
