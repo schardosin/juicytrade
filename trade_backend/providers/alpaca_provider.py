@@ -260,98 +260,111 @@ class AlpacaProvider(BaseProvider):
             self._log_error(f"get_stock_quotes for {symbols}", e)
             return {}
     
-    async def get_expiration_dates(self, symbol: str) -> List[str]:
-        """Get available expiration dates for options using snapshots endpoint with daily caching."""
+    async def get_expiration_dates(self, symbol: str) -> List[dict]:
+        """Get available expiration dates for options on a symbol with universal enhanced structure."""
         try:
             # Check cache first
             cached_dates = self._get_cached_expiration_dates(symbol)
             if cached_dates:
                 self._log_info(f"Using cached expiration dates for {symbol} ({len(cached_dates)} dates)")
                 return cached_dates
-            
+
             # Cache miss - fetch from API
             self._log_info(f"Cache miss - fetching expiration dates for {symbol} from API")
-            
+
             expiration_dates = set()
             page_token = None
             page_count = 0
-            
+
             while True:
                 page_count += 1
                 # Use the data API snapshots endpoint
                 url = f"{self.data_url}/v1beta1/options/snapshots/{symbol}"
                 api_key, api_secret = self._get_api_credentials()
-                
+
                 params = {
-                    "type": "call"  # Only fetch calls to reduce data volume - expiration dates are the same for calls and puts
+                    "type": "call"  # Only fetch calls to reduce data volume
                 }
                 if page_token:
                     params["page_token"] = page_token
-                
+
                 headers = {
                     "APCA-API-KEY-ID": api_key,
                     "APCA-API-SECRET-KEY": api_secret,
                     "accept": "application/json"
                 }
-                
+
                 response = requests.get(url, headers=headers, params=params)
-                
+
                 if response.status_code == 200:
                     data = response.json()
                     snapshots = data.get("snapshots", {})
                     
                     self._log_info(f"Page {page_count}: Retrieved {len(snapshots)} option snapshots for {symbol}")
-                    
+
                     # Extract expiration dates from option symbols
-                    page_dates = set()
                     for option_symbol in snapshots.keys():
                         expiry_date = self._extract_expiry_from_symbol(option_symbol)
                         if expiry_date:
                             expiration_dates.add(expiry_date)
-                            page_dates.add(expiry_date)
-                    
-                    self._log_info(f"Page {page_count}: Found {len(page_dates)} unique expiration dates")
-                    
-                    # Check for next page token
+
                     next_page_token = data.get("next_page_token")
                     if next_page_token:
                         page_token = next_page_token
-                        self._log_info(f"Found next page token, continuing to page {page_count + 1}")
                     else:
-                        self._log_info("No more pages available")
                         break
                 else:
-                    self._log_error(f"get_expiration_dates API call page {page_count}", 
+                    self._log_error(f"get_expiration_dates API call page {page_count}",
                                   Exception(f"HTTP {response.status_code}: {response.text}"))
                     break
-            
+
             sorted_dates = sorted(list(expiration_dates))
-            self._log_info(f"Retrieved {len(sorted_dates)} total expiration dates for {symbol} across {page_count} pages")
+            
+            # Create enhanced structure
+            enhanced_dates = [
+                {
+                    "date": exp_date,
+                    "symbol": symbol,
+                    "type": "monthly"  # Alpaca does not distinguish between weekly and monthly
+                }
+                for exp_date in sorted_dates
+            ]
+
+            self._log_info(f"Retrieved {len(enhanced_dates)} total expiration dates for {symbol}")
             
             # Cache the results for daily use
-            self._cache_expiration_dates(symbol, sorted_dates)
+            self._cache_expiration_dates(symbol, enhanced_dates)
             
-            return sorted_dates
-                
+            return enhanced_dates
+
         except Exception as e:
             self._log_error(f"get_expiration_dates for {symbol}", e)
             return []
     
-    async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
-        """Get options chain for symbol and expiration."""
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
+        """
+        Get basic options chain (no Greeks) for fast loading, ATM-focused.
+        
+        Args:
+            symbol: Underlying symbol
+            expiry: Expiration date in YYYY-MM-DD format
+            underlying_price: Current underlying price for ATM filtering
+            strike_count: Number of strikes around ATM to include (default 20)
+            
+        Returns:
+            List of OptionContract objects without Greeks
+        """
         try:
+            # Get options chain data directly from Alpaca API
             url = f"{self._get_base_url()}/v2/options/contracts"
             api_key, api_secret = self._get_api_credentials()
             
             params = {
-                "underlying_symbols": symbol,
+                "underlying_symbols": underlying_symbol,
                 "expiration_date": expiry,
                 "root_symbol": symbol,
                 "limit": 1000
             }
-            
-            if option_type:
-                params["type"] = option_type
             
             headers = {
                 "APCA-API-KEY-ID": api_key,
@@ -366,14 +379,14 @@ class AlpacaProvider(BaseProvider):
                 contracts = data.get("option_contracts", [])
                 
                 # First pass: transform contracts and identify missing quotes
-                result = []
+                all_contracts = []
                 symbols_needing_quotes = []
                 
                 for contract in contracts:
                     try:
                         option_contract = self._transform_option_contract(contract)
                         if option_contract:
-                            result.append(option_contract)
+                            all_contracts.append(option_contract)
                             
                             # Check if bid/ask are missing and add to symbols needing quotes
                             if (option_contract.bid is None or option_contract.ask is None) and option_contract.symbol:
@@ -394,7 +407,7 @@ class AlpacaProvider(BaseProvider):
                         
                         # Update contracts with latest quote data
                         updated_count = 0
-                        for contract in result:
+                        for contract in all_contracts:
                             if contract.symbol in latest_quotes:
                                 quote_data = latest_quotes[contract.symbol]
                                 
@@ -410,73 +423,56 @@ class AlpacaProvider(BaseProvider):
                         # Market is open - rely on websocket stream for live pricing
                         self._log_info(f"Market open - skipping quote fetch for {len(symbols_needing_quotes)} contracts (relying on live stream)")
                 
+                if not all_contracts:
+                    return []
+                
+                # If no underlying price provided, try to get current stock quote
+                if underlying_price is None:
+                    stock_quote = await self.get_stock_quote(symbol)
+                    if stock_quote and stock_quote.bid and stock_quote.ask:
+                        underlying_price = (stock_quote.bid + stock_quote.ask) / 2
+                    else:
+                        # Fallback: use middle strike as approximation
+                        strikes = [c.strike_price for c in all_contracts if c.strike_price]
+                        if strikes:
+                            underlying_price = sorted(strikes)[len(strikes) // 2]
+                        else:
+                            # Return all contracts if we can't determine ATM
+                            return all_contracts
+                
+                # Sort contracts by distance from ATM
+                def distance_from_atm(contract):
+                    return abs(contract.strike_price - underlying_price)
+                
+                # Get all unique strikes and sort them
+                strikes = sorted(list(set(c.strike_price for c in all_contracts)))
+                
+                # Find the ATM strike (closest to underlying price)
+                atm_strike = min(strikes, key=lambda x: abs(x - underlying_price))
+                atm_index = strikes.index(atm_strike)
+                
+                # Calculate how many strikes to take on each side
+                strikes_per_side = strike_count // 2
+                
+                # Get the range of strikes around ATM
+                start_index = max(0, atm_index - strikes_per_side)
+                end_index = min(len(strikes), atm_index + strikes_per_side + 1)
+                
+                # Select strikes in the range
+                selected_strikes = set(strikes[start_index:end_index])
+                
+                # Filter contracts to only include selected strikes
+                result = [
+                    contract for contract in all_contracts
+                    if contract.strike_price in selected_strikes
+                ]
+                
+                self._log_info(f"Basic options chain for {symbol} {expiry}: {len(result)} contracts around ATM ${underlying_price:.2f}")
                 return result
             else:
-                self._log_error(f"get_options_chain API call", 
+                self._log_error(f"get_options_chain_basic API call", 
                               Exception(f"HTTP {response.status_code}: {response.text}"))
                 return []
-                
-        except Exception as e:
-            self._log_error(f"get_options_chain for {symbol} {expiry}", e)
-            return []
-    
-    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
-        """
-        Get basic options chain (no Greeks) for fast loading, ATM-focused.
-        
-        Args:
-            symbol: Underlying symbol
-            expiry: Expiration date in YYYY-MM-DD format
-            underlying_price: Current underlying price for ATM filtering
-            strike_count: Number of strikes around ATM to include (default 20)
-            
-        Returns:
-            List of OptionContract objects without Greeks
-        """
-        try:
-            # Get full options chain first
-            all_contracts = await self.get_options_chain(symbol, expiry)
-            
-            if not all_contracts:
-                return []
-            
-            # If no underlying price provided, try to get current stock quote
-            if underlying_price is None:
-                stock_quote = await self.get_stock_quote(symbol)
-                if stock_quote and stock_quote.bid and stock_quote.ask:
-                    underlying_price = (stock_quote.bid + stock_quote.ask) / 2
-                else:
-                    # Fallback: use middle strike as approximation
-                    strikes = [c.strike_price for c in all_contracts if c.strike_price]
-                    if strikes:
-                        underlying_price = sorted(strikes)[len(strikes) // 2]
-                    else:
-                        # Return all contracts if we can't determine ATM
-                        return all_contracts
-            
-            # Sort contracts by distance from ATM
-            def distance_from_atm(contract):
-                return abs(contract.strike_price - underlying_price)
-            
-            # Separate calls and puts
-            calls = [c for c in all_contracts if c.type.lower() == 'call']
-            puts = [c for c in all_contracts if c.type.lower() == 'put']
-            
-            # Sort each by distance from ATM
-            calls.sort(key=distance_from_atm)
-            puts.sort(key=distance_from_atm)
-            
-            # Take the closest strikes for each type
-            strikes_per_side = strike_count // 2
-            selected_calls = calls[:strikes_per_side]
-            selected_puts = puts[:strikes_per_side]
-            
-            # Combine and sort by strike price
-            result = selected_calls + selected_puts
-            result.sort(key=lambda x: x.strike_price)
-            
-            self._log_info(f"Basic options chain for {symbol} {expiry}: {len(result)} contracts around ATM ${underlying_price:.2f}")
-            return result
             
         except Exception as e:
             self._log_error(f"get_options_chain_basic for {symbol} {expiry}", e)
@@ -1444,7 +1440,7 @@ class AlpacaProvider(BaseProvider):
             self._log_error(f"_extract_expiry_from_symbol {symbol}", e)
         return None
     
-    def _get_cached_expiration_dates(self, symbol: str) -> Optional[List[str]]:
+    def _get_cached_expiration_dates(self, symbol: str) -> Optional[List[dict]]:
         """Get cached expiration dates if available and not expired (daily TTL)."""
         try:
             if symbol in self._expiration_cache:
@@ -1464,7 +1460,7 @@ class AlpacaProvider(BaseProvider):
             self._log_error(f"_get_cached_expiration_dates for {symbol}", e)
             return None
     
-    def _cache_expiration_dates(self, symbol: str, expiration_dates: List[str]) -> None:
+    def _cache_expiration_dates(self, symbol: str, expiration_dates: List[dict]) -> None:
         """Cache expiration dates with daily TTL and save to disk."""
         try:
             today = date.today().strftime("%Y-%m-%d")

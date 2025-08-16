@@ -1,5 +1,4 @@
 import asyncio
-import requests
 import websockets
 import json
 import logging
@@ -476,9 +475,10 @@ class TradierProvider(BaseProvider):
                 "symbols": ",".join(symbols)
             }
             
-            resp = requests.post(url, headers=headers, data=params)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(url, headers=headers, data=params)
+                resp.raise_for_status()
+                data = resp.json()
             
             quotes = data.get("quotes", {}).get("quote", [])
             if isinstance(quotes, dict):
@@ -507,98 +507,175 @@ class TradierProvider(BaseProvider):
         except Exception as e:
             self._log_error("transform_stock_quote", e)
             return None
-    async def get_expiration_dates(self, symbol: str) -> List[str]:
-        """Get available expiration dates for options on a symbol."""
+
+    async def get_expiration_dates(self, symbol: str) -> List[dict]:
+        """Get available expiration dates for options on a symbol with universal enhanced structure."""
         try:
+            weekly_map = {
+                'SPX': 'SPXW',
+                'NDX': 'NDXP',
+                'RUT': 'RUTW',
+                'VIX': 'VIXW',
+            }
+
+            upper_symbol = symbol.upper()
+            if upper_symbol in weekly_map:
+                base_root = upper_symbol
+                alt_root = weekly_map[upper_symbol]
+            elif upper_symbol in list(weekly_map.values()):
+                alt_root = upper_symbol
+                base_root = next(k for k, v in weekly_map.items() if v == upper_symbol)
+            else:
+                base_root = upper_symbol
+                alt_root = None
+
+            api_symbol = base_root
+            has_alt_root = alt_root is not None
+
             url = f"{self.base_url}/v1/markets/options/expirations"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Accept": "application/json"
             }
             params = {
-                "symbol": symbol,
-                "includeAllRoots": "true"
+                "symbol": api_symbol,
+                "includeAllRoots": "true",
+                "expirationType": "true",
+                "strikes": "true",
+                "contractSize": "true"
             }
             
-            resp = requests.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers, params=params)
+                resp.raise_for_status()
+                data = resp.json()
             
-            expirations = data.get("expirations", {}).get("date", [])
-            if isinstance(expirations, str):
-                return [expirations]
-            return expirations
+            expirations = data.get("expirations", {}).get("expiration", [])
+            if not isinstance(expirations, list):
+                expirations = []
+            
+            # Group by date to remove duplicates and get type
+            date_to_exp_type = {}
+            for exp in expirations:
+                exp_date = exp.get("date")
+                exp_type = exp.get("expiration_type", "").lower()
+                if exp_date and exp_date not in date_to_exp_type:
+                    date_to_exp_type[exp_date] = exp_type
+            
+            # Always return enhanced structure for all symbols
+            enhanced_dates = []
+
+            if has_alt_root:
+                for exp_date, exp_type in sorted(date_to_exp_type.items()):
+                    if exp_type == "standard":
+                        symbol_type = "monthly"
+                        root = base_root
+                    else:
+                        symbol_type = "weekly"
+                        root = alt_root
+                    enhanced_dates.append({
+                        "date": exp_date,
+                        "symbol": root,
+                        "type": symbol_type
+                    })
+            else:
+                for exp_date, exp_type in sorted(date_to_exp_type.items()):
+                    symbol_type = "monthly" if exp_type == "standard" else "weekly"
+                    enhanced_dates.append({
+                        "date": exp_date,
+                        "symbol": upper_symbol,
+                        "type": symbol_type
+                    })
+            
+            return enhanced_dates
         except Exception as e:
             self._log_error(f"get_expiration_dates for {symbol}", e)
             return []
 
-    async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
-        """Get options chain for a symbol and expiration."""
-        try:
-            url = f"{self.base_url}/v1/markets/options/chains"
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Accept": "application/json"
-            }
-            params = {
-                "symbol": symbol,
-                "expiration": expiry,
-                "greeks": "true"
-            }
-            
-            resp = requests.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-            
-            contracts = data.get("options", {}).get("option", [])
-            
-            result = []
-            for contract in contracts:
-                if option_type and contract.get("option_type") != option_type.lower():
-                    continue
-                
-                transformed_contract = self._transform_option_contract(contract)
-                if transformed_contract:
-                    result.append(transformed_contract)
-            
-            return result
-        except Exception as e:
-            self._log_error(f"get_options_chain for {symbol} {expiry}", e)
-            return []
-
-    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
         """Fast loading - basic options data without Greeks, ATM-focused by strike count."""
         try:
+            # Determine the symbol to use for the API call. Use underlying_symbol if provided, otherwise use symbol.
+            # Heuristic for index weeklies: if symbol looks like an extended root (e.g., SPXW, NDXP), query the base underlying.
+            api_symbol = underlying_symbol if underlying_symbol else symbol
+            if underlying_symbol is None and len(symbol) > 3 and symbol[-1].upper() in ['W', 'P']:
+                api_symbol = symbol[:-1]
+
             url = f"{self.base_url}/v1/markets/options/chains"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Accept": "application/json"
             }
             params = {
-                "symbol": symbol,
+                "symbol": api_symbol,
                 "expiration": expiry,
                 "greeks": "false"  # Skip expensive Greeks calculation
             }
             
-            resp = requests.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers, params=params)
+                resp.raise_for_status()
+                data = resp.json()
             
-            contracts = data.get("options", {}).get("option", [])
+            contracts_raw = data.get("options", {}).get("option", [])
+            
+            # Determine type filter, for Tradier we infer 'regular' or 'weekly' based on root
+            typeFilter = None
+            if type:
+                typeFilter = type.lower()
+                if typeFilter == 'monthly':
+                    typeFilter = 'regular'
+            
+            # Filter contracts
+            filtered_contracts_raw = []
+            for contract_raw in contracts_raw:
+                option_symbol = contract_raw.get('symbol', '')
+                if not option_symbol:
+                    continue
+                
+                # Extract root from option symbol (OCC format: root + YYMMDD + C/P + 8-digit strike)
+                root = option_symbol[:-15].upper()
+                
+                # Filter by root_symbol
+                if root != symbol.upper():
+                    continue
+                
+                # Infer expiration-type: 'regular' if root matches api_symbol, else 'weekly'
+                exp_type = 'regular' if root == api_symbol.upper() else 'weekly'
+                
+                # Filter by type if specified
+                if typeFilter and exp_type != typeFilter:
+                    continue
+                
+                filtered_contracts_raw.append(contract_raw)
+            
+            if not filtered_contracts_raw:
+                return []
+            
+            # Transform contracts
+            contracts = []
+            for contract_raw in filtered_contracts_raw:
+                transformed_contract = self._transform_option_contract_basic(contract_raw)
+                if transformed_contract:
+                    contracts.append(transformed_contract)
+            
+            if not contracts:
+                return []
+            
+            logger.info(f"Tradier: Filtered to {len(contracts)} contracts for root symbol {symbol}")
             
             # Get underlying price if not provided
             if underlying_price is None:
                 try:
-                    quote = await self.get_stock_quote(symbol)
+                    quote = await self.get_stock_quote(api_symbol)
                     underlying_price = (quote.bid + quote.ask) / 2 if quote and quote.bid and quote.ask else None
                 except:
                     underlying_price = None
             
             # Smart filtering - focus on ATM strikes by count
-            filtered_contracts = []
             if underlying_price and contracts:
                 # Get all unique strikes and sort them
-                strikes = sorted(list(set(float(contract.get("strike", 0)) for contract in contracts)))
+                strikes = sorted(list(set(contract.strike_price for contract in contracts)))
                 
                 # Find the ATM strike (closest to underlying price)
                 atm_strike = min(strikes, key=lambda x: abs(x - underlying_price))
@@ -615,21 +692,15 @@ class TradierProvider(BaseProvider):
                 selected_strikes = set(strikes[start_index:end_index])
                 
                 # Filter contracts to only include selected strikes
-                for contract in contracts:
-                    strike = float(contract.get("strike", 0))
-                    if strike in selected_strikes:
-                        filtered_contracts.append(contract)
+                filtered_contracts = [
+                    contract for contract in contracts 
+                    if contract.strike_price in selected_strikes
+                ]
                 
                 contracts = filtered_contracts
             
-            # Transform without Greeks (faster)
-            result = []
-            for contract in contracts:
-                transformed_contract = self._transform_option_contract_basic(contract)
-                if transformed_contract:
-                    result.append(transformed_contract)
-            
-            return result
+            logger.info(f"Tradier: Returning {len(contracts)} basic options for {symbol} {expiry}")
+            return contracts
         except Exception as e:
             self._log_error(f"get_options_chain_basic for {symbol} {expiry}", e)
             return []
@@ -657,7 +728,7 @@ class TradierProvider(BaseProvider):
             greeks_data = {}
             for group in symbol_groups.values():
                 try:
-                    contracts = await self.get_options_chain(
+                    contracts = await self.get_options_chain_basic(
                         group['underlying'], 
                         group['expiry']
                     )
@@ -755,9 +826,10 @@ class TradierProvider(BaseProvider):
                 "Accept": "application/json"
             }
             
-            resp = requests.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
             
             days = data.get("calendar", {}).get("days", {}).get("day", [])
             if isinstance(days, dict):
@@ -782,9 +854,10 @@ class TradierProvider(BaseProvider):
                 "Accept": "application/json"
             }
             
-            resp = requests.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
             positions_data = data.get("positions", {})
             if isinstance(positions_data, dict):
                 positions = positions_data.get("position", [])
@@ -861,9 +934,10 @@ class TradierProvider(BaseProvider):
                 "Accept": "application/json"
             }
             
-            resp = requests.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
             
             orders = data.get("orders", {}).get("order", [])
             if isinstance(orders, dict):
@@ -917,9 +991,10 @@ class TradierProvider(BaseProvider):
                 "Accept": "application/json"
             }
             
-            resp = requests.get(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
             
             balances = data.get("balances", {})
             if balances:
@@ -1060,9 +1135,10 @@ class TradierProvider(BaseProvider):
             if order_data.get("limit_price"):
                 payload["price"] = f"{order_data['limit_price']:.2f}"
 
-            resp = requests.post(order_url, headers=headers, data=payload)
-            resp.raise_for_status()
-            order_response = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(order_url, headers=headers, data=payload)
+                resp.raise_for_status()
+                order_response = resp.json()
             
             order_id = order_response.get("order", {}).get("id")
             if order_id:
@@ -1138,9 +1214,10 @@ class TradierProvider(BaseProvider):
                     payload[f"side[{i}]"] = leg["side"].lower()
                     payload[f"quantity[{i}]"] = str(leg["qty"])
 
-            resp = requests.post(order_url, headers=headers, data=payload)
-            resp.raise_for_status()
-            preview_response = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(order_url, headers=headers, data=payload)
+                resp.raise_for_status()
+                preview_response = resp.json()
 
             # Extract preview data
             order_preview = preview_response.get("order", {})
@@ -1221,9 +1298,10 @@ class TradierProvider(BaseProvider):
                 payload[f"side[{i}]"] = side.lower()
                 payload[f"quantity[{i}]"] = str(leg["qty"])
 
-            resp = requests.post(order_url, headers=headers, data=payload)
-            resp.raise_for_status()
-            order_response = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.post(order_url, headers=headers, data=payload)
+                resp.raise_for_status()
+                order_response = resp.json()
             
             order_id = order_response.get("order", {}).get("id")
             if order_id:
@@ -1259,9 +1337,10 @@ class TradierProvider(BaseProvider):
                 "Accept": "application/json"
             }
             
-            resp = requests.delete(url, headers=headers)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.delete(url, headers=headers)
+                resp.raise_for_status()
+                data = resp.json()
             
             return data.get("order", {}).get("status") == "ok"
         except Exception as e:
@@ -1334,41 +1413,6 @@ class TradierProvider(BaseProvider):
         # The streaming_manager will follow up with a subscribe_to_symbols call.
         return True
 
-    def _parse_option_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Parse option symbol to extract components."""
-        try:
-            # Find the start of the date part of the symbol
-            for i, char in enumerate(symbol):
-                if char.isdigit():
-                    underlying = symbol[:i]
-                    # Tradier expects "SPX" as underlying for both SPX and SPXW options
-                    if underlying == "SPXW":
-                        underlying = "SPX"
-                    rest = symbol[i:]
-                    date_part = rest[:6]
-                    option_type = rest[6]
-                    strike_part = rest[7:]
-                    
-                    # Parse expiry date
-                    year = 2000 + int(date_part[:2])
-                    month = int(date_part[2:4])
-                    day = int(date_part[4:6])
-                    expiry_date = f"{year}-{month:02d}-{day:02d}"
-                    
-                    # Parse strike price
-                    strike_price = float(strike_part) / 1000
-                    
-                    return {
-                        "underlying": underlying,
-                        "type": "call" if option_type == "C" else "put",
-                        "strike": strike_price,
-                        "expiry": expiry_date
-                    }
-            return None
-        except Exception as e:
-            self._log_error(f"parse_option_symbol {symbol}", e)
-        return None
-
     async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
         """Search for symbols matching the query using Tradier API."""
         return await self._symbol_cache.search(query, self._api_lookup_symbols)
@@ -1385,9 +1429,10 @@ class TradierProvider(BaseProvider):
                 "q": query
             }
             
-            resp = requests.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers, params=params)
+                resp.raise_for_status()
+                data = resp.json()
             
             # Handle the response structure
             securities = data.get("securities", {})
@@ -1517,9 +1562,10 @@ class TradierProvider(BaseProvider):
             if end_date:
                 params["end"] = f"{end_date} 16:00"
             
-            response = requests.get(url, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
             
             # Extract timesales data
             series_data = data.get("series", {}).get("data", [])
@@ -1584,9 +1630,10 @@ class TradierProvider(BaseProvider):
             if end_date:
                 params["end"] = end_date
             
-            response = requests.get(url, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, params=params)
+                response.raise_for_status()
+                data = response.json()
             
             # Extract history data
             history_data = data.get("history", {})
@@ -1677,9 +1724,10 @@ class TradierProvider(BaseProvider):
             
             logger.debug(f"🔍 Requesting history from {start_date.strftime('%Y-%m-%d')} to {end_date.strftime('%Y-%m-%d')}")
             
-            resp = requests.get(url, headers=headers, params=params)
-            resp.raise_for_status()
-            data = resp.json()
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers, params=params)
+                resp.raise_for_status()
+                data = resp.json()
             
             logger.debug(f"📊 Raw history response keys: {list(data.keys())}")
             
@@ -2642,7 +2690,7 @@ class TradierProvider(BaseProvider):
                         "side": side,
                         "qty": abs(pos.qty)
                     })
-                
+
                 # Use centralized strategy detection
                 try:
                     from ..utils.optionsStrategies import detectStrategy
@@ -2652,7 +2700,7 @@ class TradierProvider(BaseProvider):
                     logger.warning(f"Could not import detectStrategy: {e}")
                     # Fallback to generic naming
                     pass
-            
+
             # Fallback to generic naming
             if len(positions) == 2:
                 return "2-Leg Strategy"
@@ -2662,10 +2710,52 @@ class TradierProvider(BaseProvider):
                 return "6-Leg Strategy"
             else:
                 return f"{len(positions)}-Leg Strategy"
-                
+
         except Exception as e:
             self._log_error("_detect_strategy_name", e)
             return "Unknown Strategy"
+
+    def _parse_option_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """Parse Tradier option symbol to extract components."""
+        try:
+            # Tradier uses standard OCC format
+            # Example: AAPL250117C00150000
+            # Format: ROOT + YYMMDD + C/P + STRIKE(8 digits)
+            
+            if len(symbol) < 15:
+                return None
+            
+            # Find where the date starts (6 consecutive digits)
+            for i in range(len(symbol) - 14):  # Need at least 15 chars after position i
+                date_part = symbol[i:i+6]
+                if date_part.isdigit():
+                    # Found the date part
+                    root = symbol[:i]
+                    date = date_part  # YYMMDD
+                    option_type = symbol[i+6]  # C or P
+                    strike_part = symbol[i+7:i+15]  # 8 digits
+                    
+                    # Parse expiry date
+                    year = 2000 + int(date[:2])
+                    month = int(date[2:4])
+                    day = int(date[4:6])
+                    expiry_date = f"{year}-{month:02d}-{day:02d}"
+                    
+                    # Parse strike price (divide by 1000 to get actual price)
+                    strike_price = float(strike_part) / 1000
+                    
+                    return {
+                        "underlying": root,
+                        "type": "call" if option_type == "C" else "put",
+                        "strike": strike_price,
+                        "expiry": expiry_date
+                    }
+            
+            return None
+            
+        except Exception as e:
+            self._log_error(f"parse_option_symbol {symbol}", e)
+            return None
 
     async def _get_lastday_price(self, symbol: str) -> Optional[float]:
         """Get the previous day's closing price for a given symbol with caching."""
