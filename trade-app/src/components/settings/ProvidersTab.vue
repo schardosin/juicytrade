@@ -520,11 +520,6 @@ export default {
             description: "Options contract data and pricing"
           },
           {
-            key: "expiration_dates",
-            label: "Expiration Dates",
-            description: "Available option expiration dates"
-          },
-          {
             key: "historical_data",
             label: "Historical Data",
             description: "Historical price and volume data"

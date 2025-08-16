@@ -174,7 +174,7 @@ class ProviderManager:
         return provider
 
     async def get_expiration_dates(self, symbol: str) -> List[str]:
-        provider = self._get_provider("expiration_dates")
+        provider = self._get_provider("options_chain")
         if provider:
             return await provider.get_expiration_dates(symbol)
         return []

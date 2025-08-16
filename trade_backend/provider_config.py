@@ -8,7 +8,6 @@ logger = logging.getLogger(__name__)
 CONFIG_FILE = "provider_config.json"
 
 DEFAULT_ROUTING = {
-    "expiration_dates": "public",
     "stock_quotes": "alpaca",
     "options_chain": "alpaca",
     "trade_account": "alpaca",  # Unified: account, positions, orders
@@ -23,7 +22,7 @@ DEFAULT_ROUTING = {
 PROVIDER_CAPABILITIES = {
     "alpaca": {
         "capabilities": {
-            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
+            "rest": ["stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes", "trade_account"]
         },
         "paper": False,
@@ -31,7 +30,7 @@ PROVIDER_CAPABILITIES = {
     },
     "alpaca_paper": {
         "capabilities": {
-            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
+            "rest": ["stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes", "trade_account"]
         },
         "paper": True,
@@ -39,14 +38,14 @@ PROVIDER_CAPABILITIES = {
     },
     "public": {
         "capabilities": {
-            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date"]
+            "rest": ["stock_quotes", "options_chain", "trade_account", "next_market_date"]
         },
         "paper": False,
         "display_name": "Public.com"
     },
     "tradier": {
         "capabilities": {
-            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
+            "rest": ["options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes"]
         },
         "paper": False,
@@ -54,7 +53,7 @@ PROVIDER_CAPABILITIES = {
     },
     "tradier_paper": {
         "capabilities": {
-            "rest": ["expiration_dates", "options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
+            "rest": ["options_chain", "next_market_date", "stock_quotes", "trade_account", "symbol_lookup", "historical_data", "market_calendar", "greeks"],
             "streaming": ["streaming_quotes"]
         },
         "paper": True,
@@ -62,7 +61,7 @@ PROVIDER_CAPABILITIES = {
     },
     "tastytrade": {
         "capabilities": {
-            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "rest": ["stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
             "streaming": ["streaming_quotes", "trade_account", "streaming_greeks"]
         },
         "paper": False,
@@ -70,7 +69,7 @@ PROVIDER_CAPABILITIES = {
     },
     "tastytrade_paper": {
         "capabilities": {
-            "rest": ["expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
+            "rest": ["stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar"],
             "streaming": ["streaming_quotes", "trade_account", "streaming_greeks"]
         },
         "paper": True,
