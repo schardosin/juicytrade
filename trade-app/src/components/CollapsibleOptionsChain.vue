@@ -61,6 +61,8 @@
             <span class="date-label">{{ expiration.label }}</span>
             <div class="badge-container">
               <span v-if="expiration.isMonthly" class="monthly-badge">M</span>
+              <span v-else-if="expiration.isQuarterly" class="quarterly-badge">Q</span>
+              <span v-else-if="expiration.isEOM" class="eom-badge">EOM</span>
               <span v-else class="weekly-badge">W</span>
             </div>
           </div>
@@ -316,6 +318,8 @@ export default {
         const symbol = expirationEntry.symbol;
         const type = expirationEntry.type;
         const isMonthly = (type === 'monthly');
+        const isQuarterly = (type === 'quarterly');
+        const isEOM = (type === 'eom');
 
         const [year, month, day] = dateStr.split("-").map(Number);
         const date = new Date(Date.UTC(year, month - 1, day));
@@ -353,6 +357,8 @@ export default {
           hasLoaded,
           optionsData,
           isMonthly,
+          isQuarterly,
+          isEOM,
           // Static IV data to avoid unnecessary re-renders
           ivData: {
             rank: 45.2,
@@ -865,6 +871,25 @@ export default {
   padding: 2px 6px;
   border-radius: var(--radius-sm);
   text-transform: uppercase;
+}
+
+.quarterly-badge {
+  background-color: #8a2be2;
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  text-transform: uppercase;
+}
+
+.eom-badge {
+  background-color: var(--color-success);
+  color: var(--text-primary);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  padding: 2px 4px;
+  border-radius: var(--radius-sm);
 }
 
 .weekly-badge {
