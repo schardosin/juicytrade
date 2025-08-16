@@ -690,7 +690,7 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
         store.activeGreeksSubscriptions.add(symbol);
         store.optionGreeks.set(symbol, {
           delta: 0.5,
-          timestamp: Date.now() - 180000 // 3 minutes old (stale)
+          timestamp: Date.now() - 360000 // 6 minutes old (stale)
         });
         
         await store.performHealthCheck();

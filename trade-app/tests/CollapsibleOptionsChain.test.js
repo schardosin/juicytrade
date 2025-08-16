@@ -41,9 +41,13 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
   const defaultProps = {
     symbol: 'SPY',
     underlyingPrice: 450.00,
-    expirationDates: ['2024-01-19', '2024-02-16', '2024-03-15'],
+    expirationDates: [
+      { date: '2024-01-19', symbol: 'SPY240119', type: 'monthly' },
+      { date: '2024-02-16', symbol: 'SPY240216', type: 'monthly' },
+      { date: '2024-03-15', symbol: 'SPY240315', type: 'quarterly' },
+    ],
     optionsDataByExpiration: {
-      '2024-01-19': [
+      '2024-01-19-monthly-SPY240119': [
         {
           symbol: 'SPY_240119C00450000',
           strike_price: 450,
@@ -72,7 +76,7 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
           theta: -0.04
         }
       ],
-      '2024-02-16': [
+      '2024-02-16-monthly-SPY240216': [
         {
           symbol: 'SPY_240216C00450000',
           strike_price: 450,
@@ -189,6 +193,48 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
     });
   });
 
+  describe('Badge Display Logic', () => {
+    it('displays monthly badge correctly', () => {
+      const props = {
+        ...defaultProps,
+        expirationDates: [{ date: '2024-01-19', symbol: 'SPY', type: 'monthly' }],
+      };
+      wrapper = mount(CollapsibleOptionsChain, { props });
+      expect(wrapper.find('.monthly-badge').exists()).toBe(true);
+      expect(wrapper.find('.monthly-badge').text()).toBe('M');
+    });
+
+    it('displays weekly badge correctly', () => {
+      const props = {
+        ...defaultProps,
+        expirationDates: [{ date: '2024-01-26', symbol: 'SPY', type: 'weekly' }],
+      };
+      wrapper = mount(CollapsibleOptionsChain, { props });
+      expect(wrapper.find('.weekly-badge').exists()).toBe(true);
+      expect(wrapper.find('.weekly-badge').text()).toBe('W');
+    });
+
+    it('displays quarterly badge correctly', () => {
+      const props = {
+        ...defaultProps,
+        expirationDates: [{ date: '2024-03-15', symbol: 'SPY', type: 'quarterly' }],
+      };
+      wrapper = mount(CollapsibleOptionsChain, { props });
+      expect(wrapper.find('.quarterly-badge').exists()).toBe(true);
+      expect(wrapper.find('.quarterly-badge').text()).toBe('Q');
+    });
+
+    it('displays EOM badge correctly', () => {
+      const props = {
+        ...defaultProps,
+        expirationDates: [{ date: '2024-01-31', symbol: 'SPY', type: 'eom' }],
+      };
+      wrapper = mount(CollapsibleOptionsChain, { props });
+      expect(wrapper.find('.eom-badge').exists()).toBe(true);
+      expect(wrapper.find('.eom-badge').text()).toBe('EOM');
+    });
+  });
+
   describe('Loading & Error States', () => {
     it('displays loading state correctly', () => {
       wrapper = mount(CollapsibleOptionsChain, {
@@ -273,7 +319,12 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
       await firstHeader.trigger('click');
       
       expect(wrapper.emitted('expiration-expanded')).toBeTruthy();
-      expect(wrapper.emitted('expiration-expanded')[0]).toEqual(['2024-01-19']);
+      const emittedEvent = wrapper.emitted('expiration-expanded')[0];
+      expect(emittedEvent[0]).toBe('2024-01-19-monthly-SPY240119');
+      expect(emittedEvent[1]).toMatchObject({
+        date: '2024-01-19',
+        symbol: 'SPY240119'
+      });
     });
 
     it('collapses expanded expiration when clicked again', async () => {
@@ -297,7 +348,7 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
       await firstHeader.trigger('click');
       
       expect(wrapper.emitted('expiration-collapsed')).toBeTruthy();
-      expect(wrapper.emitted('expiration-collapsed')[0]).toEqual(['2024-01-19']);
+      expect(wrapper.emitted('expiration-collapsed')[0]).toEqual(['2024-01-19-monthly-SPY240119']);
     });
 
     it('rotates chevron icon when expanded', async () => {
@@ -356,9 +407,9 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
       await select.setValue('30');
       
       // Change symbol
-      await wrapper.setProps({ 
+      await wrapper.setProps({
         symbol: 'AAPL',
-        expirationDates: ['2024-01-26'],
+        expirationDates: [{ date: '2024-01-26', symbol: 'AAPL240126', type: 'weekly' }],
         optionsDataByExpiration: {}
       });
       
@@ -389,7 +440,7 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
       await nextTick();
       
       // Should register all option symbols from the expanded expiration
-      const expectedSymbols = defaultProps.optionsDataByExpiration['2024-01-19'].map(opt => opt.symbol);
+      const expectedSymbols = defaultProps.optionsDataByExpiration['2024-01-19-monthly-SPY240119'].map(opt => opt.symbol);
       
       expectedSymbols.forEach(symbol => {
         expect(mockRegisterSymbolUsage).toHaveBeenCalledWith(
@@ -463,20 +514,20 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
       expect(initialRegistrations).toBeGreaterThan(0);
       
       // Change symbol
-      await wrapper.setProps({ 
+      await wrapper.setProps({
         symbol: 'AAPL',
-        expirationDates: ['2024-01-26'],
+        expirationDates: [{ date: '2024-01-26', symbol: 'AAPL240126', type: 'weekly' }],
         optionsDataByExpiration: {
-          '2024-01-26': [
+          '2024-01-26-weekly-AAPL240126': [
             {
               symbol: 'AAPL_240126C00150000',
               strike_price: 150,
               type: 'call',
               bid: 1.45,
-              ask: 1.55
-            }
-          ]
-        }
+              ask: 1.55,
+            },
+          ],
+        },
       });
       
       // Should unregister old symbols
@@ -525,7 +576,7 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
         props: {
           ...defaultProps,
           optionsDataByExpiration: {
-            '2024-01-19': []
+            '2024-01-19-monthly-SPY240119': []
           }
         }
       });
@@ -540,8 +591,9 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
     it('handles malformed option data without crashing', () => {
       const malformedProps = {
         ...defaultProps,
+        expirationDates: [{ date: '2024-01-19', symbol: 'SPY240119', type: 'monthly' }],
         optionsDataByExpiration: {
-          '2024-01-19': [
+          '2024-01-19-monthly-SPY240119': [
             {
               // Missing required fields
               strike_price: 450,
@@ -630,7 +682,7 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
         props: {
           ...defaultProps,
           optionsDataByExpiration: {
-            '2024-01-19': largeOptionSet
+            '2024-01-19-monthly-SPY240119': largeOptionSet
           }
         }
       });
@@ -692,9 +744,9 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
       expect(wrapper.emitted('strike-count-changed')).toBeTruthy();
       
       // Change symbol
-      await wrapper.setProps({ 
+      await wrapper.setProps({
         symbol: 'AAPL',
-        expirationDates: ['2024-01-26'],
+        expirationDates: [{ date: '2024-01-26', symbol: 'AAPL240126', type: 'weekly' }],
         optionsDataByExpiration: {}
       });
       
@@ -776,7 +828,11 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
       await firstHeader.trigger('click');
       
       // Change props to trigger cleanup
-      await wrapper.setProps({ symbol: 'AAPL' });
+      await wrapper.setProps({
+        symbol: 'AAPL',
+        expirationDates: [],
+        optionsDataByExpiration: {},
+      });
       
       // Unmount to trigger final cleanup
       wrapper.unmount();
