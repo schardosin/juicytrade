@@ -312,130 +312,6 @@ class DXLinkCandleClient:
         except Exception as e:
             logger.error(f"Error disconnecting DXLink: {e}")
 
-class SymbolLookupCache:
-    """Smart caching for symbol lookup with prefix filtering."""
-    
-    def __init__(self, ttl_seconds: int = 21600, max_size: int = 500):
-        self.ttl_seconds = ttl_seconds  # 6 hours (21600 seconds)
-        self.max_size = max_size
-        self.cache: Dict[str, Tuple[List[SymbolSearchResult], float]] = {}
-    
-    def _cleanup_expired(self):
-        """Remove expired entries from cache."""
-        current_time = time.time()
-        expired_keys = [
-            key for key, (_, timestamp) in self.cache.items()
-            if current_time - timestamp > self.ttl_seconds
-        ]
-        for key in expired_keys:
-            del self.cache[key]
-    
-    def _enforce_size_limit(self):
-        """Enforce max cache size using LRU eviction."""
-        if len(self.cache) > self.max_size:
-            # Simple LRU: remove oldest entries
-            sorted_items = sorted(self.cache.items(), key=lambda x: x[1][1])
-            items_to_remove = len(self.cache) - self.max_size + 1
-            for key, _ in sorted_items[:items_to_remove]:
-                del self.cache[key]
-    
-    async def search(self, query: str, api_call_func) -> List[SymbolSearchResult]:
-        """
-        Smart search with caching and prefix filtering.
-        
-        Args:
-            query: Search query
-            api_call_func: Function to call API if cache miss
-            
-        Returns:
-            List of SymbolSearchResult objects
-        """
-        self._cleanup_expired()
-        normalized_query = query.lower().strip()
-        
-        # 1. Check for exact match in cache
-        if normalized_query in self.cache:
-            results, _ = self.cache[normalized_query]
-            # Return top 50 for display
-            return results[:50] if len(results) > 50 else results
-        
-        # 2. Try to filter from cached broader search
-        filtered_results = self._try_filter_from_cache(normalized_query)
-        if filtered_results is not None:
-            # Cache the filtered results for future exact matches
-            self.cache[normalized_query] = (filtered_results, time.time())
-            self._enforce_size_limit()
-            # Return top 50 for display
-            return filtered_results[:50] if len(filtered_results) > 50 else filtered_results
-        
-        # 3. Make API call and cache results (only if successful)
-        api_results = await api_call_func(query)
-        
-        # Only cache if we got actual results (don't cache empty results from API failures)
-        if api_results:
-            # Cache the full results for better prefix filtering
-            self.cache[normalized_query] = (api_results, time.time())
-            self._enforce_size_limit()
-        
-        # Return top 50 for display
-        return api_results[:50] if len(api_results) > 50 else api_results
-    
-    def _try_filter_from_cache(self, query: str) -> Optional[List[SymbolSearchResult]]:
-        """
-        Try to filter results from a cached broader search.
-        
-        Args:
-            query: Current search query
-            
-        Returns:
-            Filtered results if found, None otherwise
-        """
-        current_time = time.time()
-        
-        # Look for cached results from shorter queries that could contain our results
-        for cached_query, (results, timestamp) in self.cache.items():
-            # Skip expired entries
-            if current_time - timestamp > self.ttl_seconds:
-                continue
-            
-            # Check if this cached query is a prefix of our query
-            if len(cached_query) < len(query) and query.startswith(cached_query):
-                # Filter the cached results to match our query
-                filtered = [
-                    result for result in results
-                    if (query in result.symbol.lower() or 
-                        query in result.description.lower())
-                ]
-                
-                # Sort the filtered results by relevance
-                def sort_key(result):
-                    symbol = result.symbol.upper()
-                    query_upper = query.upper()
-                    
-                    # Exact match gets highest priority
-                    if symbol == query_upper:
-                        return (0, symbol)
-                    
-                    # Starts with query gets second priority
-                    if symbol.startswith(query_upper):
-                        return (1, len(symbol), symbol)
-                    
-                    # Contains query gets third priority
-                    if query_upper in symbol:
-                        return (2, symbol.index(query_upper), len(symbol), symbol)
-                    
-                    # Description contains query gets fourth priority
-                    description = result.description.upper()
-                    if query_upper in description:
-                        return (3, description.index(query_upper), len(description), symbol)
-                    
-                    # Everything else
-                    return (4, symbol)
-                
-                filtered.sort(key=sort_key)
-                return filtered
-        
-        return None
 
 class TastyTradeProvider(BaseProvider):
     """
@@ -458,7 +334,6 @@ class TastyTradeProvider(BaseProvider):
         self._dxlink_url = None
         self._stream_connection = None
         self._connection_ready = asyncio.Event()
-        self._symbol_cache = SymbolLookupCache()
         
         # Streaming infrastructure
         self._streaming_queue = None
@@ -958,7 +833,7 @@ class TastyTradeProvider(BaseProvider):
     
     async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
         """Search for symbols matching the query using TastyTrade symbol search API with smart caching."""
-        return await self._symbol_cache.search(query, self._api_lookup_symbols)
+        return await self._api_lookup_symbols(query)
     
     async def _api_lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
         """Make actual API call to TastyTrade symbol search endpoint."""
@@ -992,11 +867,18 @@ class TastyTradeProvider(BaseProvider):
                 results = []
                 for item in items:
                     if isinstance(item, dict):
+                        instrument_type = item.get("instrument-type", "")
+                        ui_type = instrument_type
+                        if instrument_type == "Equity":
+                            ui_type = "Stock"
+                        elif instrument_type == "Index":
+                            ui_type = "Index"
+
                         result = SymbolSearchResult(
                             symbol=item.get("symbol", ""),
                             description=item.get("description", ""),
                             exchange=item.get("listed-market", ""),
-                            type=item.get("instrument-type", "")
+                            type=ui_type
                         )
                         results.append(result)
                 
