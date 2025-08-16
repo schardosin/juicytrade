@@ -394,7 +394,7 @@ export default {
     });
 
     // Use unified market data composable
-    const { getPositions, refreshPositions, lookupSymbols } = useMarketData();
+    const { getPositions, refreshPositions } = useMarketData();
 
     // Component registration system
     const componentId = `PositionsView-${Math.random().toString(36).substr(2, 9)}`;
@@ -1200,25 +1200,22 @@ export default {
       return selectedLegs.value.some(leg => leg.symbol === legSymbol);
     };
 
-    const togglePositionLegSelection = async (leg, strategy, group) => {
+    const togglePositionLegSelection = (leg, strategy, group) => {
       const legSymbol = leg.symbol;
       const underlyingSymbol = group.symbol;
 
       // If the selected position's symbol is different from the current global symbol, update it.
       if (underlyingSymbol && underlyingSymbol !== currentSymbol.value) {
-        try {
-          const results = await lookupSymbols(underlyingSymbol);
-          if (results && results.length > 0) {
-            const symbolData = results[0];
-            window.dispatchEvent(
-              new CustomEvent("symbol-selected", {
-                detail: symbolData,
-              })
-            );
-          }
-        } catch (error) {
-          console.error(`Error looking up symbol ${underlyingSymbol}:`, error);
-        }
+        const symbolData = {
+          symbol: underlyingSymbol,
+          description: "", // Will be fetched by SymbolHeader
+          exchange: "", // Will be fetched by SymbolHeader
+        };
+        window.dispatchEvent(
+          new CustomEvent("symbol-selected", {
+            detail: symbolData,
+          })
+        );
       }
       
       if (isLegSelected(legSymbol)) {

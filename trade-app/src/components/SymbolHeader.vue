@@ -45,6 +45,7 @@
 
 <script>
 import { computed, watch, onMounted, onUnmounted } from "vue";
+import { useGlobalSymbol } from "../composables/useGlobalSymbol.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
@@ -108,6 +109,19 @@ export default {
   },
   emits: ["trade-mode-changed"],
   setup(props) {
+    const { fetchSymbolDetails } = useGlobalSymbol();
+
+    // Watch for symbol changes to fetch details if needed
+    watch(
+      () => props.currentSymbol,
+      (newSymbol) => {
+        if (newSymbol && !props.companyName) {
+          fetchSymbolDetails(newSymbol);
+        }
+      },
+      { immediate: true }
+    );
+
     // Component registration system
     const componentId = `SymbolHeader-${Math.random().toString(36).substr(2, 9)}`;
     const registeredSymbols = new Set();

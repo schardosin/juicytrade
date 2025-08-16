@@ -598,6 +598,20 @@ export default {
       // Always prevent the default browser context menu
       event.preventDefault();
 
+      const orderSymbol = getOrderSymbol(order);
+      if (orderSymbol && orderSymbol !== props.currentSymbol) {
+        const symbolData = {
+          symbol: orderSymbol,
+          description: "", // Will be fetched by SymbolHeader
+          exchange: "", // Will be fetched by SymbolHeader
+        };
+        window.dispatchEvent(
+          new CustomEvent("symbol-selected", {
+            detail: symbolData,
+          })
+        );
+      }
+
       // If menu is already visible, hide it first
       if (contextMenu.value.visible) {
         contextMenu.value.visible = false;

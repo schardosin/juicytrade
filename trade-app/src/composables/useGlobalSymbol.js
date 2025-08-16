@@ -1,5 +1,6 @@
 import { ref, reactive, computed, watch } from "vue";
 import { useSmartMarketData } from "./useSmartMarketData.js";
+import { useMarketData } from "./useMarketData.js";
 import smartMarketDataStore from "../services/smartMarketDataStore.js";
 
 // Load persisted symbol data from localStorage
@@ -112,8 +113,8 @@ export function useGlobalSymbol(options = {}) {
     const newSymbol = symbolData.symbol;
     
     globalSymbolState.currentSymbol = newSymbol;
-    globalSymbolState.companyName = symbolData.description;
-    globalSymbolState.exchange = symbolData.exchange || "Unknown";
+    globalSymbolState.companyName = symbolData.description || "";
+    globalSymbolState.exchange = symbolData.exchange || "";
 
     // Reset price data when symbol changes
     globalSymbolState.currentPrice = null;
@@ -134,6 +135,26 @@ export function useGlobalSymbol(options = {}) {
     // Persist the symbol data to localStorage
     persistSymbolData();
 
+  };
+
+  const fetchSymbolDetails = async (symbol) => {
+    // Prevent fetching if details are already present
+    if (globalSymbolState.currentSymbol === symbol && globalSymbolState.companyName) {
+      return;
+    }
+
+    try {
+      const { lookupSymbols } = useMarketData();
+      const results = await lookupSymbols(symbol);
+      if (results && results.length > 0) {
+        const symbolData = results[0];
+        globalSymbolState.companyName = symbolData.description;
+        globalSymbolState.exchange = symbolData.exchange;
+        persistSymbolData();
+      }
+    } catch (error) {
+      console.error(`Error fetching details for symbol ${symbol}:`, error);
+    }
   };
 
   // Update price information
@@ -207,6 +228,7 @@ export function useGlobalSymbol(options = {}) {
     updateMarketStatus,
     getSymbolData,
     setupSymbolSelectionListener,
+    fetchSymbolDetails,
 
     // Computed-like getters for convenience
     currentSymbol: () => globalSymbolState.currentSymbol,
