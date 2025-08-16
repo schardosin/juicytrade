@@ -204,7 +204,7 @@
                             :key="`${group.id}-strategy-${strategy.name}-leg-${legIndex}`"
                             class="position-leg-row"
                             :class="{ selected: isLegSelected(leg.symbol) }"
-                            @click="togglePositionLegSelection(leg, strategy)"
+                            @click="togglePositionLegSelection(leg, strategy, group)"
                           >
                             <td class="symbol-cell leg-symbol">
                               <div class="leg-description">
@@ -394,7 +394,7 @@ export default {
     });
 
     // Use unified market data composable
-    const { getPositions, refreshPositions } = useMarketData();
+    const { getPositions, refreshPositions, lookupSymbols } = useMarketData();
 
     // Component registration system
     const componentId = `PositionsView-${Math.random().toString(36).substr(2, 9)}`;
@@ -1200,8 +1200,26 @@ export default {
       return selectedLegs.value.some(leg => leg.symbol === legSymbol);
     };
 
-    const togglePositionLegSelection = (leg, strategy) => {
+    const togglePositionLegSelection = async (leg, strategy, group) => {
       const legSymbol = leg.symbol;
+      const underlyingSymbol = group.symbol;
+
+      // If the selected position's symbol is different from the current global symbol, update it.
+      if (underlyingSymbol && underlyingSymbol !== currentSymbol.value) {
+        try {
+          const results = await lookupSymbols(underlyingSymbol);
+          if (results && results.length > 0) {
+            const symbolData = results[0];
+            window.dispatchEvent(
+              new CustomEvent("symbol-selected", {
+                detail: symbolData,
+              })
+            );
+          }
+        } catch (error) {
+          console.error(`Error looking up symbol ${underlyingSymbol}:`, error);
+        }
+      }
       
       if (isLegSelected(legSymbol)) {
         // Remove from selection
