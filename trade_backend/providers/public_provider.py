@@ -96,34 +96,52 @@ class PublicProvider(BaseProvider):
             self._log_error(f"get_stock_quotes for {symbols}", e)
             return {}
 
-    async def get_expiration_dates(self, symbol: str) -> List[str]:
+    async def get_expiration_dates(self, symbol: str) -> Dict[str, Dict[str, Any]]:
         """Get available expiration dates for options on a symbol."""
         token = await self._get_access_token()
         if not token:
-            return []
+            return {}
 
         url = f"{self.base_url}/userapigateway/marketdata/{self.account_id}/option-expirations"
         headers = {
             'Authorization': f'Bearer {token}',
             'Content-Type': 'application/json'
         }
-        data = {
-            "instrument": {
-                "symbol": symbol,
-                "type": "EQUITY"
-            }
-        }
-        try:
-            response = requests.post(url, headers=headers, json=data)
-            response.raise_for_status()
-            expirations_data = response.json()
-            return expirations_data.get("expirations", [])
-        except requests.exceptions.RequestException as e:
-            self._log_error(f"get_expiration_dates for {symbol}", e)
-            return []
 
-    async def get_options_chain(self, symbol: str, expiry: str, option_type: Optional[str] = None) -> List[OptionContract]:
-        """Get options chain for a symbol and expiration."""
+        async def fetch_expirations(instrument_type: str):
+            data = { "instrument": { "symbol": symbol, "type": instrument_type } }
+            try:
+                response = requests.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                expirations_data = response.json()
+                return expirations_data.get("expirations", [])
+            except requests.exceptions.RequestException as e:
+                self._log_error(f"get_expiration_dates for {symbol} with type {instrument_type}", e)
+                return []
+
+        # Try with EQUITY first
+        expirations = await fetch_expirations("EQUITY")
+
+        # If no expirations, fallback to INDEX
+        if not expirations:
+            self._log_info(f"No expirations found for {symbol} with type EQUITY, falling back to INDEX.")
+            expirations = await fetch_expirations("INDEX")
+
+        date_symbol_map = {}
+        for exp_date in expirations:
+            date_symbol_map[exp_date] = {
+                "date": exp_date,
+                "symbol": symbol,
+                "type": "unknown"
+            }
+
+        enhanced_dates = list(date_symbol_map.values())
+        enhanced_dates.sort(key=lambda x: (x["date"], x["symbol"]))
+        
+        return enhanced_dates
+
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
+        """Get basic options chain (no Greeks) for fast loading, ATM-focused."""
         token = await self._get_access_token()
         if not token:
             return []
@@ -133,47 +151,51 @@ class PublicProvider(BaseProvider):
             'Authorization': f'Bearer {token}',
             'Content-Type': 'application/json'
         }
-        data = {
-            "instrument": {
-                "symbol": symbol,
-                "type": "EQUITY"
-            },
-            "expirationDate": expiry
-        }
-        
-        try:
-            response = requests.post(url, headers=headers, json=data)
-            response.raise_for_status()
-            chain_data = response.json()
-            
-            result = []
+
+        def process_chain_data(chain_data):
+            processed_contracts = []
+            if not chain_data:
+                return processed_contracts
             
             # Process calls
-            if not option_type or option_type.lower() == "call":
-                for call in chain_data.get("calls", []):
-                    if call.get("outcome") == "SUCCESS":
-                        contract = self._transform_option_contract(call, "call")
-                        if contract:
-                            result.append(contract)
+            for call in chain_data.get("calls", []):
+                if call.get("outcome") == "SUCCESS":
+                    contract = self._transform_option_contract(call, "call")
+                    if contract:
+                        processed_contracts.append(contract)
             
             # Process puts
-            if not option_type or option_type.lower() == "put":
-                for put in chain_data.get("puts", []):
-                    if put.get("outcome") == "SUCCESS":
-                        contract = self._transform_option_contract(put, "put")
-                        if contract:
-                            result.append(contract)
-            
-            return result
-        except requests.exceptions.RequestException as e:
-            self._log_error(f"get_options_chain for {symbol} {expiry}", e)
-            return []
+            for put in chain_data.get("puts", []):
+                if put.get("outcome") == "SUCCESS":
+                    contract = self._transform_option_contract(put, "put")
+                    if contract:
+                        processed_contracts.append(contract)
 
-    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20) -> List[OptionContract]:
-        """Get basic options chain (no Greeks) for fast loading, ATM-focused."""
-        # Public API doesn't have separate basic endpoint, use full chain
-        contracts = await self.get_options_chain(symbol, expiry)
-        
+            return processed_contracts
+
+        async def fetch_chain(instrument_type: str):
+            data = {
+                "instrument": { "symbol": symbol, "type": instrument_type },
+                "expirationDate": expiry
+            }
+            try:
+                response = requests.post(url, headers=headers, json=data)
+                response.raise_for_status()
+                return response.json()
+            except requests.exceptions.RequestException as e:
+                self._log_error(f"get_options_chain_basic for {symbol} {expiry} with type {instrument_type}", e)
+                return None
+
+        # Try with EQUITY first
+        chain_data = await fetch_chain("EQUITY")
+        contracts = process_chain_data(chain_data)
+
+        # If no contracts, fallback to INDEX
+        if not contracts:
+            self._log_info(f"No contracts found for {symbol} with type EQUITY, falling back to INDEX.")
+            chain_data = await fetch_chain("INDEX")
+            contracts = process_chain_data(chain_data)
+
         if not contracts or not underlying_price:
             return contracts
         
@@ -190,7 +212,7 @@ class PublicProvider(BaseProvider):
         puts.sort(key=distance_from_atm)
         
         # Take closest strikes
-        strikes_per_side = strike_count // 2
+        strikes_per_side = strike_count
         selected_calls = calls[:strikes_per_side]
         selected_puts = puts[:strikes_per_side]
         
@@ -206,7 +228,7 @@ class PublicProvider(BaseProvider):
         if strikes_only:
             return await self.get_options_chain_basic(symbol, expiry, underlying_price, atm_range)
         
-        contracts = await self.get_options_chain(symbol, expiry)
+        contracts = await self.get_options_chain_basic(symbol, expiry, underlying_price, atm_range)
         
         if include_greeks and contracts:
             # Get Greeks for the contracts

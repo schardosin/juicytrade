@@ -63,7 +63,7 @@
               <span v-if="expiration.isMonthly" class="monthly-badge">M</span>
               <span v-else-if="expiration.isQuarterly" class="quarterly-badge">Q</span>
               <span v-else-if="expiration.isEOM" class="eom-badge">EOM</span>
-              <span v-else class="weekly-badge">W</span>
+              <span v-else-if="expiration.isWeekly" class="weekly-badge">W</span>
             </div>
           </div>
 
@@ -320,6 +320,7 @@ export default {
         const isMonthly = (type === 'monthly');
         const isQuarterly = (type === 'quarterly');
         const isEOM = (type === 'eom');
+        const isWeekly = (type === 'weekly');
 
         const [year, month, day] = dateStr.split("-").map(Number);
         const date = new Date(Date.UTC(year, month - 1, day));
@@ -359,6 +360,7 @@ export default {
           isMonthly,
           isQuarterly,
           isEOM,
+          isWeekly,
           // Static IV data to avoid unnecessary re-renders
           ivData: {
             rank: 45.2,

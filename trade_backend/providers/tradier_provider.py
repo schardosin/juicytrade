@@ -511,6 +511,14 @@ class TradierProvider(BaseProvider):
     async def get_expiration_dates(self, symbol: str) -> List[dict]:
         """Get available expiration dates for options on a symbol with universal enhanced structure."""
         try:
+            # UI to Tradier mapping
+            type_mapping = {
+                "standard": "monthly",
+                "eom": "eom",
+                "weeklys": "weekly",
+                "quarterlys": "quarterly"
+            }
+
             weekly_map = {
                 'SPX': 'SPXW',
                 'NDX': 'NDXP',
@@ -567,11 +575,10 @@ class TradierProvider(BaseProvider):
 
             if has_alt_root:
                 for exp_date, exp_type in sorted(date_to_exp_type.items()):
+                    symbol_type = type_mapping.get(exp_type, exp_type)
                     if exp_type == "standard":
-                        symbol_type = "monthly"
                         root = base_root
                     else:
-                        symbol_type = "weekly"
                         root = alt_root
                     enhanced_dates.append({
                         "date": exp_date,
@@ -580,7 +587,7 @@ class TradierProvider(BaseProvider):
                     })
             else:
                 for exp_date, exp_type in sorted(date_to_exp_type.items()):
-                    symbol_type = "monthly" if exp_type == "standard" else "weekly"
+                    symbol_type = type_mapping.get(exp_type, exp_type)
                     enhanced_dates.append({
                         "date": exp_date,
                         "symbol": upper_symbol,
@@ -595,6 +602,14 @@ class TradierProvider(BaseProvider):
     async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
         """Fast loading - basic options data without Greeks, ATM-focused by strike count."""
         try:
+            # Tradier to UI mapping
+            reverse_type_mapping = {
+                "monthly": "standard",
+                "eom": "eom",
+                "weekly": "weeklys",
+                "quarterly": "quarterlys"
+            }
+
             # Determine the symbol to use for the API call. Use underlying_symbol if provided, otherwise use symbol.
             # Heuristic for index weeklies: if symbol looks like an extended root (e.g., SPXW, NDXP), query the base underlying.
             api_symbol = underlying_symbol if underlying_symbol else symbol
@@ -622,10 +637,8 @@ class TradierProvider(BaseProvider):
             # Determine type filter, for Tradier we infer 'regular' or 'weekly' based on root
             typeFilter = None
             if type:
-                typeFilter = type.lower()
-                if typeFilter == 'monthly':
-                    typeFilter = 'regular'
-            
+                typeFilter = reverse_type_mapping.get(type.lower())
+
             # Filter contracts
             filtered_contracts_raw = []
             for contract_raw in contracts_raw:
@@ -641,7 +654,8 @@ class TradierProvider(BaseProvider):
                     continue
                 
                 # Infer expiration-type: 'regular' if root matches api_symbol, else 'weekly'
-                exp_type = 'regular' if root == api_symbol.upper() else 'weekly'
+                #exp_type = 'regular' if root == api_symbol.upper() else 'weekly'
+                exp_type = contract_raw['expiration_type']
                 
                 # Filter by type if specified
                 if typeFilter and exp_type != typeFilter:

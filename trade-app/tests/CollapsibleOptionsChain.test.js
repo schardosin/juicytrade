@@ -233,6 +233,18 @@ describe('CollapsibleOptionsChain - Stability & Cascade Protection', () => {
       expect(wrapper.find('.eom-badge').exists()).toBe(true);
       expect(wrapper.find('.eom-badge').text()).toBe('EOM');
     });
+
+    it('displays no badge for unknown type', () => {
+      const props = {
+        ...defaultProps,
+        expirationDates: [{ date: '2024-01-31', symbol: 'SPY', type: 'unknown' }],
+      };
+      wrapper = mount(CollapsibleOptionsChain, { props });
+      expect(wrapper.find('.monthly-badge').exists()).toBe(false);
+      expect(wrapper.find('.weekly-badge').exists()).toBe(false);
+      expect(wrapper.find('.quarterly-badge').exists()).toBe(false);
+      expect(wrapper.find('.eom-badge').exists()).toBe(false);
+    });
   });
 
   describe('Loading & Error States', () => {

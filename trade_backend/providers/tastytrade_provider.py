@@ -672,6 +672,14 @@ class TastyTradeProvider(BaseProvider):
     async def get_expiration_dates(self, symbol: str) -> List[str]:
         """Get available expiration dates for options on a symbol with universal enhanced structure."""
         try:
+            # UI to Tasty mapping
+            type_mapping = {
+                "regular": "monthly",
+                "end-of-month": "eom",
+                "weekly": "weekly",
+                "quarterly": "quarterly"
+            }
+
             if not await self._ensure_valid_session():
                 raise Exception("Failed to authenticate with TastyTrade")
             
@@ -703,10 +711,7 @@ class TastyTradeProvider(BaseProvider):
                         key = f"{exp_date}-{root_symbol}"
                         if key not in date_symbol_map:
                             # Determine type based on expiration type from TastyTrade
-                            if exp_type == "Weekly":
-                                symbol_type = "weekly"
-                            else:
-                                symbol_type = "monthly"  # Standard, Monthly, etc.
+                            symbol_type = type_mapping.get(exp_type.lower(), exp_type)
                             
                             date_symbol_map[key] = {
                                 "date": exp_date,
@@ -727,6 +732,14 @@ class TastyTradeProvider(BaseProvider):
     async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
         """Fast loading - basic options data without Greeks, ATM-focused by strike count."""
         try:
+            # Tasty to UI mapping
+            reverse_type_mapping = {
+                "monthly": "regular",
+                "eom": "end-of-month",
+                "weekly": "weekly",
+                "quarterly": "quarterly"
+            }
+
             # Determine the symbol to use for the API call. Use underlying_symbol if provided, otherwise use symbol.
             api_symbol = underlying_symbol if underlying_symbol else symbol
 
@@ -753,9 +766,9 @@ class TastyTradeProvider(BaseProvider):
                 items = data.get("data", {}).get("items", [])
 
                 # Determine type filter, for tastytrade monthly is called regular
-                typeFilter = type.lower()
-                if type.lower() == 'monthly':
-                    typeFilter = 'regular'
+                typeFilter = None
+                if type:
+                    typeFilter = reverse_type_mapping.get(type.lower())
 
                 # Filter contracts
                 filtered_contracts_raw = []
