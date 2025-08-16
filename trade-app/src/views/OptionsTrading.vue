@@ -37,6 +37,7 @@
               :optionsDataByExpiration="optionsManager.dataByExpiration.value"
               :loading="optionsManager.loading.value"
               :error="optionsManager.error.value"
+              :expandedExpirations="optionsManager.expandedExpirations.value"
               :currentStrikeCount="optionsManager.strikeCount.value"
               @expiration-expanded="onExpirationExpanded"
               @expiration-collapsed="onExpirationCollapsed"
@@ -103,6 +104,7 @@ import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { useOptionsChainManager } from "../composables/useOptionsChainManager";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
+import { useTradeNavigation } from "../composables/useTradeNavigation.js";
 import api from "../services/api";
 // webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
 // import webSocketClient from "../services/webSocketClient";
@@ -121,6 +123,7 @@ export default {
     RightPanel,
   },
   setup() {
+    const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
     const {
       showOrderConfirmation,
@@ -165,7 +168,7 @@ export default {
       });
 
     // Use centralized selected legs (positions loaded globally by useGlobalSymbol)
-    const { selectedLegs, clearAll: clearSelectedLegs } = useSelectedLegs();
+    const { selectedLegs, addLeg, clearAll: clearSelectedLegs } = useSelectedLegs();
 
     const activePositions = ref([]);
 
@@ -562,6 +565,85 @@ export default {
       liquidity: 4,
     }));
 
+    const processPendingOrder = async (order) => {
+      if (!order) return;
+
+      clearAllSelections();
+
+      const { legs, isOpposite } = order;
+      if (!legs || legs.length === 0) return;
+
+      // 1. Expand Expiration Dates
+      const expirationDatesToExpand = new Set(
+        legs.map((leg) => {
+          const parsed = parseOptionSymbol(leg.symbol);
+          return parsed ? parsed.expiry.substring(0, 10) : null;
+        })
+      );
+
+      expirationDatesToExpand.forEach((expiryDate) => {
+        if (expiryDate) {
+          const expirationEntry = optionsManager.expirationDates.value.find(
+            (e) => e.date === expiryDate
+          );
+          if (expirationEntry) {
+            const uniqueKey = `${expirationEntry.date}-${expirationEntry.type}-${expirationEntry.symbol}`;
+            optionsManager.expandExpiration(uniqueKey, expirationEntry);
+          }
+        }
+      });
+
+      // 2. Select the Legs
+      legs.forEach((leg) => {
+        const parsed = parseOptionSymbol(leg.symbol);
+        if (parsed) {
+          let side = leg.side.includes("buy") ? "buy" : "sell";
+          if (isOpposite) {
+            side = side === "buy" ? "sell" : "buy";
+          }
+
+          const selection = {
+            symbol: leg.symbol,
+            strike_price: parsed.strike,
+            type: parsed.type,
+            expiry: parsed.expiry,
+            side: side,
+            quantity: Math.abs(leg.qty),
+          };
+          addLeg(selection);
+        }
+      });
+    };
+
+    const parseOptionSymbol = (symbol) => {
+      try {
+        const match = symbol.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
+        if (!match) return null;
+
+        const [, underlying, dateStr, type, strikeStr] = match;
+
+        const year = 2000 + parseInt(dateStr.substring(0, 2));
+        const month = dateStr.substring(2, 4);
+        const day = dateStr.substring(4, 6);
+        const expiry = `${year}-${month.padStart(2, "0")}-${day.padStart(
+          2,
+          "0"
+        )}`;
+
+        const strike = parseInt(strikeStr) / 1000;
+
+        return {
+          underlying,
+          expiry,
+          type: type === "C" ? "call" : "put",
+          strike,
+        };
+      } catch (error) {
+        console.error("Error parsing option symbol:", symbol, error);
+        return null;
+      }
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       // The SmartMarketDataStore is already connected via main.js.
@@ -604,23 +686,27 @@ export default {
 
     // Watchers
 
-    let chartUpdateDebounceTimer = null;
-    const debouncedUpdateChartData = () => {
-      clearTimeout(chartUpdateDebounceTimer);
-      chartUpdateDebounceTimer = setTimeout(() => {
-        // Pass activePositions directly (including empty array) so an explicit "no checked positions"
-        // from the RightPanel results in chart clearing. updateChartData treats [] as an explicit
-        // empty selection and will set chartData to null.
-        updateChartData(activePositions.value);
-      }, 50); // 50ms debounce to prevent flicker from rapid state changes
-    };
-
     // This single watcher now handles all chart updates.
     // It reacts to changes in selected legs, checked positions, price, and adjusted credit.
     watch(
+      pendingOrder,
+      async (newOrder) => {
+        if (newOrder) {
+          // Ensure expiration dates are loaded
+          if (optionsManager.expirationDates.value.length === 0) {
+            await optionsManager.loadExpirationDates();
+          }
+          await processPendingOrder(newOrder);
+          clearPendingOrder();
+        }
+      },
+      { immediate: true }
+    );
+
+    watch(
       [selectedLegs, activePositions, currentPrice, adjustedNetCredit],
       () => {
-        debouncedUpdateChartData();
+        updateChartData(activePositions.value);
         
         const hasLegsForChart = selectedLegs.value.length > 0 || activePositions.value.length > 0;
         const hasLegsForTicket = selectedLegs.value.length > 0;

@@ -281,6 +281,10 @@ export default {
       type: String,
       default: null,
     },
+    expandedExpirations: {
+      type: Object,
+      default: () => new Set(),
+    },
     currentStrikeCount: {
       type: Number,
       default: 20,
@@ -302,7 +306,6 @@ export default {
 
     // Reactive state - sync with parent's current strike count
     const strikeCount = ref(props.currentStrikeCount || 20);
-    const expandedExpirations = ref(new Set());
     const liveOptionPrices = reactive(new Map());
     const liveOptionGreeks = reactive(new Map());
 
@@ -339,7 +342,7 @@ export default {
 
         const optionsData = props.optionsDataByExpiration[uniqueKey] || [];
         const hasLoaded = optionsData.length > 0;
-        const isLoading = expandedExpirations.value.has(uniqueKey) && !hasLoaded;
+        const isLoading = props.expandedExpirations.has(uniqueKey) && !hasLoaded;
 
         return {
           date: dateStr,
@@ -353,8 +356,8 @@ export default {
             timeZone: "UTC",
           }),
           daysToExpiry,
-          isExpanded: expandedExpirations.value.has(uniqueKey),
-          isLoading: expandedExpirations.value.has(uniqueKey) && !hasLoaded,
+          isExpanded: props.expandedExpirations.has(uniqueKey),
+          isLoading: props.expandedExpirations.has(uniqueKey) && !hasLoaded,
           hasLoaded,
           optionsData,
           isMonthly,
@@ -372,7 +375,7 @@ export default {
     });
 
     const hasExpandedExpirations = computed(() => {
-      return expandedExpirations.value.size > 0;
+      return props.expandedExpirations.size > 0;
     });
 
     // Methods
@@ -381,7 +384,6 @@ export default {
 
       if (wasExpanded) {
         // Collapse expiration - use uniqueKey for tracking
-        expandedExpirations.value.delete(expiration.uniqueKey);
         emit("expiration-collapsed", expiration.uniqueKey);
 
         // Clean up the local caches for the collapsed expiration's symbols
@@ -395,7 +397,6 @@ export default {
         }
       } else {
         // Expand expiration - use uniqueKey for tracking but pass clean date and symbol info
-        expandedExpirations.value.add(expiration.uniqueKey);
         emit("expiration-expanded", expiration.uniqueKey, expiration);
       }
     };
@@ -656,9 +657,6 @@ export default {
       if (newSymbol !== oldSymbol) {
         // Unregister all current symbols
         cleanupComponentRegistrations();
-        
-        // Collapse all sections for the new symbol
-        expandedExpirations.value.clear();        
       }
     }, { immediate: true });
 

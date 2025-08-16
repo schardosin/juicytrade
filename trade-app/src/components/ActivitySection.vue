@@ -173,6 +173,7 @@
       </div>
       <div
         class="context-menu-item similar-item"
+        :class="{ disabled: isOrderExpired(contextMenu.order) }"
         @click="createSimilarOrder(contextMenu.order)"
       >
         <i class="pi pi-arrow-down"></i>
@@ -180,6 +181,7 @@
       </div>
       <div
         class="context-menu-item opposite-item"
+        :class="{ disabled: isOrderExpired(contextMenu.order) }"
         @click="createOppositeOrder(contextMenu.order)"
       >
         <i class="pi pi-refresh"></i>
@@ -198,7 +200,9 @@
 
 <script>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { useRouter } from "vue-router";
 import { useMarketData } from "../composables/useMarketData.js";
+import { useTradeNavigation } from "../composables/useTradeNavigation.js";
 import { detectStrategy } from "../utils/optionsStrategies";
 import notificationService from "../services/notificationService";
 import api from "../services/api"; // Keep for cancelOrder method
@@ -212,6 +216,8 @@ export default {
     },
   },
   setup(props) {
+    const router = useRouter();
+    const { setPendingOrder } = useTradeNavigation();
     // Use unified market data composable
     const { getOrdersByStatus, isLoading } = useMarketData();
 
@@ -638,6 +644,26 @@ export default {
       contextMenu.value.visible = false;
     };
 
+    const isOrderExpired = (order) => {
+      if (!order) return true;
+      if (!order.legs || order.legs.length === 0) {
+        if (isOptionOrder(order)) {
+          const parsed = parseOptionSymbol(order.symbol);
+          if (parsed && new Date(parsed.expiry) < new Date()) {
+            return true;
+          }
+        }
+        return false;
+      }
+      for (const leg of order.legs) {
+        const parsed = parseOptionSymbol(leg.symbol);
+        if (parsed && new Date(parsed.expiry) < new Date()) {
+          return true;
+        }
+      }
+      return false;
+    };
+
     const isOrderCancellable = (order) => {
       if (!order) return false;
       const status = order.status.toLowerCase();
@@ -711,26 +737,16 @@ export default {
     };
 
     const createSimilarOrder = (order) => {
-      console.log("Creating similar order for:", order);
-
-      // Convert order to option selections
-      const selections = convertOrderToSelections(order, false);
-
-      // Emit event to parent to select these options and switch to analysis tab
-      emitOrderSelections(selections);
-
+      if (isOrderExpired(order)) return;
+      setPendingOrder({ ...order, isOpposite: false });
+      router.push("/");
       hideContextMenu();
     };
 
     const createOppositeOrder = (order) => {
-      console.log("Creating opposite order for:", order);
-
-      // Convert order to opposite option selections
-      const selections = convertOrderToSelections(order, true);
-
-      // Emit event to parent to select these options and switch to analysis tab
-      emitOrderSelections(selections);
-
+      if (isOrderExpired(order)) return;
+      setPendingOrder({ ...order, isOpposite: true });
+      router.push("/");
       hideContextMenu();
     };
 
@@ -794,25 +810,6 @@ export default {
       return selections;
     };
 
-    const emitOrderSelections = (selections) => {
-      // TODO: Emit event to parent component to handle option selections
-      // This would typically involve:
-      // 1. Selecting the options in the options chain
-      // 2. Switching to the Analysis tab
-      // 3. Opening the order ticket
-
-      console.log("Would emit selections:", selections);
-
-      // For now, just show what would be selected
-      const selectionText = selections
-        .map((s) => `${s.quantity} ${s.symbol} ${s.side.toUpperCase()}`)
-        .join(", ");
-
-      notificationService.showInfo(
-        `Would select: ${selectionText}`,
-        "Order Selection"
-      );
-    };
 
     // Watch for symbol changes
     watch(
@@ -874,6 +871,7 @@ export default {
       cancelOrder,
       createSimilarOrder,
       createOppositeOrder,
+      isOrderExpired,
     };
   },
 };
@@ -1192,13 +1190,17 @@ export default {
   background-color: rgba(255, 68, 68, 0.1);
 }
 
-.context-menu-item.cancel-item.disabled {
+.context-menu-item.cancel-item.disabled,
+.context-menu-item.similar-item.disabled,
+.context-menu-item.opposite-item.disabled {
   color: var(--text-quaternary);
   cursor: not-allowed;
   opacity: 0.5;
 }
 
-.context-menu-item.cancel-item.disabled:hover {
+.context-menu-item.cancel-item.disabled:hover,
+.context-menu-item.similar-item.disabled:hover,
+.context-menu-item.opposite-item.disabled:hover {
   background-color: transparent;
   color: var(--text-quaternary);
 }
