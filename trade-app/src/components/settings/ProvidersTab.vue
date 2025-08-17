@@ -276,8 +276,8 @@
               :class="{ selected: newProvider.account_type === accountType }"
               @click="selectAccountType(accountType)"
             >
-              <div class="account-icon">
-                <i :class="accountType === 'live' ? 'pi pi-dollar' : 'pi pi-flask'"></i>
+              <div class="account-icon" :class="accountType">
+                <i :class="accountType === 'live' ? 'pi pi-dollar' : 'pi pi-file-edit'"></i>
               </div>
               <div class="account-info">
                 <h5>{{ accountType === 'live' ? 'Live Trading' : 'Paper Trading' }}</h5>
@@ -704,7 +704,27 @@ export default {
 
     const selectAccountType = (accountType) => {
       newProvider.value.account_type = accountType;
-      newProvider.value.credentials = {};
+      
+      // For new instances, populate credentials with default values
+      if (!editingInstance.value) {
+        const credentialFields = providerTypes.value[newProvider.value.provider_type]?.credential_fields[accountType] || [];
+        const credentials = {};
+        
+        credentialFields.forEach(field => {
+          if (field.default) {
+            // Populate with default value
+            credentials[field.name] = field.default;
+          } else {
+            // Initialize with empty string
+            credentials[field.name] = '';
+          }
+        });
+        
+        newProvider.value.credentials = credentials;
+      } else {
+        // For editing instances, keep existing logic (this shouldn't happen since editing skips steps 1-2)
+        newProvider.value.credentials = {};
+      }
     };
 
     const getSelectedProviderAccountTypes = () => {
@@ -1655,9 +1675,9 @@ export default {
 }
 
 .account-badge.live {
-  background-color: rgba(220, 38, 127, 0.1);
-  color: var(--color-danger);
-  border: 1px solid var(--color-danger);
+  background-color: rgba(255, 187, 51, 0.1);
+  color: var(--color-warning);
+  border: 1px solid var(--color-warning);
 }
 
 .account-badge.paper {
@@ -1696,13 +1716,13 @@ export default {
   width: 40px;
   height: 40px;
   margin-bottom: var(--spacing-md);
-  background-color: var(--bg-secondary);
-  border: 1px solid var(--border-primary);
+  background-color: rgba(255, 107, 53, 0.1);
+  border: 1px solid var(--color-brand);
   border-radius: var(--radius-md);
   display: flex;
   align-items: center;
   justify-content: center;
-  color: var(--color-primary);
+  color: var(--color-brand);
 }
 
 .account-type-card .account-icon i {
@@ -1730,9 +1750,9 @@ export default {
   align-items: center;
   gap: var(--spacing-xs);
   padding: var(--spacing-xs) var(--spacing-sm);
-  background-color: rgba(220, 38, 127, 0.1);
-  color: var(--color-danger);
-  border: 1px solid var(--color-danger);
+  background-color: rgba(255, 107, 53, 0.1);
+  color: var(--color-brand);
+  border: 1px solid var(--color-brand);
   border-radius: var(--radius-sm);
   font-size: var(--font-size-xs);
   font-weight: var(--font-weight-semibold);
