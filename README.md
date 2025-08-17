@@ -245,6 +245,7 @@ Juicy Trade features a comprehensive **Provider Management System** accessible t
   - **Connection Testing**: Test credentials before saving
   - **Edit/Delete Operations**: Full management capabilities
   - **Security-First Design**: Required credentials not pre-filled, defaults populated for optional fields
+  - **Connection Test on Update**: When updating a provider, the connection is tested before saving. If the test fails, the dialog remains open with an error message.
 
 - **Service Routing Tab**: Configure which provider instances to use for different services
   - **Service Categories**: Trading Services and Market Data
