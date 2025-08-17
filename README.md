@@ -252,7 +252,9 @@ Juicy Trade features a comprehensive **Provider Management System** accessible t
   - **Dynamic Provider Selection**: Only shows active, compatible providers
   - **Real-time Validation**: Warns about configuration issues
   - **Status Indicators**: Visual feedback for each service configuration
-  - **Auto-save**: Changes saved immediately with confirmation
+  - **Manual Save Workflow**: Changes require explicit save action to prevent costly connection restarts
+  - **Change Tracking**: Visual indicators for unsaved changes with reset functionality
+  - **Always-Visible Save Controls**: Fixed save buttons at bottom for optimal user experience
 
 **Supported Provider Types:**
 - **Alpaca**: Live and Paper trading with comprehensive market data

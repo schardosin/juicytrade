@@ -396,7 +396,6 @@ export default {
     const marketDataServices = [
       { key: "stock_quotes", label: "Stock Quotes" },
       { key: "options_chain", label: "Options Chain" },
-      { key: "expiration_dates", label: "Expiration Dates" },
       { key: "historical_data", label: "Historical Data" },
       { key: "symbol_lookup", label: "Symbol Lookup" },
       { key: "market_calendar", label: "Market Calendar" },
