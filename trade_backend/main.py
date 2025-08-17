@@ -429,8 +429,8 @@ async def delete_provider_instance(instance_id: str):
 async def test_provider_connection(request: TestProviderConnectionRequest):
     """Test a provider connection without saving credentials."""
     try:
-        # Test the connection using provider manager
-        result = await provider_manager.test_provider_connection(
+        # Test the connection using provider manager's new method
+        result = await provider_manager.test_provider_credentials(
             request.provider_type,
             request.account_type,
             request.credentials
@@ -438,7 +438,7 @@ async def test_provider_connection(request: TestProviderConnectionRequest):
         
         return ApiResponse(
             success=result['success'],
-            data=result.get('details', {}),
+            data=result,
             message=result['message']
         )
         

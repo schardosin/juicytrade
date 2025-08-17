@@ -328,6 +328,26 @@ class BaseProvider(ABC):
             "timestamp": datetime.now().isoformat()
         }
     
+    @abstractmethod
+    async def test_credentials(self) -> Dict[str, Any]:
+        """
+        Test provider credentials by making a real API call.
+        
+        This method should make a lightweight API call to validate that the
+        credentials are correct and the provider is accessible.
+        
+        Returns:
+            Dictionary with test results:
+            {
+                "success": bool,
+                "message": str,
+                "details": dict,
+                "error_code": str (optional),
+                "error_category": str (optional)
+            }
+        """
+        pass
+    
     # === Helper Methods for Subclasses ===
     
     def _create_api_response(self, success: bool, data: Any = None, error: str = None, message: str = None) -> ApiResponse:

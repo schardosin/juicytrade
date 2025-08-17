@@ -1601,6 +1601,95 @@ class AlpacaProvider(BaseProvider):
         except Exception as e:
             self._log_error("unified_quote_handler", e)
     
+    async def test_credentials(self) -> Dict[str, Any]:
+        """
+        Test Alpaca credentials by making a real API call to validate authentication.
+        
+        Returns:
+            Dictionary with test results including success status and detailed error info.
+        """
+        try:
+            # Test credentials by making a simple account info API call
+            logger.info(f"🔍 Testing Alpaca credentials (paper: {self.use_paper})")
+            
+            # Use the trading client to get account information - this validates credentials
+            account_info = self.trading_client.get_account()
+            
+            if account_info:
+                account_status = account_info.status.value if hasattr(account_info.status, 'value') else str(account_info.status)
+                account_type = "Paper Trading" if self.use_paper else "Live Trading"
+                
+                logger.info(f"✅ Alpaca credentials valid - Account: {account_info.account_number}, Status: {account_status}")
+                
+                return {
+                    "success": True,
+                    "message": f"Alpaca connection successful ({account_type})",
+                    "details": {
+                        "account_number": account_info.account_number,
+                        "account_status": account_status,
+                        "account_type": account_type,
+                        "currency": account_info.currency or "USD",
+                        "buying_power": float(account_info.buying_power) if account_info.buying_power else None,
+                        "equity": float(account_info.equity) if account_info.equity else None,
+                        "pattern_day_trader": account_info.pattern_day_trader,
+                        "trading_blocked": account_info.trading_blocked
+                    }
+                }
+            else:
+                logger.error("❌ Alpaca credentials test failed - No account info returned")
+                return {
+                    "success": False,
+                    "message": "Failed to retrieve account information",
+                    "error_category": "authentication",
+                    "details": {"error": "No account data returned from API"}
+                }
+                
+        except Exception as e:
+            error_msg = str(e).lower()
+            logger.error(f"❌ Alpaca credentials test failed: {e}")
+            
+            # Categorize different types of errors for better user feedback
+            if "401" in error_msg or "unauthorized" in error_msg or "forbidden" in error_msg:
+                return {
+                    "success": False,
+                    "message": "Invalid API credentials. Please check your API key and secret.",
+                    "error_category": "authentication",
+                    "error_code": "INVALID_CREDENTIALS",
+                    "details": {"error": str(e)}
+                }
+            elif "403" in error_msg:
+                return {
+                    "success": False,
+                    "message": "Access forbidden. Please check your account permissions.",
+                    "error_category": "authorization",
+                    "error_code": "ACCESS_FORBIDDEN",
+                    "details": {"error": str(e)}
+                }
+            elif "timeout" in error_msg or "connection" in error_msg:
+                return {
+                    "success": False,
+                    "message": "Connection timeout. Please check your network connection and try again.",
+                    "error_category": "network",
+                    "error_code": "CONNECTION_TIMEOUT",
+                    "details": {"error": str(e)}
+                }
+            elif "rate limit" in error_msg or "429" in error_msg:
+                return {
+                    "success": False,
+                    "message": "Rate limit exceeded. Please wait a moment and try again.",
+                    "error_category": "rate_limit",
+                    "error_code": "RATE_LIMITED",
+                    "details": {"error": str(e)}
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"Connection test failed: {str(e)}",
+                    "error_category": "unknown",
+                    "error_code": "UNKNOWN_ERROR",
+                    "details": {"error": str(e)}
+                }
+
     async def lookup_symbols(self, query: str) -> List[SymbolSearchResult]:
         """Search for symbols matching the query using Alpaca assets endpoint with smart caching."""
         return await self._symbol_cache.search(query, self._api_lookup_symbols)

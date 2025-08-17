@@ -795,7 +795,7 @@ export default {
           credentials: newProvider.value.credentials
         });
         
-        connectionTestResult.value = result;
+        connectionTestResult.value = result.data;
         
       } catch (error) {
         console.error("Error testing connection:", error);
@@ -812,6 +812,14 @@ export default {
       try {
         savingProvider.value = true;
         
+        // Always test connection before saving
+        await testConnection();
+        
+        if (!connectionTestResult.value?.success) {
+          showError("Connection test failed. Please check your credentials.", "Save Error");
+          return; // Stop saving if connection test fails
+        }
+
         if (editingInstance.value) {
           // Update existing instance
           await api.updateProviderInstance(editingInstance.value, {

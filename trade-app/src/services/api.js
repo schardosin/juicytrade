@@ -598,6 +598,10 @@ export const api = {
       return response.data;
     } catch (error) {
       console.error("Error testing provider connection:", error);
+      // Even if there's an error, return the response data if available
+      if (error.response && error.response.data) {
+        return error.response.data;
+      }
       throw error;
     }
   },

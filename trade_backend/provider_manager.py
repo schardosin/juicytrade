@@ -114,8 +114,8 @@ class ProviderManager:
                 }
         return instances
 
-    async def test_provider_connection(self, provider_type: str, account_type: str, credentials: Dict[str, str]) -> Dict[str, Any]:
-        """Test a provider connection without saving credentials"""
+    async def test_provider_credentials(self, provider_type: str, account_type: str, credentials: Dict[str, str]) -> Dict[str, Any]:
+        """Test provider credentials by making a real API call."""
         try:
             # Apply defaults to credentials
             test_credentials = apply_defaults(provider_type, account_type, credentials)
@@ -126,32 +126,17 @@ class ProviderManager:
             if not provider:
                 return {
                     'success': False,
-                    'message': f'Failed to create {provider_type} provider instance',
-                    'details': {'error': 'Provider creation failed'}
+                    'message': f'Failed to create {provider_type} provider instance'
                 }
             
-            # Test the connection with a simple health check
-            health_result = await provider.health_check()
+            # Test credentials using the new method
+            return await provider.test_credentials()
             
-            if health_result.get('status') == 'healthy':
-                return {
-                    'success': True,
-                    'message': f'{provider_type.title()} connection successful',
-                    'details': health_result
-                }
-            else:
-                return {
-                    'success': False,
-                    'message': f'{provider_type.title()} connection failed',
-                    'details': health_result
-                }
-                
         except Exception as e:
-            logger.error(f"❌ Error testing {provider_type} connection: {e}")
+            logger.error(f"❌ Error testing {provider_type} credentials: {e}")
             return {
                 'success': False,
-                'message': f'Connection test failed: {str(e)}',
-                'details': {'error': str(e)}
+                'message': f'Credential test failed: {str(e)}'
             }
 
     def _get_provider(self, operation: str) -> Optional[BaseProvider]:

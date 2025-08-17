@@ -1679,6 +1679,30 @@ class TradierProvider(BaseProvider):
             self._log_error(f"_get_daily_bars for {symbol} {timeframe}", e)
             return []
 
+    async def test_credentials(self) -> Dict[str, Any]:
+        """
+        Test Tradier credentials by making a real API call to validate authentication.
+        This method attempts to fetch account information, which requires valid credentials.
+        """
+        try:
+            logger.info("🔍 Testing Tradier credentials...")
+            account_info = await self.get_account()
+            if account_info and account_info.account_id:
+                logger.info("✅ Tradier credentials are valid.")
+                return {"success": True, "message": "Successfully connected to Tradier."}
+            else:
+                logger.error("❌ Tradier credentials validation failed: No account info returned.")
+                return {"success": False, "message": "Invalid credentials or no account info found."}
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 401:
+                logger.error(f"❌ Tradier API authentication failed (401): {e.response.text}")
+                return {"success": False, "message": "Authentication failed: Invalid API key or account ID."}
+            else:
+                logger.error(f"❌ HTTP error during Tradier credential test: {e}")
+                return {"success": False, "message": f"API error: {e.response.status_code} - {e.response.text}"}
+        except Exception as e:
+            logger.error(f"❌ Unexpected error during Tradier credential test: {e}")
+            return {"success": False, "message": f"An unexpected error occurred: {str(e)}"}
 
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""
