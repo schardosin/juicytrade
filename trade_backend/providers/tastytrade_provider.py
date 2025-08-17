@@ -339,6 +339,13 @@ class TastyTradeProvider(BaseProvider):
         self._streaming_queue = None
         self._streaming_task = None
         self._shutdown_event = asyncio.Event()
+        # Lock to serialize recv() calls on the websocket. The websockets library
+        # raises "cannot call recv while another coroutine is already running recv"
+        # when multiple coroutines call recv() concurrently on the same connection.
+        # Serializing recv calls prevents that class of failure.
+        self._recv_lock = asyncio.Lock()
+        # Track current subscriptions for recovery
+        self._subscribed_symbols = set()
         
         # Health monitoring
         self._connection_id = f"tastytrade_{self.account_id}"
@@ -1513,6 +1520,19 @@ class TastyTradeProvider(BaseProvider):
             streaming_health_manager.update_connection_state(self._connection_id, ConnectionState.CONNECTING)
             
             # Clean up any existing connection first
+            # Cancel existing streaming task to avoid concurrent recv calls/leaks
+            if self._streaming_task and not self._streaming_task.done():
+                try:
+                    self._streaming_task.cancel()
+                    # Wait briefly for the task to cancel to avoid overlapping recv() calls
+                    try:
+                        await asyncio.wait_for(self._streaming_task, timeout=5.0)
+                    except Exception:
+                        pass
+                except Exception:
+                    pass
+                self._streaming_task = None
+
             if self._stream_connection:
                 try:
                     await TimeoutWrapper.execute(
@@ -2337,14 +2357,16 @@ class TastyTradeProvider(BaseProvider):
             await self._stream_connection.send(json.dumps(setup_msg))
             
             # Wait for SETUP response
-            response = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            async with self._recv_lock:
+                response = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
             setup_response = json.loads(response)
             if setup_response.get("type") != "SETUP":
                 logger.error(f"Unexpected SETUP response: {setup_response}")
                 return False
             
             # 2. Wait for AUTH_STATE: UNAUTHORIZED
-            auth_state = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            async with self._recv_lock:
+                auth_state = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
             auth_response = json.loads(auth_state)
             if auth_response.get("type") != "AUTH_STATE" or auth_response.get("state") != "UNAUTHORIZED":
                 logger.error(f"Unexpected AUTH_STATE response: {auth_response}")
@@ -2359,7 +2381,8 @@ class TastyTradeProvider(BaseProvider):
             await self._stream_connection.send(json.dumps(auth_msg))
             
             # Wait for AUTH_STATE: AUTHORIZED
-            auth_success = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            async with self._recv_lock:
+                auth_success = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
             auth_success_response = json.loads(auth_success)
             if (auth_success_response.get("type") != "AUTH_STATE" or 
                 auth_success_response.get("state") != "AUTHORIZED"):
@@ -2376,7 +2399,8 @@ class TastyTradeProvider(BaseProvider):
             await self._stream_connection.send(json.dumps(channel_msg))
             
             # Wait for CHANNEL_OPENED
-            channel_response = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            async with self._recv_lock:
+                channel_response = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
             channel_opened = json.loads(channel_response)
             if channel_opened.get("type") != "CHANNEL_OPENED":
                 logger.error(f"Channel open failed: {channel_opened}")
@@ -2396,7 +2420,8 @@ class TastyTradeProvider(BaseProvider):
             await self._stream_connection.send(json.dumps(feed_setup_msg))
             
             # Wait for FEED_CONFIG
-            feed_response = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
+            async with self._recv_lock:
+                feed_response = await asyncio.wait_for(self._stream_connection.recv(), timeout=10)
             feed_config = json.loads(feed_response)
             if feed_config.get("type") != "FEED_CONFIG":
                 logger.error(f"Feed setup failed: {feed_config}")
@@ -2465,30 +2490,32 @@ class TastyTradeProvider(BaseProvider):
     async def _process_streaming_data(self):
         """Process incoming streaming data and send to queue with automatic recovery."""
         logger.info("TastyTrade: Starting streaming data processor")
-        
+
         # Store current subscriptions for recovery
         current_subscriptions = set()
         recovery_attempt = 0
         max_recovery_attempts = 5
-        
+
         # Start periodic keepalive task
         keepalive_task = asyncio.create_task(self._periodic_keepalive())
-        
+
         try:
             while not self._shutdown_event.is_set():
                 try:
-                    # Main streaming loop
+                    # Main streaming loop: read messages while connected
                     while self.is_connected and self._stream_connection:
                         try:
-                            # Wait for incoming messages with shorter timeout
-                            message = await asyncio.wait_for(self._stream_connection.recv(), timeout=10.0)
+                            # Serialize recv() calls to avoid concurrent recv errors
+                            async with self._recv_lock:
+                                message = await asyncio.wait_for(self._stream_connection.recv(), timeout=10.0)
+
                             data = json.loads(message)
-                            
+
                             # Update health manager that we received data
                             streaming_health_manager.record_data_received(self._connection_id)
-                            
+
                             logger.debug(f"TastyTrade: Received message type: {data.get('type')}")
-                            
+
                             if data.get("type") == "FEED_DATA":
                                 # Process both Quote and Greeks events from the feed data
                                 feed_data = data.get("data", [])
@@ -2499,34 +2526,34 @@ class TastyTradeProvider(BaseProvider):
                                 logger.debug("TastyTrade: Received keepalive from server")
                             else:
                                 logger.debug(f"TastyTrade: Received non-FEED_DATA message: {data}")
-                            
+
                             # Reset recovery attempt counter on successful data processing
                             recovery_attempt = 0
-                            
+
                         except asyncio.TimeoutError:
                             # Timeout is normal - the periodic keepalive task handles keepalives
                             logger.debug("TastyTrade: Streaming timeout (normal - keepalive task handles connection maintenance)")
                             continue
-                        
+
                         except websockets.exceptions.ConnectionClosed as e:
                             # WebSocket connection was closed
                             close_code = getattr(e, 'code', None)
                             close_reason = getattr(e, 'reason', 'Unknown')
-                            
+
                             if close_code == 1000:
                                 logger.warning(f"TastyTrade: Connection closed normally by server (code: {close_code}, reason: {close_reason})")
                             else:
                                 logger.error(f"TastyTrade: Connection closed unexpectedly (code: {close_code}, reason: {close_reason})")
-                            
+
                             # All connection closures should trigger recovery
                             await self._handle_connection_loss(f"WebSocket closed (code: {close_code})", current_subscriptions)
                             break
-                            
+
                         except json.JSONDecodeError as e:
                             logger.error(f"TastyTrade: Invalid JSON received: {e}")
                             # JSON errors are not connection issues - continue processing
                             continue
-                            
+
                         except Exception as e:
                             logger.error(f"TastyTrade: Error processing streaming message: {e}")
                             # Check if this is a connection-related error
@@ -2538,19 +2565,19 @@ class TastyTradeProvider(BaseProvider):
                                 # Non-connection error - log and continue
                                 streaming_health_manager.record_error(self._connection_id, str(e))
                                 continue
-                    
+
                     # If we exit the inner loop, attempt recovery
                     if not self._shutdown_event.is_set() and recovery_attempt < max_recovery_attempts:
                         recovery_attempt += 1
                         logger.info(f"TastyTrade: Attempting recovery #{recovery_attempt}/{max_recovery_attempts}")
-                        
+
                         # Attempt to recover the connection
                         if await self._attempt_connection_recovery(current_subscriptions, recovery_attempt):
                             logger.info("TastyTrade: Recovery successful, resuming streaming")
                             continue
                         else:
                             logger.error(f"TastyTrade: Recovery attempt #{recovery_attempt} failed")
-                            
+
                             # Wait before next attempt with exponential backoff
                             delay = min(5.0 * (2 ** (recovery_attempt - 1)), 60.0)
                             logger.info(f"TastyTrade: Waiting {delay:.1f}s before next recovery attempt")
@@ -2560,17 +2587,17 @@ class TastyTradeProvider(BaseProvider):
                         if recovery_attempt >= max_recovery_attempts:
                             logger.error("TastyTrade: Max recovery attempts reached, stopping streaming processor")
                         break
-                        
+
                 except asyncio.CancelledError:
                     logger.info("TastyTrade: Streaming processor cancelled")
                     break
                 except Exception as e:
                     logger.error(f"TastyTrade: Fatal error in streaming processor: {e}")
                     streaming_health_manager.record_error(self._connection_id, f"Fatal error: {e}")
-                    
+
                     # Wait before attempting recovery
                     await asyncio.sleep(5.0)
-                    
+
         finally:
             # Cancel keepalive task
             if keepalive_task and not keepalive_task.done():
@@ -2579,7 +2606,7 @@ class TastyTradeProvider(BaseProvider):
                     await keepalive_task
                 except asyncio.CancelledError:
                     pass
-                    
+
         logger.info("TastyTrade: Streaming data processor stopped")
     
     async def _periodic_keepalive(self):

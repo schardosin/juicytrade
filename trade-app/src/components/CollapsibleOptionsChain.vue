@@ -309,6 +309,20 @@ export default {
     const liveOptionPrices = reactive(new Map());
     const liveOptionGreeks = reactive(new Map());
 
+    // Local expanded expirations set - mirror of parent prop but owned locally so
+    // the component can immediately reflect expand/collapse UI changes on user clicks
+    // while still emitting events for the parent to synchronize.
+    const expandedSet = ref(new Set(Array.from(props.expandedExpirations || [])));
+
+    // Keep local set in sync if parent updates the prop externally
+    watch(
+      () => props.expandedExpirations,
+      (newVal) => {
+        expandedSet.value = new Set(Array.from(newVal || []));
+      },
+      { immediate: true }
+    );
+
     // Component registration system
     const componentId = `CollapsibleOptionsChain-${Math.random().toString(36).substr(2, 9)}`;
     const registeredSymbols = new Set();
@@ -342,7 +356,10 @@ export default {
 
         const optionsData = props.optionsDataByExpiration[uniqueKey] || [];
         const hasLoaded = optionsData.length > 0;
-        const isLoading = props.expandedExpirations.has(uniqueKey) && !hasLoaded;
+
+        // Use local expandedSet so UI updates immediately on user clicks.
+        const isExpandedLocal = expandedSet.value.has(uniqueKey);
+        const isLoading = isExpandedLocal && !hasLoaded;
 
         return {
           date: dateStr,
@@ -356,8 +373,8 @@ export default {
             timeZone: "UTC",
           }),
           daysToExpiry,
-          isExpanded: props.expandedExpirations.has(uniqueKey),
-          isLoading: props.expandedExpirations.has(uniqueKey) && !hasLoaded,
+          isExpanded: isExpandedLocal,
+          isLoading,
           hasLoaded,
           optionsData,
           isMonthly,
@@ -375,16 +392,20 @@ export default {
     });
 
     const hasExpandedExpirations = computed(() => {
-      return props.expandedExpirations.size > 0;
+      return expandedSet.value.size > 0;
     });
 
     // Methods
     const toggleExpiration = (expiration) => {
-      const wasExpanded = expiration.isExpanded;
+      const uniqueKey = expiration.uniqueKey;
+      const wasExpanded = expandedSet.value.has(uniqueKey);
 
       if (wasExpanded) {
-        // Collapse expiration - use uniqueKey for tracking
-        emit("expiration-collapsed", expiration.uniqueKey);
+        // Update local state immediately so UI collapses
+        expandedSet.value.delete(uniqueKey);
+
+        // Emit collapse event so parent can sync its state
+        emit("expiration-collapsed", uniqueKey);
 
         // Clean up the local caches for the collapsed expiration's symbols
         if (expiration.optionsData && expiration.optionsData.length > 0) {
@@ -396,8 +417,11 @@ export default {
           });
         }
       } else {
-        // Expand expiration - use uniqueKey for tracking but pass clean date and symbol info
-        emit("expiration-expanded", expiration.uniqueKey, expiration);
+        // Update local state immediately so UI expands
+        expandedSet.value.add(uniqueKey);
+
+        // Emit expand event so parent can sync its state and possibly start loading
+        emit("expiration-expanded", uniqueKey, expiration);
       }
     };
 
