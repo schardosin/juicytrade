@@ -6,7 +6,7 @@
     :draggable="false"
     class="settings-dialog"
     header="Settings"
-    :style="{ width: '1000px', height: '600px' }"
+    :style="{ width: '1000px', height: '800px' }"
     @hide="onClose"
   >
     <div class="settings-container">
@@ -185,7 +185,7 @@ export default {
 :deep(.p-dialog-content) {
   padding: 0 !important;
   background-color: var(--dialog-bg) !important;
-  height: calc(600px - 80px) !important;
+  height: calc(800px - 80px) !important;
   overflow: hidden !important;
 }
 
@@ -263,7 +263,7 @@ export default {
 
 .tab-content {
   height: 100%;
-  padding: var(--spacing-xl);
+  padding: var(--spacing-xl) var(--spacing-xl) 0 var(--spacing-xl);
 }
 
 .placeholder-content {

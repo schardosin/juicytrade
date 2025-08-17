@@ -131,89 +131,118 @@
     </div>
 
     <!-- Service Routing Tab -->
-    <div v-if="activeSubTab === 'routing'" class="sub-tab-content">
-      <div class="tab-header">
-        <div class="header-content">
-          <h2>Service Routing</h2>
-          <p>Configure which provider instances to use for different services</p>
+    <div v-if="activeSubTab === 'routing'" class="sub-tab-content routing-tab">
+      <div class="routing-content">
+        <div class="tab-header">
+          <div class="header-content">
+            <h2>Service Routing</h2>
+            <p>Configure which provider instances to use for different services</p>
+          </div>
         </div>
-      </div>
 
-      <!-- Loading State -->
-      <div v-if="routingLoading" class="loading-section">
-        <div class="loading-spinner"></div>
-        <span>Loading service configuration...</span>
-      </div>
+        <!-- Loading State -->
+        <div v-if="routingLoading" class="loading-section">
+          <div class="loading-spinner"></div>
+          <span>Loading service configuration...</span>
+        </div>
 
-      <!-- Error State -->
-      <div v-else-if="routingError" class="error-section">
-        <i class="pi pi-exclamation-triangle"></i>
-        <span>{{ routingError }}</span>
-        <Button
-          label="Retry"
-          icon="pi pi-refresh"
-          @click="loadRoutingData"
-          class="retry-button"
-          size="small"
-        />
-      </div>
+        <!-- Error State -->
+        <div v-else-if="routingError" class="error-section">
+          <i class="pi pi-exclamation-triangle"></i>
+          <span>{{ routingError }}</span>
+          <Button
+            label="Retry"
+            icon="pi pi-refresh"
+            @click="loadRoutingData"
+            class="retry-button"
+            size="small"
+          />
+        </div>
 
-      <!-- Service Configuration -->
-      <div v-else class="service-config">
-        <!-- Service Categories -->
-        <div v-for="category in serviceCategories" :key="category.name" class="service-category">
-          <h3 class="category-title">
-            <i :class="category.icon"></i>
-            {{ category.title }}
-          </h3>
-          
-          <!-- Service Items -->
-          <div class="service-items">
-            <div v-for="service in category.services" :key="service.key" class="service-item">
-              <div class="service-info">
-                <label class="service-label">{{ service.label }}</label>
-                <span class="service-description">{{ service.description }}</span>
-              </div>
-              
-              <!-- Provider Dropdown -->
-              <div class="provider-selection">
-                <Dropdown
-                  v-model="currentConfig[service.key]"
-                  :options="getAvailableInstancesForService(service.key)"
-                  option-label="label"
-                  option-value="value"
-                  :placeholder="getProviderPlaceholder(service.key)"
-                  @change="onProviderChange(service.key, $event.value)"
-                  class="provider-dropdown"
-                  :loading="updatingRouting"
-                  :disabled="updatingRouting"
-                />
+        <!-- Service Configuration -->
+        <div v-else class="service-config">
+          <!-- Service Categories -->
+          <div v-for="category in serviceCategories" :key="category.name" class="service-category">
+            <h3 class="category-title">
+              <i :class="category.icon"></i>
+              {{ category.title }}
+            </h3>
+            
+            <!-- Service Items -->
+            <div class="service-items">
+              <div v-for="service in category.services" :key="service.key" class="service-item">
+                <div class="service-info">
+                  <label class="service-label">{{ service.label }}</label>
+                  <span class="service-description">{{ service.description }}</span>
+                </div>
                 
-                <!-- Status Indicator -->
-                <div class="provider-status">
-                  <i 
-                    :class="getStatusIcon(service.key)" 
-                    :title="getStatusTooltip(service.key)"
-                  ></i>
+                <!-- Provider Dropdown -->
+                <div class="provider-selection">
+                  <Dropdown
+                    v-model="currentConfig[service.key]"
+                    :options="getAvailableInstancesForService(service.key)"
+                    option-label="label"
+                    option-value="value"
+                    :placeholder="getProviderPlaceholder(service.key)"
+                    @change="onProviderChange(service.key, $event.value)"
+                    class="provider-dropdown"
+                    :loading="updatingRouting"
+                    :disabled="updatingRouting"
+                  />
+                  
+                  <!-- Status Indicator -->
+                  <div class="provider-status">
+                    <i 
+                      :class="getStatusIcon(service.key)" 
+                      :title="getStatusTooltip(service.key)"
+                    ></i>
+                  </div>
                 </div>
               </div>
             </div>
           </div>
-        </div>
-        
-        <!-- Validation Warnings -->
-        <div v-if="validationWarnings.length > 0" class="validation-warnings">
-          <h4>Configuration Warnings</h4>
-          <div v-for="warning in validationWarnings" :key="warning" class="warning-item">
-            <i class="pi pi-exclamation-triangle"></i>
-            <span>{{ warning }}</span>
+          
+          <!-- Validation Warnings -->
+          <div v-if="validationWarnings.length > 0" class="validation-warnings">
+            <h4>Configuration Warnings</h4>
+            <div v-for="warning in validationWarnings" :key="warning" class="warning-item">
+              <i class="pi pi-exclamation-triangle"></i>
+              <span>{{ warning }}</span>
+            </div>
           </div>
         </div>
+      </div>
 
-        <!-- Save Status -->
-        <div v-if="lastSaved" class="save-status">
-          <i class="pi pi-check-circle"></i>
-          <span>Last saved: {{ formatTime(lastSaved) }}</span>
+      <!-- Fixed Save Actions -->
+      <div class="save-actions-fixed">
+        <div class="save-status-section">
+          <div v-if="hasUnsavedChanges" class="unsaved-changes">
+            <i class="pi pi-exclamation-circle"></i>
+            <span>You have unsaved changes</span>
+          </div>
+          <div v-else-if="lastSaved" class="save-status">
+            <i class="pi pi-check-circle"></i>
+            <span>Last saved: {{ formatTime(lastSaved) }}</span>
+          </div>
+        </div>
+        
+        <div class="save-buttons">
+          <Button
+            label="Reset"
+            icon="pi pi-refresh"
+            @click="resetChanges"
+            class="p-button-secondary"
+            size="small"
+            :disabled="!hasUnsavedChanges || savingRouting"
+          />
+          <Button
+            label="Save Changes"
+            icon="pi pi-save"
+            @click="saveRoutingChanges"
+            class="p-button-success"
+            :disabled="!hasUnsavedChanges"
+            :loading="savingRouting"
+          />
         </div>
       </div>
     </div>
@@ -467,10 +496,13 @@ export default {
       getError("providers.available").value || getError("providers.config").value
     );
     const availableProviders = computed(() => reactiveAvailableProviders.value || {});
-    const currentConfig = computed(() => reactiveProviderConfig.value || {});
+    const originalConfig = computed(() => reactiveProviderConfig.value || {});
+    const currentConfig = ref({});
     const updatingRouting = ref(false);
     const validationWarnings = ref([]);
     const lastSaved = ref(null);
+    const hasUnsavedChanges = ref(false);
+    const savingRouting = ref(false);
 
     // Dialog management
     const showAddProviderDialog = ref(false);
@@ -583,6 +615,9 @@ export default {
     const loadRoutingData = async () => {
       try {
         await refreshProviderData();
+        // Initialize current config with original config
+        currentConfig.value = { ...originalConfig.value };
+        hasUnsavedChanges.value = false;
         validateConfiguration();
       } catch (error) {
         console.error("Error loading routing data:", error);
@@ -910,38 +945,72 @@ export default {
       return "Select provider...";
     };
 
-    const onProviderChange = async (serviceKey, newProvider) => {
-      if (!newProvider || updatingRouting.value) return;
+    const onProviderChange = (serviceKey, newProvider) => {
+      // Update the local configuration without saving
+      currentConfig.value[serviceKey] = newProvider;
+      
+      // Check if there are unsaved changes
+      checkForUnsavedChanges();
+      
+      // Validate new configuration
+      validateConfiguration();
+    };
+
+    const checkForUnsavedChanges = () => {
+      const original = originalConfig.value;
+      const current = currentConfig.value;
+      
+      // Compare configurations
+      const hasChanges = Object.keys({ ...original, ...current }).some(key => {
+        return original[key] !== current[key];
+      });
+      
+      hasUnsavedChanges.value = hasChanges;
+    };
+
+    const resetChanges = () => {
+      // Reset to original configuration
+      currentConfig.value = { ...originalConfig.value };
+      hasUnsavedChanges.value = false;
+      validateConfiguration();
+    };
+
+    const saveRoutingChanges = async () => {
+      if (!hasUnsavedChanges.value || savingRouting.value) return;
       
       try {
-        updatingRouting.value = true;
-        
-        // Update the configuration
-        const updatedConfig = { ...currentConfig.value };
-        updatedConfig[serviceKey] = newProvider;
+        savingRouting.value = true;
         
         // Send to backend through smart data system
-        await updateProviderConfig(updatedConfig);
+        await updateProviderConfig(currentConfig.value);
         
         // Set last saved timestamp
         lastSaved.value = new Date();
+        hasUnsavedChanges.value = false;
         
-        // Validate new configuration
-        validateConfiguration();
-        
-        showSuccess(
-          `${serviceKey.replace('_', ' ')} provider updated to ${formatProviderName(newProvider, availableProviders.value[newProvider])}`,
-          "Provider Updated"
+        // Show success message with details of what was changed
+        const changedServices = Object.keys(currentConfig.value).filter(key => 
+          originalConfig.value[key] !== currentConfig.value[key]
         );
         
-      } catch (err) {
-        console.error("Error updating provider:", err);
-        showError("Failed to update provider configuration", "Update Error");
+        if (changedServices.length > 0) {
+          const serviceNames = changedServices.map(key => key.replace('_', ' ')).join(', ');
+          showSuccess(
+            `Service routing updated for: ${serviceNames}`,
+            "Configuration Saved"
+          );
+        } else {
+          showSuccess("Service routing configuration saved", "Configuration Saved");
+        }
         
-        // Refresh data to revert any UI changes
+      } catch (err) {
+        console.error("Error saving provider configuration:", err);
+        showError("Failed to save provider configuration", "Save Error");
+        
+        // Refresh data to ensure consistency
         await loadRoutingData();
       } finally {
-        updatingRouting.value = false;
+        savingRouting.value = false;
       }
     };
 
@@ -1092,6 +1161,9 @@ export default {
 
     // Watch for changes in provider data and auto-validate
     watch([reactiveAvailableProviders, reactiveProviderConfig], () => {
+      // Update current config when original config changes
+      currentConfig.value = { ...originalConfig.value };
+      hasUnsavedChanges.value = false;
       validateConfiguration();
     }, { deep: true });
 
@@ -1110,12 +1182,15 @@ export default {
       
       // Service routing data
       availableProviders,
+      originalConfig,
       currentConfig,
       routingLoading,
       routingError,
       updatingRouting,
       validationWarnings,
       lastSaved,
+      hasUnsavedChanges,
+      savingRouting,
       
       // Dialog management
       showAddProviderDialog,
@@ -1165,6 +1240,11 @@ export default {
       hasExistingValue,
       getOriginalValue,
       onCredentialFieldChange,
+      
+      // Save routing methods
+      checkForUnsavedChanges,
+      resetChanges,
+      saveRoutingChanges,
     };
   },
 };
@@ -1172,16 +1252,19 @@ export default {
 
 <style scoped>
 .providers-tab {
+  display: flex;
+  flex-direction: column;
   height: 100%;
-  overflow-y: auto;
+  position: relative;
 }
 
 /* Sub-tab Navigation */
 .sub-tab-nav {
   display: flex;
   gap: var(--spacing-sm);
-  margin-bottom: var(--spacing-xl);
+  margin-bottom: var(--spacing-lg);
   border-bottom: 1px solid var(--border-primary);
+  flex-shrink: 0;
 }
 
 .sub-tab-btn {
@@ -1216,8 +1299,76 @@ export default {
 /* Tab Content */
 .sub-tab-content {
   flex: 1;
+  overflow-y: auto;
+  min-height: 0;
+}
+
+/* Routing Tab Layout */
+.routing-tab {
+  flex: 1;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+.routing-content {
+  flex: 1;
+  overflow-y: auto;
+  padding-right: var(--spacing-sm);
+  padding-bottom: 80px; /* Space for fixed save buttons */
+}
+
+/* Fixed Save Actions */
+.save-actions-fixed {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md) var(--radius-md) 0 0;
+  flex-shrink: 0;
+  box-shadow: 0 -2px 8px rgba(0, 0, 0, 0.1);
+  z-index: 10;
+}
+
+.save-actions-fixed .save-status-section {
+  flex: 1;
+}
+
+.save-actions-fixed .unsaved-changes {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-base);
+  color: var(--color-warning);
+  font-weight: var(--font-weight-medium);
+}
+
+.save-actions-fixed .unsaved-changes i {
+  color: var(--color-warning);
+}
+
+.save-actions-fixed .save-status {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+}
+
+.save-actions-fixed .save-status i {
+  color: var(--color-success);
+}
+
+.save-actions-fixed .save-buttons {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex-shrink: 0;
 }
 
 .tab-header {
@@ -1590,6 +1741,41 @@ export default {
   color: var(--color-success);
 }
 
+/* Save Actions */
+.save-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-lg);
+  background-color: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  margin-top: var(--spacing-lg);
+}
+
+.save-status-section {
+  flex: 1;
+}
+
+.unsaved-changes {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-base);
+  color: var(--color-warning);
+  font-weight: var(--font-weight-medium);
+}
+
+.unsaved-changes i {
+  color: var(--color-warning);
+}
+
+.save-buttons {
+  display: flex;
+  gap: var(--spacing-sm);
+  flex-shrink: 0;
+}
+
 /* Dialog Styles */
 .provider-dialog :deep(.p-dialog) {
   background-color: var(--bg-secondary);
@@ -1854,20 +2040,24 @@ export default {
 }
 
 /* Custom scrollbar */
-.providers-tab::-webkit-scrollbar {
+.routing-content::-webkit-scrollbar,
+.sub-tab-content::-webkit-scrollbar {
   width: 6px;
 }
 
-.providers-tab::-webkit-scrollbar-track {
+.routing-content::-webkit-scrollbar-track,
+.sub-tab-content::-webkit-scrollbar-track {
   background: var(--bg-secondary);
 }
 
-.providers-tab::-webkit-scrollbar-thumb {
+.routing-content::-webkit-scrollbar-thumb,
+.sub-tab-content::-webkit-scrollbar-thumb {
   background: var(--border-secondary);
   border-radius: var(--radius-sm);
 }
 
-.providers-tab::-webkit-scrollbar-thumb:hover {
+.routing-content::-webkit-scrollbar-thumb:hover,
+.sub-tab-content::-webkit-scrollbar-thumb:hover {
   background: var(--border-tertiary);
 }
 </style>
