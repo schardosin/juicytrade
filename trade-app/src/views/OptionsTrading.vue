@@ -89,7 +89,7 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { DateTime } from "luxon";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
@@ -377,50 +377,57 @@ export default {
       isRightPanelExpanded.value = false;
     };
 
-    const updateChartData = (positions = null) => {
+    const updateChartData = async (positions = null) => {
       // If positions are provided (from RightPanel), use them directly
-      // Otherwise, use selectedLegs (from centralized store)
+      // Otherwise, prefer selectedLegs; fallback to activePositions when no selected legs.
       let positionsToUse = positions;
+      let builtFromSelectedLegs = false;
 
       if (!positionsToUse) {
+        // If there are no selected legs, but we have activePositions (checked rows), use those.
         if (selectedLegs.value.length === 0) {
-          chartData.value = null;
-          return;
-        }
+          if (activePositions.value && activePositions.value.length > 0) {
+            positionsToUse = activePositions.value;
+          } else {
+            chartData.value = null;
+            return;
+          }
+        } else {
+          try {
+            // Convert selected legs to position format for chart
+            builtFromSelectedLegs = true;
+            positionsToUse = selectedLegs.value
+              .map((leg) => {
+                const price = leg.side === "buy" ? leg.ask : leg.bid;
+                const quantity =
+                  leg.side === "buy" ? leg.quantity : -leg.quantity;
 
-        try {
-          // Convert selected legs to position format for chart
-          positionsToUse = selectedLegs.value
-            .map((leg) => {
-              const price = leg.side === "buy" ? leg.ask : leg.bid;
-              const quantity =
-                leg.side === "buy" ? leg.quantity : -leg.quantity;
-
-              return {
-                symbol: leg.symbol,
-                asset_class: "us_option",
-                side: leg.side === "buy" ? "long" : "short",
-                qty: quantity,
-                strike_price: leg.strike_price,
-                option_type: leg.type,
-                expiry_date: leg.expiry,
-                current_price: price,
-                avg_entry_price: price,
-                cost_basis: price * quantity * 100, // Keep the sign for proper cost calculation
-                market_value: price * quantity * 100,
-                unrealized_pl: 0,
-                underlying_symbol: currentSymbol.value,
-                is_synthetic: true,
-              };
-            })
-            .filter(Boolean);
-        } catch (error) {
-          console.error(
-            "Error converting selected legs to positions:",
-            error
-          );
-          chartData.value = null;
-          return;
+                return {
+                  symbol: leg.symbol,
+                  asset_class: "us_option",
+                  side: leg.side === "buy" ? "long" : "short",
+                  qty: quantity,
+                  strike_price: leg.strike_price,
+                  option_type: leg.type,
+                  expiry_date: leg.expiry,
+                  current_price: price,
+                  avg_entry_price: price,
+                  cost_basis: price * quantity * 100, // Keep the sign for proper cost calculation
+                  market_value: price * quantity * 100,
+                  unrealized_pl: 0,
+                  underlying_symbol: currentSymbol.value,
+                  is_synthetic: true,
+                };
+              })
+              .filter(Boolean);
+          } catch (error) {
+            console.error(
+              "Error converting selected legs to positions:",
+              error
+            );
+            chartData.value = null;
+            return;
+          }
         }
       }
 
@@ -435,6 +442,15 @@ export default {
           currentPrice.value,
           adjustedNetCredit.value
         );
+
+        // If the chart was built from selected legs (i.e., user selected/deselected via options chain),
+        // force a complete re-init cycle by clearing the chart data first so PayoffChart destroys its
+        // internal Chart.js instance and recreates it with fresh datasets/gradients.
+        if (builtFromSelectedLegs) {
+          chartData.value = null;
+          // Allow Vue and child components to process the nullification and destroy the chart
+          await nextTick();
+        }
 
         // Force reactivity by creating a new object reference
         chartData.value = {
@@ -706,7 +722,9 @@ export default {
     watch(
       [selectedLegs, activePositions, currentPrice, adjustedNetCredit],
       () => {
-        updateChartData(activePositions.value);
+        // Recompute chart data using selected legs if present, otherwise fallback to activePositions.
+        // This prevents stale charts when selecting/deselecting legs from the chain.
+        updateChartData();
         
         const hasLegsForChart = selectedLegs.value.length > 0 || activePositions.value.length > 0;
         const hasLegsForTicket = selectedLegs.value.length > 0;

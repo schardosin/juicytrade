@@ -739,8 +739,14 @@ export default {
           const newStrikes = newChartData && newChartData.strikes ? JSON.stringify(newChartData.strikes) : null;
           const strikesChanged = prevStrikes !== newStrikes;
 
-          // If strikes changed, force a full update and apply the suggested initial window.
-          if (strikesChanged) {
+          // Also detect a change in the number of legs (position). Some workflows add/remove legs
+          // but end up with the same strikes array - in that case we still need a full reinitialize.
+          const prevCount = prev && typeof prev.positionCount === 'number' ? prev.positionCount : null;
+          const newCount = typeof newChartData.positionCount === 'number' ? newChartData.positionCount : null;
+          const positionCountChanged = prevCount !== newCount;
+
+          // If strikes changed or position count changed, force a full update and apply the suggested initial window.
+          if (strikesChanged || positionCountChanged) {
             // Clear any saved user view so we apply the strike-derived suggested window
             chartState.value.viewCenter = null;
             chartState.value.viewRange = null;
@@ -749,6 +755,16 @@ export default {
             // Ensure updates are not blocked by interaction flags (selection is not a pan/zoom).
             chartState.value.frozenUpdates = false;
             pendingUpdate.value = null;
+
+            // Force a full recreation of the chart to ensure no stale datasets / gradients remain.
+            try {
+              if (chart.value) {
+                chart.value.destroy();
+                chart.value = null;
+              }
+            } catch (e) {
+              console.warn("Could not destroy existing chart before full reinit:", e);
+            }
 
             // Immediately perform a full update to apply the suggested window
             // (bypass debounce so the view updates right after selection).
