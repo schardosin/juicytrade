@@ -124,3 +124,41 @@ def apply_defaults(provider_type: str, account_type: str, credentials: Dict[str,
             result[field_name] = field["default"]
     
     return result
+
+def is_sensitive_field(field_name: str) -> bool:
+    """Determine if a credential field contains sensitive information"""
+    sensitive_fields = ['password', 'api_key', 'api_secret']
+    return field_name in sensitive_fields
+
+def get_visible_credentials(instance_data: Dict[str, Any]) -> Dict[str, str]:
+    """Get non-sensitive credential values that can be displayed in UI"""
+    credentials = instance_data.get('credentials', {})
+    visible_creds = {}
+    
+    for field_name, field_value in credentials.items():
+        if not is_sensitive_field(field_name):
+            visible_creds[field_name] = field_value
+    
+    return visible_creds
+
+def get_masked_credentials(instance_data: Dict[str, Any]) -> Dict[str, bool]:
+    """Get indicators for which sensitive fields have values set"""
+    credentials = instance_data.get('credentials', {})
+    masked_creds = {}
+    
+    for field_name, field_value in credentials.items():
+        if is_sensitive_field(field_name):
+            masked_creds[field_name] = bool(field_value and field_value.strip())
+    
+    return masked_creds
+
+def get_default_credentials(provider_type: str, account_type: str) -> Dict[str, str]:
+    """Get default credential values for a provider type and account type"""
+    fields = get_credential_fields(provider_type, account_type)
+    defaults = {}
+    
+    for field in fields:
+        if "default" in field:
+            defaults[field["name"]] = field["default"]
+    
+    return defaults

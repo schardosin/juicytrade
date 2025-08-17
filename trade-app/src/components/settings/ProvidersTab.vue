@@ -313,17 +313,16 @@
               class="form-group"
             >
               <label>{{ field.label }}</label>
-              <InputText
+              <MaskedCredentialInput
                 v-model="newProvider.credentials[field.name]"
-                :type="field.type"
+                :input-type="field.type"
                 :placeholder="field.placeholder"
-                :required="field.required"
-                :autocomplete="field.type === 'password' ? 'current-password' : 'off'"
-                class="w-full"
+                :is-sensitive="isSensitiveField(field.name)"
+                :has-existing-value="hasExistingValue(field.name)"
+                :original-value="getOriginalValue(field.name)"
+                :default-value="field.default || ''"
+                @change="onCredentialFieldChange(field.name, $event)"
               />
-              <small v-if="field.default" class="field-hint">
-                Default: {{ field.default }}
-              </small>
             </div>
 
             <!-- Test Connection -->
@@ -419,6 +418,7 @@ import Dropdown from "primevue/dropdown";
 import Button from "primevue/button";
 import Dialog from "primevue/dialog";
 import InputText from "primevue/inputtext";
+import MaskedCredentialInput from "./MaskedCredentialInput.vue";
 import { useMarketData } from "../../composables/useMarketData";
 import { useNotifications } from "../../composables/useNotifications";
 import api from "../../services/api";
@@ -430,6 +430,7 @@ export default {
     Button,
     Dialog,
     InputText,
+    MaskedCredentialInput,
   },
   setup() {
     const { showSuccess, showError, showWarning } = useNotifications();
@@ -637,14 +638,19 @@ export default {
       
       editingInstance.value = instanceId;
       
-      // Initialize credentials object with empty values for required fields and defaults for optional fields
+      // Smart credential initialization using the new backend data
       const credentialFields = providerTypes.value[instance.provider_type]?.credential_fields[instance.account_type] || [];
       const credentials = {};
+      
       credentialFields.forEach(field => {
-        if (field.required) {
-          credentials[field.name] = ''; // Empty for security, user must re-enter required fields
+        if (isSensitiveField(field.name)) {
+          // For sensitive fields, start with empty value (user must re-enter)
+          credentials[field.name] = '';
         } else {
-          credentials[field.name] = field.default || ''; // Use default for optional fields
+          // For non-sensitive fields, use existing value or default
+          credentials[field.name] = instance.visible_credentials?.[field.name] || 
+                                   instance.default_credentials?.[field.name] || 
+                                   field.default || '';
         }
       });
       
@@ -735,6 +741,26 @@ export default {
     });
 
     const canSaveProvider = computed(() => {
+      // For editing existing instances, allow saving even if sensitive fields are empty
+      // (they will keep their existing values)
+      if (editingInstance.value) {
+        const fields = getCredentialFields();
+        const hasRequiredFields = fields.every(field => {
+          if (!field.required) return true;
+          
+          // For sensitive fields in edit mode, allow empty values (keep existing)
+          if (isSensitiveField(field.name)) {
+            return true;
+          }
+          
+          // For non-sensitive required fields, must have a value
+          return newProvider.value.credentials[field.name];
+        });
+        
+        return hasRequiredFields && newProvider.value.display_name;
+      }
+      
+      // For new instances, all required fields must be filled
       return canTestConnection.value && newProvider.value.display_name;
     });
 
@@ -954,6 +980,80 @@ export default {
       return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     };
 
+    // Smart credential handling methods
+    const isSensitiveField = (fieldName) => {
+      const sensitiveFields = ['password', 'api_key', 'api_secret'];
+      return sensitiveFields.includes(fieldName);
+    };
+
+    const hasExistingValue = (fieldName) => {
+      if (!editingInstance.value) return false;
+      
+      const instance = providerInstances.value[editingInstance.value];
+      if (!instance) return false;
+      
+      if (isSensitiveField(fieldName)) {
+        return instance.masked_credentials?.[fieldName] || false;
+      } else {
+        return !!(instance.visible_credentials?.[fieldName]);
+      }
+    };
+
+    const getOriginalValue = (fieldName) => {
+      if (!editingInstance.value) return '';
+      
+      const instance = providerInstances.value[editingInstance.value];
+      if (!instance) return '';
+      
+      if (isSensitiveField(fieldName)) {
+        // For sensitive fields, return empty string - they need to be re-entered
+        return '';
+      } else {
+        // For non-sensitive fields, return the actual value or default
+        return instance.visible_credentials?.[fieldName] || 
+               instance.default_credentials?.[fieldName] || '';
+      }
+    };
+
+    const onCredentialFieldChange = (fieldName, event) => {
+      // This method can be used to track field changes if needed
+      console.log(`Field ${fieldName} changed:`, event);
+    };
+
+    // Enhanced editProviderInstance method
+    const editProviderInstanceEnhanced = (instanceId) => {
+      const instance = providerInstances.value[instanceId];
+      if (!instance) return;
+      
+      editingInstance.value = instanceId;
+      
+      // Smart credential initialization using the new backend data
+      const credentialFields = providerTypes.value[instance.provider_type]?.credential_fields[instance.account_type] || [];
+      const credentials = {};
+      
+      credentialFields.forEach(field => {
+        if (isSensitiveField(field.name)) {
+          // For sensitive fields, start with empty value
+          credentials[field.name] = '';
+        } else {
+          // For non-sensitive fields, use existing value or default
+          credentials[field.name] = instance.visible_credentials?.[field.name] || 
+                                   instance.default_credentials?.[field.name] || 
+                                   field.default || '';
+        }
+      });
+      
+      newProvider.value = {
+        provider_type: instance.provider_type,
+        account_type: instance.account_type,
+        display_name: instance.display_name,
+        credentials: credentials
+      };
+      
+      dialogStep.value = 3; // Skip to credentials step for editing
+      showAddProviderDialog.value = true;
+    };
+
     // Load data on mount
     onMounted(async () => {
       await Promise.all([
@@ -1031,6 +1131,12 @@ export default {
       getStatusIcon,
       getStatusTooltip,
       formatTime,
+      
+      // Smart credential handling methods
+      isSensitiveField,
+      hasExistingValue,
+      getOriginalValue,
+      onCredentialFieldChange,
     };
   },
 };

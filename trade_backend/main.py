@@ -194,22 +194,30 @@ async def get_provider_types_endpoint():
 
 @app.get("/providers/instances", response_model=ApiResponse)
 async def get_provider_instances():
-    """Get all provider instances with their status."""
+    """Get all provider instances with their status and credential information."""
     try:
+        from .provider_types import get_visible_credentials, get_masked_credentials, get_default_credentials
+        
         # Get all instances from credential store
         all_instances = provider_manager.credential_store.get_all_instances()
         
-        # Convert to response format (without credentials for security)
+        # Convert to response format with enhanced credential information
         instances_data = {}
         for instance_id, instance_data in all_instances.items():
+            provider_type = instance_data.get('provider_type')
+            account_type = instance_data.get('account_type')
+            
             instances_data[instance_id] = {
                 'instance_id': instance_id,
                 'active': instance_data.get('active', False),
-                'provider_type': instance_data.get('provider_type'),
-                'account_type': instance_data.get('account_type'),
+                'provider_type': provider_type,
+                'account_type': account_type,
                 'display_name': instance_data.get('display_name'),
                 'created_at': instance_data.get('created_at'),
-                'updated_at': instance_data.get('updated_at')
+                'updated_at': instance_data.get('updated_at'),
+                'visible_credentials': get_visible_credentials(instance_data),
+                'masked_credentials': get_masked_credentials(instance_data),
+                'default_credentials': get_default_credentials(provider_type, account_type) if provider_type and account_type else {}
             }
         
         return ApiResponse(
@@ -284,8 +292,10 @@ async def create_provider_instance(request: CreateProviderInstanceRequest):
 
 @app.put("/providers/instances/{instance_id}", response_model=ApiResponse)
 async def update_provider_instance(instance_id: str, request: UpdateProviderInstanceRequest):
-    """Update an existing provider instance."""
+    """Update an existing provider instance with smart credential handling."""
     try:
+        from .provider_types import validate_credentials, apply_defaults, is_sensitive_field
+        
         # Check if instance exists
         instance = provider_manager.credential_store.get_instance(instance_id)
         if not instance:
@@ -297,13 +307,30 @@ async def update_provider_instance(instance_id: str, request: UpdateProviderInst
             updates['display_name'] = request.display_name
         
         if request.credentials is not None:
-            from .provider_types import validate_credentials, apply_defaults
+            # Get existing credentials
+            existing_credentials = instance.get('credentials', {})
             
-            # Validate new credentials
+            # Smart credential merging - only update changed fields
+            merged_credentials = existing_credentials.copy()
+            
+            # Process each credential field
+            for field_name, field_value in request.credentials.items():
+                # Skip empty sensitive fields (they weren't changed)
+                if is_sensitive_field(field_name) and not field_value:
+                    continue
+                
+                # Skip masked placeholder values
+                if field_value == '••••••••':
+                    continue
+                
+                # Update the field
+                merged_credentials[field_name] = field_value
+            
+            # Validate merged credentials
             validation_errors = validate_credentials(
                 instance['provider_type'],
                 instance['account_type'],
-                request.credentials
+                merged_credentials
             )
             
             if validation_errors:
@@ -312,11 +339,11 @@ async def update_provider_instance(instance_id: str, request: UpdateProviderInst
                     detail=f"Credential validation failed: {', '.join(validation_errors)}"
                 )
             
-            # Apply defaults and update
+            # Apply defaults to merged credentials
             credentials_with_defaults = apply_defaults(
                 instance['provider_type'],
                 instance['account_type'],
-                request.credentials
+                merged_credentials
             )
             updates['credentials'] = credentials_with_defaults
         
