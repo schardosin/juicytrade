@@ -267,6 +267,17 @@ export default {
     // User menu items
     const userMenuItems = [
       {
+        label: "Setup Wizard",
+        icon: "pi pi-wrench",
+        command: () => {
+          // Navigate to setup wizard
+          window.location.href = '/setup';
+        },
+      },
+      {
+        separator: true,
+      },
+      {
         label: "Account Settings",
         icon: "pi pi-user",
         command: () => {

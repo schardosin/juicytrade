@@ -734,6 +734,133 @@ export const api = {
       throw error;
     }
   },
+
+  // === Setup Configuration APIs ===
+
+  // Check if mandatory routes are configured
+  async checkSetupStatus() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/setup/status`);
+      return response.data.data;
+    } catch (error) {
+      console.error("Error checking setup status:", error);
+      // If the endpoint doesn't exist yet, we'll check locally
+      return this.checkSetupStatusLocal();
+    }
+  },
+
+  // Debug function to test setup status - can be called from browser console
+  async debugSetupStatus() {
+    console.log('=== DEBUG SETUP STATUS ===');
+    try {
+      const config = await this.getProviderConfig();
+      console.log('Provider config:', config);
+      
+      const mandatoryServices = [
+        'trade_account',
+        'options_chain',
+        'historical_data',
+        'symbol_lookup',
+        'streaming_quotes'
+      ];
+      
+      console.log('Mandatory services:', mandatoryServices);
+      console.log('Service routing:', config?.service_routing);
+      
+      mandatoryServices.forEach(service => {
+        const routedProvider = config?.service_routing?.[service];
+        console.log(`${service}: ${routedProvider} (${routedProvider ? 'CONFIGURED' : 'MISSING'})`);
+      });
+      
+      const result = await this.checkSetupStatusLocal();
+      console.log('Final setup status:', result);
+      return result;
+    } catch (error) {
+      console.error('Debug setup status error:', error);
+      return error;
+    }
+  },
+
+  // Local fallback to check setup status
+  async checkSetupStatusLocal() {
+    try {
+      const config = await this.getProviderConfig();
+      console.log('Raw provider config from API:', config);
+      
+      const mandatoryServices = [
+        'trade_account',
+        'options_chain',
+        'historical_data',
+        'symbol_lookup',
+        'streaming_quotes'
+      ];
+
+      // The config might be directly the service routing object, or nested under service_routing
+      const serviceRouting = config.service_routing || config;
+      
+      console.log('Service routing object:', serviceRouting);
+
+      // Check if we have service routing configuration
+      if (!serviceRouting || typeof serviceRouting !== 'object') {
+        return {
+          is_setup_complete: false,
+          missing_mandatory_services: mandatoryServices,
+          configured_services: {},
+          has_providers: false
+        };
+      }
+
+      // Check each mandatory service
+      const isSetupComplete = mandatoryServices.every(service => {
+        const routedProvider = serviceRouting[service];
+        const isConfigured = routedProvider && routedProvider !== null && routedProvider !== '';
+        console.log(`${service}: ${routedProvider} (${isConfigured ? 'CONFIGURED' : 'MISSING'})`);
+        return isConfigured;
+      });
+
+      const missingServices = mandatoryServices.filter(service => {
+        const routedProvider = serviceRouting[service];
+        return !routedProvider || routedProvider === null || routedProvider === '';
+      });
+
+      console.log('Setup complete:', isSetupComplete, 'Missing services:', missingServices);
+
+      return {
+        is_setup_complete: isSetupComplete,
+        missing_mandatory_services: missingServices,
+        configured_services: serviceRouting || {},
+        has_providers: config.provider_instances && config.provider_instances.length > 0
+      };
+    } catch (error) {
+      console.error("Error checking local setup status:", error);
+      
+      // If the provider config API fails (like with 500 errors), it means no providers are configured
+      // This is exactly what we see in the logs when no providers are set up
+      if (error.response && error.response.status >= 500) {
+        console.log("Provider config API failed with 500 error - no providers configured");
+        return {
+          is_setup_complete: false,
+          missing_mandatory_services: [
+            'trade_account',
+            'options_chain', 
+            'historical_data',
+            'symbol_lookup',
+            'streaming_quotes'
+          ],
+          configured_services: {},
+          has_providers: false
+        };
+      }
+      
+      // For other errors, assume setup is complete to avoid blocking users
+      return {
+        is_setup_complete: true,
+        missing_mandatory_services: [],
+        configured_services: {},
+        has_providers: false
+      };
+    }
+  },
 };
 
 export default api;
