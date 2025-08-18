@@ -101,6 +101,18 @@ class ProviderConfigManager:
             logger.error(f"Error saving {CONFIG_FILE}: {e}")
 
     def get_config(self) -> Dict[str, str]:
+        # Import here to avoid circular imports
+        from .provider_manager import provider_manager
+        
+        # Check if there are any active provider instances
+        available_instances = provider_manager.get_available_provider_instances()
+        active_instances = {k: v for k, v in available_instances.items() if v.get('active', False)}
+        
+        # If no active provider instances exist, return empty config
+        if not active_instances:
+            return {}
+        
+        # Otherwise return the current configuration
         return self._config.copy()
 
     def update_config(self, new_config: Dict[str, Any]) -> bool:
