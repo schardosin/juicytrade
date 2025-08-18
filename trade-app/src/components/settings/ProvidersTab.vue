@@ -60,7 +60,7 @@
             <div class="instance-icon">
               <img 
                 v-if="!getProviderIcon(instance.provider_type)" 
-                :src="`/src/assets/logos/${instance.provider_type}.svg`" 
+                :src="`/logos/${instance.provider_type}.svg`" 
                 :alt="`${instance.provider_type} logo`"
                 class="provider-logo"
               />
@@ -270,7 +270,7 @@
               <div class="provider-icon">
                 <img 
                   v-if="!getProviderIcon(key)" 
-                  :src="`/src/assets/logos/${key}.svg`" 
+                  :src="`/logos/${key}.svg`" 
                   :alt="`${key} logo`"
                   class="provider-logo"
                 />
@@ -1495,7 +1495,7 @@ export default {
   font-size: var(--font-size-lg);
 }
 
-.provider-logo {
+.instance-icon .provider-logo {
   width: 48px;
   height: 28px;
   object-fit: contain;

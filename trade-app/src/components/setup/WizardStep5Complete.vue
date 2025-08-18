@@ -38,7 +38,7 @@
               <div class="provider-icon">
                 <img 
                   v-if="!getProviderIcon(provider.provider_type)" 
-                  :src="`/src/assets/logos/${provider.provider_type}.svg`" 
+                  :src="`/logos/${provider.provider_type}.svg`"
                   :alt="`${provider.provider_type} logo`"
                   class="provider-logo"
                 />

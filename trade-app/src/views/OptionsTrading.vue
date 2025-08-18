@@ -171,6 +171,7 @@ export default {
     const { selectedLegs, addLeg, clearAll: clearSelectedLegs } = useSelectedLegs();
 
     const activePositions = ref([]);
+    const hasExplicitPositionSelection = ref(false); // Track if user has made checkbox selections
 
     // Use centralized options chain manager
     const optionsManager = useOptionsChainManager(
@@ -378,57 +379,57 @@ export default {
     };
 
     const updateChartData = async (positions = null) => {
-      // If positions are provided (from RightPanel), use them directly
-      // Otherwise, prefer selectedLegs; fallback to activePositions when no selected legs.
-      let positionsToUse = positions;
+      // PRIORITY ORDER (FIXED):
+      // 1. Explicit positions from RightPanel checkboxes (user's explicit selection)
+      // 2. selectedLegs from options chain (when no explicit position selection)
+      // 3. Empty chart (when nothing is selected)
+      
+      let positionsToUse = null;
       let builtFromSelectedLegs = false;
 
-      if (!positionsToUse) {
-        // If there are no selected legs, but we have activePositions (checked rows), use those.
-        if (selectedLegs.value.length === 0) {
-          if (activePositions.value && activePositions.value.length > 0) {
-            positionsToUse = activePositions.value;
-          } else {
-            chartData.value = null;
-            return;
-          }
-        } else {
-          try {
-            // Convert selected legs to position format for chart
-            builtFromSelectedLegs = true;
-            positionsToUse = selectedLegs.value
-              .map((leg) => {
-                const price = leg.side === "buy" ? leg.ask : leg.bid;
-                const quantity =
-                  leg.side === "buy" ? leg.quantity : -leg.quantity;
+      if (positions && positions.length > 0) {
+        // Priority 1: Use positions explicitly provided from RightPanel checkboxes
+        positionsToUse = positions;
+        console.log("📊 Chart using RightPanel checked positions:", positions.length);
+      } else if (selectedLegs.value.length > 0) {
+        // Priority 2: Fall back to selectedLegs only if no explicit position selection
+        try {
+          builtFromSelectedLegs = true;
+          positionsToUse = selectedLegs.value
+            .map((leg) => {
+              const price = leg.side === "buy" ? leg.ask : leg.bid;
+              const quantity =
+                leg.side === "buy" ? leg.quantity : -leg.quantity;
 
-                return {
-                  symbol: leg.symbol,
-                  asset_class: "us_option",
-                  side: leg.side === "buy" ? "long" : "short",
-                  qty: quantity,
-                  strike_price: leg.strike_price,
-                  option_type: leg.type,
-                  expiry_date: leg.expiry,
-                  current_price: price,
-                  avg_entry_price: price,
-                  cost_basis: price * quantity * 100, // Keep the sign for proper cost calculation
-                  market_value: price * quantity * 100,
-                  unrealized_pl: 0,
-                  underlying_symbol: currentSymbol.value,
-                  is_synthetic: true,
-                };
-              })
-              .filter(Boolean);
-          } catch (error) {
-            console.error(
-              "Error converting selected legs to positions:",
-              error
-            );
-            chartData.value = null;
-            return;
-          }
+              return {
+                symbol: leg.symbol,
+                asset_class: "us_option",
+                side: leg.side === "buy" ? "long" : "short",
+                qty: quantity,
+                strike_price: leg.strike_price,
+                option_type: leg.type,
+                expiry_date: leg.expiry,
+                current_price: price,
+                avg_entry_price: price,
+                cost_basis: price * quantity * 100,
+                market_value: price * quantity * 100,
+                unrealized_pl: 0,
+                underlying_symbol: currentSymbol.value,
+                is_synthetic: true,
+              };
+            })
+            .filter(Boolean);
+          console.log("📊 Chart using selectedLegs (no position selection):", positionsToUse.length);
+        } catch (error) {
+          console.error("Error converting selected legs to positions:", error);
+          chartData.value = null;
+          return;
         }
+      } else {
+        // Priority 3: No data to chart
+        console.log("📊 Chart cleared - no positions or legs selected");
+        chartData.value = null;
+        return;
       }
 
       if (!positionsToUse || positionsToUse.length === 0) {
@@ -520,6 +521,7 @@ export default {
 
     const onPositionsChanged = (checkedPositions) => {
       activePositions.value = checkedPositions;
+      hasExplicitPositionSelection.value = true; // User has made explicit checkbox selections
       // The watcher on activePositions will handle the update.
     };
 
@@ -722,9 +724,14 @@ export default {
     watch(
       [selectedLegs, activePositions, currentPrice, adjustedNetCredit],
       () => {
-        // Recompute chart data using selected legs if present, otherwise fallback to activePositions.
-        // This prevents stale charts when selecting/deselecting legs from the chain.
-        updateChartData();
+        // FIXED: Respect RightPanel checkbox selections as priority
+        if (hasExplicitPositionSelection.value) {
+          // User has made explicit checkbox selections - use activePositions (even if empty)
+          updateChartData(activePositions.value);
+        } else {
+          // No explicit position selection - fall back to selectedLegs
+          updateChartData();
+        }
         
         const hasLegsForChart = selectedLegs.value.length > 0 || activePositions.value.length > 0;
         const hasLegsForTicket = selectedLegs.value.length > 0;

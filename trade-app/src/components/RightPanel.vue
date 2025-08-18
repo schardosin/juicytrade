@@ -530,7 +530,10 @@ export default {
         checkedPositions.value.has(pos.id)
       );
 
-      // Emit positions to parent for chart generation
+      console.log("📊 RightPanel: Emitting positions-changed with", checkedPositionsList.length, "positions");
+      
+      // Always emit positions-changed, even if empty array
+      // This tells the parent that user has made explicit checkbox selections
       emit("positions-changed", checkedPositionsList);
     };
 
