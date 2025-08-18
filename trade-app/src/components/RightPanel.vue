@@ -409,16 +409,6 @@ export default {
       const existingSymbols = new Set();
       const symbolGroup = getSymbolGroup(props.currentSymbol);
 
-      // DEBUG: Log each final position
-      positions.forEach((pos, index) => {
-        console.log(`🐛 DEBUG - Final position ${index}:`, {
-          id: pos.id,
-          symbol: pos.symbol,
-          expiry_date: pos.expiry_date,
-          isExisting: pos.isExisting,
-          isSelected: pos.isSelected
-        });
-      });
 
       // Add existing positions for the current symbol group
       existingPositions.value.forEach((position) => {
@@ -466,19 +456,6 @@ export default {
                 (position.avg_entry_price - currentPrice) * Math.abs(qty) * 100;
             }
 
-            console.log(`Updated existing position ${position.symbol}:`, {
-              newCurrentPrice: currentPrice,
-              newUnrealizedPL: unrealizedPL,
-              calculation: {
-                qty,
-                entryPrice: position.avg_entry_price,
-                priceDiff:
-                  qty > 0
-                    ? currentPrice - position.avg_entry_price
-                    : position.avg_entry_price - currentPrice,
-                multiplier: 100,
-              },
-            });
           }
 
           const positionData = {
@@ -506,7 +483,7 @@ export default {
         }
 
         positions.push({
-          id: `selected:${leg.symbol}`, // Stable namespaced id for selected legs
+          id: `selected:${leg.symbol}:${index}`, // FIXED: Include index to make IDs unique for duplicate symbols
           symbol: leg.symbol,
           asset_class: "us_option", // Required for chart
           qty: leg.side === "buy" ? leg.quantity : -leg.quantity,
@@ -521,16 +498,6 @@ export default {
         });
       });
 
-      // DEBUG: Log each final position
-      positions.forEach((pos, index) => {
-        console.log(`🐛 DEBUG - Final position ${index}:`, {
-          id: pos.id,
-          symbol: pos.symbol,
-          expiry_date: pos.expiry_date,
-          isExisting: pos.isExisting,
-          isSelected: pos.isSelected
-        });
-      });
 
       return positions;
     });
@@ -548,11 +515,14 @@ export default {
 
     // Method to update chart based on checked positions
     const updateChartWithCheckedPositions = () => {
+      // Force fresh price lookup by clearing and re-registering live price cache
+      // This ensures we get current market prices, just like manual checkbox interactions
+      liveOptionPrices.clear();
+      
       const checkedPositionsList = allPositions.value.filter((pos) =>
         checkedPositions.value.has(pos.id)
       );
 
-      console.log("📊 RightPanel: Emitting positions-changed with", checkedPositionsList.length, "positions");
       
       // Always emit positions-changed, even if empty array
       // This tells the parent that user has made explicit checkbox selections
@@ -611,13 +581,6 @@ export default {
       const strike = position.strike_price || 0;
       const expiry = position.expiry_date || "";
 
-      // DEBUG: Log the raw data from backend
-      console.log("🐛 DEBUG - Position data:", {
-        symbol: position.symbol,
-        rawExpiry: expiry,
-        expiryType: typeof expiry,
-        position: position
-      });
 
       // Format expiry date (e.g., "Jul 14")
       let formattedExpiry = expiry;
@@ -641,19 +604,6 @@ export default {
           month: "short",
           day: "numeric",
           timeZone: "UTC",
-        });
-
-        // DEBUG: Log the date processing
-        console.log("🐛 DEBUG - Date processing:", {
-          rawExpiry: expiry,
-          parsedComponents: { year, month, day },
-          expiryDateUTC: expiryDate.toISOString(),
-          currentDate: currentDate.toISOString(),
-          timeDiff: timeDiff,
-          daysToExpiry: daysToExpiry,
-          formattedExpiry: formattedExpiry,
-          currentTime: new Date().toISOString(),
-          currentTimeEST: new Date().toLocaleString("en-US", {timeZone: "America/New_York"})
         });
       }
 
@@ -776,17 +726,29 @@ export default {
       () => allPositions.value,
       (newPositions, oldPositions) => {
         let hasNewPositions = false;
+        let hasRemovedPositions = false;
         
         // Only auto-check NEW positions that weren't there before
         // Don't re-check positions that the user has manually unchecked
         if (oldPositions) {
           const oldIds = new Set(oldPositions.map(pos => pos.id));
+          const newIds = new Set(newPositions.map(pos => pos.id));
+          
+          // Check for new positions to auto-check
           newPositions.forEach((pos) => {
             // Only auto-check if this is a completely new position AND it's a selected leg (new trade)
             // Do NOT auto-check existing positions - let user manually check them if they want to see impact
             if (!oldIds.has(pos.id) && pos.isSelected && !pos.isExisting) {
               checkedPositions.value.add(pos.id);
               hasNewPositions = true;
+            }
+          });
+          
+          // CRITICAL FIX: Remove checked positions that no longer exist (legs removed from options chain)
+          oldPositions.forEach((pos) => {
+            if (!newIds.has(pos.id) && checkedPositions.value.has(pos.id)) {
+              checkedPositions.value.delete(pos.id);
+              hasRemovedPositions = true;
             }
           });
         } else {
@@ -799,9 +761,10 @@ export default {
           });
         }
         
-        // If we auto-checked new positions, update the chart to include all checked positions
-        if (hasNewPositions && checkedPositions.value.size > 0) {
-          // Use nextTick to ensure the DOM and reactive state are updated
+        // If we auto-checked new positions OR removed positions, force fresh pricing and chart update
+        // This ensures the chart reflects the current leg selection from options chain
+        if ((hasNewPositions || hasRemovedPositions) && (checkedPositions.value.size > 0 || hasRemovedPositions)) {
+          // Use nextTick to ensure the DOM and reactive state are updated, then force fresh pricing
           setTimeout(() => {
             updateChartWithCheckedPositions();
           }, 0);

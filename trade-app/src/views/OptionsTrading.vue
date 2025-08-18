@@ -373,86 +373,26 @@ export default {
     const clearAllSelections = () => {
       clearSelectedLegs();
       activePositions.value = [];
-      hasExplicitPositionSelection.value = false; // Reset flag to allow selectedLegs fallback
       chartData.value = null;
       showBottomPanel.value = false;
       isRightPanelExpanded.value = false;
     };
 
     const updateChartData = async (positions = null) => {
-      // PRIORITY ORDER (FIXED):
-      // 1. Explicit positions from RightPanel checkboxes (user's explicit selection)
-      // 2. selectedLegs from options chain (when no explicit position selection)
-      // 3. Empty chart (when nothing is selected)
+      // Chart ONLY uses positions from RightPanel checkboxes
+      // No fallback to selectedLegs - if no positions are checked, show no chart
       
-      let positionsToUse = null;
-      let builtFromSelectedLegs = false;
-
-      if (positions && positions.length > 0) {
-        // Priority 1: Use positions explicitly provided from RightPanel checkboxes
-        positionsToUse = positions;
-        console.log("📊 Chart using RightPanel checked positions:", positions.length);
-      } else if (selectedLegs.value.length > 0) {
-        // Priority 2: Fall back to selectedLegs only if no explicit position selection
-        try {
-          builtFromSelectedLegs = true;
-          positionsToUse = selectedLegs.value
-            .map((leg) => {
-              const price = leg.side === "buy" ? leg.ask : leg.bid;
-              const quantity =
-                leg.side === "buy" ? leg.quantity : -leg.quantity;
-
-              return {
-                symbol: leg.symbol,
-                asset_class: "us_option",
-                side: leg.side === "buy" ? "long" : "short",
-                qty: quantity,
-                strike_price: leg.strike_price,
-                option_type: leg.type,
-                expiry_date: leg.expiry,
-                current_price: price,
-                avg_entry_price: price,
-                cost_basis: price * quantity * 100,
-                market_value: price * quantity * 100,
-                unrealized_pl: 0,
-                underlying_symbol: currentSymbol.value,
-                is_synthetic: true,
-              };
-            })
-            .filter(Boolean);
-          console.log("📊 Chart using selectedLegs (no position selection):", positionsToUse.length);
-        } catch (error) {
-          console.error("Error converting selected legs to positions:", error);
-          chartData.value = null;
-          return;
-        }
-      } else {
-        // Priority 3: No data to chart
-        console.log("📊 Chart cleared - no positions or legs selected");
-        chartData.value = null;
-        return;
-      }
-
-      if (!positionsToUse || positionsToUse.length === 0) {
+      if (!positions || positions.length === 0) {
         chartData.value = null;
         return;
       }
 
       try {
         const payoffData = generateMultiLegPayoff(
-          positionsToUse,
+          positions,
           currentPrice.value,
           adjustedNetCredit.value
         );
-
-        // If the chart was built from selected legs (i.e., user selected/deselected via options chain),
-        // force a complete re-init cycle by clearing the chart data first so PayoffChart destroys its
-        // internal Chart.js instance and recreates it with fresh datasets/gradients.
-        if (builtFromSelectedLegs) {
-          chartData.value = null;
-          // Allow Vue and child components to process the nullification and destroy the chart
-          await nextTick();
-        }
 
         // Force reactivity by creating a new object reference
         chartData.value = {
@@ -522,12 +462,7 @@ export default {
 
     const onPositionsChanged = (checkedPositions) => {
       activePositions.value = checkedPositions;
-      
-      // FIXED: Always mark as explicit selection when user interacts with checkboxes
-      // This includes when they uncheck everything - they want to see NO chart, not selectedLegs fallback
-      hasExplicitPositionSelection.value = true;
-      
-      // The watcher on activePositions will handle the update.
+      // The watcher on activePositions will handle the chart update
     };
 
     // CollapsibleOptionsChain event handlers - now using centralized manager
@@ -545,12 +480,6 @@ export default {
     };
 
     const onPriceAdjusted = (data) => {
-      // console.log("📊 OptionsTrading: Received price adjustment", {
-      //   data: data,
-      //   adjustedNetCredit: data.adjustedNetCredit,
-      //   previousValue: adjustedNetCredit.value
-      // });
-      
       adjustedNetCredit.value = data.adjustedNetCredit;
     };
 
@@ -726,24 +655,32 @@ export default {
       { immediate: true }
     );
 
+    // Track previous leg count to detect changes
+    const previousLegCount = ref(0);
+
     watch(
       [selectedLegs, activePositions, currentPrice, adjustedNetCredit],
       () => {
-        // FIXED: Respect RightPanel checkbox selections as priority
-        if (hasExplicitPositionSelection.value) {
-          // User has made explicit checkbox selections - use activePositions (even if empty)
-          updateChartData(activePositions.value);
-        } else {
-          // No explicit position selection - fall back to selectedLegs
-          updateChartData();
+        // Reset adjustedNetCredit when number of legs changes
+        const currentLegCount = selectedLegs.value.length;
+        if (currentLegCount !== previousLegCount.value) {
+          adjustedNetCredit.value = null; // Reset to use natural mid price
+          previousLegCount.value = currentLegCount;
         }
+
+        // Chart should ONLY follow position details selections
+        // Always use activePositions (checked positions in RightPanel), never fall back to selectedLegs
+        updateChartData(activePositions.value);
         
-        const hasLegsForChart = selectedLegs.value.length > 0 || activePositions.value.length > 0;
+        const hasLegsForChart = activePositions.value.length > 0;
         const hasLegsForTicket = selectedLegs.value.length > 0;
 
         showBottomPanel.value = hasLegsForTicket;
         
         if (hasLegsForChart) {
+          isRightPanelExpanded.value = true;
+        } else if (selectedLegs.value.length > 0) {
+          // Expand panel when options are selected (so user can see position details)
           isRightPanelExpanded.value = true;
         } else {
           isRightPanelExpanded.value = false;
