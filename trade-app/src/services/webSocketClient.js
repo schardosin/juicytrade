@@ -12,10 +12,16 @@ class WebSocketStreamingClient {
         // Use the configured WebSocket URL from environment
         this.baseUrl = envWebSocketUrl;
       } else {
-        // Fallback: auto-detect based on current location (production/containerized mode)
-        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const host = window.location.host;
-        this.baseUrl = `${protocol}//${host}`;
+        // Fallback: check if we're in development mode (localhost:3001) or production
+        if (window.location.hostname === 'localhost' && window.location.port === '3001') {
+          // Development mode - use default backend port
+          this.baseUrl = 'ws://localhost:8008';
+        } else {
+          // Production/containerized mode - auto-detect based on current location
+          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+          const host = window.location.host;
+          this.baseUrl = `${protocol}//${host}`;
+        }
       }
     } else {
       this.baseUrl = baseUrl;
