@@ -1,6 +1,16 @@
 import axios from "axios";
 
-const API_BASE_URL = "/api";
+// Get API base URL from environment variable or use default
+const getApiBaseUrl = () => {
+  const envApiBaseUrl = import.meta.env.JUICYTRADE_API_BASE_URL;
+  if (envApiBaseUrl && envApiBaseUrl.trim() !== '') {
+    return envApiBaseUrl;
+  }
+  // Default fallback for relative API calls
+  return "/api";
+};
+
+const API_BASE_URL = getApiBaseUrl();
 
 // Circuit Breaker implementation for API resilience
 class APICircuitBreaker {

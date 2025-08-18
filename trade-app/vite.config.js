@@ -8,7 +8,7 @@ export default defineConfig({
     port: 3001,
     proxy: {
       "/api": {
-        target: "http://localhost:8008",
+        target: process.env.JUICYTRADE_API_BASE_URL || "http://localhost:8008",
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/api/, ""),
       },
@@ -19,4 +19,5 @@ export default defineConfig({
       "@": path.resolve(__dirname, "./src"),
     },
   },
+  envPrefix: ['VITE_', 'JUICYTRADE_'],
 });

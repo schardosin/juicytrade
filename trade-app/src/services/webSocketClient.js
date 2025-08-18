@@ -2,8 +2,24 @@
 import { ref } from 'vue';
 
 class WebSocketStreamingClient {
-  constructor(baseUrl = "ws://localhost:8008") {
-    this.baseUrl = baseUrl;
+  constructor(baseUrl = null) {
+    // Use environment variable or auto-detect WebSocket URL
+    if (!baseUrl) {
+      // Check if JUICYTRADE_WEBSOCKET_URL is defined and not empty
+      const envWebSocketUrl = import.meta.env.JUICYTRADE_WEBSOCKET_URL;
+      
+      if (envWebSocketUrl && envWebSocketUrl.trim() !== '') {
+        // Use the configured WebSocket URL from environment
+        this.baseUrl = envWebSocketUrl;
+      } else {
+        // Fallback: auto-detect based on current location (production/containerized mode)
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host;
+        this.baseUrl = `${protocol}//${host}`;
+      }
+    } else {
+      this.baseUrl = baseUrl;
+    }
     this.worker = null;
     this.callbacks = new Map();
     this.isConnected = ref(false); // Make this reactive

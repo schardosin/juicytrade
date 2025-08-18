@@ -72,7 +72,7 @@ The platform connects to a Python backend service for:
 
 **Backend Requirements:**
 
-- Python streaming service running on `localhost:8008`
+- Python streaming service (configurable via environment variables)
 - WebSocket endpoint for real-time data
 - REST API for options data and order management
 
@@ -138,8 +138,8 @@ src/
 The application can be configured through environment variables:
 
 ```env
-VITE_API_BASE_URL=http://localhost:8008
-VITE_WS_URL=ws://localhost:8008/ws
+JUICYTRADE_API_BASE_URL=http://localhost:8008
+JUICYTRADE_WEBSOCKET_URL=ws://localhost:8008/ws
 ```
 
 ## Development
