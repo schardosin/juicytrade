@@ -461,10 +461,13 @@ export default {
 
       const parsed = parseOptionSymbol(symbol);
       if (parsed && parsed.expiry) {
-        const date = new Date(parsed.expiry);
+        // Parse as UTC to avoid timezone issues (same fix as RightPanel.vue)
+        const [year, month, day] = parsed.expiry.split("-").map(Number);
+        const date = new Date(Date.UTC(year, month - 1, day));
         return date.toLocaleDateString("en-US", {
           month: "short",
           day: "numeric",
+          timeZone: "UTC",
         });
       }
       return "";
@@ -475,10 +478,13 @@ export default {
 
       const parsed = parseOptionSymbol(symbol);
       if (parsed && parsed.expiry) {
-        const expiryDate = new Date(parsed.expiry);
-        const today = new Date();
-        const diffTime = expiryDate.getTime() - today.getTime();
-        const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+        // Parse as UTC to avoid timezone issues (same fix as RightPanel.vue)
+        const [year, month, day] = parsed.expiry.split("-").map(Number);
+        const expiryDate = new Date(Date.UTC(year, month - 1, day));
+        const currentDate = new Date();
+        currentDate.setHours(0, 0, 0, 0);
+        const timeDiff = expiryDate.getTime() - currentDate.getTime();
+        const diffDays = Math.ceil(timeDiff / (1000 * 60 * 60 * 24));
         return `${Math.max(0, diffDays)}d`;
       }
       return "";
@@ -537,6 +543,17 @@ export default {
         return ["SPX", "SPXW"];
       }
       return [symbol];
+    };
+
+    // Map weekly symbols back to their root symbols
+    const mapToRootSymbol = (symbol) => {
+      const weeklyMap = {
+        'SPXW': 'SPX',
+        'NDXP': 'NDX',
+        'RUTW': 'RUT',
+        'VIXW': 'VIX',
+      };
+      return weeklyMap[symbol] || symbol;
     };
 
     const extractUnderlyingFromOptionSymbol = (symbol) => {
@@ -606,8 +623,10 @@ export default {
 
       const orderSymbol = getOrderSymbol(order);
       if (orderSymbol && orderSymbol !== props.currentSymbol) {
+        // Map weekly symbols back to their root symbols for navigation
+        const rootSymbol = mapToRootSymbol(orderSymbol);
         const symbolData = {
-          symbol: orderSymbol,
+          symbol: rootSymbol,
           description: "", // Will be fetched by SymbolHeader
           exchange: "", // Will be fetched by SymbolHeader
         };
@@ -645,20 +664,44 @@ export default {
     };
 
     const isOrderExpired = (order) => {
-      if (!order) return true;
+      if (!order) {
+        return true;
+      }
+      
       if (!order.legs || order.legs.length === 0) {
         if (isOptionOrder(order)) {
           const parsed = parseOptionSymbol(order.symbol);
-          if (parsed && new Date(parsed.expiry) < new Date()) {
-            return true;
+          if (parsed) {
+            // Parse as UTC to avoid timezone issues (same fix as other date functions)
+            const [year, month, day] = parsed.expiry.split("-").map(Number);
+            const expiryDate = new Date(Date.UTC(year, month - 1, day));
+            // Use UTC for current date comparison to match expiry date
+            const currentDate = new Date();
+            const currentDateUTC = new Date(Date.UTC(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate()));
+            
+            // Only consider expired if expiry date is BEFORE current date (not same day)
+            if (expiryDate.getTime() < currentDateUTC.getTime()) {
+              return true;
+            }
           }
         }
         return false;
       }
+      
       for (const leg of order.legs) {
         const parsed = parseOptionSymbol(leg.symbol);
-        if (parsed && new Date(parsed.expiry) < new Date()) {
-          return true;
+        if (parsed) {
+          // Parse as UTC to avoid timezone issues (same fix as other date functions)
+          const [year, month, day] = parsed.expiry.split("-").map(Number);
+          const expiryDate = new Date(Date.UTC(year, month - 1, day));
+          // Use UTC for current date comparison to match expiry date
+          const currentDate = new Date();
+          const currentDateUTC = new Date(Date.UTC(currentDate.getFullYear(), currentDate.getMonth(), currentDate.getDate()));
+          
+          // Only consider expired if expiry date is BEFORE current date (not same day)
+          if (expiryDate.getTime() < currentDateUTC.getTime()) {
+            return true;
+          }
         }
       }
       return false;

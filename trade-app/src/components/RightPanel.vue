@@ -409,6 +409,17 @@ export default {
       const existingSymbols = new Set();
       const symbolGroup = getSymbolGroup(props.currentSymbol);
 
+      // DEBUG: Log each final position
+      positions.forEach((pos, index) => {
+        console.log(`🐛 DEBUG - Final position ${index}:`, {
+          id: pos.id,
+          symbol: pos.symbol,
+          expiry_date: pos.expiry_date,
+          isExisting: pos.isExisting,
+          isSelected: pos.isSelected
+        });
+      });
+
       // Add existing positions for the current symbol group
       existingPositions.value.forEach((position) => {
         if (symbolGroup.includes(position.underlying_symbol)) {
@@ -510,6 +521,17 @@ export default {
         });
       });
 
+      // DEBUG: Log each final position
+      positions.forEach((pos, index) => {
+        console.log(`🐛 DEBUG - Final position ${index}:`, {
+          id: pos.id,
+          symbol: pos.symbol,
+          expiry_date: pos.expiry_date,
+          isExisting: pos.isExisting,
+          isSelected: pos.isSelected
+        });
+      });
+
       return positions;
     });
 
@@ -589,30 +611,49 @@ export default {
       const strike = position.strike_price || 0;
       const expiry = position.expiry_date || "";
 
+      // DEBUG: Log the raw data from backend
+      console.log("🐛 DEBUG - Position data:", {
+        symbol: position.symbol,
+        rawExpiry: expiry,
+        expiryType: typeof expiry,
+        position: position
+      });
+
       // Format expiry date (e.g., "Jul 14")
       let formattedExpiry = expiry;
       let daysToExpiry = 0;
 
       if (expiry && expiry.includes("-")) {
-        // Parse date components directly to avoid timezone issues
+        // Handle YYYY-MM-DD format - parse as UTC to avoid timezone issues (same as BottomTradingPanel)
         const [year, month, day] = expiry.split("-").map(Number);
-
-        // Create date objects in local timezone
-        const expiryDate = new Date(year, month - 1, day); // month is 0-indexed
+        const expiryDate = new Date(Date.UTC(year, month - 1, day));
+        
+        // Get current date for comparison
         const currentDate = new Date();
-
-        // Set both dates to midnight to get accurate day difference
-        expiryDate.setHours(0, 0, 0, 0);
         currentDate.setHours(0, 0, 0, 0);
 
         // Calculate days difference
         const timeDiff = expiryDate.getTime() - currentDate.getTime();
         daysToExpiry = Math.ceil(timeDiff / (1000 * 3600 * 24));
 
-        // Format the date directly from components to avoid timezone conversion
+        // Format the date using UTC timezone (same as BottomTradingPanel)
         formattedExpiry = expiryDate.toLocaleDateString("en-US", {
           month: "short",
           day: "numeric",
+          timeZone: "UTC",
+        });
+
+        // DEBUG: Log the date processing
+        console.log("🐛 DEBUG - Date processing:", {
+          rawExpiry: expiry,
+          parsedComponents: { year, month, day },
+          expiryDateUTC: expiryDate.toISOString(),
+          currentDate: currentDate.toISOString(),
+          timeDiff: timeDiff,
+          daysToExpiry: daysToExpiry,
+          formattedExpiry: formattedExpiry,
+          currentTime: new Date().toISOString(),
+          currentTimeEST: new Date().toLocaleString("en-US", {timeZone: "America/New_York"})
         });
       }
 
@@ -871,16 +912,18 @@ export default {
     // Avoid any internal caching here to prevent stale charts when no legs are selected.
     const chartData = computed(() => props.chartData);
 
-    watch(
-      selectedLegs,
-      (newLegs) => {
-        if (newLegs.length === 0) {
-          checkedPositions.value.clear();
-          emit("positions-changed", []);
-        }
-      },
-      { deep: true }
-    );
+    // REMOVED: This watcher was causing race conditions with the parent's flag system
+    // The parent (OptionsTrading) now properly manages the priority between selectedLegs and position selections
+    // watch(
+    //   selectedLegs,
+    //   (newLegs) => {
+    //     if (newLegs.length === 0) {
+    //       checkedPositions.value.clear();
+    //       emit("positions-changed", []);
+    //     }
+    //   },
+    //   { deep: true }
+    // );
 
     return {
       activeSection,

@@ -373,6 +373,7 @@ export default {
     const clearAllSelections = () => {
       clearSelectedLegs();
       activePositions.value = [];
+      hasExplicitPositionSelection.value = false; // Reset flag to allow selectedLegs fallback
       chartData.value = null;
       showBottomPanel.value = false;
       isRightPanelExpanded.value = false;
@@ -521,7 +522,11 @@ export default {
 
     const onPositionsChanged = (checkedPositions) => {
       activePositions.value = checkedPositions;
-      hasExplicitPositionSelection.value = true; // User has made explicit checkbox selections
+      
+      // FIXED: Always mark as explicit selection when user interacts with checkboxes
+      // This includes when they uncheck everything - they want to see NO chart, not selectedLegs fallback
+      hasExplicitPositionSelection.value = true;
+      
       // The watcher on activePositions will handle the update.
     };
 

@@ -441,16 +441,20 @@ export default {
     const formatExpiry = (expiry) => {
       if (!expiry) return "Jul 11";
       if (typeof expiry === "string") {
-        const date = new Date(expiry);
+        // Parse as UTC to avoid timezone issues (same fix as RightPanel.vue and ActivitySection.vue)
+        const [year, month, day] = expiry.split("-").map(Number);
+        const date = new Date(Date.UTC(year, month - 1, day));
         return date.toLocaleDateString("en-US", {
           month: "short",
           day: "numeric",
+          timeZone: "UTC",
         });
       }
       if (expiry instanceof Date) {
         return expiry.toLocaleDateString("en-US", {
           month: "short",
           day: "numeric",
+          timeZone: "UTC",
         });
       }
       return expiry.toString();
