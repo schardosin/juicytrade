@@ -2,6 +2,7 @@ import json
 import os
 import logging
 from typing import Dict, List, Optional, Any
+from .path_manager import path_manager
 
 logger = logging.getLogger(__name__)
 
@@ -82,23 +83,25 @@ class ProviderConfigManager:
         self._config = self._load_config()
 
     def _load_config(self) -> Dict[str, str]:
-        if os.path.exists(CONFIG_FILE):
+        config_path = path_manager.get_config_file_path(CONFIG_FILE)
+        if config_path.exists():
             try:
-                with open(CONFIG_FILE, 'r') as f:
+                with open(config_path, 'r') as f:
                     config = json.load(f)
-                    logger.info(f"Loaded provider config from {CONFIG_FILE}")
+                    logger.info(f"Loaded provider config from {config_path}")
                     return config
             except (json.JSONDecodeError, IOError) as e:
-                logger.error(f"Error loading {CONFIG_FILE}: {e}. Using default config.")
+                logger.error(f"Error loading {config_path}: {e}. Using default config.")
         return DEFAULT_ROUTING.copy()
 
     def _save_config(self):
+        config_path = path_manager.get_config_file_path(CONFIG_FILE)
         try:
-            with open(CONFIG_FILE, 'w') as f:
+            with open(config_path, 'w') as f:
                 json.dump(self._config, f, indent=2)
-            logger.info(f"Saved provider config to {CONFIG_FILE}")
+            logger.info(f"Saved provider config to {config_path}")
         except IOError as e:
-            logger.error(f"Error saving {CONFIG_FILE}: {e}")
+            logger.error(f"Error saving {config_path}: {e}")
 
     def get_config(self) -> Dict[str, str]:
         # Import here to avoid circular imports

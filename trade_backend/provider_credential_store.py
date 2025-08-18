@@ -3,6 +3,7 @@ import os
 import logging
 import time
 from typing import Dict, List, Optional, Any
+from .path_manager import path_manager
 
 logger = logging.getLogger(__name__)
 
@@ -13,27 +14,29 @@ class ProviderCredentialStore:
     
     def _load_credentials(self) -> Dict[str, Any]:
         """Load credentials from JSON file"""
-        if os.path.exists(self.credentials_file):
+        credentials_path = path_manager.get_config_file_path(self.credentials_file)
+        if credentials_path.exists():
             try:
-                with open(self.credentials_file, 'r') as f:
+                with open(credentials_path, 'r') as f:
                     data = json.load(f)
-                    logger.info(f"✅ Loaded provider credentials from {self.credentials_file}")
+                    logger.info(f"✅ Loaded provider credentials from {credentials_path}")
                     return data
             except (json.JSONDecodeError, IOError) as e:
-                logger.error(f"❌ Error loading {self.credentials_file}: {e}")
+                logger.error(f"❌ Error loading {credentials_path}: {e}")
                 return {}
         else:
-            logger.info(f"📝 Creating new credentials file: {self.credentials_file}")
+            logger.info(f"📝 Creating new credentials file: {credentials_path}")
             return {}
     
     def _save_credentials(self):
         """Save credentials to JSON file"""
+        credentials_path = path_manager.get_config_file_path(self.credentials_file)
         try:
-            with open(self.credentials_file, 'w') as f:
+            with open(credentials_path, 'w') as f:
                 json.dump(self._data, f, indent=2)
-            logger.info(f"💾 Saved provider credentials to {self.credentials_file}")
+            logger.info(f"💾 Saved provider credentials to {credentials_path}")
         except IOError as e:
-            logger.error(f"❌ Error saving {self.credentials_file}: {e}")
+            logger.error(f"❌ Error saving {credentials_path}: {e}")
             raise
     
     def get_all_instances(self) -> Dict[str, Any]:

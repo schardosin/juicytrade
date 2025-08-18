@@ -7,6 +7,8 @@ services:
     restart: unless-stopped
     environment:
       - PYTHONUNBUFFERED=1
+    volumes:
+      - ./data:/app/data  # Map host data directory to container data directory
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost/api/providers/available"]
       interval: 30s

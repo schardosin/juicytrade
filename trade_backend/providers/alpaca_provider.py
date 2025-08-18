@@ -24,6 +24,7 @@ from ..models import (
     StockQuote, OptionContract, Position, Order, 
     ExpirationDate, MarketData, ApiResponse, SymbolSearchResult, Account
 )
+from ..path_manager import path_manager
 
 logger = logging.getLogger(__name__)
 
@@ -186,7 +187,7 @@ class AlpacaProvider(BaseProvider):
         
         # Expiration dates cache (daily TTL)
         self._expiration_cache: Dict[str, Dict[str, Any]] = {}
-        self._cache_file_path = "cache/alpaca_expiration_cache.json"
+        self._cache_file_name = "alpaca_expiration_cache.json"
         
         # Load cache from disk on startup
         self._load_cache_from_disk()
@@ -1488,8 +1489,9 @@ class AlpacaProvider(BaseProvider):
     def _load_cache_from_disk(self) -> None:
         """Load expiration dates cache from disk on startup."""
         try:
-            if os.path.exists(self._cache_file_path):
-                with open(self._cache_file_path, 'r') as f:
+            cache_path = path_manager.get_cache_file_path(self._cache_file_name)
+            if cache_path.exists():
+                with open(cache_path, 'r') as f:
                     cache_data = json.load(f)
                     
                 # Validate and load cache data
@@ -1520,13 +1522,10 @@ class AlpacaProvider(BaseProvider):
     def _save_cache_to_disk(self) -> None:
         """Save expiration dates cache to disk."""
         try:
-            # Create cache directory if it doesn't exist
-            cache_dir = os.path.dirname(self._cache_file_path)
-            if cache_dir and not os.path.exists(cache_dir):
-                os.makedirs(cache_dir, exist_ok=True)
+            cache_path = path_manager.get_cache_file_path(self._cache_file_name)
             
             # Save cache to file
-            with open(self._cache_file_path, 'w') as f:
+            with open(cache_path, 'w') as f:
                 json.dump(self._expiration_cache, f, indent=2)
                 
             self._log_info(f"Saved {len(self._expiration_cache)} cache entries to disk")

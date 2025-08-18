@@ -36,9 +36,6 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the backend code
 COPY trade_backend ./trade_backend
 
-#COPY provider_config.json ./provider_config.json
-#COPY provider_credentials.json ./provider_credentials.json
-
 # Copy built frontend from builder (install into both common nginx document roots)
 COPY --from=frontend-builder /app/trade-app/dist /usr/share/nginx/html
 COPY --from=frontend-builder /app/trade-app/dist /var/www/html
@@ -56,6 +53,9 @@ COPY docker/supervisord.conf /etc/supervisor/supervisord.conf
 EXPOSE 80
 # Optional: expose backend port for debugging (commented out by default)
 # EXPOSE 8008
+
+# Create data directory structure for configuration and cache files
+RUN mkdir -p /app/data/config /app/data/cache
 
 # Ensure nginx can read files and supervisor has proper dirs
 RUN mkdir -p /var/log/supervisor && chown -R www-data:www-data /usr/share/nginx/html

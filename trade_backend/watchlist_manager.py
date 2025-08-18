@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Dict, List, Optional, Any
 from pathlib import Path
 import logging
+from .path_manager import path_manager
 
 logger = logging.getLogger(__name__)
 
@@ -18,7 +19,7 @@ class WatchlistManager:
     
     def __init__(self, config_file: str = "watchlist.json"):
         """Initialize the watchlist manager with JSON file storage."""
-        self.config_file = Path(__file__).parent.parent / config_file
+        self.config_file = config_file
         self._watchlists = {}
         self._active_watchlist = "default"
         self._version = "1.0"
@@ -27,13 +28,14 @@ class WatchlistManager:
     def _load_config(self):
         """Load watchlist configuration from JSON file."""
         try:
-            if self.config_file.exists():
-                with open(self.config_file, 'r') as f:
+            config_path = path_manager.get_config_file_path(self.config_file)
+            if config_path.exists():
+                with open(config_path, 'r') as f:
                     data = json.load(f)
                     self._watchlists = data.get('watchlists', {})
                     self._active_watchlist = data.get('active_watchlist', 'default')
                     self._version = data.get('version', '1.0')
-                    logger.info(f"📋 Loaded {len(self._watchlists)} watchlists from {self.config_file}")
+                    logger.info(f"📋 Loaded {len(self._watchlists)} watchlists from {config_path}")
             else:
                 # Create default configuration
                 self._create_default_config()
@@ -70,14 +72,17 @@ class WatchlistManager:
                 "last_updated": datetime.utcnow().isoformat() + 'Z'
             }
             
+            # Get config path
+            config_path = path_manager.get_config_file_path(self.config_file)
+            
             # Atomic write - write to temp file first, then rename
-            temp_file = self.config_file.with_suffix('.tmp')
+            temp_file = config_path.with_suffix('.tmp')
             with open(temp_file, 'w') as f:
                 json.dump(data, f, indent=2)
             
             # Atomic rename
-            temp_file.replace(self.config_file)
-            logger.debug(f"💾 Saved watchlist config to {self.config_file}")
+            temp_file.replace(config_path)
+            logger.debug(f"💾 Saved watchlist config to {config_path}")
             
         except Exception as e:
             logger.error(f"❌ Error saving watchlist config: {e}")
