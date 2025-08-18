@@ -359,6 +359,9 @@ export function convertButterflyToPositions(
   return positions;
 }
 
+// Helper function to round to 2 decimal places to avoid floating-point precision issues
+const roundToTwo = (num) => Math.round((num + Number.EPSILON) * 100) / 100;
+
 export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCredit = null) {
   if (!positions || positions.length === 0) {
     return null;
@@ -513,14 +516,14 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
 
       // Calculate P&L for this position at expiration
       let positionPayoff;
-      const entryPrice = position.avg_entry_price || 0;
+      const entryPrice = roundToTwo(position.avg_entry_price || 0);
       
       if (qty > 0) {
         // Long position: We paid premium to buy
-        positionPayoff = (intrinsicValue - entryPrice) * qty * 100;
+        positionPayoff = roundToTwo((intrinsicValue - entryPrice) * qty * 100);
       } else {
         // Short position: We received premium when we sold
-        positionPayoff = (entryPrice - intrinsicValue) * Math.abs(qty) * 100;
+        positionPayoff = roundToTwo((entryPrice - intrinsicValue) * Math.abs(qty) * 100);
       }
 
       totalPayoff += positionPayoff;
@@ -536,7 +539,7 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
       // so no additional adjustment is needed for them
     }
 
-    payoffs.push(totalPayoff);
+    payoffs.push(roundToTwo(totalPayoff));
   }
 
   // Find break-even points (where payoff crosses zero)

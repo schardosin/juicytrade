@@ -112,7 +112,7 @@ describe('WebSocketClient - Cascade Protection & Real-Time Data Integrity', () =
       expect(webSocketClient.isConnected.value).toBe(true);
       expect(mockWorkerInstance.postMessage).toHaveBeenCalledWith({
         command: 'connect',
-        url: 'ws://localhost:8008/ws'
+        url: 'ws://localhost:3000/ws'
       });
     });
 
