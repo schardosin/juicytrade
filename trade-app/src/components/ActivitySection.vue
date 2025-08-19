@@ -199,10 +199,12 @@
 </template>
 
 <script>
-import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch, reactive } from "vue";
 import { useRouter } from "vue-router";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useTradeNavigation } from "../composables/useTradeNavigation.js";
+import { useSmartMarketData } from "../composables/useSmartMarketData.js";
+import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 import { detectStrategy } from "../utils/optionsStrategies";
 import notificationService from "../services/notificationService";
 import api from "../services/api"; // Keep for cancelOrder method
@@ -220,6 +222,14 @@ export default {
     const { setPendingOrder } = useTradeNavigation();
     // Use unified market data composable
     const { getOrdersByStatus, isLoading } = useMarketData();
+
+    // Component registration system for live pricing
+    const componentId = `ActivitySection-${Math.random().toString(36).substr(2, 9)}`;
+    const registeredSymbols = new Set();
+
+    // Smart Market Data integration - same pattern as BottomTradingPanel
+    const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
+    const liveOptionPrices = reactive(new Map());
 
     const orders = ref([]);
     const selectedSymbolFilter = ref(props.currentSymbol);
@@ -239,6 +249,79 @@ export default {
       y: 0,
       order: null,
     });
+
+    // Single registration method per component to prevent double registration
+    const ensureSymbolRegistration = (symbol) => {
+      if (!registeredSymbols.has(symbol)) {
+        smartMarketDataStore.registerSymbolUsage(symbol, componentId);
+        registeredSymbols.add(symbol);
+      }
+    };
+
+    // Live price function - same pattern as BottomTradingPanel
+    const getLivePrice = (symbol) => {
+      if (!symbol) return null;
+
+      if (!liveOptionPrices.has(symbol)) {
+        // Ensure symbol is registered (only once per component)
+        ensureSymbolRegistration(symbol);
+        
+        // Call getSmartOptionPrice only once to set up the subscription
+        liveOptionPrices.set(symbol, getSmartOptionPrice(symbol));
+      }
+      return liveOptionPrices.get(symbol)?.value;
+    };
+
+    // Check if order is a working order (needs live pricing)
+    const isWorkingOrder = (order) => {
+      const status = order.status.toLowerCase();
+      return [
+        "new",
+        "accepted",
+        "pending_new",
+        "partially_filled",
+        "held",
+        "pending",
+        "unknown",
+        "open",
+        "submitted"
+      ].includes(status);
+    };
+
+    // Calculate live combined order price (following BottomTradingPanel pattern)
+    const calculateLiveOrderPrice = (order) => {
+      if (!isWorkingOrder(order)) {
+        return null; // Only calculate for working orders
+      }
+
+      // Get legs array (handle both multi-leg and single orders)
+      const legs = order.legs && order.legs.length > 0 ? order.legs : [order];
+      
+      // Skip stock orders - only handle option orders
+      if (!legs.some(leg => isOptionSymbol(leg.symbol))) {
+        return null;
+      }
+
+      const total = legs.reduce((acc, leg) => {
+        const livePrice = getLivePrice(leg.symbol);
+        let midPrice = 0;
+        
+        if (livePrice && livePrice.bid > 0 && livePrice.ask > 0) {
+          midPrice = (livePrice.bid + livePrice.ask) / 2;
+        } else {
+          // Fallback to static price if live price not available
+          return acc;
+        }
+        
+        // Apply side logic: buy = negative (you pay), sell = positive (you receive)
+        const signedPrice = leg.side && leg.side.includes('buy') ? -midPrice : midPrice;
+        return acc + (signedPrice * Math.abs(leg.qty || 0));
+      }, 0);
+
+      // Calculate per-contract price (same as BottomTradingPanel)
+      const minQty = Math.min(...legs.map(leg => Math.abs(leg.qty || 1)));
+      return total / minQty;
+    };
 
     // Computed property for filtered orders
     const filteredOrders = computed(() => {
@@ -381,7 +464,15 @@ export default {
     };
 
     const formatFillPrice = (order) => {
-      // Show actual fill price (what you got) - consistent positive format since CR indicates credit
+      // For Working orders, show live combined mid-price
+      if (isWorkingOrder(order)) {
+        const livePrice = calculateLiveOrderPrice(order);
+        if (livePrice !== null) {
+          return Math.abs(livePrice).toFixed(2);
+        }
+      }
+      
+      // For non-working orders, show static price (existing logic)
       if (order.avg_fill_price) {
         return Math.abs(order.avg_fill_price).toFixed(2);
       } else if (order.limit_price) {
@@ -862,12 +953,88 @@ export default {
       }
     );
 
-    // Watch for status changes and refetch orders
+    // Component cleanup system
+    const cleanupComponentRegistrations = () => {
+      // Unregister all symbols this component was using
+      for (const symbol of registeredSymbols) {
+        smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
+      }
+      
+      // Clear local tracking
+      registeredSymbols.clear();
+      liveOptionPrices.clear();
+    };
+
+    // Watch for symbol changes to clean up old registrations
+    watch(
+      () => props.currentSymbol,
+      (newSymbol, oldSymbol) => {
+        if (newSymbol !== oldSymbol) {
+          // Clean up old registrations when symbol changes
+          cleanupComponentRegistrations();
+        }
+        selectedSymbolFilter.value = newSymbol;
+      }
+    );
+
+    // Watch for status changes and manage subscriptions
     watch(
       () => selectedStatus.value,
-      (newStatus) => {
+      (newStatus, oldStatus) => {
+        // Clean up subscriptions when switching away from working orders
+        if (oldStatus === 'working' && newStatus !== 'working') {
+          cleanupComponentRegistrations();
+        }
+        
         fetchOrders(newStatus);
       }
+    );
+
+    // Watch filtered orders to manage subscriptions for working orders
+    watch(
+      filteredOrders,
+      (newOrders) => {
+        // Only manage subscriptions for working orders
+        if (selectedStatus.value === 'working') {
+          // Extract all option symbols from working orders
+          const workingSymbols = new Set();
+          
+          newOrders.forEach(order => {
+            if (isWorkingOrder(order)) {
+              // Get legs array (handle both multi-leg and single orders)
+              const legs = order.legs && order.legs.length > 0 ? order.legs : [order];
+              
+              legs.forEach(leg => {
+                if (isOptionSymbol(leg.symbol)) {
+                  workingSymbols.add(leg.symbol);
+                }
+              });
+            }
+          });
+          
+          // Register new symbols that aren't already registered
+          workingSymbols.forEach(symbol => {
+            if (!registeredSymbols.has(symbol)) {
+              ensureSymbolRegistration(symbol);
+            }
+          });
+          
+          // Unregister symbols that are no longer needed
+          const symbolsToRemove = [];
+          registeredSymbols.forEach(symbol => {
+            if (!workingSymbols.has(symbol)) {
+              symbolsToRemove.push(symbol);
+            }
+          });
+          
+          symbolsToRemove.forEach(symbol => {
+            smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
+            registeredSymbols.delete(symbol);
+            liveOptionPrices.delete(symbol);
+          });
+        }
+      },
+      { deep: true }
     );
 
     // Fetch orders on mount
@@ -877,9 +1044,11 @@ export default {
       document.addEventListener("contextmenu", handleGlobalContextMenu);
     });
 
-    // Clean up event listeners
+    // Clean up event listeners and subscriptions
     onUnmounted(() => {
       document.removeEventListener("contextmenu", handleGlobalContextMenu);
+      // Clean up all component registrations
+      cleanupComponentRegistrations();
     });
 
     return {

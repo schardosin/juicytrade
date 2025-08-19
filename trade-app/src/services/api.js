@@ -795,8 +795,6 @@ export const api = {
   async checkSetupStatusLocal() {
     try {
       const config = await this.getProviderConfig();
-      console.log('Raw provider config from API:', config);
-      
       const mandatoryServices = [
         'trade_account',
         'options_chain',
@@ -808,8 +806,6 @@ export const api = {
       // The config might be directly the service routing object, or nested under service_routing
       const serviceRouting = config.service_routing || config;
       
-      console.log('Service routing object:', serviceRouting);
-
       // Check if we have service routing configuration
       if (!serviceRouting || typeof serviceRouting !== 'object') {
         return {
