@@ -66,6 +66,16 @@ class WebSocketStreamingClient {
     const wasConnected = this.isConnected.value;
     this.isConnected.value = (status === 'connected');
     
+    // Emit detailed status event for UI components
+    window.dispatchEvent(new CustomEvent('websocket-status-change', {
+      detail: {
+        status: status,
+        timestamp: Date.now(),
+        wasConnected: wasConnected,
+        isConnected: this.isConnected.value
+      }
+    }));
+    
     if (this.isConnected.value) {
       // Clear connection timeout
       if (this.connectionTimeout) {

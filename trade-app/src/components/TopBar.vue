@@ -654,7 +654,16 @@ export default {
     };
 
     // Enhanced connection status event handlers
-    const handleConnectionStatusUpdate = (status) => {
+    const handleConnectionStatusUpdate = (event) => {
+      // Add error handling for malformed events
+      if (!event || !event.detail || typeof event.detail.status !== 'string') {
+        console.warn('⚠️ Received malformed websocket status event:', event);
+        return;
+      }
+      
+      const { status } = event.detail;
+      console.log('📡 TopBar received status update:', status);
+      
       // Map worker status to our connection state
       switch (status) {
         case 'connecting':
@@ -684,12 +693,22 @@ export default {
 
     const handleRecoveryEvent = (event) => {
       console.log('🚑 Recovery event received:', event.detail);
-      isRecovering.value = true;
-      connectionState.value = 'recovering';
       
-      // Update last data received time from recovery detail if available
-      if (event.detail && event.detail.lastDataReceived) {
-        lastDataReceived.value = event.detail.lastDataReceived;
+      // Check if this is a recovery completion event
+      if (event.detail && event.detail.recoveryType === 'websocket_recovery') {
+        // Recovery completed successfully - transition to connected
+        connectionState.value = 'connected';
+        isRecovering.value = false;
+        lastDataReceived.value = Date.now();
+      } else {
+        // Recovery started
+        isRecovering.value = true;
+        connectionState.value = 'recovering';
+        
+        // Update last data received time from recovery detail if available
+        if (event.detail && event.detail.lastDataReceived) {
+          lastDataReceived.value = event.detail.lastDataReceived;
+        }
       }
     };
 
@@ -706,22 +725,8 @@ export default {
 
     // Set up WebSocket status listener
     const setupWebSocketStatusListener = () => {
-      if (webSocketClient.worker) {
-        // Listen for status messages from the worker
-        const originalOnMessage = webSocketClient.worker.onmessage;
-        webSocketClient.worker.onmessage = (event) => {
-          // Call original handler first
-          if (originalOnMessage) {
-            originalOnMessage.call(webSocketClient.worker, event);
-          }
-          
-          // Handle status updates for TopBar
-          const { type, message } = event.data;
-          if (type === 'status') {
-            handleConnectionStatusUpdate(message);
-          }
-        };
-      }
+      // Listen to the new websocket-status-change event from WebSocketClient
+      window.addEventListener('websocket-status-change', handleConnectionStatusUpdate);
     };
 
     // Lifecycle hooks
@@ -731,6 +736,7 @@ export default {
       
       // Set up enhanced connection status listeners
       window.addEventListener('websocket-recovery', handleRecoveryEvent);
+      window.addEventListener('websocket-recovered', handleRecoveryEvent);
       
       // Set up WebSocket status listener
       setupWebSocketStatusListener();
@@ -739,14 +745,20 @@ export default {
       webSocketClient.onPriceUpdate(handleDataReceived);
       webSocketClient.onGreeksUpdate(handleDataReceived);
       
-      // Initialize connection if not already connected
-      if (!webSocketClient.isConnected.value) {
+      // Initialize connection status based on current WebSocket state
+      if (webSocketClient.isConnected.value) {
+        // If already connected, set status immediately
+        connectionState.value = 'connected';
+        isRecovering.value = false;
+        lastDataReceived.value = Date.now();
+        console.log('📡 TopBar mounted - WebSocket already connected');
+      } else {
+        // If not connected, try to connect
+        connectionState.value = 'connecting';
         webSocketClient.connect().catch(error => {
           console.error('❌ Failed to connect WebSocket:', error);
+          connectionState.value = 'disconnected';
         });
-      } else {
-        // If already connected, update status immediately
-        handleConnectionStatusUpdate('connected');
       }
     });
 
@@ -761,6 +773,17 @@ export default {
       () => webSocketClient.isConnected.value,
       (newStatus) => {
         isConnected.value = newStatus;
+        // Sync connection state with WebSocket client state
+        if (newStatus && connectionState.value !== 'connected') {
+          connectionState.value = 'connected';
+          isRecovering.value = false;
+          lastDataReceived.value = Date.now();
+          console.log('📡 TopBar synced to connected state via watcher');
+        } else if (!newStatus && connectionState.value === 'connected') {
+          connectionState.value = 'disconnected';
+          isRecovering.value = false;
+          console.log('📡 TopBar synced to disconnected state via watcher');
+        }
       },
       { immediate: true }
     );
@@ -771,7 +794,11 @@ export default {
         clearTimeout(searchTimeout);
         searchTimeout = null;
       }
-
+      
+      // Clean up event listeners
+      window.removeEventListener('websocket-recovery', handleRecoveryEvent);
+      window.removeEventListener('websocket-recovered', handleRecoveryEvent);
+      window.removeEventListener('websocket-status-change', handleConnectionStatusUpdate);
     });
 
     return {
