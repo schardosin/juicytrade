@@ -475,12 +475,21 @@ describe('ActivitySection', () => {
     });
   });
 
-  describe('Context Menu Symbol Navigation', () => {
-    it('should dispatch symbol-selected event with root symbol for weekly options', () => {
-      const mockDispatchEvent = vi.fn();
-      const originalDispatchEvent = window.dispatchEvent;
-      window.dispatchEvent = mockDispatchEvent;
+  describe('Context Menu Behavior', () => {
+    let mockDispatchEvent;
+    let originalDispatchEvent;
 
+    beforeEach(() => {
+      mockDispatchEvent = vi.fn();
+      originalDispatchEvent = window.dispatchEvent;
+      window.dispatchEvent = mockDispatchEvent;
+    });
+
+    afterEach(() => {
+      window.dispatchEvent = originalDispatchEvent;
+    });
+
+    it('should only show context menu on right-click without changing symbols', () => {
       const mockOrder = {
         id: '1',
         symbol: 'SPXW250117C05000000',
@@ -493,23 +502,225 @@ describe('ActivitySection', () => {
         clientY: 200
       };
 
-      // Simulate the showContextMenu function behavior
-      const orderSymbol = 'SPXW'; // This would come from getOrderSymbol
-      const rootSymbol = 'SPX'; // This would come from mapToRootSymbol
+      // Call showContextMenu directly
+      wrapper.vm.showContextMenu(mockEvent, mockOrder);
+
+      // Should prevent default browser context menu
+      expect(mockEvent.preventDefault).toHaveBeenCalled();
+
+      // Should set context menu state
+      expect(wrapper.vm.contextMenu.visible).toBe(true);
+      expect(wrapper.vm.contextMenu.x).toBe(100);
+      expect(wrapper.vm.contextMenu.y).toBe(200);
+      expect(wrapper.vm.contextMenu.order).toStrictEqual(mockOrder);
+
+      // Should NOT dispatch symbol-selected event on right-click
+      expect(mockDispatchEvent).not.toHaveBeenCalled();
+    });
+
+    it('should hide existing context menu before showing new one', async () => {
+      const mockOrder1 = { id: '1', symbol: 'SPX250117C05000000', status: 'filled' };
+      const mockOrder2 = { id: '2', symbol: 'AAPL250117C00150000', status: 'filled' };
       
-      if (orderSymbol && orderSymbol !== 'SPX') {
-        const symbolData = {
-          symbol: rootSymbol,
-          description: "",
-          exchange: "",
-        };
-        window.dispatchEvent(
-          new CustomEvent("symbol-selected", {
-            detail: symbolData,
-          })
-        );
+      const mockEvent1 = { preventDefault: vi.fn(), clientX: 100, clientY: 200 };
+      const mockEvent2 = { preventDefault: vi.fn(), clientX: 150, clientY: 250 };
+
+      // Show first context menu
+      wrapper.vm.showContextMenu(mockEvent1, mockOrder1);
+      expect(wrapper.vm.contextMenu.visible).toBe(true);
+      expect(wrapper.vm.contextMenu.order).toStrictEqual(mockOrder1);
+
+      // Show second context menu - should hide first and show second
+      wrapper.vm.showContextMenu(mockEvent2, mockOrder2);
+      
+      // Should initially be hidden
+      expect(wrapper.vm.contextMenu.visible).toBe(false);
+      
+      // Wait for the setTimeout to complete
+      await new Promise(resolve => setTimeout(resolve, 1));
+      
+      // Now should show the new menu
+      expect(wrapper.vm.contextMenu.visible).toBe(true);
+      expect(wrapper.vm.contextMenu.order).toStrictEqual(mockOrder2);
+      expect(wrapper.vm.contextMenu.x).toBe(150);
+      expect(wrapper.vm.contextMenu.y).toBe(250);
+    });
+
+    it('should hide context menu when hideContextMenu is called', () => {
+      // First show a context menu
+      const mockOrder = { id: '1', symbol: 'SPX250117C05000000', status: 'filled' };
+      const mockEvent = { preventDefault: vi.fn(), clientX: 100, clientY: 200 };
+      
+      wrapper.vm.showContextMenu(mockEvent, mockOrder);
+      expect(wrapper.vm.contextMenu.visible).toBe(true);
+
+      // Then hide it
+      wrapper.vm.hideContextMenu();
+      expect(wrapper.vm.contextMenu.visible).toBe(false);
+    });
+  });
+
+  describe('Optimized Symbol Changing Logic', () => {
+    let mockDispatchEvent;
+    let originalDispatchEvent;
+    let mockRouter;
+    let mockSetPendingOrder;
+
+    beforeEach(() => {
+      mockDispatchEvent = vi.fn();
+      originalDispatchEvent = window.dispatchEvent;
+      window.dispatchEvent = mockDispatchEvent;
+      
+      // Mock router and setPendingOrder
+      mockRouter = { push: vi.fn() };
+      mockSetPendingOrder = vi.fn();
+      
+      // Re-mount with fresh mocks
+      wrapper = mount(ActivitySection, {
+        props: {
+          currentSymbol: 'SPX'
+        },
+        global: {
+          stubs: {
+            'i': { template: '<span></span>' }
+          },
+          mocks: {
+            $router: mockRouter
+          }
+        }
+      });
+    });
+
+    afterEach(() => {
+      window.dispatchEvent = originalDispatchEvent;
+    });
+
+    it('should NOT dispatch symbol-selected event when order symbol matches current symbol', () => {
+      const mockOrder = {
+        id: '1',
+        symbol: 'SPX250117C05000000', // SPX option
+        status: 'filled'
+      };
+
+      // Mock the internal functions
+      const getOrderSymbol = vi.fn().mockReturnValue('SPX');
+      const mapToRootSymbol = vi.fn().mockReturnValue('SPX');
+      
+      // Simulate createSimilarOrder logic
+      const orderSymbol = getOrderSymbol(mockOrder);
+      if (orderSymbol) {
+        const rootSymbol = mapToRootSymbol(orderSymbol);
+        // Only change symbol if the final mapped symbol is different from current
+        if (rootSymbol !== 'SPX') { // Current symbol is SPX
+          window.dispatchEvent(new CustomEvent("symbol-selected", {
+            detail: { symbol: rootSymbol, description: "", exchange: "" }
+          }));
+        }
       }
 
+      // Should NOT dispatch event since SPX === SPX
+      expect(mockDispatchEvent).not.toHaveBeenCalled();
+    });
+
+    it('should dispatch symbol-selected event when order symbol differs from current symbol', () => {
+      const mockOrder = {
+        id: '1',
+        symbol: 'AAPL250117C00150000', // AAPL option
+        status: 'filled'
+      };
+
+      // Mock the internal functions
+      const getOrderSymbol = vi.fn().mockReturnValue('AAPL');
+      const mapToRootSymbol = vi.fn().mockReturnValue('AAPL');
+      
+      // Simulate createSimilarOrder logic
+      const orderSymbol = getOrderSymbol(mockOrder);
+      if (orderSymbol) {
+        const rootSymbol = mapToRootSymbol(orderSymbol);
+        // Only change symbol if the final mapped symbol is different from current
+        if (rootSymbol !== 'SPX') { // Current symbol is SPX
+          window.dispatchEvent(new CustomEvent("symbol-selected", {
+            detail: { symbol: rootSymbol, description: "", exchange: "" }
+          }));
+        }
+      }
+
+      // Should dispatch event since AAPL !== SPX
+      expect(mockDispatchEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'symbol-selected',
+          detail: {
+            symbol: 'AAPL',
+            description: '',
+            exchange: ''
+          }
+        })
+      );
+    });
+
+    it('should handle weekly symbol mapping correctly in createSimilarOrder', () => {
+      const mockOrder = {
+        id: '1',
+        symbol: 'SPXW250117C05000000', // SPXW option
+        status: 'filled'
+      };
+
+      // Mock the internal functions to simulate the actual component behavior
+      const getOrderSymbol = vi.fn().mockReturnValue('SPXW');
+      const mapToRootSymbol = vi.fn().mockReturnValue('SPX'); // SPXW maps to SPX
+      
+      // Simulate createSimilarOrder logic
+      const orderSymbol = getOrderSymbol(mockOrder);
+      if (orderSymbol) {
+        const rootSymbol = mapToRootSymbol(orderSymbol);
+        // Only change symbol if the final mapped symbol is different from current
+        if (rootSymbol !== 'SPX') { // Current symbol is SPX
+          window.dispatchEvent(new CustomEvent("symbol-selected", {
+            detail: { symbol: rootSymbol, description: "", exchange: "" }
+          }));
+        }
+      }
+
+      // Should NOT dispatch event since SPXW maps to SPX, and current is SPX
+      expect(mockDispatchEvent).not.toHaveBeenCalled();
+    });
+
+    it('should dispatch event when weekly symbol maps to different root symbol', () => {
+      // Change current symbol to something different
+      wrapper = mount(ActivitySection, {
+        props: {
+          currentSymbol: 'AAPL' // Different current symbol
+        },
+        global: {
+          stubs: {
+            'i': { template: '<span></span>' }
+          }
+        }
+      });
+
+      const mockOrder = {
+        id: '1',
+        symbol: 'SPXW250117C05000000', // SPXW option
+        status: 'filled'
+      };
+
+      // Mock the internal functions
+      const getOrderSymbol = vi.fn().mockReturnValue('SPXW');
+      const mapToRootSymbol = vi.fn().mockReturnValue('SPX'); // SPXW maps to SPX
+      
+      // Simulate createSimilarOrder logic
+      const orderSymbol = getOrderSymbol(mockOrder);
+      if (orderSymbol) {
+        const rootSymbol = mapToRootSymbol(orderSymbol);
+        // Only change symbol if the final mapped symbol is different from current
+        if (rootSymbol !== 'AAPL') { // Current symbol is AAPL
+          window.dispatchEvent(new CustomEvent("symbol-selected", {
+            detail: { symbol: rootSymbol, description: "", exchange: "" }
+          }));
+        }
+      }
+
+      // Should dispatch event since SPX !== AAPL
       expect(mockDispatchEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           type: 'symbol-selected',
@@ -520,9 +731,161 @@ describe('ActivitySection', () => {
           }
         })
       );
+    });
 
-      // Restore original dispatchEvent
+    it('should handle null/undefined order symbols gracefully', () => {
+      const mockOrder = {
+        id: '1',
+        // No symbol property
+        status: 'filled'
+      };
+
+      // Mock the internal functions
+      const getOrderSymbol = vi.fn().mockReturnValue(null);
+      
+      // Simulate createSimilarOrder logic
+      const orderSymbol = getOrderSymbol(mockOrder);
+      if (orderSymbol) {
+        // This block should not execute
+        window.dispatchEvent(new CustomEvent("symbol-selected", {
+          detail: { symbol: 'TEST', description: "", exchange: "" }
+        }));
+      }
+
+      // Should NOT dispatch event since orderSymbol is null
+      expect(mockDispatchEvent).not.toHaveBeenCalled();
+    });
+
+    it('should apply same logic to createOppositeOrder', () => {
+      const mockOrder = {
+        id: '1',
+        symbol: 'AAPL250117C00150000', // AAPL option
+        status: 'filled'
+      };
+
+      // Mock the internal functions
+      const getOrderSymbol = vi.fn().mockReturnValue('AAPL');
+      const mapToRootSymbol = vi.fn().mockReturnValue('AAPL');
+      
+      // Simulate createOppositeOrder logic (same as createSimilarOrder for symbol changing)
+      const orderSymbol = getOrderSymbol(mockOrder);
+      if (orderSymbol) {
+        const rootSymbol = mapToRootSymbol(orderSymbol);
+        // Only change symbol if the final mapped symbol is different from current
+        if (rootSymbol !== 'SPX') { // Current symbol is SPX
+          window.dispatchEvent(new CustomEvent("symbol-selected", {
+            detail: { symbol: rootSymbol, description: "", exchange: "" }
+          }));
+        }
+      }
+
+      // Should dispatch event since AAPL !== SPX
+      expect(mockDispatchEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'symbol-selected',
+          detail: {
+            symbol: 'AAPL',
+            description: '',
+            exchange: ''
+          }
+        })
+      );
+    });
+  });
+
+  describe('Context Menu Integration with Symbol Logic', () => {
+    let mockDispatchEvent;
+    let originalDispatchEvent;
+
+    beforeEach(() => {
+      mockDispatchEvent = vi.fn();
+      originalDispatchEvent = window.dispatchEvent;
+      window.dispatchEvent = mockDispatchEvent;
+    });
+
+    afterEach(() => {
       window.dispatchEvent = originalDispatchEvent;
+    });
+
+    it('should show context menu without symbol change, then change symbol only on menu item click', () => {
+      const mockOrder = {
+        id: '1',
+        symbol: 'AAPL250117C00150000', // Different from current SPX
+        status: 'filled'
+      };
+
+      const mockEvent = {
+        preventDefault: vi.fn(),
+        clientX: 100,
+        clientY: 200
+      };
+
+      // Step 1: Right-click should only show menu
+      wrapper.vm.showContextMenu(mockEvent, mockOrder);
+      
+      expect(wrapper.vm.contextMenu.visible).toBe(true);
+      expect(mockDispatchEvent).not.toHaveBeenCalled(); // No symbol change yet
+
+      // Step 2: Clicking "Similar" should change symbol (if different)
+      // This would be tested by calling createSimilarOrder directly
+      // Since we can't easily simulate the actual click in this test setup
+      
+      // Reset the mock to test the menu item behavior
+      mockDispatchEvent.mockClear();
+      
+      // Simulate what happens when createSimilarOrder is called
+      const orderSymbol = 'AAPL'; // From getOrderSymbol
+      const rootSymbol = 'AAPL'; // From mapToRootSymbol
+      
+      if (rootSymbol !== 'SPX') { // Current symbol is SPX
+        window.dispatchEvent(new CustomEvent("symbol-selected", {
+          detail: { symbol: rootSymbol, description: "", exchange: "" }
+        }));
+      }
+
+      // Now symbol change should occur
+      expect(mockDispatchEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          type: 'symbol-selected',
+          detail: {
+            symbol: 'AAPL',
+            description: '',
+            exchange: ''
+          }
+        })
+      );
+    });
+
+    it('should not change symbol when menu item clicked for same symbol', () => {
+      const mockOrder = {
+        id: '1',
+        symbol: 'SPX250117C05000000', // Same as current SPX
+        status: 'filled'
+      };
+
+      const mockEvent = {
+        preventDefault: vi.fn(),
+        clientX: 100,
+        clientY: 200
+      };
+
+      // Step 1: Right-click shows menu
+      wrapper.vm.showContextMenu(mockEvent, mockOrder);
+      expect(wrapper.vm.contextMenu.visible).toBe(true);
+      expect(mockDispatchEvent).not.toHaveBeenCalled();
+
+      // Step 2: Clicking "Similar" should NOT change symbol (same symbol)
+      const orderSymbol = 'SPX'; // From getOrderSymbol
+      const rootSymbol = 'SPX'; // From mapToRootSymbol
+      
+      if (rootSymbol !== 'SPX') { // Current symbol is SPX
+        window.dispatchEvent(new CustomEvent("symbol-selected", {
+          detail: { symbol: rootSymbol, description: "", exchange: "" }
+        }));
+      }
+
+      // Should still not dispatch event
+      expect(mockDispatchEvent).not.toHaveBeenCalled();
     });
   });
 

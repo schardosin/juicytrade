@@ -712,22 +712,6 @@ export default {
       // Always prevent the default browser context menu
       event.preventDefault();
 
-      const orderSymbol = getOrderSymbol(order);
-      if (orderSymbol && orderSymbol !== props.currentSymbol) {
-        // Map weekly symbols back to their root symbols for navigation
-        const rootSymbol = mapToRootSymbol(orderSymbol);
-        const symbolData = {
-          symbol: rootSymbol,
-          description: "", // Will be fetched by SymbolHeader
-          exchange: "", // Will be fetched by SymbolHeader
-        };
-        window.dispatchEvent(
-          new CustomEvent("symbol-selected", {
-            detail: symbolData,
-          })
-        );
-      }
-
       // If menu is already visible, hide it first
       if (contextMenu.value.visible) {
         contextMenu.value.visible = false;
@@ -872,6 +856,26 @@ export default {
 
     const createSimilarOrder = (order) => {
       if (isOrderExpired(order)) return;
+      
+      // Change symbol only if the final mapped symbol is different from current
+      const orderSymbol = getOrderSymbol(order);
+      if (orderSymbol) {
+        const rootSymbol = mapToRootSymbol(orderSymbol);
+        // Only change symbol if the final mapped symbol is different from current
+        if (rootSymbol !== props.currentSymbol) {
+          const symbolData = {
+            symbol: rootSymbol,
+            description: "", // Will be fetched by SymbolHeader
+            exchange: "", // Will be fetched by SymbolHeader
+          };
+          window.dispatchEvent(
+            new CustomEvent("symbol-selected", {
+              detail: symbolData,
+            })
+          );
+        }
+      }
+      
       setPendingOrder({ ...order, isOpposite: false });
       router.push("/");
       hideContextMenu();
@@ -879,6 +883,26 @@ export default {
 
     const createOppositeOrder = (order) => {
       if (isOrderExpired(order)) return;
+      
+      // Change symbol only if the final mapped symbol is different from current
+      const orderSymbol = getOrderSymbol(order);
+      if (orderSymbol) {
+        const rootSymbol = mapToRootSymbol(orderSymbol);
+        // Only change symbol if the final mapped symbol is different from current
+        if (rootSymbol !== props.currentSymbol) {
+          const symbolData = {
+            symbol: rootSymbol,
+            description: "", // Will be fetched by SymbolHeader
+            exchange: "", // Will be fetched by SymbolHeader
+          };
+          window.dispatchEvent(
+            new CustomEvent("symbol-selected", {
+              detail: symbolData,
+            })
+          );
+        }
+      }
+      
       setPendingOrder({ ...order, isOpposite: true });
       router.push("/");
       hideContextMenu();
