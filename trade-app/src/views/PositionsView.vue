@@ -387,7 +387,7 @@ export default {
   },
   setup() {
     // Use global symbol state with centralized symbol selection
-    const { globalSymbolState, setupSymbolSelectionListener } = useGlobalSymbol({
+    const { globalSymbolState, setupSymbolSelectionListener, updateSymbol } = useGlobalSymbol({
       onSymbolChange: async (symbolData) => {
         // Positions are already refreshed by updateSymbol in useGlobalSymbol
         // Any additional positions-specific logic can go here if needed
@@ -803,17 +803,26 @@ export default {
 
         const [, underlying, dateStr, type, strikeStr] = match;
 
-        // Parse date: YYMMDD -> MM/DD
+        // Parse date: YYMMDD -> full year extraction
+        const year = parseInt(dateStr.substring(0, 2));
         const month = dateStr.substring(2, 4);
         const day = dateStr.substring(4, 6);
+        
+        // Convert 2-digit year to 4-digit year
+        // Years 00-30 are assumed to be 2000-2030, 31-99 are 1931-1999
+        const fullYear = year <= 30 ? 2000 + year : 1900 + year;
+        
         const expiry = `${month}/${day}`;
+        const expiryWithYear = `${month}/${day}/${fullYear}`;
 
         // Parse strike: 8 digits with 3 decimal places
         const strike = parseInt(strikeStr) / 1000;
 
         return {
           underlying,
-          expiry,
+          expiry, // Keep for backward compatibility (MM/DD format)
+          expiryWithYear, // New field with full date (MM/DD/YYYY format)
+          year: fullYear,
           type: type === "C" ? "call" : "put",
           strike,
         };
@@ -828,11 +837,10 @@ export default {
       if (leg.asset_class === "us_option") {
         const parts = parseOptionSymbol(leg.symbol);
         if (parts) {
-          // Convert MM/DD format to "Aug 1" format
+          // Convert MM/DD format to "Aug 1" format using actual year
           const [month, day] = parts.expiry.split("/");
-          const currentYear = new Date().getFullYear();
           const date = new Date(
-            currentYear,
+            parts.year, // Use the actual year from the option symbol
             parseInt(month) - 1,
             parseInt(day)
           );
@@ -865,11 +873,10 @@ export default {
       if (leg.asset_class === "us_option") {
         const parts = parseOptionSymbol(leg.symbol);
         if (parts) {
-          // Parse MM/DD format to get proper date
+          // Use the actual year from the parsed option symbol
           const [month, day] = parts.expiry.split("/");
-          const currentYear = new Date().getFullYear();
           const expiryDate = new Date(
-            currentYear,
+            parts.year, // Use the actual year from the option symbol
             parseInt(month) - 1,
             parseInt(day)
           );
@@ -1064,8 +1071,8 @@ export default {
           const parts = parseOptionSymbol(leg.symbol);
           if (parts) {
             const [month, day] = parts.expiry.split("/");
-            const currentYear = new Date().getFullYear();
-            const expiryDate = new Date(currentYear, parseInt(month) - 1, parseInt(day));
+            // Use the actual year from the parsed option symbol
+            const expiryDate = new Date(parts.year, parseInt(month) - 1, parseInt(day));
             const today = new Date();
             
             // Set both dates to midnight to get accurate day difference
@@ -1201,7 +1208,7 @@ export default {
       return selectedLegs.value.some(leg => leg.symbol === legSymbol);
     };
 
-    const togglePositionLegSelection = (leg, strategy, group) => {
+    const togglePositionLegSelection = async (leg, strategy, group) => {
       const legSymbol = leg.symbol;
       const underlyingSymbol = group.symbol;
 
@@ -1209,7 +1216,38 @@ export default {
       const rootSymbol = mapToRootSymbol(underlyingSymbol);
       const needsSymbolChange = rootSymbol && rootSymbol !== currentSymbol.value;
 
-      // Handle leg selection first (before symbol change to avoid losing selection)
+      console.log(`🎯 PositionsView: Leg selection for ${legSymbol}, underlying: ${underlyingSymbol}, needsSymbolChange: ${needsSymbolChange}`);
+
+      // 🔑 KEY FIX: Change symbol FIRST if needed, then handle leg selection
+      if (needsSymbolChange) {
+        try {
+          console.log(`🔄 PositionsView: Changing symbol from ${currentSymbol.value} to ${rootSymbol}`);
+          
+          // Change symbol synchronously and wait for positions to load
+          const symbolData = {
+            symbol: rootSymbol,
+            description: "", // Will be fetched by SymbolHeader
+            exchange: "", // Will be fetched by SymbolHeader
+          };
+          
+          // Use the global symbol update function directly
+          await updateSymbol(symbolData);
+          
+          // Wait for all reactive updates to complete
+          await nextTick();
+          
+          // Give a bit more time for positions data to fully load and watchers to settle
+          await new Promise(resolve => setTimeout(resolve, 150));
+          
+          console.log(`✅ PositionsView: Symbol change completed, current symbol: ${currentSymbol.value}`);
+          
+        } catch (error) {
+          console.error('❌ Error changing symbol before leg selection:', error);
+          // Continue with leg selection even if symbol change fails
+        }
+      }
+
+      // Now handle leg selection after symbol change is complete
       if (isLegSelected(legSymbol)) {
         // Remove from selection
         removeLeg(legSymbol);
@@ -1220,10 +1258,9 @@ export default {
         // Format expiry date for centralized store (YYYY-MM-DD format)
         let formattedExpiry = null;
         if (parsedOption && parsedOption.expiry) {
-          // parsedOption.expiry is in MM/DD format, convert to YYYY-MM-DD
+          // parsedOption.expiry is in MM/DD format, convert to YYYY-MM-DD using actual year
           const [month, day] = parsedOption.expiry.split("/");
-          const currentYear = new Date().getFullYear();
-          formattedExpiry = `${currentYear}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+          formattedExpiry = `${parsedOption.year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
         }
         
         // Get current market price for the closing trade
@@ -1257,24 +1294,15 @@ export default {
         };
         
         addLeg(closingLeg, 'positions');
-      }
-
-      // Change symbol AFTER leg selection to avoid losing the selection
-      if (needsSymbolChange) {
-        // Use a longer delay to ensure the RightPanel has processed the leg selection
-        // and updated its checkboxes before the symbol change clears them
+        
+        console.log(`📊 PositionsView: Added closing leg:`, closingLeg);
+        
+        // Force right panel to expand to analysis tab after a short delay
+        await nextTick();
         setTimeout(() => {
-          const symbolData = {
-            symbol: rootSymbol,
-            description: "", // Will be fetched by SymbolHeader
-            exchange: "", // Will be fetched by SymbolHeader
-          };
-          window.dispatchEvent(
-            new CustomEvent("symbol-selected", {
-              detail: symbolData,
-            })
-          );
-        }, 100); // Increased delay to allow RightPanel to process the selection
+          console.log(`📈 PositionsView: Expanding right panel for analysis`);
+          isRightPanelExpanded.value = true;
+        }, 50);
       }
     };
 
