@@ -208,6 +208,7 @@ import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 import { detectStrategy } from "../utils/optionsStrategies";
 import notificationService from "../services/notificationService";
 import api from "../services/api"; // Keep for cancelOrder method
+import { mapToRootSymbol } from "../utils/symbolMapping.js";
 
 export default {
   name: "ActivitySection",
@@ -636,16 +637,6 @@ export default {
       return [symbol];
     };
 
-    // Map weekly symbols back to their root symbols
-    const mapToRootSymbol = (symbol) => {
-      const weeklyMap = {
-        'SPXW': 'SPX',
-        'NDXP': 'NDX',
-        'RUTW': 'RUT',
-        'VIXW': 'VIX',
-      };
-      return weeklyMap[symbol] || symbol;
-    };
 
     const extractUnderlyingFromOptionSymbol = (symbol) => {
       if (!isOptionSymbol(symbol)) return null;

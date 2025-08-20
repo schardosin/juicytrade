@@ -838,11 +838,17 @@ export default {
     );
 
     // Watch for symbol changes to clear checkboxes only when symbol changes
+    // BUT preserve checkboxes for selected legs that should remain checked
     watch(
       () => props.currentSymbol,
       (newSymbol, oldSymbol) => {
         if (newSymbol !== oldSymbol) {
-          checkedPositions.value.clear();
+          // Don't clear checkboxes if we have selected legs that should remain checked
+          // This prevents the race condition where symbol change clears selections
+          // before the leg selection has been processed
+          if (selectedLegs.value.length === 0) {
+            checkedPositions.value.clear();
+          }
         }
       }
     );

@@ -360,7 +360,7 @@
 </template>
 
 <script>
-import { ref, computed, watch, onMounted, onUnmounted, reactive } from "vue";
+import { ref, computed, watch, onMounted, onUnmounted, reactive, nextTick } from "vue";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import RightPanel from "../components/RightPanel.vue";
@@ -373,6 +373,7 @@ import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { useOrderManagement } from "../composables/useOrderManagement";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
+import { mapToRootSymbol } from "../utils/symbolMapping.js";
 
 export default {
   name: "PositionsView",
@@ -1204,20 +1205,11 @@ export default {
       const legSymbol = leg.symbol;
       const underlyingSymbol = group.symbol;
 
-      // If the selected position's symbol is different from the current global symbol, update it.
-      if (underlyingSymbol && underlyingSymbol !== currentSymbol.value) {
-        const symbolData = {
-          symbol: underlyingSymbol,
-          description: "", // Will be fetched by SymbolHeader
-          exchange: "", // Will be fetched by SymbolHeader
-        };
-        window.dispatchEvent(
-          new CustomEvent("symbol-selected", {
-            detail: symbolData,
-          })
-        );
-      }
-      
+      // Map weekly symbols to their root symbols (e.g., SPXW -> SPX, NDXP -> NDX)
+      const rootSymbol = mapToRootSymbol(underlyingSymbol);
+      const needsSymbolChange = rootSymbol && rootSymbol !== currentSymbol.value;
+
+      // Handle leg selection first (before symbol change to avoid losing selection)
       if (isLegSelected(legSymbol)) {
         // Remove from selection
         removeLeg(legSymbol);
@@ -1265,6 +1257,24 @@ export default {
         };
         
         addLeg(closingLeg, 'positions');
+      }
+
+      // Change symbol AFTER leg selection to avoid losing the selection
+      if (needsSymbolChange) {
+        // Use a longer delay to ensure the RightPanel has processed the leg selection
+        // and updated its checkboxes before the symbol change clears them
+        setTimeout(() => {
+          const symbolData = {
+            symbol: rootSymbol,
+            description: "", // Will be fetched by SymbolHeader
+            exchange: "", // Will be fetched by SymbolHeader
+          };
+          window.dispatchEvent(
+            new CustomEvent("symbol-selected", {
+              detail: symbolData,
+            })
+          );
+        }, 100); // Increased delay to allow RightPanel to process the selection
       }
     };
 
