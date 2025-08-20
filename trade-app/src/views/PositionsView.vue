@@ -464,6 +464,7 @@ export default {
     const expandedGroups = ref([]);
     const isRightPanelExpanded = ref(false);
     const adjustedNetCredit = ref(null); // Add adjustedNetCredit for limit price functionality
+    const isSymbolTransitioning = ref(false); // Flag to track symbol change in progress
 
     // Computed property to determine which section to show in right panel
     const rightPanelSection = computed(() => {
@@ -1223,6 +1224,12 @@ export default {
         try {
           console.log(`🔄 PositionsView: Changing symbol from ${currentSymbol.value} to ${rootSymbol}`);
           
+          // Set flag to prevent chart updates during transition
+          isSymbolTransitioning.value = true;
+          
+          // Temporarily disable chart updates during symbol transition
+          chartData.value = null;
+          
           // Change symbol synchronously and wait for positions to load
           const symbolData = {
             symbol: rootSymbol,
@@ -1236,14 +1243,27 @@ export default {
           // Wait for all reactive updates to complete
           await nextTick();
           
-          // Give a bit more time for positions data to fully load and watchers to settle
-          await new Promise(resolve => setTimeout(resolve, 150));
+          // Wait for underlying price to be available (critical for chart generation)
+          let retryCount = 0;
+          const maxRetries = 20; // Max 2 seconds
+          while ((!currentPrice.value || currentPrice.value === 0) && retryCount < maxRetries) {
+            await new Promise(resolve => setTimeout(resolve, 100));
+            retryCount++;
+          }
           
-          console.log(`✅ PositionsView: Symbol change completed, current symbol: ${currentSymbol.value}`);
+          if (retryCount >= maxRetries) {
+            console.warn(`⚠️ PositionsView: Timeout waiting for price data for ${rootSymbol}`);
+          } else {
+            console.log(`✅ PositionsView: Symbol change completed, current symbol: ${currentSymbol.value}, price: ${currentPrice.value}`);
+          }
+          
+          // Clear the transition flag
+          isSymbolTransitioning.value = false;
           
         } catch (error) {
           console.error('❌ Error changing symbol before leg selection:', error);
-          // Continue with leg selection even if symbol change fails
+          // Clear the transition flag even on error
+          isSymbolTransitioning.value = false;
         }
       }
 
@@ -1295,12 +1315,12 @@ export default {
         
         addLeg(closingLeg, 'positions');
         
-        console.log(`📊 PositionsView: Added closing leg:`, closingLeg);
+        // � KEY FIX: Immediately update chart with the new selection
+        await nextTick();
+        updateChartWithSelectedLegs();
         
         // Force right panel to expand to analysis tab after a short delay
-        await nextTick();
         setTimeout(() => {
-          console.log(`📈 PositionsView: Expanding right panel for analysis`);
           isRightPanelExpanded.value = true;
         }, 50);
       }
@@ -1456,6 +1476,83 @@ export default {
       { immediate: true }
     );
 
+    // 🔑 KEY FIX: Watch for selectedLegs changes to trigger chart generation
+    // This ensures chart updates when legs are selected, especially after symbol changes
+    // TEMPORARILY DISABLED TO DEBUG RACE CONDITION
+    /*
+    watch(
+      selectedLegs,
+      async (newLegs) => {
+        // Wait for any pending operations to complete
+        await nextTick();
+        
+        // Regenerate chart with current selectedLegs
+        updateChartWithSelectedLegs();
+      },
+      { deep: true }
+    );
+    */
+
+    // 🔑 NEW: Function to update chart based on selected legs
+    const updateChartWithSelectedLegs = async () => {
+      // Don't update chart during symbol transitions
+      if (isSymbolTransitioning.value) {
+        console.log("⏸️ PositionsView: Skipping chart update during symbol transition");
+        return;
+      }
+      
+      try {
+        if (selectedLegs.value.length > 0) {
+          // Import chart generation function
+          const { generateMultiLegPayoff } = await import("../utils/chartUtils");
+          
+          // Convert selected legs to positions format for chart generation
+          const legPositions = selectedLegs.value.map(leg => ({
+            symbol: leg.symbol,
+            qty: leg.side === 'buy' ? leg.quantity : -leg.quantity,
+            strike_price: leg.strike_price,
+            option_type: leg.type,
+            expiry_date: leg.expiry,
+            current_price: leg.current_price,
+            bid: leg.bid,
+            ask: leg.ask,
+            avg_entry_price: leg.avg_entry_price,
+            asset_class: "us_option",
+            isSelected: true,
+            isExisting: leg.source === 'positions'
+          }));
+          
+          // Ensure we have a valid current price for chart generation
+          const chartCurrentPrice = currentPrice.value || 0;
+          if (chartCurrentPrice === 0) {
+            console.warn("⚠️ PositionsView: Current price is 0, chart may not render correctly");
+            return; // Don't generate chart without valid price
+          }
+          
+          // Generate chart with selected legs
+          const chartResult = generateMultiLegPayoff(
+            legPositions, 
+            chartCurrentPrice, 
+            adjustedNetCredit.value
+          );
+          
+          if (chartResult) {
+            chartData.value = chartResult;
+            console.log(`✅ PositionsView: Chart updated with ${selectedLegs.value.length} selected legs`);
+          } else {
+            console.warn("⚠️ PositionsView: Chart generation returned null for selected legs");
+            chartData.value = null;
+          }
+        } else {
+          // No legs selected, clear chart
+          chartData.value = null;
+        }
+      } catch (error) {
+        console.error("❌ PositionsView: Error updating chart with selected legs:", error);
+        chartData.value = null;
+      }
+    };
+
     // Component cleanup system
     const cleanupComponentRegistrations = () => {
       // Unregister all symbols this component was using
@@ -1475,6 +1572,10 @@ export default {
         if (newSymbol !== oldSymbol) {
           // Unregister all current symbols
           cleanupComponentRegistrations();
+          
+          // 🔑 KEY FIX: Clear chart data when symbol changes to prevent stale data
+          chartData.value = null;
+          lastChartPositions.value = null;
         }
       },
       { immediate: true }
@@ -1572,6 +1673,8 @@ export default {
       // Position selection functions
       isLegSelected,
       togglePositionLegSelection,
+      updateChartWithSelectedLegs,
+      isSymbolTransitioning,
       // Bottom Trading Panel integration
       hasSelectedLegs,
       onReviewSend,
