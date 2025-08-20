@@ -385,8 +385,8 @@ describe('BottomTradingPanel - Cascade Protection & Trading Interface Integrity'
       expect(mockUpdateQuantity).not.toHaveBeenCalled();
     });
 
-    it('does not increment quantity above 10', async () => {
-      mockSelectedLegs.value[0].quantity = 10;
+    it('does not increment quantity above 100', async () => {
+      mockSelectedLegs.value[0].quantity = 100;
 
       wrapper = mount(BottomTradingPanel, {
         props: {
@@ -879,6 +879,489 @@ describe('BottomTradingPanel - Cascade Protection & Trading Interface Integrity'
 
         wrapper.unmount();
       }
+    });
+  });
+
+  describe('Proportional Quantity Adjustment Logic', () => {
+    // Helper functions to test the internal logic
+    const calculateGCD = (a, b) => {
+      return b === 0 ? a : calculateGCD(b, a % b);
+    };
+
+    const calculateArrayGCD = (numbers) => {
+      if (numbers.length === 0) return 1;
+      if (numbers.length === 1) return numbers[0];
+      
+      return numbers.reduce((gcd, num) => calculateGCD(gcd, num));
+    };
+
+    const analyzeQuantityPattern = (legs) => {
+      if (legs.length === 0) return { ratios: [], multiplier: 1, canIncrement: false, canDecrement: false };
+      
+      const quantities = legs.map(leg => leg.quantity);
+      const gcd = calculateArrayGCD(quantities);
+      const ratios = quantities.map(qty => qty / gcd);
+      
+      // Check if we can increment (no leg would exceed limits)
+      const canIncrement = legs.every((leg, index) => {
+        const maxQty = leg.source === 'positions' && leg.original_quantity ? leg.original_quantity : 100;
+        const nextQty = ratios[index] * (gcd + 1); // Calculate what the next quantity would be
+        return nextQty <= maxQty;
+      });
+      
+      const canDecrement = gcd > 1;
+      
+      return {
+        ratios,
+        multiplier: gcd,
+        canIncrement,
+        canDecrement
+      };
+    };
+
+    const getNextProportionalQuantities = (legs, direction) => {
+      const analysis = analyzeQuantityPattern(legs);
+      
+      if (direction === 'increment' && !analysis.canIncrement) {
+        return null;
+      }
+      
+      if (direction === 'decrement' && !analysis.canDecrement) {
+        return null;
+      }
+      
+      const newMultiplier = direction === 'increment' 
+        ? analysis.multiplier + 1 
+        : analysis.multiplier - 1;
+      
+      const newQuantities = analysis.ratios.map(ratio => ratio * newMultiplier);
+      
+      const isValid = legs.every((leg, index) => {
+        const newQty = newQuantities[index];
+        const maxQty = leg.source === 'positions' && leg.original_quantity ? leg.original_quantity : 100;
+        return newQty >= 1 && newQty <= maxQty;
+      });
+      
+      return isValid ? newQuantities : null;
+    };
+
+    describe('GCD Calculation', () => {
+      it('calculates GCD correctly for two numbers', () => {
+        expect(calculateGCD(12, 8)).toBe(4);
+        expect(calculateGCD(15, 25)).toBe(5);
+        expect(calculateGCD(7, 13)).toBe(1);
+        expect(calculateGCD(0, 5)).toBe(5);
+      });
+
+      it('calculates GCD correctly for arrays', () => {
+        expect(calculateArrayGCD([12, 8, 16])).toBe(4);
+        expect(calculateArrayGCD([1, 1, 2])).toBe(1);
+        expect(calculateArrayGCD([2, 4, 6])).toBe(2);
+        expect(calculateArrayGCD([3, 6, 9])).toBe(3);
+        expect(calculateArrayGCD([5])).toBe(5);
+        expect(calculateArrayGCD([])).toBe(1);
+      });
+    });
+
+    describe('Pattern Analysis', () => {
+      it('analyzes butterfly spread pattern (1:1:2)', () => {
+        const legs = [
+          { quantity: 1, source: 'options_chain' },
+          { quantity: 1, source: 'options_chain' },
+          { quantity: 2, source: 'options_chain' }
+        ];
+
+        const analysis = analyzeQuantityPattern(legs);
+        expect(analysis.ratios).toEqual([1, 1, 2]);
+        expect(analysis.multiplier).toBe(1);
+        expect(analysis.canIncrement).toBe(true);
+        expect(analysis.canDecrement).toBe(false);
+      });
+
+      it('analyzes equal quantities pattern (2:2:2)', () => {
+        const legs = [
+          { quantity: 2, source: 'options_chain' },
+          { quantity: 2, source: 'options_chain' },
+          { quantity: 2, source: 'options_chain' }
+        ];
+
+        const analysis = analyzeQuantityPattern(legs);
+        expect(analysis.ratios).toEqual([1, 1, 1]);
+        expect(analysis.multiplier).toBe(2);
+        expect(analysis.canIncrement).toBe(true);
+        expect(analysis.canDecrement).toBe(true);
+      });
+
+      it('analyzes complex ratio pattern (2:3:4)', () => {
+        const legs = [
+          { quantity: 2, source: 'options_chain' },
+          { quantity: 3, source: 'options_chain' },
+          { quantity: 4, source: 'options_chain' }
+        ];
+
+        const analysis = analyzeQuantityPattern(legs);
+        expect(analysis.ratios).toEqual([2, 3, 4]);
+        expect(analysis.multiplier).toBe(1);
+        expect(analysis.canIncrement).toBe(true);
+        expect(analysis.canDecrement).toBe(false);
+      });
+
+      it('handles position constraints correctly', () => {
+        const legs = [
+          { quantity: 2, source: 'positions', original_quantity: 3 },
+          { quantity: 4, source: 'positions', original_quantity: 6 }
+        ];
+
+        const analysis = analyzeQuantityPattern(legs);
+        expect(analysis.ratios).toEqual([1, 2]);
+        expect(analysis.multiplier).toBe(2);
+        expect(analysis.canIncrement).toBe(true); // 3:6 would be within limits
+        expect(analysis.canDecrement).toBe(true); // 1:2 would be valid
+      });
+
+      it('prevents increment when exceeding position limits', () => {
+        const legs = [
+          { quantity: 3, source: 'positions', original_quantity: 3 },
+          { quantity: 6, source: 'positions', original_quantity: 6 }
+        ];
+
+        const analysis = analyzeQuantityPattern(legs);
+        expect(analysis.canIncrement).toBe(false); // Would exceed original quantities
+      });
+    });
+
+    describe('Proportional Quantity Calculation', () => {
+      it('calculates next increment for butterfly spread (1:1:2 → 2:2:4)', () => {
+        const legs = [
+          { quantity: 1, source: 'options_chain' },
+          { quantity: 1, source: 'options_chain' },
+          { quantity: 2, source: 'options_chain' }
+        ];
+
+        const newQuantities = getNextProportionalQuantities(legs, 'increment');
+        expect(newQuantities).toEqual([2, 2, 4]);
+      });
+
+      it('calculates multiple increments maintaining ratio (2:2:4 → 3:3:6)', () => {
+        const legs = [
+          { quantity: 2, source: 'options_chain' },
+          { quantity: 2, source: 'options_chain' },
+          { quantity: 4, source: 'options_chain' }
+        ];
+
+        const newQuantities = getNextProportionalQuantities(legs, 'increment');
+        expect(newQuantities).toEqual([3, 3, 6]);
+      });
+
+      it('calculates decrement maintaining ratio (4:4:8 → 3:3:6)', () => {
+        const legs = [
+          { quantity: 4, source: 'options_chain' },
+          { quantity: 4, source: 'options_chain' },
+          { quantity: 8, source: 'options_chain' }
+        ];
+
+        const newQuantities = getNextProportionalQuantities(legs, 'decrement');
+        expect(newQuantities).toEqual([3, 3, 6]);
+      });
+
+      it('handles equal quantities correctly (3:3:3 → 4:4:4)', () => {
+        const legs = [
+          { quantity: 3, source: 'options_chain' },
+          { quantity: 3, source: 'options_chain' },
+          { quantity: 3, source: 'options_chain' }
+        ];
+
+        const newQuantities = getNextProportionalQuantities(legs, 'increment');
+        expect(newQuantities).toEqual([4, 4, 4]);
+      });
+
+      it('handles complex ratios correctly (2:3:4 → 4:6:8)', () => {
+        const legs = [
+          { quantity: 2, source: 'options_chain' },
+          { quantity: 3, source: 'options_chain' },
+          { quantity: 4, source: 'options_chain' }
+        ];
+
+        const newQuantities = getNextProportionalQuantities(legs, 'increment');
+        expect(newQuantities).toEqual([4, 6, 8]);
+      });
+
+      it('returns null when cannot decrement (already at minimum)', () => {
+        const legs = [
+          { quantity: 1, source: 'options_chain' },
+          { quantity: 1, source: 'options_chain' },
+          { quantity: 2, source: 'options_chain' }
+        ];
+
+        const newQuantities = getNextProportionalQuantities(legs, 'decrement');
+        expect(newQuantities).toBeNull();
+      });
+
+      it('returns null when increment would exceed limits', () => {
+        const legs = [
+          { quantity: 100, source: 'options_chain' },
+          { quantity: 100, source: 'options_chain' }
+        ];
+
+        const newQuantities = getNextProportionalQuantities(legs, 'increment');
+        expect(newQuantities).toBeNull();
+      });
+
+      it('respects position quantity limits', () => {
+        const legs = [
+          { quantity: 2, source: 'positions', original_quantity: 3 },
+          { quantity: 4, source: 'positions', original_quantity: 6 }
+        ];
+
+        const newQuantities = getNextProportionalQuantities(legs, 'increment');
+        expect(newQuantities).toEqual([3, 6]); // Should reach max allowed
+
+        // Try to increment again - should fail
+        legs[0].quantity = 3;
+        legs[1].quantity = 6;
+        const nextQuantities = getNextProportionalQuantities(legs, 'increment');
+        expect(nextQuantities).toBeNull();
+      });
+    });
+
+    describe('Integration with Component', () => {
+      beforeEach(() => {
+        // Reset mocks
+        vi.clearAllMocks();
+      });
+
+      it('applies proportional increment to butterfly spread', async () => {
+        mockSelectedLegs.value = [
+          {
+            symbol: 'SPY_240119C00450000',
+            quantity: 1,
+            side: 'buy',
+            action: 'buy_to_open',
+            type: 'Call',
+            strike_price: 450,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          },
+          {
+            symbol: 'SPY_240119C00460000',
+            quantity: 1,
+            side: 'sell',
+            action: 'sell_to_open',
+            type: 'Call',
+            strike_price: 460,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          },
+          {
+            symbol: 'SPY_240119C00470000',
+            quantity: 2,
+            side: 'buy',
+            action: 'buy_to_open',
+            type: 'Call',
+            strike_price: 470,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          }
+        ];
+
+        wrapper = mount(BottomTradingPanel, {
+          props: {
+            visible: true,
+            symbol: 'SPY'
+          }
+        });
+
+        await nextTick();
+
+        const quantityControls = wrapper.find('.control-group:nth-child(3)');
+        const incrementBtn = quantityControls.findAll('.ctrl-btn')[1];
+        
+        await incrementBtn.trigger('click');
+
+        // Should call updateQuantity for each leg with proportional amounts
+        expect(mockUpdateQuantity).toHaveBeenCalledTimes(3);
+        expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00450000', 2);
+        expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00460000', 2);
+        expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00470000', 4);
+      });
+
+      it('applies proportional decrement maintaining ratios', async () => {
+        mockSelectedLegs.value = [
+          {
+            symbol: 'SPY_240119C00450000',
+            quantity: 4,
+            side: 'buy',
+            action: 'buy_to_open',
+            type: 'Call',
+            strike_price: 450,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          },
+          {
+            symbol: 'SPY_240119C00460000',
+            quantity: 4,
+            side: 'sell',
+            action: 'sell_to_open',
+            type: 'Call',
+            strike_price: 460,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          },
+          {
+            symbol: 'SPY_240119C00470000',
+            quantity: 8,
+            side: 'buy',
+            action: 'buy_to_open',
+            type: 'Call',
+            strike_price: 470,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          }
+        ];
+
+        wrapper = mount(BottomTradingPanel, {
+          props: {
+            visible: true,
+            symbol: 'SPY'
+          }
+        });
+
+        await nextTick();
+
+        const quantityControls = wrapper.find('.control-group:nth-child(3)');
+        const decrementBtn = quantityControls.findAll('.ctrl-btn')[0];
+        
+        await decrementBtn.trigger('click');
+
+        // Should call updateQuantity for each leg with proportional amounts
+        expect(mockUpdateQuantity).toHaveBeenCalledTimes(3);
+        expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00450000', 3);
+        expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00460000', 3);
+        expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00470000', 6);
+      });
+
+      it('falls back to old behavior when proportional calculation fails', async () => {
+        mockSelectedLegs.value = [
+          {
+            symbol: 'SPY_240119C00450000',
+            quantity: 100, // At max limit
+            side: 'buy',
+            action: 'buy_to_open',
+            type: 'Call',
+            strike_price: 450,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          }
+        ];
+
+        wrapper = mount(BottomTradingPanel, {
+          props: {
+            visible: true,
+            symbol: 'SPY'
+          }
+        });
+
+        await nextTick();
+
+        const quantityControls = wrapper.find('.control-group:nth-child(3)');
+        const incrementBtn = quantityControls.findAll('.ctrl-btn')[1];
+        
+        await incrementBtn.trigger('click');
+
+        // Should not call updateQuantity since we're at max limit
+        expect(mockUpdateQuantity).not.toHaveBeenCalled();
+      });
+
+      it('works with selected legs only', async () => {
+        mockSelectedLegs.value = [
+          {
+            symbol: 'SPY_240119C00450000',
+            quantity: 1,
+            side: 'buy',
+            action: 'buy_to_open',
+            type: 'Call',
+            strike_price: 450,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          },
+          {
+            symbol: 'SPY_240119C00460000',
+            quantity: 2,
+            side: 'sell',
+            action: 'sell_to_open',
+            type: 'Call',
+            strike_price: 460,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          }
+        ];
+
+        wrapper = mount(BottomTradingPanel, {
+          props: {
+            visible: true,
+            symbol: 'SPY'
+          }
+        });
+
+        await nextTick();
+
+        // Select only the first leg
+        const firstLeg = wrapper.find('.order-leg');
+        await firstLeg.trigger('click');
+
+        const quantityControls = wrapper.find('.control-group:nth-child(3)');
+        const incrementBtn = quantityControls.findAll('.ctrl-btn')[1];
+        
+        await incrementBtn.trigger('click');
+
+        // Should only update the selected leg (fallback to old behavior for single leg)
+        expect(mockUpdateQuantity).toHaveBeenCalledTimes(1);
+        expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00450000', 2);
+      });
+
+      it('maintains backward compatibility with equal quantities', async () => {
+        mockSelectedLegs.value = [
+          {
+            symbol: 'SPY_240119C00450000',
+            quantity: 3,
+            side: 'buy',
+            action: 'buy_to_open',
+            type: 'Call',
+            strike_price: 450,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          },
+          {
+            symbol: 'SPY_240119C00460000',
+            quantity: 3,
+            side: 'sell',
+            action: 'sell_to_open',
+            type: 'Call',
+            strike_price: 460,
+            expiry: '2024-01-19',
+            source: 'options_chain'
+          }
+        ];
+
+        wrapper = mount(BottomTradingPanel, {
+          props: {
+            visible: true,
+            symbol: 'SPY'
+          }
+        });
+
+        await nextTick();
+
+        const quantityControls = wrapper.find('.control-group:nth-child(3)');
+        const incrementBtn = quantityControls.findAll('.ctrl-btn')[1];
+        
+        await incrementBtn.trigger('click');
+
+        // Should increment both legs to 4 (maintaining 1:1 ratio)
+        expect(mockUpdateQuantity).toHaveBeenCalledTimes(2);
+        expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00450000', 4);
+        expect(mockUpdateQuantity).toHaveBeenCalledWith('SPY_240119C00460000', 4);
+      });
     });
   });
 

@@ -569,6 +569,74 @@ export default {
       }
     };
 
+    // Helper function to calculate Greatest Common Divisor
+    const calculateGCD = (a, b) => {
+      return b === 0 ? a : calculateGCD(b, a % b);
+    };
+
+    // Helper function to calculate GCD of an array of numbers
+    const calculateArrayGCD = (numbers) => {
+      if (numbers.length === 0) return 1;
+      if (numbers.length === 1) return numbers[0];
+      
+      return numbers.reduce((gcd, num) => calculateGCD(gcd, num));
+    };
+
+    // Helper function to analyze quantity pattern and find ratios
+    const analyzeQuantityPattern = (legs) => {
+      if (legs.length === 0) return { ratios: [], multiplier: 1, canIncrement: false, canDecrement: false };
+      
+      const quantities = legs.map(leg => leg.quantity);
+      const gcd = calculateArrayGCD(quantities);
+      const ratios = quantities.map(qty => qty / gcd);
+      
+      // Check if we can increment (no leg would exceed limits)
+      const canIncrement = legs.every((leg, index) => {
+        const maxQty = leg.source === 'positions' && leg.original_quantity ? leg.original_quantity : 100;
+        const nextQty = ratios[index] * (gcd + 1); // Calculate what the next quantity would be
+        return nextQty <= maxQty;
+      });
+      
+      // Check if we can decrement (no leg would go below 1)
+      const canDecrement = gcd > 1; // Can only decrement if current multiplier > 1
+      
+      return {
+        ratios,
+        multiplier: gcd,
+        canIncrement,
+        canDecrement
+      };
+    };
+
+    // Helper function to calculate next proportional quantities
+    const getNextProportionalQuantities = (legs, direction) => {
+      const analysis = analyzeQuantityPattern(legs);
+      
+      if (direction === 'increment' && !analysis.canIncrement) {
+        return null; // Cannot increment
+      }
+      
+      if (direction === 'decrement' && !analysis.canDecrement) {
+        return null; // Cannot decrement
+      }
+      
+      const newMultiplier = direction === 'increment' 
+        ? analysis.multiplier + 1 
+        : analysis.multiplier - 1;
+      
+      // Calculate new quantities maintaining the ratio
+      const newQuantities = analysis.ratios.map(ratio => ratio * newMultiplier);
+      
+      // Validate all new quantities are within limits
+      const isValid = legs.every((leg, index) => {
+        const newQty = newQuantities[index];
+        const maxQty = leg.source === 'positions' && leg.original_quantity ? leg.original_quantity : 100;
+        return newQty >= 1 && newQty <= maxQty;
+      });
+      
+      return isValid ? newQuantities : null;
+    };
+
     const incrementQuantity = () => {
       // If legs are selected, only affect selected legs; otherwise affect all legs
       const legsToUpdate =
@@ -578,11 +646,25 @@ export default {
             )
           : selectedLegs.value;
 
-      legsToUpdate.forEach((leg) => {
-        if (leg.quantity < 10) {
-          updateQuantity(leg.symbol, leg.quantity + 1);
-        }
-      });
+      if (legsToUpdate.length === 0) return;
+
+      // Calculate proportional quantities
+      const newQuantities = getNextProportionalQuantities(legsToUpdate, 'increment');
+      
+      if (newQuantities) {
+        // Apply new quantities maintaining ratios
+        legsToUpdate.forEach((leg, index) => {
+          updateQuantity(leg.symbol, newQuantities[index]);
+        });
+      } else {
+        // Fallback to old behavior if proportional calculation fails
+        legsToUpdate.forEach((leg) => {
+          const maxQty = leg.source === 'positions' && leg.original_quantity ? leg.original_quantity : 100;
+          if (leg.quantity < maxQty) {
+            updateQuantity(leg.symbol, leg.quantity + 1);
+          }
+        });
+      }
     };
 
     const decrementQuantity = () => {
@@ -594,11 +676,24 @@ export default {
             )
           : selectedLegs.value;
 
-      legsToUpdate.forEach((leg) => {
-        if (leg.quantity > 1) {
-          updateQuantity(leg.symbol, leg.quantity - 1);
-        }
-      });
+      if (legsToUpdate.length === 0) return;
+
+      // Calculate proportional quantities
+      const newQuantities = getNextProportionalQuantities(legsToUpdate, 'decrement');
+      
+      if (newQuantities) {
+        // Apply new quantities maintaining ratios
+        legsToUpdate.forEach((leg, index) => {
+          updateQuantity(leg.symbol, newQuantities[index]);
+        });
+      } else {
+        // Fallback to old behavior if proportional calculation fails
+        legsToUpdate.forEach((leg) => {
+          if (leg.quantity > 1) {
+            updateQuantity(leg.symbol, leg.quantity - 1);
+          }
+        });
+      }
     };
 
     const moveStrikeUp = () => {
