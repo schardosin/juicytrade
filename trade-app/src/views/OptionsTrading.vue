@@ -668,11 +668,37 @@ export default {
           previousLegCount.value = currentLegCount;
         }
 
-        // Chart should ONLY follow position details selections
-        // Always use activePositions (checked positions in RightPanel), never fall back to selectedLegs
-        updateChartData(activePositions.value);
+        // PRIORITY SYSTEM for chart data:
+        // 1. If user has explicitly checked positions in RightPanel, use those (activePositions)
+        // 2. If no explicit position selections but we have selectedLegs, use those for chart
+        // This ensures chart updates immediately when quantities change in BottomTradingPanel
         
-        const hasLegsForChart = activePositions.value.length > 0;
+        let positionsForChart = [];
+        
+        if (activePositions.value.length > 0) {
+          // User has made explicit checkbox selections in RightPanel
+          positionsForChart = activePositions.value;
+        } else if (selectedLegs.value.length > 0) {
+          // No explicit selections, but we have legs from options chain - convert for chart
+          positionsForChart = selectedLegs.value.map((leg, index) => ({
+            id: `selected:${leg.symbol}:${index}`,
+            symbol: leg.symbol,
+            asset_class: "us_option",
+            qty: leg.side === "buy" ? leg.quantity : -leg.quantity,
+            strike_price: leg.strike_price,
+            option_type: leg.type,
+            expiry_date: leg.expiry,
+            current_price: leg.current_price || ((leg.bid + leg.ask) / 2) || 0,
+            avg_entry_price: leg.avg_entry_price,
+            unrealized_pl: 0,
+            isExisting: false,
+            isSelected: true,
+          }));
+        }
+        
+        updateChartData(positionsForChart);
+        
+        const hasLegsForChart = positionsForChart.length > 0;
         const hasLegsForTicket = selectedLegs.value.length > 0;
 
         showBottomPanel.value = hasLegsForTicket;

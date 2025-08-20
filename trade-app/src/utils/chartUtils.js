@@ -492,6 +492,47 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
   }, 0);
 
 
+  // Calculate the credit adjustment once, outside the price loop
+  let creditAdjustment = 0;
+  if (adjustedNetCredit !== null && newPositions.length > 0) {
+    // Calculate total quantity for new positions to determine if strategy is symmetrical
+    const newPositionQuantities = newPositions.map(pos => Math.abs(pos.qty));
+    const minQuantity = Math.min(...newPositionQuantities);
+    const maxQuantity = Math.max(...newPositionQuantities);
+    
+    // Check if all legs scale proportionally (symmetrical strategy)
+    const isSymmetrical = newPositionQuantities.every(qty => qty % minQuantity === 0);
+    
+    if (isSymmetrical && minQuantity > 1) {
+      // SYMMETRICAL STRATEGY: Limit price is per-unit, scale by minimum quantity
+      // Calculate per-unit natural credit by creating single-unit positions
+      const singleUnitCredit = newPositions.reduce((sum, pos) => {
+        const premium = pos.avg_entry_price || 0;
+        const singleUnitQty = pos.qty / minQuantity; // Convert to single unit
+        if (singleUnitQty < 0) {
+          return sum + premium * Math.abs(singleUnitQty);
+        } else {
+          return sum - premium * Math.abs(singleUnitQty);
+        }
+      }, 0);
+      
+      // For symmetrical strategies, the adjustment should be applied per unit, then scaled
+      // The key insight: adjustedNetCredit is the per-unit limit price (ABSOLUTE VALUE)
+      // singleUnitCredit is the per-unit natural price (with correct sign)
+      // For debit spreads: singleUnitCredit is negative, adjustedNetCredit should also be negative
+      // For credit spreads: singleUnitCredit is positive, adjustedNetCredit should also be positive
+      
+      // Convert adjustedNetCredit to have the same sign as singleUnitCredit
+      const adjustedNetCreditWithSign = singleUnitCredit >= 0 ? adjustedNetCredit : -adjustedNetCredit;
+      const perUnitAdjustment = adjustedNetCreditWithSign - singleUnitCredit;
+      creditAdjustment = perUnitAdjustment * minQuantity * 100;
+    } else {
+      // ASYMMETRICAL STRATEGY or single quantity: Limit price is total for the strategy
+      const totalAdjustment = adjustedNetCredit - newNetCredit;
+      creditAdjustment = totalAdjustment * 100;
+    }
+  }
+
   for (const price of prices) {
     let totalPayoff = 0;
 
@@ -529,15 +570,8 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
       totalPayoff += positionPayoff;
     }
 
-    // Handle mixed scenario: apply adjustedNetCredit only to new positions
-    if (adjustedNetCredit !== null && newPositions.length > 0) {
-      // Calculate the difference between adjusted and original net credit for new positions only
-      const newCreditAdjustment = (adjustedNetCredit - newNetCredit) * 100;
-      totalPayoff += newCreditAdjustment;
-      
-      // Note: existing positions already use their actual entry prices in the calculation above
-      // so no additional adjustment is needed for them
-    }
+    // Apply the credit adjustment (calculated once outside the loop)
+    totalPayoff += creditAdjustment;
 
     payoffs.push(roundToTwo(totalPayoff));
   }

@@ -608,6 +608,182 @@ describe('PayoffChart Mathematical Validation', () => {
     });
   });
 
+  describe('Quantity Scaling Tests', () => {
+    // Helper function to create call spread positions with specified quantity
+    const createCallSpreadPosition = (quantity = 1) => [
+      {
+        symbol: 'SPY_CALL_615_2024-12-20',
+        asset_class: 'us_option',
+        qty: quantity, // Long call
+        strike_price: 615,
+        option_type: 'call',
+        expiry_date: '2024-12-20',
+        current_price: 8.50,
+        avg_entry_price: 8.50,
+        unrealized_pl: 0,
+        isExisting: false,
+        isSelected: true,
+      },
+      {
+        symbol: 'SPY_CALL_625_2024-12-20',
+        asset_class: 'us_option',
+        qty: -quantity, // Short call
+        strike_price: 625,
+        option_type: 'call',
+        expiry_date: '2024-12-20',
+        current_price: 3.50,
+        avg_entry_price: 3.50,
+        unrealized_pl: 0,
+        isExisting: false,
+        isSelected: true,
+      }
+    ];
+
+    it('should scale payoffs correctly with quantity = 1', () => {
+      const positions = createCallSpreadPosition(1);
+      const result = generateMultiLegPayoff(positions, 620);
+      
+      expect(result).toBeTruthy();
+      expect(result.maxProfit).toBe(500); // (625-615-5.00) * 1 * 100 = $500
+      expect(result.maxLoss).toBe(-500); // Net debit * 1 * 100 = $500 loss
+    });
+
+    it('should scale payoffs correctly with quantity = 4', () => {
+      const positions = createCallSpreadPosition(4);
+      const result = generateMultiLegPayoff(positions, 620);
+      
+      expect(result).toBeTruthy();
+      expect(result.maxProfit).toBe(2000); // (625-615-5.00) * 4 * 100 = $2000
+      expect(result.maxLoss).toBe(-2000); // Net debit * 4 * 100 = $2000 loss
+    });
+
+    it('should handle limit price adjustment correctly for symmetrical strategies', () => {
+      const positions = createCallSpreadPosition(4);
+      const adjustedNetCredit = 4.50; // Better limit price than natural 5.00
+      const result = generateMultiLegPayoff(positions, 620, adjustedNetCredit);
+      
+      expect(result).toBeTruthy();
+      // With better limit price: (625-615-4.50) * 4 * 100 = $2200 max profit
+      expect(result.maxProfit).toBe(2200);
+      // Max loss should be: 4.50 * 4 * 100 = $1800
+      expect(result.maxLoss).toBe(-1800);
+    });
+
+    it('should maintain correct break-even points regardless of quantity', () => {
+      const positions1 = createCallSpreadPosition(1);
+      const positions4 = createCallSpreadPosition(4);
+      
+      const result1 = generateMultiLegPayoff(positions1, 620);
+      const result4 = generateMultiLegPayoff(positions4, 620);
+      
+      // Break-even points should be the same regardless of quantity
+      expect(result1.breakEvenPoints).toEqual(result4.breakEvenPoints);
+      expect(result1.breakEvenPoints[0]).toBeCloseTo(620, 1); // Around 615 + 5.00 net debit
+    });
+
+    it('should scale individual payoff points correctly', () => {
+      const positions1 = createCallSpreadPosition(1);
+      const positions4 = createCallSpreadPosition(4);
+      
+      const result1 = generateMultiLegPayoff(positions1, 620);
+      const result4 = generateMultiLegPayoff(positions4, 620);
+      
+      // Every payoff point should be exactly 4x
+      expect(result1.payoffs.length).toBe(result4.payoffs.length);
+      
+      for (let i = 0; i < result1.payoffs.length; i++) {
+        expect(result4.payoffs[i]).toBeCloseTo(result1.payoffs[i] * 4, 2);
+      }
+    });
+
+    it('should handle asymmetrical strategies with different quantities', () => {
+      // Create a ratio spread: 1 long call, 2 short calls
+      const positions = [
+        {
+          symbol: 'SPY_CALL_615_2024-12-20',
+          asset_class: 'us_option',
+          qty: 1, // Long 1 call
+          strike_price: 615,
+          option_type: 'call',
+          expiry_date: '2024-12-20',
+          current_price: 8.50,
+          avg_entry_price: 8.50,
+          unrealized_pl: 0,
+          isExisting: false,
+          isSelected: true,
+        },
+        {
+          symbol: 'SPY_CALL_625_2024-12-20',
+          asset_class: 'us_option',
+          qty: -2, // Short 2 calls
+          strike_price: 625,
+          option_type: 'call',
+          expiry_date: '2024-12-20',
+          current_price: 3.50,
+          avg_entry_price: 3.50,
+          unrealized_pl: 0,
+          isExisting: false,
+          isSelected: true,
+        }
+      ];
+
+      const result = generateMultiLegPayoff(positions, 620);
+      
+      expect(result).toBeTruthy();
+      // This should create a ratio spread with limited profit and unlimited loss potential
+      expect(result.maxProfit).toBeGreaterThan(0);
+      expect(result.maxLoss).toBeLessThan(-1000); // Should have significant loss potential
+    });
+
+    it('should correctly apply limit price scaling for symmetrical vs asymmetrical strategies', () => {
+      // Test symmetrical strategy (1:1 ratio)
+      const symmetricalPositions = createCallSpreadPosition(3);
+      const symmetricalResult = generateMultiLegPayoff(symmetricalPositions, 620, 4.00); // $4.00 limit vs $5.00 natural
+      
+      // Test asymmetrical strategy (1:2 ratio)
+      const asymmetricalPositions = [
+        {
+          symbol: 'SPY_CALL_615_2024-12-20',
+          asset_class: 'us_option',
+          qty: 1,
+          strike_price: 615,
+          option_type: 'call',
+          expiry_date: '2024-12-20',
+          current_price: 8.50,
+          avg_entry_price: 8.50,
+          unrealized_pl: 0,
+          isExisting: false,
+          isSelected: true,
+        },
+        {
+          symbol: 'SPY_CALL_625_2024-12-20',
+          asset_class: 'us_option',
+          qty: -2,
+          strike_price: 625,
+          option_type: 'call',
+          expiry_date: '2024-12-20',
+          current_price: 3.50,
+          avg_entry_price: 3.50,
+          unrealized_pl: 0,
+          isExisting: false,
+          isSelected: true,
+        }
+      ];
+      const asymmetricalResult = generateMultiLegPayoff(asymmetricalPositions, 620, 1.50); // $1.50 total limit vs $1.50 natural
+      
+      expect(symmetricalResult).toBeTruthy();
+      expect(asymmetricalResult).toBeTruthy();
+      
+      // Symmetrical should scale by quantity (3x improvement)
+      expect(symmetricalResult.maxProfit).toBe(1800); // (625-615-4.00) * 3 * 100
+      expect(symmetricalResult.maxLoss).toBe(-1200); // 4.00 * 3 * 100
+      
+      // Asymmetrical should use limit price as total
+      expect(asymmetricalResult.maxProfit).toBeGreaterThan(0);
+      expect(asymmetricalResult.maxLoss).toBeLessThan(0);
+    });
+  });
+
   describe('Edge Cases and Error Handling', () => {
     it('handles empty chart data gracefully', () => {
       const chartData = null;
