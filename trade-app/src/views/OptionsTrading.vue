@@ -677,7 +677,22 @@ export default {
         
         if (activePositions.value.length > 0) {
           // User has made explicit checkbox selections in RightPanel
-          positionsForChart = activePositions.value;
+          // Sync quantities for selected (non-existing) legs with the latest store values
+          const legsMap = new Map(selectedLegs.value.map(leg => [leg.symbol, leg]));
+          positionsForChart = activePositions.value.map((pos) => {
+            if (!pos.isExisting && pos.asset_class === "us_option" && legsMap.has(pos.symbol)) {
+              const leg = legsMap.get(pos.symbol);
+              return {
+                ...pos,
+                // Ensure qty reflects current leg quantity and side
+                qty: leg.side === "buy" ? leg.quantity : -leg.quantity,
+                // Keep pricing in sync where possible (fallback to existing pos)
+                current_price: leg.current_price || ((leg.bid + leg.ask) / 2) || pos.current_price || 0,
+                avg_entry_price: leg.avg_entry_price ?? pos.avg_entry_price,
+              };
+            }
+            return pos;
+          });
         } else if (selectedLegs.value.length > 0) {
           // No explicit selections, but we have legs from options chain - convert for chart
           positionsForChart = selectedLegs.value.map((leg, index) => ({
