@@ -1,26 +1,29 @@
 <template>
   <div class="top-bar">
-    <!-- Logo Section -->
-    <div class="logo-section">
-      <div class="logo">
-        <span class="logo-text">juicytrade</span>
+    <!-- Left Section: Logo + Navigation -->
+    <div class="left-section">
+      <div class="logo-section">
+        <div class="logo">
+          <span class="logo-text">juicytrade</span>
+        </div>
+      </div>
+
+      <div class="nav-section">
+        <div class="nav-links">
+          <button
+            v-for="link in navLinks"
+            :key="link.value"
+            :class="['nav-link', { active: activeLink === link.value }]"
+            @click="setActiveLink(link.value)"
+          >
+            {{ link.label }}
+          </button>
+        </div>
       </div>
     </div>
 
-    <!-- Navigation Links -->
-    <div class="nav-links">
-      <button
-        v-for="link in navLinks"
-        :key="link.value"
-        :class="['nav-link', { active: activeLink === link.value }]"
-        @click="setActiveLink(link.value)"
-      >
-        {{ link.label }}
-      </button>
-    </div>
-
-    <!-- Search Section -->
-    <div class="search-section">
+    <!-- Center Section: Search -->
+    <div class="center-section">
       <div class="search-container">
         <i class="pi pi-search search-icon"></i>
         <InputText
@@ -83,110 +86,119 @@
       </div>
     </div>
 
-    <!-- Right Section -->
+    <!-- Right Section: Account Info + Controls -->
     <div class="right-section">
-      <!-- Account Info -->
-      <div class="account-info">
-        <div class="account-balance">
-          <span class="balance-label">Net Liq</span>
-          <span
-            class="balance-value"
-            :class="{ loading: accountLoading, error: accountError }"
-          >
-            <span v-if="accountLoading" class="loading-dots">...</span>
-            <span v-else-if="accountError" class="error-text">--</span>
-            <span v-else>${{ netLiquidation.toLocaleString() }}</span>
-          </span>
-        </div>
-        <div class="buying-power">
-          <span class="power-label">BP</span>
-          <span
-            class="power-value"
-            :class="{ loading: accountLoading, error: accountError }"
-          >
-            <span v-if="accountLoading" class="loading-dots">...</span>
-            <span v-else-if="accountError" class="error-text">--</span>
-            <span v-else>${{ buyingPower.toLocaleString() }}</span>
-          </span>
-        </div>
-      </div>
-
-      <!-- Trade Account Indicator -->
-      <div class="trade-account-section">
-        <div 
-          class="trade-account-indicator"
-          :class="{ loading: providersLoading, error: providersError }"
-          @mouseenter="showProviderTooltip = true"
-          @mouseleave="showProviderTooltip = false"
-        >
-          <i class="pi pi-building account-icon"></i>
-          <span class="account-name">
-            <span v-if="providersLoading" class="loading-dots">...</span>
-            <span v-else-if="providersError" class="error-text">--</span>
-            <span v-else>{{ tradeAccountName }}</span>
-          </span>
-          <span class="account-type" :class="tradeAccountTypeClass">
-            {{ tradeAccountType }}
-          </span>
-        </div>
-
-        <!-- Provider Configuration Tooltip -->
-        <div 
-          v-if="showProviderTooltip && !providersLoading && !providersError"
-          class="provider-tooltip"
-        >
-          <div class="tooltip-header">
-            <h4>Provider Configuration</h4>
+      <!-- Account & Trading Info Section -->
+      <div class="account-section">
+        <!-- Account Info -->
+        <div class="account-info">
+          <div class="account-balance">
+            <span class="balance-label">Net Liq</span>
+            <span
+              class="balance-value"
+              :class="{ loading: accountLoading, error: accountError }"
+            >
+              <span v-if="accountLoading" class="loading-dots">...</span>
+              <span v-else-if="accountError" class="error-text">--</span>
+              <span v-else>${{ netLiquidation.toLocaleString() }}</span>
+            </span>
           </div>
-          <div class="tooltip-content">
-            <div class="provider-category">
-              <h5>Trading Services</h5>
-              <div class="provider-item">
-                <span class="service-name">Trade Account</span>
-                <span class="provider-name">{{ formatProviderName('trade_account') }}</span>
-              </div>
-            </div>
-            <div class="provider-category">
-              <h5>Market Data</h5>
-              <div v-for="service in marketDataServices" :key="service.key" class="provider-item">
-                <span class="service-name">{{ service.label }}</span>
-                <span class="provider-name">{{ formatProviderName(service.key) }}</span>
-              </div>
-            </div>
+          <div class="buying-power">
+            <span class="power-label">BP</span>
+            <span
+              class="power-value"
+              :class="{ loading: accountLoading, error: accountError }"
+            >
+              <span v-if="accountLoading" class="loading-dots">...</span>
+              <span v-else-if="accountError" class="error-text">--</span>
+              <span v-else>${{ buyingPower.toLocaleString() }}</span>
+            </span>
           </div>
         </div>
-      </div>
 
-      <!-- Status Indicator -->
-      <div class="status-section">
-        <div class="connection-status" :class="connectionStatusClass" :title="connectionTooltip">
-          <span class="status-dot" :class="statusDotClass"></span>
-          <span class="status-text">{{ connectionStatus }}</span>
-          <span v-if="isRecovering" class="recovery-spinner"></span>
+        <!-- Trade Account Indicator -->
+        <div class="trade-account-section">
+          <div 
+            class="trade-account-indicator"
+            :class="{ loading: providersLoading, error: providersError }"
+            @mouseenter="showProviderTooltip = true"
+            @mouseleave="showProviderTooltip = false"
+          >
+            <i class="pi pi-building account-icon"></i>
+            <span class="account-name">
+              <span v-if="providersLoading" class="loading-dots">...</span>
+              <span v-else-if="providersError" class="error-text">--</span>
+              <span v-else>{{ tradeAccountName }}</span>
+            </span>
+            <span class="account-type" :class="tradeAccountTypeClass">
+              {{ tradeAccountType }}
+            </span>
+          </div>
+
+          <!-- Provider Configuration Tooltip -->
+          <div 
+            v-if="showProviderTooltip && !providersLoading && !providersError"
+            class="provider-tooltip"
+          >
+            <div class="tooltip-header">
+              <h4>Provider Configuration</h4>
+            </div>
+            <div class="tooltip-content">
+              <div class="provider-category">
+                <h5>Trading Services</h5>
+                <div class="provider-item">
+                  <span class="service-name">Trade Account</span>
+                  <span class="provider-name">{{ formatProviderName('trade_account') }}</span>
+                </div>
+              </div>
+              <div class="provider-category">
+                <h5>Market Data</h5>
+                <div v-for="service in marketDataServices" :key="service.key" class="provider-item">
+                  <span class="service-name">{{ service.label }}</span>
+                  <span class="provider-name">{{ formatProviderName(service.key) }}</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 
-      <!-- User Menu -->
-      <div class="user-menu">
-        <Button
-          icon="pi pi-user"
-          class="user-button"
-          text
-          rounded
-          @click="toggleUserMenu"
-        />
-        <Menu ref="userMenuRef" :model="userMenuItems" :popup="true" />
-      </div>
+      <!-- System & User Controls Section -->
+      <div class="controls-section">
+        <!-- Status Indicator -->
+        <div class="status-section">
+          <div class="connection-status" :class="connectionStatusClass" :title="connectionTooltip">
+            <span class="status-dot" :class="statusDotClass"></span>
+            <span class="status-text">{{ connectionStatus }}</span>
+            <span v-if="isRecovering" class="recovery-spinner"></span>
+          </div>
+        </div>
 
-      <!-- Settings -->
-      <div class="settings">
-        <Button
-          icon="pi pi-cog"
-          class="settings-button"
-          text
-          rounded
-          @click="openSettings"
-        />
+        <!-- User Controls -->
+        <div class="user-controls">
+          <!-- User Menu -->
+          <div class="user-menu">
+            <Button
+              icon="pi pi-user"
+              class="user-button"
+              text
+              rounded
+              @click="toggleUserMenu"
+            />
+            <Menu ref="userMenuRef" :model="userMenuItems" :popup="true" />
+          </div>
+
+          <!-- Settings -->
+          <div class="settings">
+            <Button
+              icon="pi pi-cog"
+              class="settings-button"
+              text
+              rounded
+              @click="openSettings"
+            />
+          </div>
+        </div>
       </div>
     </div>
 
@@ -861,13 +873,21 @@ export default {
   background-color: var(--bg-primary);
   border-bottom: 1px solid var(--border-primary);
   padding: 0 var(--spacing-xl);
-  gap: var(--spacing-xl);
+}
+
+/* Left Section: Logo + Navigation */
+.left-section {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  flex: 1;
+  min-width: 0;
 }
 
 .logo-section {
   display: flex;
   align-items: center;
-  min-width: 120px;
+  flex-shrink: 0;
 }
 
 .logo-text {
@@ -877,13 +897,19 @@ export default {
   letter-spacing: -0.5px;
 }
 
+.nav-section {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
 .nav-links {
   display: flex;
-  gap: var(--spacing-sm);
+  gap: var(--spacing-xs);
 }
 
 .nav-link {
-  padding: var(--spacing-sm) var(--spacing-lg);
+  padding: var(--spacing-sm) var(--spacing-md);
   background: none;
   border: none;
   color: var(--text-secondary);
@@ -892,6 +918,7 @@ export default {
   cursor: pointer;
   border-radius: var(--radius-md);
   transition: var(--transition-normal);
+  white-space: nowrap;
 }
 
 .nav-link:hover {
@@ -904,16 +931,31 @@ export default {
   color: var(--text-primary);
 }
 
-.search-section {
-  flex: 1;
+/* Center Section: Search */
+.center-section {
+  display: flex;
+  justify-content: center;
+  flex: 0 0 auto;
   max-width: 400px;
-  margin: 0 var(--spacing-xl);
+  width: 100%;
+}
+
+/* Right Section: Account Info + Controls */
+.right-section {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  flex: 1;
+  justify-content: flex-end;
+  min-width: 0;
 }
 
 .search-container {
   position: relative;
   display: flex;
   align-items: center;
+  width: 100%;
+  max-width: 400px;
 }
 
 .search-icon {
@@ -1088,10 +1130,14 @@ export default {
   font-size: var(--font-size-base);
 }
 
-.right-section {
+/* Account & Trading Info Section */
+.account-section {
   display: flex;
   align-items: center;
-  gap: var(--spacing-lg);
+  gap: var(--spacing-md);
+  flex-shrink: 0;
+  padding-right: var(--spacing-md);
+  border-right: 1px solid var(--border-secondary);
 }
 
 .account-info {
@@ -1149,6 +1195,14 @@ export default {
   }
 }
 
+/* System & User Controls Section */
+.controls-section {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  flex-shrink: 0;
+}
+
 .status-section {
   display: flex;
   align-items: center;
@@ -1167,6 +1221,12 @@ export default {
   width: 6px;
   height: 6px;
   border-radius: 50%;
+}
+
+.user-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
 }
 
 /* Enhanced connection status styles */
