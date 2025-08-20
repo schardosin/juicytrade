@@ -1202,6 +1202,7 @@ export default {
 
 .price-input[type="number"] {
   -moz-appearance: textfield;
+  appearance: textfield;
 }
 
 .order-config {

@@ -180,41 +180,75 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
   // Calculate natural net premium
   const naturalNet = calculateNetPremium(positions);
 
-  // Determine if strategy is credit or debit based on natural
-  const isCredit = naturalNet > 0;
-
-  // Calculate effective net based on limit price
-  let effectiveNet = naturalNet;
-  if (limitPrice != null) {
-    effectiveNet = isCredit ? limitPrice : -limitPrice;
-  }
-
-  // Calculate adjustment
-  const adjustment = (effectiveNet - naturalNet) * 100;
-
-  // Apply adjustment to payoffs
-  for (let i = 0; i < payoffs.length; i++) {
-    payoffs[i] += adjustment;
-  }
-
-  // Find max profit and max loss
+  // Calculate max profit and max loss from the natural payoffs FIRST
+  // This ensures they scale properly with quantity regardless of limit price
   let maxProfit = Math.max(...payoffs);
   let maxLoss = Math.min(...payoffs);
 
-  // Calculate net calls and puts for unlimited overrides
+    // Calculate net calls and puts for unlimited overrides
   const netCalls = positions.filter(p => p.option_type === 'call').reduce((sum, p) => sum + p.qty, 0);
   const netPuts = positions.filter(p => p.option_type === 'put').reduce((sum, p) => sum + p.qty, 0);
 
-  // Override for unlimited potential
-  if (netCalls > 0 || netPuts > 0) {
+  // Override for unlimited potential - FIXED LOGIC
+  // Only set unlimited profit if there's a NET long position in calls
+  if (netCalls > 0) {
     maxProfit = Infinity;
   }
-  if (netCalls < 0 || netPuts < 0) {
+  
+  // Only set unlimited loss if there's a NET short position in calls
+  if (netCalls < 0) {
     maxLoss = -Infinity;
   }
 
-  // Find break-even points
-  const breakEvenPoints = findBreakEvenPoints(prices, payoffs);
+  // NOW apply limit price adjustment for break-even calculation and display
+  // This affects the entire payoff curve but preserves the max profit/loss relationships
+  let adjustment = 0;
+  if (limitPrice != null && positions.length > 0) {
+    // Determine if strategy is credit or debit based on natural
+    const isCredit = naturalNet > 0;
+    
+    // Calculate effective net based on limit price
+    const effectiveNet = isCredit ? limitPrice : -limitPrice;
+    
+    // Determine if strategy is symmetrical or asymmetrical
+    const quantities = positions.map(pos => Math.abs(pos.qty));
+    const minQuantity = Math.min(...quantities);
+    const maxQuantity = Math.max(...quantities);
+    
+    // Check if all legs scale proportionally (symmetrical)
+    // A strategy is symmetrical if all quantities are multiples of the minimum quantity
+    const isSymmetrical = quantities.every(qty => qty % minQuantity === 0);
+    
+    let totalEffectiveNet;
+    
+    if (isSymmetrical) {
+      // SYMMETRICAL TRADE: Limit price is per-unit, scale by quantity
+      // Example: Spread with qty=2, limit=$0.50 → total=$1.00
+      totalEffectiveNet = effectiveNet * minQuantity;
+    } else {
+      // ASYMMETRICAL TRADE: Limit price is total for the strategy
+      // Example: Ratio spread, limit price represents total strategy price
+      totalEffectiveNet = effectiveNet;
+    }
+    
+    // Calculate adjustment based on total values
+    const adjustmentPerShare = totalEffectiveNet - naturalNet;
+    adjustment = adjustmentPerShare * 100;
+  }
+
+  // Apply adjustment to payoffs for break-even calculations (but don't modify original payoffs array)
+  const adjustedPayoffs = payoffs.map(payoff => payoff + adjustment);
+
+  // If max profit/loss are not infinite, apply the same adjustment
+  if (maxProfit !== Infinity) {
+    maxProfit += adjustment;
+  }
+  if (maxLoss !== -Infinity) {
+    maxLoss += adjustment;
+  }
+
+  // Find break-even points using adjusted payoffs
+  const breakEvenPoints = findBreakEvenPoints(prices, adjustedPayoffs);
 
   // Calculate current unrealized P&L
   const currentPL = positions.reduce(
@@ -228,7 +262,7 @@ function generatePayoffAnalysis(positions, underlyingPrice, limitPrice) {
     breakEvenPoints: breakEvenPoints.map((point) => formatNumber(point, 2)),
     currentPL: formatNumber(currentPL),
     prices,
-    payoffs,
+    payoffs: adjustedPayoffs,
   };
 }
 
