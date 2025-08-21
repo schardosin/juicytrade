@@ -42,16 +42,6 @@
             </div>
           </div>
 
-          <div class="header-right">
-            <div class="group-by-section">
-              <label for="groupBy">Group By:</label>
-              <select id="groupBy" v-model="groupBy" class="group-by-select">
-                <option value="order_chains">Order Chains</option>
-                <option value="symbol">Symbol</option>
-                <option value="strategy">Strategy</option>
-              </select>
-            </div>
-          </div>
         </div>
 
         <!-- Loading State -->
@@ -460,7 +450,6 @@ export default {
     const error = ref(null);
     const positionGroups = ref([]);
     const selectedType = ref("options");
-    const groupBy = ref("order_chains");
     const expandedGroups = ref([]);
     const isRightPanelExpanded = ref(false);
     const adjustedNetCredit = ref(null); // Add adjustedNetCredit for limit price functionality
@@ -1601,7 +1590,6 @@ export default {
       error,
       positionGroups,
       selectedType,
-      groupBy,
       expandedGroups,
 
       // Computed
@@ -1787,25 +1775,8 @@ export default {
   border-color: var(--color-brand);
 }
 
-.group-by-section {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-xs);
-}
 
-.group-by-section label {
-  color: var(--text-secondary);
-  font-weight: var(--font-weight-medium);
-}
 
-.group-by-select {
-  padding: var(--spacing-sm) var(--spacing-md);
-  background: var(--bg-tertiary);
-  color: var(--text-primary);
-  border: 1px solid var(--border-secondary);
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-}
 
 .loading-state,
 .error-state,
