@@ -781,31 +781,6 @@ class TradierProvider(BaseProvider):
             self._log_error(f"get_options_chain_smart for {symbol} {expiry}", e)
             return []
 
-    def _transform_option_contract(self, raw_contract: Dict[str, Any]) -> Optional[OptionContract]:
-        """Transform Tradier option contract to our standard model."""
-        try:
-            greeks = raw_contract.get("greeks", {})
-            return OptionContract(
-                symbol=raw_contract.get("symbol", ""),
-                underlying_symbol=raw_contract.get("underlying", ""),
-                expiration_date=raw_contract.get("expiration_date", ""),
-                strike_price=float(raw_contract.get("strike", 0)),
-                type=raw_contract.get("option_type", "").lower(),
-                bid=float(raw_contract.get("bid", 0)) if raw_contract.get("bid") else None,
-                ask=float(raw_contract.get("ask", 0)) if raw_contract.get("ask") else None,
-                close_price=float(raw_contract.get("close", 0)) if raw_contract.get("close") else None,
-                volume=int(raw_contract.get("volume", 0)) if raw_contract.get("volume") else None,
-                open_interest=int(raw_contract.get("open_interest", 0)) if raw_contract.get("open_interest") else None,
-                implied_volatility=float(greeks.get("mid_iv", 0)) if greeks.get("mid_iv") else None,
-                delta=float(greeks.get("delta", 0)) if greeks.get("delta") else None,
-                gamma=float(greeks.get("gamma", 0)) if greeks.get("gamma") else None,
-                theta=float(greeks.get("theta", 0)) if greeks.get("theta") else None,
-                vega=float(greeks.get("vega", 0)) if greeks.get("vega") else None,
-            )
-        except Exception as e:
-            self._log_error("transform_option_contract", e)
-            return None
-
     def _transform_option_contract_basic(self, raw_contract: Dict[str, Any]) -> Optional[OptionContract]:
         """Transform Tradier option contract to our standard model without Greeks (faster)."""
         try:

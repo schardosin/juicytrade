@@ -471,86 +471,6 @@ class TastyTradeProvider(BaseProvider):
         """Get stock quotes for multiple symbols."""
         raise NotImplementedError("TastyTrade get_stock_quotes not yet implemented")
     
-    async def _get_option_quotes(self, option_symbols: List[str]) -> Dict[str, Dict[str, Any]]:
-        """Get option quotes for multiple option symbols using TastyTrade market data API."""
-        try:
-            if not option_symbols:
-                return {}
-            
-            if not await self._ensure_valid_session():
-                raise Exception("Failed to authenticate with TastyTrade")
-            
-            # TastyTrade market data endpoint for instruments
-            pricing_data = {}
-            
-            # Process symbols in batches to avoid URL length limits
-            batch_size = 50
-            for i in range(0, len(option_symbols), batch_size):
-                batch_symbols = option_symbols[i:i + batch_size]
-                
-                try:
-                    # Use the instruments endpoint with market data
-                    symbols_param = ",".join(batch_symbols)
-                    url = f"{self.base_url}/instruments/equity-options"
-                    headers = {
-                        "Authorization": self._session_token,
-                        "Accept": "application/json",
-                        "User-Agent": "juicytrade/1.0"
-                    }
-                    params = {
-                        "symbol[]": batch_symbols  # TastyTrade uses array notation
-                    }
-                    
-                    async with httpx.AsyncClient(timeout=30.0) as client:
-                        response = await client.get(url, headers=headers, params=params)
-                        response.raise_for_status()
-                        
-                        data = response.json()
-                        items = data.get("data", {}).get("items", [])
-                        
-                        # Extract pricing data for each symbol
-                        for item in items:
-                            symbol = item.get("symbol", "")
-                            # Clean up symbol spaces for matching
-                            cleaned_symbol = ' '.join(symbol.split()).replace(' ', '') if symbol else ""
-                            
-                            # Check if this symbol (cleaned) matches any in our batch
-                            matching_batch_symbol = None
-                            for batch_symbol in batch_symbols:
-                                batch_cleaned = ' '.join(batch_symbol.split()).replace(' ', '') if batch_symbol else ""
-                                if cleaned_symbol == batch_cleaned:
-                                    matching_batch_symbol = batch_symbol
-                                    break
-                            
-                            if matching_batch_symbol:
-                                # Extract market data if available
-                                market_data = item.get("market-data", {})
-                                pricing_data[matching_batch_symbol] = {
-                                    "bid": market_data.get("bid"),
-                                    "ask": market_data.get("ask"),
-                                    "close": market_data.get("close"),
-                                    "volume": market_data.get("volume"),
-                                    "open_interest": market_data.get("open-interest"),
-                                    "implied_volatility": market_data.get("implied-volatility"),
-                                    "delta": market_data.get("delta"),
-                                    "gamma": market_data.get("gamma"),
-                                    "theta": market_data.get("theta"),
-                                    "vega": market_data.get("vega"),
-                                }
-                                logger.debug(f"TastyTrade: Found pricing data for {matching_batch_symbol}")
-                        
-                except Exception as e:
-                    logger.error(f"Error fetching pricing data for batch: {e}")
-                    # Continue with other batches even if one fails
-                    continue
-            
-            logger.info(f"TastyTrade: Retrieved pricing data for {len(pricing_data)}/{len(option_symbols)} symbols")
-            return pricing_data
-            
-        except Exception as e:
-            self._log_error("_get_option_quotes", e)
-            return {}
-    
     async def get_expiration_dates(self, symbol: str) -> List[str]:
         """Get available expiration dates for options on a symbol with universal enhanced structure."""
         try:
@@ -670,14 +590,11 @@ class TastyTradeProvider(BaseProvider):
 
                 if not filtered_contracts_raw:
                     return []
-
-                # 2. Get pricing data for the filtered contracts
-                pricing_data = await self._get_option_quotes(option_symbols)
                 
-                # 3. Transform contracts with pricing data
+                # 2. Transform contracts with pricing data
                 contracts = []
                 for item in filtered_contracts_raw:
-                    transformed_contract = self._transform_tastytrade_option_contract(item, pricing_data)
+                    transformed_contract = self._transform_tastytrade_option_contract(item, None)
                     if transformed_contract:
                         contracts.append(transformed_contract)
 
@@ -1954,9 +1871,6 @@ class TastyTradeProvider(BaseProvider):
             # Convert TastyTrade symbol to standard OCC format for UI consistency
             standard_symbol = self.convert_symbol_to_standard_format(symbol)
             
-            # Get pricing data for this symbol if available (use original TastyTrade symbol for lookup)
-            price_info = pricing_data.get(symbol, {}) if pricing_data else {}
-            
             return OptionContract(
                 symbol=standard_symbol,  # UI gets standard OCC format
                 underlying_symbol=raw_contract.get("underlying-symbol", ""),
@@ -1964,17 +1878,17 @@ class TastyTradeProvider(BaseProvider):
                 strike_price=float(raw_contract.get("strike-price", 0)),
                 type=self._normalize_option_type(raw_contract.get("option-type", "")),
                 root_symbol=raw_contract.get("root-symbol", ""),  # Use root-symbol directly from API
-                bid=price_info.get("bid"),
-                ask=price_info.get("ask"),
-                close_price=price_info.get("close"),
-                volume=price_info.get("volume"),
-                open_interest=price_info.get("open_interest"),
+                bid=None,
+                ask=None,
+                close_price=None,
+                volume=None,
+                open_interest=None,
                 # Greeks from pricing data if available
-                implied_volatility=price_info.get("implied_volatility"),
-                delta=price_info.get("delta"),
-                gamma=price_info.get("gamma"),
-                theta=price_info.get("theta"),
-                vega=price_info.get("vega"),
+                implied_volatility=None,
+                delta=None,
+                gamma=None,
+                theta=None,
+                vega=None,
             )
         except Exception as e:
             self._log_error("transform_tastytrade_option_contract", e)
