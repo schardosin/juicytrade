@@ -546,7 +546,7 @@ class TastyTradeProvider(BaseProvider):
             self._log_error(f"get_expiration_dates for {symbol}", e)
             return []
     
-    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None, include_greeks: bool = False) -> List[OptionContract]:
         """Fast loading - basic options data without Greeks, ATM-focused by strike count."""
         try:
             # Tasty to UI mapping
