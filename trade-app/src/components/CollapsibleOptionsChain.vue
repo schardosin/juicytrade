@@ -75,11 +75,12 @@
           <!-- IV Information -->
           <div class="iv-display">
             <span v-if="getIvxForExpiration(expiration.date)?.ivx_percent" class="iv-label">
-              IVx: {{ getIvxForExpiration(expiration.date).ivx_percent }}% | Exp. Move: ${{ getIvxForExpiration(expiration.date).expected_move_dollars }}
+              IVx: {{ getIvxForExpiration(expiration.date).ivx_percent }}% (≈{{ getIvxForExpiration(expiration.date).expected_move_dollars }})
             </span>
-            <span v-else class="iv-label">
-              IVx: <div class="mini-spinner"></div>
-            </span>
+            <div v-else class="iv-loading">
+              <span class="iv-label">IVx:</span>
+              <div class="mini-spinner"></div>
+            </div>
           </div>
 
           <!-- Loading Indicator for this expiration -->
@@ -973,6 +974,12 @@ export default {
 .iv-label {
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
+}
+
+.iv-loading {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
 }
 
 .expiration-loading {
