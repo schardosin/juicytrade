@@ -599,7 +599,7 @@ class TradierProvider(BaseProvider):
             self._log_error(f"get_expiration_dates for {symbol}", e)
             return []
 
-    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None, include_greeks: bool = False) -> List[OptionContract]:
         """Fast loading - basic options data without Greeks, ATM-focused by strike count."""
         try:
             # Tradier to UI mapping
@@ -624,7 +624,7 @@ class TradierProvider(BaseProvider):
             params = {
                 "symbol": api_symbol,
                 "expiration": expiry,
-                "greeks": "false"  # Skip expensive Greeks calculation
+                "greeks": str(include_greeks).lower()
             }
             
             async with httpx.AsyncClient() as client:
@@ -784,6 +784,7 @@ class TradierProvider(BaseProvider):
     def _transform_option_contract_basic(self, raw_contract: Dict[str, Any]) -> Optional[OptionContract]:
         """Transform Tradier option contract to our standard model without Greeks (faster)."""
         try:
+            greeks = raw_contract.get("greeks", {})
             return OptionContract(
                 symbol=raw_contract.get("symbol", ""),
                 underlying_symbol=raw_contract.get("underlying", ""),
@@ -795,12 +796,11 @@ class TradierProvider(BaseProvider):
                 close_price=float(raw_contract.get("close", 0)) if raw_contract.get("close") else None,
                 volume=int(raw_contract.get("volume", 0)) if raw_contract.get("volume") else None,
                 open_interest=int(raw_contract.get("open_interest", 0)) if raw_contract.get("open_interest") else None,
-                # Greeks are None for basic loading (will be loaded separately)
-                implied_volatility=None,
-                delta=None,
-                gamma=None,
-                theta=None,
-                vega=None,
+                implied_volatility=float(greeks.get("mid_iv", 0)) if greeks.get("mid_iv") else None,
+                delta=float(greeks.get("delta", 0)) if greeks.get("delta") else None,
+                gamma=float(greeks.get("gamma", 0)) if greeks.get("gamma") else None,
+                theta=float(greeks.get("theta", 0)) if greeks.get("theta") else None,
+                vega=float(greeks.get("vega", 0)) if greeks.get("vega") else None,
             )
         except Exception as e:
             self._log_error("transform_option_contract_basic", e)
@@ -1682,6 +1682,43 @@ class TradierProvider(BaseProvider):
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""
         return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
+
+    async def get_all_expirations_ivx(self, symbol: str, underlying_price: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Get IVx data for all expirations for a given symbol."""
+        # This is a default implementation that can be overridden by providers
+        # that have a more efficient way to get this data.
+        from ..services.ivx_calculator import calculate_ivx_data
+        from datetime import datetime
+
+        expirations = await self.get_expiration_dates(symbol)
+        
+        if underlying_price is None:
+            try:
+                quote = await self.get_stock_quote(symbol)
+                if quote and quote.bid and quote.ask:
+                    underlying_price = (quote.bid + quote.ask) / 2
+            except Exception:
+                pass
+
+        ivx_data = []
+        if underlying_price and underlying_price > 0:
+            for exp_date_obj in expirations:
+                exp_date = exp_date_obj['date']
+                # This is inefficient and should be optimized as per the plan
+                options_chain = await self.get_options_chain_basic(symbol, exp_date, underlying_price=underlying_price, include_greeks=True)
+                
+                # Calculate DTE
+                dte = (datetime.strptime(exp_date, "%Y-%m-%d").date() - datetime.now().date()).days
+
+                if options_chain:
+                    data = calculate_ivx_data(options_chain, underlying_price, dte)
+                    ivx_data.append({
+                        "expiration_date": exp_date,
+                        "ivx_percent": data["ivx_percent"],
+                        "expected_move_dollars": data["expected_move_dollars"]
+                    })
+        
+        return ivx_data
     
     async def _send_to_cache_or_queue(self, market_data: MarketData):
         """Send market data to cache if available, otherwise to queue."""

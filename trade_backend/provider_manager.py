@@ -11,6 +11,7 @@ from .provider_credential_store import ProviderCredentialStore
 from .provider_types import get_provider_types, validate_credentials, apply_defaults
 from .config import settings
 from .models import StockQuote, OptionContract, Position, Order, MarketData, SymbolSearchResult, Account, PositionGroup
+from .services.ivx_cache import ivx_cache
 
 logger = logging.getLogger(__name__)
 
@@ -151,6 +152,20 @@ class ProviderManager:
             logger.error(f"Provider '{provider_name}' not initialized.")
         return provider
 
+    async def get_all_expirations_ivx(self, symbol: str, underlying_price: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Get IVx data for all expirations for a given symbol."""
+        cached_data = ivx_cache.get(symbol)
+        if cached_data:
+            logger.info(f"Returning cached IVx data for {symbol}")
+            return cached_data
+
+        provider = self._get_provider("options_chain")
+        if provider and hasattr(provider, 'get_all_expirations_ivx'):
+            live_data = await provider.get_all_expirations_ivx(symbol, underlying_price)
+            ivx_cache.set(symbol, live_data)
+            return live_data
+        return []
+
     def get_provider(self, instance_id: str) -> Optional[BaseProvider]:
         """Get a provider instance by its instance ID."""
         provider = self._providers.get(instance_id)
@@ -170,10 +185,10 @@ class ProviderManager:
             return await provider.get_stock_quote(symbol)
         return None
 
-    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None) -> List[OptionContract]:
+    async def get_options_chain_basic(self, symbol: str, expiry: str, underlying_price: float = None, strike_count: int = 20, type: str = None, underlying_symbol: str = None, include_greeks: bool = False) -> List[OptionContract]:
         provider = self._get_provider("options_chain")
         if provider:
-            return await provider.get_options_chain_basic(symbol, expiry, underlying_price, strike_count, type, underlying_symbol)
+            return await provider.get_options_chain_basic(symbol, expiry, underlying_price, strike_count, type, underlying_symbol, include_greeks)
         return []
 
     async def get_options_greeks_batch(self, option_symbols: List[str]) -> Dict[str, Dict]:

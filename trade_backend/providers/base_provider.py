@@ -160,6 +160,15 @@ class BaseProvider(ABC):
             [{"time": "2024-01-15", "open": 150.25, "high": 152.80, "low": 149.90, "close": 151.45, "volume": 1234567}]
         """
         pass
+
+    async def get_all_expirations_ivx(self, symbol: str) -> List[Dict[str, Any]]:
+        """
+        Get IVx data for all expirations for a given symbol.
+        
+        This is an optional method. If not implemented by a provider,
+        the provider manager will fall back to a default implementation.
+        """
+        raise NotImplementedError("get_all_expirations_ivx is not implemented for this provider")
     
     # === Account & Portfolio Methods ===
     

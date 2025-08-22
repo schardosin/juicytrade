@@ -6,7 +6,8 @@ import time
 import httpx
 import websockets
 import websockets.exceptions
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Set
+from asyncio import Future
 from datetime import datetime, timedelta
 
 from .base_provider import BaseProvider
@@ -16,6 +17,7 @@ from ..models import (
 )
 from ..config import settings
 from ..streaming_health_manager import streaming_health_manager, ConnectionState, TimeoutWrapper
+from ..services.ivx_calculator import calculate_expected_move, find_atm_strike
 
 logger = logging.getLogger(__name__)
 
@@ -339,13 +341,12 @@ class TastyTradeProvider(BaseProvider):
         self._streaming_queue = None
         self._streaming_task = None
         self._shutdown_event = asyncio.Event()
-        # Lock to serialize recv() calls on the websocket. The websockets library
-        # raises "cannot call recv while another coroutine is already running recv"
-        # when multiple coroutines call recv() concurrently on the same connection.
-        # Serializing recv calls prevents that class of failure.
         self._recv_lock = asyncio.Lock()
-        # Track current subscriptions for recovery
         self._subscribed_symbols = set()
+        
+        # Request/response mechanism for streaming
+        self._greeks_requests: Dict[str, Future] = {}
+        self._quote_requests: Dict[str, Future] = {}
         
         # Health monitoring
         self._connection_id = f"tastytrade_{self.account_id}"
@@ -464,13 +465,27 @@ class TastyTradeProvider(BaseProvider):
     # === Market Data Methods ===
     
     async def get_stock_quote(self, symbol: str) -> Optional[StockQuote]:
-        """Get the latest stock quote for a symbol."""
-        raise NotImplementedError("TastyTrade get_stock_quote not yet implemented")
-    
+        """Get the latest stock quote for a symbol via streaming."""
+        quote_data = await self.get_streaming_quote(symbol)
+        if not quote_data:
+            return None
+
+        return StockQuote(
+            symbol=symbol,
+            bid=quote_data.get('bid'),
+            ask=quote_data.get('ask'),
+            bid_size=quote_data.get('bid_size'),
+            ask_size=quote_data.get('ask_size'),
+            last_price=None, # Not in quote data
+            timestamp=datetime.now().isoformat()
+        )
+
     async def get_stock_quotes(self, symbols: List[str]) -> Dict[str, StockQuote]:
         """Get stock quotes for multiple symbols."""
-        raise NotImplementedError("TastyTrade get_stock_quotes not yet implemented")
-    
+        tasks = [self.get_stock_quote(s) for s in symbols]
+        results = await asyncio.gather(*tasks)
+        return {s.symbol: s for s in results if s}
+
     async def get_expiration_dates(self, symbol: str) -> List[str]:
         """Get available expiration dates for options on a symbol with universal enhanced structure."""
         try:
@@ -2257,6 +2272,150 @@ class TastyTradeProvider(BaseProvider):
             self._log_error("transform_tastytrade_account", e)
             return None
 
+    async def get_all_expirations_ivx(self, symbol: str, underlying_price: Optional[float] = None) -> List[Dict[str, Any]]:
+        """Get IVx data for all expirations for a given symbol using streaming."""
+        logger.info(f"TastyTrade: Getting all expirations IVx for {symbol}")
+        
+        # 1. Get expirations and underlying price
+        expirations = await self.get_expiration_dates(symbol)
+        if not expirations:
+            logger.warning(f"No expirations found for {symbol}")
+            return []
+
+        if underlying_price is None:
+            quote = await self.get_stock_quote(symbol)
+            if quote and quote.bid and quote.ask:
+                underlying_price = (quote.bid + quote.ask) / 2
+            else:
+                logger.warning(f"Could not get underlying price for {symbol}")
+                return []
+
+        # 2. Ensure streaming is connected
+        await self._ensure_healthy_connection()
+
+        # 3. Create tasks to fetch IVx for each expiration concurrently
+        tasks = [
+            self._get_ivx_for_expiration(symbol, exp_date_obj, underlying_price)
+            for exp_date_obj in expirations
+        ]
+        
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+
+        # 4. Filter out None results and log errors
+        ivx_results = []
+        for i, res in enumerate(results):
+            if isinstance(res, Exception):
+                logger.error(f"Error getting IVx for expiration {expirations[i]['date']}: {res}")
+            elif res is not None:
+                ivx_results.append(res)
+        
+        logger.info(f"Successfully retrieved IVx for {len(ivx_results)} expirations for {symbol}")
+        return ivx_results
+
+    async def _get_ivx_for_expiration(self, symbol: str, exp_date_obj: dict, underlying_price: float) -> Optional[Dict[str, Any]]:
+        """Helper to get IVx for a single expiration date."""
+        exp_date = exp_date_obj['date']
+        exp_root_symbol = exp_date_obj.get('symbol', symbol)
+        exp_type = exp_date_obj.get('type')
+        
+        logger.debug(f"Processing IVx for {exp_root_symbol} {exp_date} ({exp_type})")
+
+        # 1. Get basic option chain to find strikes
+        options_chain = await self.get_options_chain_basic(
+            symbol=exp_root_symbol,
+            expiry=exp_date,
+            underlying_price=underlying_price,
+            strike_count=20,
+            type=exp_type,
+            underlying_symbol=symbol
+        )
+        if not options_chain:
+            logger.warning(f"No options chain found for {exp_root_symbol} {exp_date}")
+            return None
+
+        # 2. Find ATM strike
+        atm_strike_val = find_atm_strike(options_chain, underlying_price)
+        if not atm_strike_val:
+            logger.warning(f"Could not find ATM strike for {exp_root_symbol} {exp_date}")
+            return None
+
+        # 3. Find ATM contracts (call and put)
+        atm_call = next((c for c in options_chain if c.strike_price == atm_strike_val and c.type == 'call'), None)
+        atm_put = next((c for c in options_chain if c.strike_price == atm_strike_val and c.type == 'put'), None)
+
+        if not atm_call or not atm_put:
+            logger.warning(f"Could not find ATM call/put for {exp_root_symbol} {exp_date} at strike {atm_strike_val}")
+            return None
+
+        # 4. Fetch IV for both using the streaming greeks helper
+        greeks_tasks = [
+            self.get_streaming_greeks(atm_call.symbol),
+            self.get_streaming_greeks(atm_put.symbol)
+        ]
+        greeks_results = await asyncio.gather(*greeks_tasks)
+
+        valid_ivs = [
+            g.get('implied_volatility') for g in greeks_results 
+            if g and g.get('implied_volatility') is not None
+        ]
+        
+        if not valid_ivs:
+            logger.warning(f"Failed to get IV for ATM options for {exp_root_symbol} {exp_date}")
+            return None
+
+        # 5. Calculate IVx (average of ATM call and put IV)
+        ivx = sum(valid_ivs) / len(valid_ivs)
+
+        # 6. Calculate DTE and Expected Move
+        dte = (datetime.strptime(exp_date, "%Y-%m-%d").date() - datetime.now().date()).days
+        expected_move = calculate_expected_move(underlying_price, ivx, dte)
+
+        return {
+            "expiration_date": exp_date,
+            "ivx_percent": round(ivx * 100, 2),
+            "expected_move_dollars": round(expected_move, 2)
+        }
+
+    async def get_streaming_quote(self, symbol: str, timeout: int = 10) -> Optional[Dict]:
+        """Subscribes to a symbol and waits for its quote data via streaming."""
+        await self._ensure_healthy_connection()
+
+        future = asyncio.get_running_loop().create_future()
+        self._quote_requests[symbol] = future
+
+        await self.subscribe_to_symbols([symbol], data_types=['Quote'])
+
+        try:
+            quote = await asyncio.wait_for(future, timeout=timeout)
+            return quote
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout waiting for quote for {symbol}")
+            return None
+        finally:
+            await self.unsubscribe_from_symbols([symbol], data_types=['Quote'])
+            if symbol in self._quote_requests:
+                del self._quote_requests[symbol]
+
+    async def get_streaming_greeks(self, symbol: str, timeout: int = 10) -> Optional[Dict]:
+        """Subscribes to an option symbol and waits for its greeks data."""
+        await self._ensure_healthy_connection()
+
+        future = asyncio.get_running_loop().create_future()
+        self._greeks_requests[symbol] = future
+
+        await self.subscribe_to_symbols([symbol], data_types=['Greeks'])
+
+        try:
+            greeks = await asyncio.wait_for(future, timeout=timeout)
+            return greeks
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout waiting for greeks for {symbol}")
+            return None
+        finally:
+            await self.unsubscribe_from_symbols([symbol], data_types=['Greeks'])
+            if symbol in self._greeks_requests:
+                del self._greeks_requests[symbol]
+
     async def _dxlink_streaming_setup(self) -> bool:
         """Execute DXLink setup sequence for streaming connection."""
         try:
@@ -2569,10 +2728,11 @@ class TastyTradeProvider(BaseProvider):
             if quote_data:
                 logger.debug(f"TastyTrade: Processing {len(quote_data)} quote updates")
                 for symbol, quote in quote_data.items():
-                    # Convert TastyTrade symbol back to standard format
                     standard_symbol = self.convert_symbol_to_standard_format(symbol)
                     
-                    # Create MarketData object and send to queue
+                    if standard_symbol in self._quote_requests and not self._quote_requests[standard_symbol].done():
+                        self._quote_requests[standard_symbol].set_result(quote)
+
                     market_data = MarketData(
                         symbol=standard_symbol,
                         data=quote,
@@ -2587,10 +2747,11 @@ class TastyTradeProvider(BaseProvider):
             if greeks_data:
                 logger.debug(f"TastyTrade: Processing {len(greeks_data)} Greeks updates")
                 for symbol, greeks in greeks_data.items():
-                    # Convert TastyTrade symbol back to standard format
                     standard_symbol = self.convert_symbol_to_standard_format(symbol)
                     
-                    # Create MarketData object with Greeks data type and send to cache or queue
+                    if standard_symbol in self._greeks_requests and not self._greeks_requests[standard_symbol].done():
+                        self._greeks_requests[standard_symbol].set_result(greeks)
+
                     market_data = MarketData(
                         symbol=standard_symbol,
                         data=greeks,
@@ -2598,7 +2759,6 @@ class TastyTradeProvider(BaseProvider):
                         timestamp=datetime.now().isoformat()
                     )
                     await self._send_to_cache_or_queue(market_data)
-                    
                     logger.debug(f"TastyTrade: Sent Greeks update for {standard_symbol}")
                 
         except Exception as e:

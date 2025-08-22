@@ -27,6 +27,8 @@ from .connection_manager import ConnectionManager
 from .shutdown_manager import shutdown_manager
 from .watchlist_manager import watchlist_manager
 from .greeks_manager import greeks_manager
+from .services.ivx_calculator import calculate_ivx_data
+from datetime import datetime
 
 # Configure logging
 logging.basicConfig(
@@ -657,6 +659,20 @@ async def get_full_options_chain(symbol: str, expiry: str):
         )
     except Exception as e:
         logger.error(f"Error getting full options chain: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/ivx/all_expirations/{symbol}", response_model=ApiResponse)
+async def get_all_expirations_ivx(symbol: str, underlying_price: Optional[float] = None):
+    """Get IVx data for all expirations for a given symbol."""
+    try:
+        ivx_data = await provider_manager.get_all_expirations_ivx(symbol, underlying_price)
+        return ApiResponse(
+            success=True,
+            data=ivx_data,
+            message=f"Retrieved IVx data for {len(ivx_data)} expirations for {symbol}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting all expirations IVx data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/next_market_date", response_model=ApiResponse)
