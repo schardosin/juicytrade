@@ -28,11 +28,8 @@ class DataHealthMonitor {
       console.warn("⚠️ Initial WebSocket connection failed, will retry via health monitoring");
     }
     
-    // Log initial market status
+    // Skip data freshness checks during off-market hours
     const marketStatus = MarketHoursUtil.getMarketStatus();
-    if (!marketStatus.isOpen) {
-      console.log('📊 Data freshness checks will be skipped during off-market hours');
-    }
     
     // Start periodic health checks
     this.healthTimer = setInterval(() => {
@@ -388,6 +385,9 @@ class SmartMarketDataStore {
     // Reactive data stores - Greeks data (streaming updates)
     this.optionGreeks = reactive(new Map());
 
+    // IVx Data
+    this.ivxDataBySymbol = reactive(new Map());
+
     // Reactive data stores - REST API data
     this.data = reactive(new Map()); // General data store for all REST API data
 
@@ -443,6 +443,9 @@ class SmartMarketDataStore {
 
     // Register positions data source
     this.setupPositionsDataSource();
+
+    // Register IVx data source
+    this.setupIvxDataSource();
 
     // Start health monitoring
     this.startHealthMonitoring();
@@ -580,6 +583,145 @@ class SmartMarketDataStore {
   }
 
   /**
+   * Set up IVx data source - follows same pattern as positions
+   */
+  setupIvxDataSource() {
+    // IVx data - periodic updates every 60 seconds (same as positions pattern)
+    this.registerDataSource("ivx", {
+      strategy: "periodic",
+      method: "fetchIvxForAllExpirations",
+      interval: 60 * 1000, // 60 seconds
+      updateMethod: (key, data) => {
+        // Transform array response to symbol-keyed object for easy access
+        this.processIvxData(data);
+      }
+    });
+  }
+
+  /**
+   * Process IVx data from API response and transform it for easy access
+   * Transforms array response to symbol-keyed object structure
+   */
+  processIvxData(data) {
+    try {
+      if (!data) {
+        console.warn("⚠️ No IVx data received");
+        return;
+      }
+
+      // Handle different response structures
+      let processedData = {};
+
+      if (Array.isArray(data)) {
+        // If data is an array of symbol objects
+        data.forEach(symbolData => {
+          if (symbolData.symbol && symbolData.expirations) {
+            processedData[symbolData.symbol] = {
+              expirations: symbolData.expirations,
+              lastUpdated: Date.now()
+            };
+          }
+        });
+      } else if (typeof data === 'object') {
+        // If data is already an object with symbol keys
+        Object.keys(data).forEach(symbol => {
+          if (data[symbol] && data[symbol].expirations) {
+            processedData[symbol] = {
+              expirations: data[symbol].expirations,
+              lastUpdated: Date.now()
+            };
+          }
+        });
+      } else {
+        console.warn("⚠️ Unexpected IVx data format:", typeof data);
+        return;
+      }
+
+      // Update the data store with processed IVx data
+      this.updateData('ivx', processedData);
+      
+      console.log(`✅ Processed IVx data for ${Object.keys(processedData).length} symbols`);
+      
+    } catch (error) {
+      console.error("❌ Error processing IVx data:", error);
+      this.setError('ivx', error);
+    }
+  }
+
+  /**
+   * Get symbols that are currently being tracked for IVx data
+   * This determines which symbols we should fetch IVx data for
+   */
+  getTrackedIvxSymbols() {
+    // For now, return symbols that are actively subscribed to for price data
+    // This ensures we only fetch IVx for symbols the user is actually viewing
+    const trackedSymbols = Array.from(this.activeSubscriptions).filter(symbol => {
+      // Only track stock symbols (not option symbols) for IVx
+      return symbol && symbol.length <= 10 && /^[A-Z]+$/.test(symbol);
+    });
+    
+    return trackedSymbols;
+  }
+
+  /**
+   * Fetch IVx data for all tracked symbols
+   * Makes individual API calls for each symbol with proper underlying price detection
+   */
+  async fetchIvxForAllSymbols(symbols) {
+    try {
+      if (!symbols || symbols.length === 0) {
+        return {};
+      }
+
+      // Fetch IVx data for each symbol concurrently
+      const ivxPromises = symbols.map(async (symbol) => {
+        try {
+          // Get underlying price for this symbol
+          const underlyingPrice = this.stockPrices.get(symbol)?.price;
+          
+          // Call the API method with proper parameters
+          const ivxData = await api.fetchIvxForAllExpirations(symbol, underlyingPrice);
+          
+          return {
+            symbol: symbol,
+            expirations: ivxData || [],
+            lastUpdated: Date.now()
+          };
+        } catch (error) {
+          console.error(`❌ Error fetching IVx for ${symbol}:`, error);
+          return {
+            symbol: symbol,
+            expirations: [],
+            lastUpdated: Date.now(),
+            error: error.message
+          };
+        }
+      });
+
+      // Wait for all requests to complete
+      const results = await Promise.all(ivxPromises);
+      
+      // Transform results into symbol-keyed object
+      const allIvxData = {};
+      results.forEach(result => {
+        if (result.symbol) {
+          allIvxData[result.symbol] = {
+            expirations: result.expirations,
+            lastUpdated: result.lastUpdated,
+            error: result.error
+          };
+        }
+      });
+
+      return allIvxData;
+
+    } catch (error) {
+      console.error("❌ Error in fetchIvxForAllSymbols:", error);
+      return {};
+    }
+  }
+
+  /**
    * Initialize the store and connect to WebSocket data flow
    */
   initialize() {
@@ -652,6 +794,55 @@ class SmartMarketDataStore {
   }
 
   /**
+   * Get reactive IVx data for a symbol - follows same pattern as positions
+   * Automatically handles underlying price detection and periodic updates
+   */
+  getIvxData(symbolRef, underlyingPriceRef) {
+    // Handle both computed refs and direct values
+    const getSymbolValue = () => {
+      if (typeof symbolRef === 'function') {
+        return symbolRef();
+      } else if (symbolRef && typeof symbolRef === 'object' && 'value' in symbolRef) {
+        return symbolRef.value;
+      } else {
+        return symbolRef;
+      }
+    };
+
+    // Return reactive computed that filters IVx data for this symbol
+    return computed(() => {
+      const symbol = getSymbolValue();
+      
+      if (!symbol) {
+        return { isLoading: false, expirations: [] };
+      }
+
+      // Ensure this symbol is tracked for IVx data
+      this.ensureIvxSubscription(symbol);
+
+      const allIvxData = this.data.get('ivx');
+      
+      if (!allIvxData) {
+        return { isLoading: true, expirations: [] };
+      }
+
+      // Filter IVx data for this specific symbol
+      const symbolIvxData = allIvxData[symbol];
+      
+      if (!symbolIvxData) {
+        return { isLoading: false, expirations: [] };
+      }
+
+      return {
+        isLoading: false,
+        expirations: symbolIvxData.expirations || [],
+        symbol: symbol,
+        lastUpdated: symbolIvxData.lastUpdated
+      };
+    });
+  }
+
+  /**
    * Get reactive previous close price for a symbol
    * Automatically handles fetching and caching
    */
@@ -673,14 +864,22 @@ class SmartMarketDataStore {
    * Ensure subscription for a symbol
    */
   ensureSubscription(symbol) {
-    if (!symbol) return;
+    // Handle computed refs and extract actual string value
+    let actualSymbol = symbol;
+    if (typeof symbol === 'function') {
+      actualSymbol = symbol();
+    } else if (symbol && typeof symbol === 'object' && 'value' in symbol) {
+      actualSymbol = symbol.value;
+    }
+
+    if (!actualSymbol || typeof actualSymbol !== 'string') return;
 
     // Initialize access timestamp
-    this.lastAccess.set(symbol, Date.now());
+    this.lastAccess.set(actualSymbol, Date.now());
 
     // Ensure we're subscribed to this symbol
-    if (!this.activeSubscriptions.has(symbol)) {
-      this.subscribeToSymbol(symbol);
+    if (!this.activeSubscriptions.has(actualSymbol)) {
+      this.subscribeToSymbol(actualSymbol);
     }
   }
 
@@ -696,6 +895,52 @@ class SmartMarketDataStore {
     // Ensure we're subscribed to Greeks for this symbol
     if (!this.activeGreeksSubscriptions.has(symbol)) {
       this.subscribeToGreeks(symbol);
+    }
+  }
+
+  /**
+   * Ensure IVx subscription for a symbol
+   * This ensures the symbol is tracked for IVx data fetching
+   */
+  ensureIvxSubscription(symbol) {
+    if (!symbol) return;
+
+    // For IVx, we need to ensure the symbol is in activeSubscriptions
+    // so it gets picked up by getTrackedIvxSymbols()
+    this.ensureSubscription(symbol);
+    
+    // Also trigger an immediate IVx data fetch for this symbol if we don't have data
+    const allIvxData = this.data.get('ivx');
+    const hasExistingData = allIvxData && allIvxData[symbol];
+    
+    if (!hasExistingData) {
+      // Trigger immediate fetch for this specific symbol
+      this.fetchIvxForSymbol(symbol);
+    }
+  }
+
+  /**
+   * Fetch IVx data for a specific symbol immediately
+   */
+  async fetchIvxForSymbol(symbol) {
+    try {
+      // Get underlying price for this symbol
+      const underlyingPrice = this.stockPrices.get(symbol)?.price;
+      
+      // Call the API method with proper parameters
+      const ivxData = await api.fetchIvxForAllExpirations(symbol, underlyingPrice);
+      
+      // Update the data store with this symbol's data
+      const allIvxData = this.data.get('ivx') || {};
+      allIvxData[symbol] = {
+        expirations: ivxData || [],
+        lastUpdated: Date.now()
+      };
+      
+      this.updateData('ivx', allIvxData);
+      
+    } catch (error) {
+      console.error(`❌ Error fetching IVx for ${symbol}:`, error);
     }
   }
 
@@ -1311,7 +1556,7 @@ class SmartMarketDataStore {
    * Set up periodic updates for a data source
    */
   setupPeriodicUpdate(key, config) {
-    const fetchData = async () => {
+    const fetchData = async (options = {}) => {
       try {
         this.setLoading(key, true);
         
@@ -1319,11 +1564,44 @@ class SmartMarketDataStore {
         if (!api[config.method]) {
           throw new Error(`API method '${config.method}' not found`);
         }
+
+        let params = config.params || [];
         
-        const response = await api[config.method](...(config.params || []));
-        // The API methods already return the extracted data, not the full response
-        // So we use the response directly
-        this.updateData(key, response);
+        // Handle IVx data source specially
+        if (key === 'ivx') {
+          // For IVx, we need to fetch data for all tracked symbols
+          const trackedSymbols = this.getTrackedIvxSymbols();
+          
+          if (trackedSymbols.length === 0) {
+            return;
+          }
+          
+          // Fetch IVx data for all tracked symbols
+          const allIvxData = await this.fetchIvxForAllSymbols(trackedSymbols);
+          
+          if (config.updateMethod) {
+            config.updateMethod(key, allIvxData);
+          } else {
+            this.updateData(key, allIvxData);
+          }
+          
+          return;
+        }
+        
+        // Handle other data sources with dynamic parameters
+        if (key.includes('.')) {
+          const keyParts = key.split('.');
+          params = keyParts.slice(1);
+        }
+        
+        const response = await api[config.method](...params);
+        
+        if (config.updateMethod) {
+          config.updateMethod(key, response);
+        } else {
+          this.updateData(key, response);
+        }
+
       } catch (error) {
         console.error(`❌ Error fetching periodic data for ${key}:`, error);
         this.setError(key, error);
@@ -1336,7 +1614,9 @@ class SmartMarketDataStore {
     fetchData();
 
     // Set up periodic updates
-    const timer = setInterval(fetchData, config.interval);
+    const timer = setInterval(() => {
+      fetchData();
+    }, config.interval);
     this.timers.set(key, timer);
   }
 
@@ -1375,6 +1655,13 @@ class SmartMarketDataStore {
     // Check cache validity
     if (!forceRefresh && cached && !this.isCacheExpired(cached, config.ttl)) {
       return cached.data;
+    }
+    
+    if (config.strategy === "periodic") {
+      if (!this.timers.has(key)) {
+        this.setupPeriodicUpdate(key, config);
+      }
+      return this.data.get(key);
     }
 
     try {
@@ -1431,7 +1718,7 @@ class SmartMarketDataStore {
       config = this.findWildcardConfig(key);
     }
 
-    if (config && config.strategy === "on-demand") {
+    if (config && (config.strategy === "on-demand" || config.strategy === "periodic")) {
       // Trigger fetch if not cached or expired
       this.getData(key).catch(console.error);
     }

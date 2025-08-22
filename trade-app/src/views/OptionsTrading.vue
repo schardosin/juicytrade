@@ -39,6 +39,7 @@
               :error="optionsManager.error.value"
               :expandedExpirations="optionsManager.expandedExpirations.value"
               :currentStrikeCount="optionsManager.strikeCount.value"
+              :ivxData="ivxData"
               @expiration-expanded="onExpirationExpanded"
               @expiration-collapsed="onExpirationCollapsed"
               @strike-count-changed="onStrikeCountChanged"
@@ -125,6 +126,12 @@ export default {
   setup() {
     const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
+    const { getIvxData } = useMarketData();
+    const ivxData = getIvxData(
+      computed(() => globalSymbolState.currentSymbol),
+      computed(() => globalSymbolState.currentPrice)
+    );
+
     const {
       showOrderConfirmation,
       showOrderResult,
@@ -819,6 +826,8 @@ export default {
       optionsDataByExpiration,
       optionsChainLoading,
       optionsChainError,
+
+      ivxData,
 
       // Order management
       showOrderConfirmation,

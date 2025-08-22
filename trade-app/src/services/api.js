@@ -477,6 +477,21 @@ export const api = {
     }
   },
 
+  // Get IVx for all expirations for a symbol
+  async fetchIvxForAllExpirations(symbol, underlyingPrice) {
+    try {
+      const params = {};
+      if (underlyingPrice) {
+        params.underlying_price = underlyingPrice;
+      }
+      const response = await apiClient.get(`${API_BASE_URL}/ivx/all_expirations/${symbol}`, { params });
+      return response.data.data;
+    } catch (error) {
+      console.error(`Error fetching IVx for ${symbol}:`, error);
+      throw error;
+    }
+  },
+
   // Get previous day's close price
   async getPreviousClose(symbol) {
     try {

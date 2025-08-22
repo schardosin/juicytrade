@@ -42,6 +42,13 @@ export function useMarketData() {
     return smartMarketDataStore.getOptionGreeks(symbol);
   };
 
+  /**
+   * Get reactive IVx data for a symbol
+   */
+  const getIvxData = (symbol, underlyingPrice) => {
+    return smartMarketDataStore.getIvxData(symbol, underlyingPrice);
+  };
+
   // ===== PERIODIC DATA (Auto-refreshing) =====
 
   /**
@@ -197,6 +204,7 @@ export function useMarketData() {
     getStockPrice,
     getOptionPrice,
     getOptionGreeks,
+    getIvxData,
 
     // Auto-updating data (Periodic)
     getBalance,

@@ -74,10 +74,11 @@
 
           <!-- IV Information -->
           <div class="iv-display">
-            <span class="iv-label">
-              IVx: {{ expiration.ivData.rank }}% ({{
-                expiration.ivData.change >= 0 ? "+" : ""
-              }}{{ expiration.ivData.change }})
+            <span v-if="getIvxForExpiration(expiration.date)?.ivx_percent" class="iv-label">
+              IVx: {{ getIvxForExpiration(expiration.date).ivx_percent }}% | Exp. Move: ${{ getIvxForExpiration(expiration.date).expected_move_dollars }}
+            </span>
+            <span v-else class="iv-label">
+              IVx: <div class="mini-spinner"></div>
             </span>
           </div>
 
@@ -288,6 +289,10 @@ export default {
     currentStrikeCount: {
       type: Number,
       default: 20,
+    },
+    ivxData: {
+      type: Object,
+      default: () => ({}),
     },
   },
   emits: [
@@ -592,6 +597,20 @@ export default {
     };
 
     // Get ITM label for display
+    const getIvxForExpiration = (date) => {
+      if (!props.ivxData || props.ivxData.isLoading) {
+        return null;
+      }
+      
+      // IVx data is organized by symbol, then by expiration dates
+      // props.ivxData should contain the expirations array for the current symbol
+      if (props.ivxData.expirations && Array.isArray(props.ivxData.expirations)) {
+        return props.ivxData.expirations.find(exp => exp.expiration_date === date);
+      }
+      
+      return null;
+    };
+
     const getITMLabel = (strike, optionType) => {
       if (!props.underlyingPrice) return null;
 
@@ -718,6 +737,7 @@ export default {
       getPutSelectionClass,
       selectCallOption,
       selectPutOption,
+      getIvxForExpiration,
     };
   },
 };

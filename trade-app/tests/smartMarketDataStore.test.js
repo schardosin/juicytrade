@@ -76,7 +76,25 @@ vi.mock('../src/services/api.js', () => ({
         }
       ]
     }),
-    updateProviderConfig: vi.fn().mockResolvedValue({ success: true })
+    updateProviderConfig: vi.fn().mockResolvedValue({ success: true }),
+    fetchIvxForAllExpirations: vi.fn().mockResolvedValue([
+      {
+        expiration_date: '2024-01-19',
+        ivx_percent: 18.5,
+        expected_move_dollars: 12.45,
+        expected_move_percent: 2.5,
+        atm_strike: 500,
+        atm_iv: 0.185
+      },
+      {
+        expiration_date: '2024-02-16',
+        ivx_percent: 22.3,
+        expected_move_dollars: 15.67,
+        expected_move_percent: 3.1,
+        atm_strike: 500,
+        atm_iv: 0.223
+      }
+    ])
   }
 }));
 
@@ -997,6 +1015,308 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
       expect(() => store.registerSymbolUsage(null, 'component')).not.toThrow();
       expect(() => store.registerSymbolUsage('AAPL', null)).not.toThrow();
       expect(() => store.unregisterComponent(null)).not.toThrow();
+    });
+  });
+
+  describe('IVx Data Management & Integration', () => {
+    describe('IVx Data Fetching & Processing', () => {
+      it('fetches IVx data for symbol and processes correctly', async () => {
+        const symbol = 'SPY';
+        
+        // Fetch IVx data (method doesn't take underlyingPrice parameter)
+        await store.fetchIvxForSymbol(symbol);
+        
+        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledWith(symbol, undefined);
+        
+        // Check that data was stored in the store
+        const allIvxData = store.data.get('ivx');
+        expect(allIvxData).toBeTruthy();
+        expect(allIvxData[symbol]).toBeTruthy();
+        expect(allIvxData[symbol].expirations).toHaveLength(2);
+        expect(allIvxData[symbol].expirations[0].expiration_date).toBe('2024-01-19');
+        expect(allIvxData[symbol].expirations[0].ivx_percent).toBe(18.5);
+      });
+
+      it('processes IVx data with correct structure', async () => {
+        const symbol = 'AAPL';
+        const rawIvxData = [
+          {
+            expiration_date: '2024-03-15',
+            ivx_percent: 25.8,
+            expected_move_dollars: 18.92,
+            expected_move_percent: 4.2,
+            atm_strike: 150,
+            atm_iv: 0.258
+          }
+        ];
+        
+        mockApi.fetchIvxForAllExpirations.mockResolvedValueOnce(rawIvxData);
+        
+        await store.fetchIvxForSymbol(symbol);
+        
+        const allIvxData = store.data.get('ivx');
+        expect(allIvxData[symbol]).toBeTruthy();
+        expect(allIvxData[symbol].expirations).toEqual(rawIvxData);
+        expect(allIvxData[symbol].lastUpdated).toBeGreaterThan(Date.now() - 1000);
+      });
+
+      it('handles IVx API failures gracefully', async () => {
+        const symbol = 'SPY';
+        const error = new Error('IVx API Error');
+        
+        mockApi.fetchIvxForAllExpirations.mockRejectedValueOnce(error);
+        
+        // The method doesn't throw, it handles errors internally
+        await store.fetchIvxForSymbol(symbol);
+        
+        // The implementation logs the error but doesn't store error information in the data structure
+        // It simply doesn't update the data store when an error occurs
+        const allIvxData = store.data.get('ivx');
+        
+        // Since the error occurred, no data should be stored for this symbol
+        if (allIvxData) {
+          expect(allIvxData[symbol]).toBeUndefined();
+        } else {
+          expect(allIvxData).toBeFalsy();
+        }
+        
+        // Verify the API was called with correct parameters
+        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledWith(symbol, undefined);
+      });
+    });
+
+    describe('IVx Subscription Management', () => {
+      it('tracks multiple symbols for IVx data', () => {
+        const symbols = ['SPY', 'QQQ', 'AAPL'];
+        const componentId = 'multi-symbol-view';
+        
+        // Register multiple symbols
+        symbols.forEach(symbol => {
+          store.registerSymbolUsage(symbol, componentId);
+        });
+        
+        // Get tracked IVx symbols
+        const trackedSymbols = store.getTrackedIvxSymbols();
+        
+        expect(trackedSymbols).toEqual(expect.arrayContaining(symbols));
+        expect(trackedSymbols.length).toBe(symbols.length);
+      });
+
+      it('ensures IVx subscription for tracked symbols', async () => {
+        const symbol = 'SPY';
+        const componentId = 'options-chain';
+        
+        // Register symbol usage
+        store.registerSymbolUsage(symbol, componentId);
+        
+        // Ensure IVx subscription
+        store.ensureIvxSubscription(symbol);
+        
+        // Should trigger subscription and immediate fetch
+        expect(store.activeSubscriptions.has(symbol)).toBe(true);
+      });
+
+      it('cleans up IVx subscriptions when component unregisters', async () => {
+        const symbol = 'SPY';
+        const componentId = 'temporary-component';
+        
+        // Register and ensure IVx subscription
+        store.registerSymbolUsage(symbol, componentId);
+        store.ensureIvxSubscription(symbol);
+        
+        expect(store.activeSubscriptions.has(symbol)).toBe(true);
+        
+        // Unregister component
+        store.unregisterComponent(componentId);
+        
+        await nextTick();
+        
+        // Subscription should be cleaned up
+        expect(store.activeSubscriptions.has(symbol)).toBe(false);
+      });
+    });
+
+    describe('IVx Data Access & Reactivity', () => {
+      it('provides reactive IVx data access', async () => {
+        const symbol = 'SPY';
+        
+        // Get IVx data ref
+        const ivxDataRef = store.getIvxData(symbol);
+        
+        // Initially should show loading state
+        expect(ivxDataRef.value.isLoading).toBe(true);
+        
+        // Fetch IVx data
+        await store.fetchIvxForSymbol(symbol);
+        
+        // Data should now be available reactively
+        expect(ivxDataRef.value.isLoading).toBe(false);
+        expect(ivxDataRef.value.expirations).toHaveLength(2);
+      });
+
+      it('returns loading state for invalid symbols', () => {
+        // Test different types of invalid symbols
+        const nullSymbols = [null, undefined, ''];
+        const spaceSymbol = ' ';
+        
+        // null, undefined, and empty string return early with no loading
+        nullSymbols.forEach(symbol => {
+          const ivxDataRef = store.getIvxData(symbol);
+          // These symbols return early with { isLoading: false, expirations: [] }
+          expect(ivxDataRef.value.isLoading).toBe(false);
+          expect(ivxDataRef.value.expirations).toEqual([]);
+        });
+        
+        // Space character is truthy, so it triggers ensureIvxSubscription and shows loading
+        const spaceIvxDataRef = store.getIvxData(spaceSymbol);
+        expect(spaceIvxDataRef.value.isLoading).toBe(true);
+        expect(spaceIvxDataRef.value.expirations).toEqual([]);
+      });
+    });
+
+    describe('IVx Integration with Periodic Updates', () => {
+      it('handles IVx updates with different underlying prices', async () => {
+        const symbol = 'SPY';
+        
+        // Set up price data for the symbol
+        store.stockPrices.set(symbol, { price: 500.00, timestamp: Date.now() });
+        
+        // First fetch
+        await store.fetchIvxForSymbol(symbol);
+        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledWith(symbol, 500.00);
+        
+        // Update price and fetch again
+        store.stockPrices.set(symbol, { price: 505.00, timestamp: Date.now() });
+        await store.fetchIvxForSymbol(symbol);
+        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledWith(symbol, 505.00);
+        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledTimes(2);
+      });
+
+      it('fetches IVx for all tracked symbols', async () => {
+        const symbols = ['SPY', 'QQQ'];
+        const componentId = 'multi-symbol';
+        
+        // Register symbols
+        symbols.forEach(symbol => {
+          store.registerSymbolUsage(symbol, componentId);
+        });
+        
+        // Fetch IVx for all symbols
+        const result = await store.fetchIvxForAllSymbols(symbols);
+        
+        expect(result).toBeTruthy();
+        expect(Object.keys(result)).toEqual(expect.arrayContaining(symbols));
+        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledTimes(symbols.length);
+      });
+    });
+
+    describe('IVx Component Integration Scenarios', () => {
+      it('simulates options chain component IVx integration', async () => {
+        const symbol = 'SPY';
+        const componentId = 'options-chain-spy';
+        
+        // Step 1: Component registers for symbol
+        store.registerSymbolUsage(symbol, componentId);
+        
+        // Step 2: Component requests IVx data
+        const ivxDataRef = store.getIvxData(symbol);
+        store.ensureIvxSubscription(symbol);
+        
+        // Step 3: Fetch IVx data
+        await store.fetchIvxForSymbol(symbol);
+        
+        // Step 4: Verify data is available to component
+        expect(ivxDataRef.value).toBeTruthy();
+        expect(ivxDataRef.value.expirations).toHaveLength(2);
+        
+        // Step 5: Component can access specific expiration data
+        const jan19Data = ivxDataRef.value.expirations.find(exp => exp.expiration_date === '2024-01-19');
+        expect(jan19Data).toBeTruthy();
+        expect(jan19Data.ivx_percent).toBe(18.5);
+        expect(jan19Data.expected_move_dollars).toBe(12.45);
+        
+        // Step 6: Component unregisters
+        store.unregisterComponent(componentId);
+        
+        await nextTick();
+        
+        // Data should still be available but subscription cleaned up
+        expect(ivxDataRef.value.expirations).toHaveLength(2); // Data preserved
+        expect(store.activeSubscriptions.has(symbol)).toBe(false); // Subscription cleaned up
+      });
+
+      it('handles multiple components accessing same symbol IVx data', async () => {
+        const symbol = 'SPY';
+        const component1 = 'options-chain';
+        const component2 = 'payoff-chart';
+        
+        // Both components register for same symbol
+        store.registerSymbolUsage(symbol, component1);
+        store.registerSymbolUsage(symbol, component2);
+        
+        // Both ensure IVx subscription
+        store.ensureIvxSubscription(symbol);
+        
+        // Fetch data once
+        await store.fetchIvxForSymbol(symbol);
+        
+        // Both components should have access to same data
+        const ivxData1 = store.getIvxData(symbol);
+        const ivxData2 = store.getIvxData(symbol);
+        
+        expect(ivxData1.value.expirations).toEqual(ivxData2.value.expirations);
+        expect(ivxData1.value.expirations).toHaveLength(2);
+        
+        // Unregister one component
+        store.unregisterComponent(component1);
+        await nextTick();
+        
+        // Subscription should remain (still used by component2)
+        expect(store.activeSubscriptions.has(symbol)).toBe(true);
+        
+        // Unregister second component
+        store.unregisterComponent(component2);
+        await nextTick();
+        
+        // Now subscription should be cleaned up
+        expect(store.activeSubscriptions.has(symbol)).toBe(false);
+      });
+    });
+
+    describe('IVx Memory Management', () => {
+      it('cleans up IVx data during force cleanup', () => {
+        const symbol = 'SPY';
+        
+        // Set up IVx data in the data store
+        store.data.set('ivx', {
+          [symbol]: {
+            expirations: [{ expiration_date: '2024-01-19', ivx_percent: 18.5 }],
+            lastUpdated: Date.now()
+          }
+        });
+        
+        expect(store.data.has('ivx')).toBe(true);
+        
+        // Force cleanup
+        store.forceCleanup();
+        
+        // IVx data should be cleaned up
+        expect(store.data.has('ivx')).toBe(false);
+      });
+
+      it('handles high-frequency IVx updates without memory leaks', async () => {
+        const symbol = 'SPY';
+        
+        // Simulate multiple rapid IVx updates
+        for (let i = 0; i < 10; i++) {
+          await store.fetchIvxForSymbol(symbol);
+        }
+        
+        // Should only have one IVx entry per symbol in the data store
+        const allIvxData = store.data.get('ivx');
+        expect(Object.keys(allIvxData)).toHaveLength(1);
+        expect(allIvxData[symbol]).toBeTruthy();
+      });
     });
   });
 
