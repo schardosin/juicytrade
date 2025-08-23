@@ -152,19 +152,6 @@ class ProviderManager:
             logger.error(f"Provider '{provider_name}' not initialized.")
         return provider
 
-    async def get_all_expirations_ivx(self, symbol: str, underlying_price: Optional[float] = None) -> List[Dict[str, Any]]:
-        """Get IVx data for all expirations for a given symbol."""
-        cached_data = ivx_cache.get(symbol)
-        if cached_data:
-            logger.info(f"Returning cached IVx data for {symbol}")
-            return cached_data
-
-        provider = self._get_provider("options_chain")
-        if provider and hasattr(provider, 'get_all_expirations_ivx'):
-            live_data = await provider.get_all_expirations_ivx(symbol, underlying_price)
-            ivx_cache.set(symbol, live_data)
-            return live_data
-        return []
 
     def get_provider(self, instance_id: str) -> Optional[BaseProvider]:
         """Get a provider instance by its instance ID."""

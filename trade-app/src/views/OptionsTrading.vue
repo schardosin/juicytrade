@@ -635,12 +635,12 @@ export default {
       };
 
       window.addEventListener("websocket-recovered", handleSystemRecovery);
+    });
 
-      // Store cleanup for unmount
-      onUnmounted(() => {
-        cleanup();
-        window.removeEventListener("websocket-recovered", handleSystemRecovery);
-      });
+    onUnmounted(() => {
+      const cleanup = setupSymbolSelectionListener();
+      cleanup();
+      // No need to remove the event listener here as it's tied to the component's lifecycle
     });
 
     // Watchers

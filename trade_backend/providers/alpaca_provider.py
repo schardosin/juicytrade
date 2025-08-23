@@ -1395,29 +1395,65 @@ class AlpacaProvider(BaseProvider):
         return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
     
     def _parse_option_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
-        """Parse option symbol to extract components."""
+        """
+        Parse option symbol to extract components.
+        
+        Option symbol format: [UNDERLYING][YYMMDD][C/P][STRIKE:8]
+        Examples:
+        - MSFT271217P00360000 (MSFT, 2027-12-17, Put, $360.00)
+        - BA271217C00150000 (BA, 2027-12-17, Call, $150.00)
+        - GOOGL271217C03200000 (GOOGL, 2027-12-17, Call, $3200.00)
+        
+        The key insight is that the last 15 characters are always:
+        [YYMMDD:6][C/P:1][STRIKE:8] = 15 characters total
+        
+        So we parse from the end backwards to get the underlying symbol.
+        """
         try:
-            if len(symbol) >= 15:
-                underlying = symbol[:3]
-                date_part = symbol[3:9]
-                option_type = symbol[9]
-                strike_part = symbol[10:]
-                
-                # Parse expiry date
-                year = 2000 + int(date_part[:2])
-                month = int(date_part[2:4])
-                day = int(date_part[4:6])
-                expiry_date = f"{year}-{month:02d}-{day:02d}"
-                
-                # Parse strike price
-                strike_price = float(strike_part) / 1000
-                
-                return {
-                    "underlying": underlying,
-                    "type": "call" if option_type == "C" else "put",
-                    "strike": strike_price,
-                    "expiry": expiry_date
-                }
+            if len(symbol) < 15:
+                return None
+            
+            # The option part is always the last 15 characters: YYMMDD + C/P + 8-digit strike
+            option_part = symbol[-15:]
+            underlying = symbol[:-15]  # Everything before the last 15 characters
+            
+            if not underlying:  # Safety check
+                return None
+            
+            # Parse the option part
+            date_part = option_part[:6]  # YYMMDD
+            option_type = option_part[6]  # C or P
+            strike_part = option_part[7:]  # 8-digit strike
+            
+            # Validate option type
+            if option_type not in ['C', 'P']:
+                return None
+            
+            # Validate strike part is 8 digits
+            if len(strike_part) != 8 or not strike_part.isdigit():
+                return None
+            
+            # Parse expiry date
+            year = 2000 + int(date_part[:2])
+            month = int(date_part[2:4])
+            day = int(date_part[4:6])
+            
+            # Validate date components
+            if not (1 <= month <= 12 and 1 <= day <= 31):
+                return None
+            
+            expiry_date = f"{year}-{month:02d}-{day:02d}"
+            
+            # Parse strike price (divide by 1000 to get actual price)
+            strike_price = float(strike_part) / 1000
+            
+            return {
+                "underlying": underlying,
+                "type": "call" if option_type == "C" else "put",
+                "strike": strike_price,
+                "expiry": expiry_date
+            }
+            
         except Exception as e:
             self._log_error(f"parse_option_symbol {symbol}", e)
         return None
@@ -2328,169 +2364,27 @@ class AlpacaProvider(BaseProvider):
 
     async def _get_atm_contracts_for_ivx(self, symbol: str, exp_date: str, underlying_price: float) -> List[OptionContract]:
         """
-        Get only ATM contracts needed for IVx calculation using direct API approach.
+        Get only ATM contracts needed for IVx calculation using the snapshots endpoint.
         
-        This method directly fetches ATM contracts from Alpaca's options contracts endpoint
-        with proper filtering to ensure we get reliable data with IV information.
+        This method makes ONE API call per expiration and processes all strikes in memory
+        to find the ATM range, which is much more efficient than multiple API calls.
         """
         try:
             logger.debug(f"Getting ATM contracts for IVx: {symbol} {exp_date} @ ${underlying_price}")
             
-            # Calculate ATM strike range (3 strikes on each side)
-            target_strikes = self._calculate_atm_strike_range(underlying_price)
-            logger.debug(f"Target strikes for ATM range: {target_strikes}")
-            
-            # Get options contracts directly from Alpaca API with proper filtering
-            url = f"{self._get_base_url()}/v2/options/contracts"
-            api_key, api_secret = self._get_api_credentials()
-            
-            params = {
-                "underlying_symbols": symbol,  # Correct parameter name
-                "expiration_date": exp_date,
-                "root_symbol": symbol,
-                "limit": 100  # Reasonable limit for ATM contracts
-            }
-            
-            headers = {
-                "APCA-API-KEY-ID": api_key,
-                "APCA-API-SECRET-KEY": api_secret,
-                "accept": "application/json"
-            }
-            
-            response = requests.get(url, headers=headers, params=params)
-            
-            if response.status_code != 200:
-                logger.warning(f"Options contracts API call failed: HTTP {response.status_code}: {response.text}")
-                return []
-            
-            data = response.json()
-            contracts = data.get("option_contracts", [])
-            
-            if not contracts:
-                logger.debug(f"No contracts found for {symbol} {exp_date}")
-                return []
-            
-            # Filter to ATM strikes and transform contracts
-            atm_contracts = []
-            symbols_needing_iv = []
-            
-            for contract in contracts:
-                try:
-                    strike_price = float(contract.get("strike_price", 0))
-                    
-                    # Check if this strike is in our ATM range
-                    if not any(abs(strike_price - target_strike) < 0.01 for target_strike in target_strikes):
-                        continue
-                    
-                    # Transform contract
-                    option_contract = self._transform_option_contract(contract)
-                    if not option_contract:
-                        continue
-                    
-                    # Check if we have IV data
-                    if option_contract.implied_volatility and option_contract.implied_volatility > 0:
-                        atm_contracts.append(option_contract)
-                    else:
-                        atm_contracts.append(option_contract)
-                        symbols_needing_iv.append(option_contract.symbol)
-                        
-                except Exception as e:
-                    logger.debug(f"Error processing contract: {e}")
-                    continue
-            
-            # If some contracts are missing IV, try to get it from snapshots
-            if symbols_needing_iv:
-                logger.debug(f"Fetching IV data for {len(symbols_needing_iv)} contracts")
-                iv_data = await self._get_iv_from_snapshots(symbols_needing_iv)
-                
-                # Update contracts with IV data
-                for contract in atm_contracts:
-                    if contract.symbol in iv_data:
-                        contract.implied_volatility = iv_data[contract.symbol]
-            
-            # Filter to only contracts with valid IV data
-            contracts_with_iv = [
-                contract for contract in atm_contracts 
-                if contract.implied_volatility and contract.implied_volatility > 0
-            ]
-            
-            logger.debug(f"Found {len(contracts_with_iv)} ATM contracts with IV data for {symbol} {exp_date}")
-            return contracts_with_iv
-            
-        except Exception as e:
-            logger.error(f"Error getting ATM contracts for {symbol} {exp_date}: {e}")
-            return []
-
-    async def _get_iv_from_snapshots(self, option_symbols: List[str]) -> Dict[str, float]:
-        """
-        Get implied volatility data for specific option symbols from snapshots endpoint.
-        
-        Args:
-            option_symbols: List of option symbols to get IV for
-            
-        Returns:
-            Dictionary mapping option symbols to their implied volatility values
-        """
-        try:
-            if not option_symbols:
-                return {}
-            
-            # Use the snapshots endpoint to get IV data
-            url = f"{self.data_url}/v1beta1/options/snapshots"
-            api_key, api_secret = self._get_api_credentials()
-            
-            # Join symbols with comma for the API call
-            symbols_param = ",".join(option_symbols)
-            
-            params = {
-                "symbols": symbols_param
-            }
-            headers = {
-                "APCA-API-KEY-ID": api_key,
-                "APCA-API-SECRET-KEY": api_secret,
-                "accept": "application/json"
-            }
-            
-            response = requests.get(url, headers=headers, params=params)
-            
-            if response.status_code != 200:
-                logger.warning(f"IV snapshots API call failed: HTTP {response.status_code}: {response.text}")
-                return {}
-            
-            data = response.json()
-            snapshots = data.get("snapshots", {})
-            
-            iv_data = {}
-            for symbol, snapshot in snapshots.items():
-                if snapshot:
-                    iv = snapshot.get('impliedVolatility')
-                    if iv is not None and iv > 0:
-                        iv_data[symbol] = float(iv)
-            
-            logger.debug(f"Retrieved IV data for {len(iv_data)}/{len(option_symbols)} option symbols")
-            return iv_data
-            
-        except Exception as e:
-            logger.error(f"Error getting IV from snapshots for {len(option_symbols)} symbols: {e}")
-            return {}
-
-    async def _get_atm_strikes_with_iv_direct(self, symbol: str, exp_date: str, underlying_price: float) -> List[OptionContract]:
-        """
-        Directly fetch ATM strikes with IV data from snapshots endpoint.
-        This is much faster than fetching full options chains.
-        """
-        try:
-            # Use snapshots endpoint to get option data with IV directly
+            # Use the snapshots endpoint with expiration_date parameter for single-call efficiency
             url = f"{self.data_url}/v1beta1/options/snapshots/{symbol}"
             api_key, api_secret = self._get_api_credentials()
             
-            params = {
-                "type": "call"  # Start with calls, we'll get puts separately if needed
-            }
             headers = {
                 "APCA-API-KEY-ID": api_key,
                 "APCA-API-SECRET-KEY": api_secret,
                 "accept": "application/json"
+            }
+            
+            # Get all snapshots for this expiration in one call
+            params = {
+                "expiration_date": exp_date
             }
             
             response = requests.get(url, headers=headers, params=params)
@@ -2503,193 +2397,124 @@ class AlpacaProvider(BaseProvider):
             snapshots = data.get("snapshots", {})
             
             if not snapshots:
-                logger.debug(f"No snapshots found for {symbol}")
+                logger.debug(f"No snapshots found for {symbol} {exp_date}")
                 return []
             
-            logger.debug(f"Found {len(snapshots)} total snapshots for {symbol}")
+            logger.debug(f"Found {len(snapshots)} option snapshots for {symbol} {exp_date}")
             
-            # Filter and process only ATM contracts for the specific expiration
-            atm_contracts = []
-            target_strikes = self._calculate_atm_strike_range(underlying_price)
-            logger.debug(f"Target strikes for {symbol} @ ${underlying_price}: {target_strikes}")
+            # Process snapshots to find ATM strikes
+            all_strikes = set()
+            option_data = {}  # strike -> {calls: [], puts: []}
             
-            matching_exp_count = 0
-            matching_strike_count = 0
-            iv_count = 0
-            
+            # First pass: collect all strikes and organize data - FIXED ITERATION PATTERN
             for option_symbol, snapshot in snapshots.items():
                 try:
-                    # Parse option symbol to check expiration and strike
-                    option_info = self._parse_option_symbol_for_filtering(option_symbol, exp_date, target_strikes)
-                    if not option_info:
-                        # Check if it's the right expiration for debugging
-                        parsed = self._parse_option_symbol(option_symbol)
-                        if parsed and parsed['expiry'] == exp_date:
-                            matching_exp_count += 1
-                        continue
-                    
-                    matching_strike_count += 1
-                    
-                    # Extract IV from snapshot
+                    # Extract implied volatility from snapshot
                     iv = snapshot.get('impliedVolatility')
-                    if iv is None or iv <= 0:
-                        logger.debug(f"No IV for {option_symbol}: {iv}")
+                    if iv is None or float(iv) <= 0:
                         continue
                     
-                    iv_count += 1
+                    # Parse option symbol to get strike and type
+                    parsed = self._parse_option_symbol(option_symbol)
+                    if not parsed:
+                        continue
                     
-                    # Create minimal OptionContract with only required data for IVx
-                    contract = OptionContract(
-                        symbol=option_symbol,
-                        underlying_symbol=symbol,
-                        expiration_date=exp_date,
-                        strike_price=option_info['strike'],
-                        type=option_info['type'],
-                        implied_volatility=float(iv),
-                        # Set minimal bid/ask from snapshot if available
-                        bid=float(snapshot.get('latestQuote', {}).get('bp', 0)) if snapshot.get('latestQuote', {}).get('bp') else None,
-                        ask=float(snapshot.get('latestQuote', {}).get('ap', 0)) if snapshot.get('latestQuote', {}).get('ap') else None,
-                        # Other fields not needed for IVx calculation
-                        close_price=None,
-                        volume=None,
-                        open_interest=None,
-                        delta=None,
-                        gamma=None,
-                        theta=None,
-                        vega=None
-                    )
+                    strike = parsed['strike']
+                    option_type = parsed['type']
                     
-                    atm_contracts.append(contract)
+                    # Store the data
+                    if strike not in option_data:
+                        option_data[strike] = {'calls': [], 'puts': []}
+                    
+                    contract_data = {
+                        'symbol': option_symbol,
+                        'strike': strike,
+                        'type': option_type,
+                        'iv': float(iv),
+                        'bid': float(snapshot.get('latestQuote', {}).get('bp', 0)) if snapshot.get('latestQuote', {}).get('bp') else None,
+                        'ask': float(snapshot.get('latestQuote', {}).get('ap', 0)) if snapshot.get('latestQuote', {}).get('ap') else None
+                    }
+                    
+                    if option_type == 'call':
+                        option_data[strike]['calls'].append(contract_data)
+                    else:
+                        option_data[strike]['puts'].append(contract_data)
+                    
+                    all_strikes.add(strike)
                     
                 except Exception as e:
-                    logger.debug(f"Error processing option {option_symbol}: {e}")
+                    logger.debug(f"Error processing snapshot for {option_symbol}: {e}")
                     continue
             
-            logger.debug(f"Filtering results for {symbol} {exp_date}: {matching_exp_count} matching exp, {matching_strike_count} matching strikes, {iv_count} with IV")
+            if not all_strikes:
+                logger.warning(f"No valid strikes with IV found for {symbol} {exp_date}")
+                return []
             
-            # Also get puts for the same strikes
-            if atm_contracts:
-                puts = await self._get_atm_puts_direct(symbol, exp_date, target_strikes)
-                atm_contracts.extend(puts)
+            # Find the closest strike to underlying price
+            sorted_strikes = sorted(list(all_strikes))
+            closest_strike = min(sorted_strikes, key=lambda x: abs(x - underlying_price))
+            closest_index = sorted_strikes.index(closest_strike)
             
-            logger.debug(f"Found {len(atm_contracts)} ATM contracts with IV for {symbol} {exp_date}")
+            # Select ATM range (3-4 strikes on each side, adaptive to available strikes)
+            strikes_per_side = 3
+            start_index = max(0, closest_index - strikes_per_side)
+            end_index = min(len(sorted_strikes), closest_index + strikes_per_side + 1)
+            
+            selected_strikes = sorted_strikes[start_index:end_index]
+            
+            logger.debug(f"ATM selection: underlying=${underlying_price:.2f}, closest=${closest_strike}, selected={selected_strikes}")
+            
+            # Create OptionContract objects for selected strikes
+            atm_contracts = []
+            for strike in selected_strikes:
+                if strike in option_data:
+                    # Add calls
+                    for call_data in option_data[strike]['calls']:
+                        contract = OptionContract(
+                            symbol=call_data['symbol'],
+                            underlying_symbol=symbol,
+                            expiration_date=exp_date,
+                            strike_price=call_data['strike'],
+                            type=call_data['type'],
+                            implied_volatility=call_data['iv'],
+                            bid=call_data['bid'],
+                            ask=call_data['ask'],
+                            # Other fields not needed for IVx calculation
+                            close_price=None,
+                            volume=None,
+                            open_interest=None,
+                            delta=None,
+                            gamma=None,
+                            theta=None,
+                            vega=None
+                        )
+                        atm_contracts.append(contract)
+                    
+                    # Add puts
+                    for put_data in option_data[strike]['puts']:
+                        contract = OptionContract(
+                            symbol=put_data['symbol'],
+                            underlying_symbol=symbol,
+                            expiration_date=exp_date,
+                            strike_price=put_data['strike'],
+                            type=put_data['type'],
+                            implied_volatility=put_data['iv'],
+                            bid=put_data['bid'],
+                            ask=put_data['ask'],
+                            # Other fields not needed for IVx calculation
+                            close_price=None,
+                            volume=None,
+                            open_interest=None,
+                            delta=None,
+                            gamma=None,
+                            theta=None,
+                            vega=None
+                        )
+                        atm_contracts.append(contract)
+            
+            logger.debug(f"Created {len(atm_contracts)} ATM contracts with IV data for {symbol} {exp_date}")
             return atm_contracts
             
         except Exception as e:
-            logger.error(f"Error getting ATM strikes directly for {symbol} {exp_date}: {e}")
+            logger.error(f"Error getting ATM contracts for {symbol} {exp_date}: {e}")
             return []
-
-    async def _get_atm_puts_direct(self, symbol: str, exp_date: str, target_strikes: List[float]) -> List[OptionContract]:
-        """Get ATM puts directly from snapshots endpoint."""
-        try:
-            url = f"{self.data_url}/v1beta1/options/snapshots/{symbol}"
-            api_key, api_secret = self._get_api_credentials()
-            
-            params = {
-                "type": "put"
-            }
-            headers = {
-                "APCA-API-KEY-ID": api_key,
-                "APCA-API-SECRET-KEY": api_secret,
-                "accept": "application/json"
-            }
-            
-            response = requests.get(url, headers=headers, params=params)
-            
-            if response.status_code != 200:
-                return []
-            
-            data = response.json()
-            snapshots = data.get("snapshots", {})
-            
-            put_contracts = []
-            for option_symbol, snapshot in snapshots.items():
-                try:
-                    option_info = self._parse_option_symbol_for_filtering(option_symbol, exp_date, target_strikes)
-                    if not option_info:
-                        continue
-                    
-                    iv = snapshot.get('impliedVolatility')
-                    if iv is None or iv <= 0:
-                        continue
-                    
-                    contract = OptionContract(
-                        symbol=option_symbol,
-                        underlying_symbol=symbol,
-                        expiration_date=exp_date,
-                        strike_price=option_info['strike'],
-                        type=option_info['type'],
-                        implied_volatility=float(iv),
-                        bid=float(snapshot.get('latestQuote', {}).get('bp', 0)) if snapshot.get('latestQuote', {}).get('bp') else None,
-                        ask=float(snapshot.get('latestQuote', {}).get('ap', 0)) if snapshot.get('latestQuote', {}).get('ap') else None,
-                        close_price=None,
-                        volume=None,
-                        open_interest=None,
-                        delta=None,
-                        gamma=None,
-                        theta=None,
-                        vega=None
-                    )
-                    
-                    put_contracts.append(contract)
-                    
-                except Exception as e:
-                    continue
-            
-            return put_contracts
-            
-        except Exception as e:
-            logger.error(f"Error getting ATM puts for {symbol} {exp_date}: {e}")
-            return []
-
-    def _calculate_atm_strike_range(self, underlying_price: float) -> List[float]:
-        """Calculate a focused range of strikes around ATM for IVx calculation."""
-        try:
-            # For IVx, we only need a few strikes around ATM
-            # Calculate reasonable strike intervals based on underlying price
-            if underlying_price < 50:
-                strike_interval = 1.0
-            elif underlying_price < 100:
-                strike_interval = 2.5
-            elif underlying_price < 200:
-                strike_interval = 5.0
-            else:
-                strike_interval = 10.0
-            
-            # Get 3 strikes on each side of ATM
-            strikes = []
-            for i in range(-3, 4):  # -3, -2, -1, 0, 1, 2, 3
-                strike = round((underlying_price + (i * strike_interval)) / strike_interval) * strike_interval
-                if strike > 0:
-                    strikes.append(strike)
-            
-            return strikes
-            
-        except Exception as e:
-            logger.error(f"Error calculating ATM strike range for price {underlying_price}: {e}")
-            return []
-
-    def _parse_option_symbol_for_filtering(self, option_symbol: str, target_exp_date: str, target_strikes: List[float]) -> Optional[Dict[str, Any]]:
-        """
-        Parse option symbol and check if it matches our filtering criteria.
-        Returns option info if it matches, None otherwise.
-        """
-        try:
-            # Parse the option symbol
-            option_info = self._parse_option_symbol(option_symbol)
-            if not option_info:
-                return None
-            
-            # Check if expiration matches
-            if option_info['expiry'] != target_exp_date:
-                return None
-            
-            # Check if strike is in our target range
-            strike = option_info['strike']
-            if not any(abs(strike - target_strike) < 0.01 for target_strike in target_strikes):
-                return None
-            
-            return option_info
-            
-        except Exception as e:
-            return None

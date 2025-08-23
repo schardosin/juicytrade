@@ -444,8 +444,8 @@ class SmartMarketDataStore {
     // Register positions data source
     this.setupPositionsDataSource();
 
-    // Register IVx data source
-    this.setupIvxDataSource();
+    // IVx data is now handled via streaming WebSocket messages
+    // No periodic setup needed
 
     // Start health monitoring
     this.startHealthMonitoring();
@@ -582,144 +582,6 @@ class SmartMarketDataStore {
     });
   }
 
-  /**
-   * Set up IVx data source - follows same pattern as positions
-   */
-  setupIvxDataSource() {
-    // IVx data - periodic updates every 60 seconds (same as positions pattern)
-    this.registerDataSource("ivx", {
-      strategy: "periodic",
-      method: "fetchIvxForAllExpirations",
-      interval: 60 * 1000, // 60 seconds
-      updateMethod: (key, data) => {
-        // Transform array response to symbol-keyed object for easy access
-        this.processIvxData(data);
-      }
-    });
-  }
-
-  /**
-   * Process IVx data from API response and transform it for easy access
-   * Transforms array response to symbol-keyed object structure
-   */
-  processIvxData(data) {
-    try {
-      if (!data) {
-        console.warn("⚠️ No IVx data received");
-        return;
-      }
-
-      // Handle different response structures
-      let processedData = {};
-
-      if (Array.isArray(data)) {
-        // If data is an array of symbol objects
-        data.forEach(symbolData => {
-          if (symbolData.symbol && symbolData.expirations) {
-            processedData[symbolData.symbol] = {
-              expirations: symbolData.expirations,
-              lastUpdated: Date.now()
-            };
-          }
-        });
-      } else if (typeof data === 'object') {
-        // If data is already an object with symbol keys
-        Object.keys(data).forEach(symbol => {
-          if (data[symbol] && data[symbol].expirations) {
-            processedData[symbol] = {
-              expirations: data[symbol].expirations,
-              lastUpdated: Date.now()
-            };
-          }
-        });
-      } else {
-        console.warn("⚠️ Unexpected IVx data format:", typeof data);
-        return;
-      }
-
-      // Update the data store with processed IVx data
-      this.updateData('ivx', processedData);
-      
-      console.log(`✅ Processed IVx data for ${Object.keys(processedData).length} symbols`);
-      
-    } catch (error) {
-      console.error("❌ Error processing IVx data:", error);
-      this.setError('ivx', error);
-    }
-  }
-
-  /**
-   * Get symbols that are currently being tracked for IVx data
-   * This determines which symbols we should fetch IVx data for
-   */
-  getTrackedIvxSymbols() {
-    // For now, return symbols that are actively subscribed to for price data
-    // This ensures we only fetch IVx for symbols the user is actually viewing
-    const trackedSymbols = Array.from(this.activeSubscriptions).filter(symbol => {
-      // Only track stock symbols (not option symbols) for IVx
-      return symbol && symbol.length <= 10 && /^[A-Z]+$/.test(symbol);
-    });
-    
-    return trackedSymbols;
-  }
-
-  /**
-   * Fetch IVx data for all tracked symbols
-   * Makes individual API calls for each symbol with proper underlying price detection
-   */
-  async fetchIvxForAllSymbols(symbols) {
-    try {
-      if (!symbols || symbols.length === 0) {
-        return {};
-      }
-
-      // Fetch IVx data for each symbol concurrently
-      const ivxPromises = symbols.map(async (symbol) => {
-        try {
-          // Get underlying price for this symbol
-          const underlyingPrice = this.stockPrices.get(symbol)?.price;
-          
-          // Call the API method with proper parameters
-          const ivxData = await api.fetchIvxForAllExpirations(symbol, underlyingPrice);
-          
-          return {
-            symbol: symbol,
-            expirations: ivxData || [],
-            lastUpdated: Date.now()
-          };
-        } catch (error) {
-          console.error(`❌ Error fetching IVx for ${symbol}:`, error);
-          return {
-            symbol: symbol,
-            expirations: [],
-            lastUpdated: Date.now(),
-            error: error.message
-          };
-        }
-      });
-
-      // Wait for all requests to complete
-      const results = await Promise.all(ivxPromises);
-      
-      // Transform results into symbol-keyed object
-      const allIvxData = {};
-      results.forEach(result => {
-        if (result.symbol) {
-          allIvxData[result.symbol] = {
-            expirations: result.expirations,
-            lastUpdated: result.lastUpdated,
-            error: result.error
-          };
-        }
-      });
-
-      return allIvxData;
-
-    } catch (error) {
-      console.error("❌ Error in fetchIvxForAllSymbols:", error);
-      return {};
-    }
-  }
 
   /**
    * Initialize the store and connect to WebSocket data flow
@@ -794,8 +656,8 @@ class SmartMarketDataStore {
   }
 
   /**
-   * Get reactive IVx data for a symbol - follows same pattern as positions
-   * Automatically handles underlying price detection and periodic updates
+   * Get reactive IVx data for a symbol - uses streaming data from WebSocket
+   * Automatically handles subscription management and streaming updates
    */
   getIvxData(symbolRef, underlyingPriceRef) {
     // Handle both computed refs and direct values
@@ -809,7 +671,7 @@ class SmartMarketDataStore {
       }
     };
 
-    // Return reactive computed that filters IVx data for this symbol
+    // Return reactive computed that uses streaming IVx data
     return computed(() => {
       const symbol = getSymbolValue();
       
@@ -817,25 +679,24 @@ class SmartMarketDataStore {
         return { isLoading: false, expirations: [] };
       }
 
-      // Ensure this symbol is tracked for IVx data
+      // Ensure this symbol is tracked for streaming IVx data
       this.ensureIvxSubscription(symbol);
 
-      const allIvxData = this.data.get('ivx');
-      
-      if (!allIvxData) {
-        return { isLoading: true, expirations: [] };
-      }
-
-      // Filter IVx data for this specific symbol
-      const symbolIvxData = allIvxData[symbol];
+      // Get streaming IVx data for this symbol
+      const symbolIvxData = this.ivxDataBySymbol.get(symbol);
       
       if (!symbolIvxData) {
-        return { isLoading: false, expirations: [] };
+        return { 
+          isLoading: true, 
+          expirations: [], 
+          symbol: symbol 
+        };
       }
 
       return {
         isLoading: false,
         expirations: symbolIvxData.expirations || [],
+        progress: symbolIvxData.progress,
         symbol: symbol,
         lastUpdated: symbolIvxData.lastUpdated
       };
@@ -900,48 +761,14 @@ class SmartMarketDataStore {
 
   /**
    * Ensure IVx subscription for a symbol
-   * This ensures the symbol is tracked for IVx data fetching
+   * This ensures the symbol is tracked for streaming IVx data
    */
   ensureIvxSubscription(symbol) {
     if (!symbol) return;
 
-    // For IVx, we need to ensure the symbol is in activeSubscriptions
-    // so it gets picked up by getTrackedIvxSymbols()
+    // For streaming IVx, we just need to ensure the symbol is in activeSubscriptions
+    // The backend will automatically start IVx calculations when a symbol is subscribed
     this.ensureSubscription(symbol);
-    
-    // Also trigger an immediate IVx data fetch for this symbol if we don't have data
-    const allIvxData = this.data.get('ivx');
-    const hasExistingData = allIvxData && allIvxData[symbol];
-    
-    if (!hasExistingData) {
-      // Trigger immediate fetch for this specific symbol
-      this.fetchIvxForSymbol(symbol);
-    }
-  }
-
-  /**
-   * Fetch IVx data for a specific symbol immediately
-   */
-  async fetchIvxForSymbol(symbol) {
-    try {
-      // Get underlying price for this symbol
-      const underlyingPrice = this.stockPrices.get(symbol)?.price;
-      
-      // Call the API method with proper parameters
-      const ivxData = await api.fetchIvxForAllExpirations(symbol, underlyingPrice);
-      
-      // Update the data store with this symbol's data
-      const allIvxData = this.data.get('ivx') || {};
-      allIvxData[symbol] = {
-        expirations: ivxData || [],
-        lastUpdated: Date.now()
-      };
-      
-      this.updateData('ivx', allIvxData);
-      
-    } catch (error) {
-      console.error(`❌ Error fetching IVx for ${symbol}:`, error);
-    }
   }
 
   /**
@@ -1261,6 +1088,11 @@ class SmartMarketDataStore {
       this.updateData('positions', data);
     });
 
+    webSocketClient.onIvxUpdate((data) => {
+      this.handleIvxUpdate(data);
+    });
+
+
     // Connect to WebSocket
     try {
       await webSocketClient.connect();
@@ -1352,6 +1184,74 @@ class SmartMarketDataStore {
       this.lastGreeksAccess.set(symbol, Date.now());
     }
   }
+
+  /**
+   * Handle incoming IVx updates from WebSocket - streaming partial data
+   */
+  handleIvxUpdate(data) {
+    // Extract symbol from the WebSocket message (it's at the top level, not in data.symbol)
+    const symbol = data.symbol;
+    if (!symbol) {
+      console.warn('⚠️ IVx update missing symbol:', data);
+      return;
+    }
+
+    // Get or create symbol's IVx data structure
+    let symbolIvxData = this.ivxDataBySymbol.get(symbol);
+    if (!symbolIvxData) {
+      symbolIvxData = {
+        expirations: [],
+        status: 'calculating',
+        lastUpdated: Date.now(),
+        progress: { completed: 0, total: 0 }
+      };
+      this.ivxDataBySymbol.set(symbol, symbolIvxData);
+    }
+
+    // Handle partial IVx data update
+    if (data.data) {
+      const { expiration_date, ivx_percent, expected_move_dollars } = data.data;
+      
+      if (expiration_date && ivx_percent !== undefined) {
+        // Find existing expiration or add new one
+        const existingIndex = symbolIvxData.expirations.findIndex(
+          exp => exp.expiration_date === expiration_date
+        );
+        
+        const expirationData = {
+          expiration_date,
+          ivx_percent,
+          expected_move_dollars,
+          timestamp: Date.now()
+        };
+        
+        if (existingIndex >= 0) {
+          // Update existing expiration
+          symbolIvxData.expirations[existingIndex] = expirationData;
+        } else {
+          // Add new expiration
+          symbolIvxData.expirations.push(expirationData);
+        }
+        
+        // Sort expirations by date
+        symbolIvxData.expirations.sort((a, b) => 
+          new Date(a.expiration_date) - new Date(b.expiration_date)
+        );
+      }
+    }
+
+    // Update progress if provided
+    if (data.progress) {
+      symbolIvxData.progress = data.progress;
+    }
+
+    // Update timestamp
+    symbolIvxData.lastUpdated = Date.now();
+    
+    // Trigger reactivity update
+    this.ivxDataBySymbol.set(symbol, { ...symbolIvxData });
+  }
+
 
   /**
    * Check if a symbol is an option symbol

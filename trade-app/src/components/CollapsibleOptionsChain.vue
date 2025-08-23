@@ -75,7 +75,7 @@
           <!-- IV Information -->
           <div class="iv-display">
             <span v-if="getIvxForExpiration(expiration.date)?.ivx_percent" class="iv-label">
-              IVx: {{ getIvxForExpiration(expiration.date).ivx_percent }}% (≈{{ getIvxForExpiration(expiration.date).expected_move_dollars }})
+              IVx: {{ formatIvxPercent(getIvxForExpiration(expiration.date).ivx_percent) }}% (≈${{ formatIvxMove(getIvxForExpiration(expiration.date).expected_move_dollars) }})
             </span>
             <div v-else class="iv-loading">
               <span class="iv-label">IVx:</span>
@@ -599,7 +599,7 @@ export default {
 
     // Get ITM label for display
     const getIvxForExpiration = (date) => {
-      if (!props.ivxData || props.ivxData.isLoading) {
+      if (!props.ivxData || !props.ivxData.expirations) {
         return null;
       }
       
@@ -610,6 +610,16 @@ export default {
       }
       
       return null;
+    };
+
+    const formatIvxPercent = (value) => {
+      if (value === null || value === undefined) return 'N/A';
+      return value.toFixed(1);
+    };
+
+    const formatIvxMove = (value) => {
+      if (value === null || value === undefined) return 'N/A';
+      return value.toFixed(2);
     };
 
     const getITMLabel = (strike, optionType) => {
@@ -739,6 +749,8 @@ export default {
       selectCallOption,
       selectPutOption,
       getIvxForExpiration,
+      formatIvxPercent,
+      formatIvxMove,
     };
   },
 };

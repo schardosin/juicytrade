@@ -190,6 +190,14 @@ class WebSocketStreamingClient {
   onPositionsUpdate(callback) {
     this.addCallback('positions_update', callback);
   }
+
+  onIvxUpdate(callback) {
+    this.addCallback('ivx_partial_data', callback);
+  }
+
+  onIvxStatus(callback) {
+    this.addCallback('ivx_status', callback);
+  }
   
   addCallback(type, callback) {
     if (!this.callbacks.has(type)) {
@@ -220,9 +228,9 @@ class WebSocketStreamingClient {
     if (callbacks) {
       callbacks.forEach(callback => {
         try {
-          // Pass the whole message for price_update, greeks_update, and subscription_confirmed
+          // Pass the whole message for price_update, greeks_update, subscription_confirmed, and ivx_partial_data
           // and just the data for others, which matches the legacy client's behavior.
-          const dataToSend = (message.type === 'price_update' || message.type === 'greeks_update' || message.type === 'subscription_confirmed')
+          const dataToSend = (message.type === 'price_update' || message.type === 'greeks_update' || message.type === 'subscription_confirmed' || message.type === 'ivx_partial_data')
             ? message
             : message.data;
           callback(dataToSend);

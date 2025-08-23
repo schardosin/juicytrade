@@ -7,6 +7,7 @@ from .provider_config import provider_config_manager
 from .provider_manager import provider_manager
 from .models import MarketData
 from .utils.symbol_converter import SymbolConverter
+from .ivx_streaming_manager import ivx_streaming_manager
 
 logger = logging.getLogger(__name__)
 
@@ -161,7 +162,10 @@ class StreamingManager:
         # 4. Update Greeks subscriptions (options only)
         await self._update_greeks_subscriptions(option_symbols)
         
-        logger.info(f"Global subscriptions updated. Quotes: {len(global_new_symbols)}, Greeks: {len(option_symbols)} symbols.")
+        # 5. Trigger IVx calculations for stock symbols
+        await self._update_ivx_subscriptions(stock_symbols)
+        
+        logger.info(f"Global subscriptions updated. Quotes: {len(global_new_symbols)}, Greeks: {len(option_symbols)}, IVx: {len(stock_symbols)} symbols.")
 
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""
@@ -244,6 +248,15 @@ class StreamingManager:
                     logger.info(f"✅ Unsubscribed from Greeks-only streaming on {provider_name}: {len(symbols)} symbols")
                 except Exception as e:
                     logger.error(f"❌ Error unsubscribing Greeks on {provider_name}: {e}")
+
+    async def _update_ivx_subscriptions(self, stock_symbols: Set[str]):
+        """Triggers IVx calculations for subscribed stock symbols."""
+        if not ivx_streaming_manager:
+            return
+
+        for symbol in stock_symbols:
+            # This will start the calculation if it's not already running.
+            await ivx_streaming_manager.calculate_ivx_for_symbol(symbol)
 
     def get_subscription_status(self) -> Dict[str, any]:
         """Gets the current global subscription status."""
