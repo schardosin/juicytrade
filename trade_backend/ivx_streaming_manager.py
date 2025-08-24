@@ -140,38 +140,10 @@ class IVxStreamingManager:
                 else:
                     logger.warning(f"⚠️ Provider-specific IVx streaming calculation returned no results for {symbol}")
                     
-            # Fallback to non-streaming method if streaming not supported
-            elif hasattr(provider, "get_all_expirations_ivx"):
-                logger.info(f"📊 Provider {provider.name} has get_all_expirations_ivx method (non-streaming fallback)")
-                
-                # Call provider-specific method with timeout protection
-                try:
-                    # Set a reasonable timeout to prevent connection drops
-                    ivx_results = await asyncio.wait_for(
-                        provider.get_all_expirations_ivx(symbol, underlying_price),
-                        timeout=60.0  # 60 second timeout
-                    )
-                except asyncio.TimeoutError:
-                    logger.error(f"⏰ IVx calculation timeout for {symbol} after 60 seconds")
-                    return
-                except Exception as e:
-                    logger.error(f"❌ Provider-specific IVx calculation failed for {symbol}: {e}")
-                    return
-                
-                if ivx_results:
-                    # Stream results as they come in (simulate streaming for non-streaming provider methods)
-                    for i, ivx_data in enumerate(ivx_results):
-                        # Stream partial result
-                        await self._broadcast_partial_ivx_data(symbol, ivx_data, i+1, len(ivx_results))
-                    
-                    # Cache the complete results
-                    ivx_cache.set(symbol, ivx_results)
-                    
-                    logger.info(f"✅ Completed provider-specific IVx calculation for {symbol}: {len(ivx_results)} expirations")
-                else:
-                    logger.warning(f"⚠️ Provider-specific IVx calculation returned no results for {symbol}")
             else:
-                logger.warning(f"⚠️ Provider {provider.name} does not have IVx calculation methods")
+                logger.warning(f"⚠️ Provider {provider.name} does not have a streaming IVx calculation method, falling back to default.")
+                # Fallback to a generic, non-provider-specific calculation if no method is available.
+                # This part can be enhanced with a default implementation if needed.
             
         except Exception as e:
             logger.error(f"❌ Error in provider-specific IVx calculation for {symbol}: {e}")
@@ -186,12 +158,38 @@ class IVxStreamingManager:
             return None
     
     async def _get_underlying_price(self, symbol: str, provider) -> Optional[float]:
-        """Get the current underlying price for a symbol."""
+        """Get the current underlying price for a symbol, with fallback for indices."""
         try:
+            # First, try the standard quote endpoint
             quote = await provider.get_stock_quote(symbol)
-            if quote and quote.bid and quote.ask:
-                return (quote.bid + quote.ask) / 2
+            if quote:
+                if quote.bid and quote.ask:
+                    return (quote.bid + quote.ask) / 2
+                if hasattr(quote, 'last') and quote.last:
+                    logger.warning(f"Bid/ask not available for {symbol}, falling back to last price: {quote.last}")
+                    return quote.last
+            
+            # Fallback for indices like SPX where direct quotes might fail
+            logger.warning(f"Direct quote failed for {symbol}, trying fallback via options chain.")
+            expirations = await provider.get_expiration_dates(symbol)
+            if not expirations:
+                logger.error(f"No expirations found for {symbol}, cannot get price from options chain.")
+                return None
+            
+            # Get the options chain for the first expiration to find the underlying price
+            first_expiry = expirations[0]['date']
+            options_chain = await provider.get_options_chain_basic(symbol, first_expiry, include_greeks=False)
+            
+            if options_chain and hasattr(options_chain[0], 'underlying_price'):
+                # Tradier includes the underlying price in the options chain response
+                underlying_price = getattr(options_chain[0], 'underlying_price', None)
+                if underlying_price:
+                    logger.info(f"Successfully fetched underlying price for {symbol} from options chain: {underlying_price}")
+                    return underlying_price
+
+            logger.error(f"Fallback to get price from options chain also failed for {symbol}.")
             return None
+            
         except Exception as e:
             logger.error(f"Error getting underlying price for {symbol}: {e}")
             return None

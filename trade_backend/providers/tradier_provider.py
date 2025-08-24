@@ -502,6 +502,7 @@ class TradierProvider(BaseProvider):
                 symbol=raw_quote.get("symbol", ""),
                 ask=float(raw_quote.get("ask", 0)) if raw_quote.get("ask") else None,
                 bid=float(raw_quote.get("bid", 0)) if raw_quote.get("bid") else None,
+                last=float(raw_quote.get("last", 0)) if raw_quote.get("last") else None,
                 timestamp=datetime.fromtimestamp(raw_quote.get("trade_date") / 1000).isoformat() if raw_quote.get("trade_date") else datetime.now().isoformat()
             )
         except Exception as e:
@@ -1683,42 +1684,109 @@ class TradierProvider(BaseProvider):
         """Check if symbol is an option symbol."""
         return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
 
-    async def get_all_expirations_ivx(self, symbol: str, underlying_price: Optional[float] = None) -> List[Dict[str, Any]]:
-        """Get IVx data for all expirations for a given symbol."""
-        # This is a default implementation that can be overridden by providers
-        # that have a more efficient way to get this data.
-        from ..services.ivx_calculator import calculate_ivx_data
-        from datetime import datetime
-
+    async def get_all_expirations_ivx_streaming(self, symbol: str, underlying_price: Optional[float] = None, stream_callback=None) -> List[Dict[str, Any]]:
+        """
+        Get IVx data for all expirations with a fluid, concurrent streaming implementation.
+        """
+        logger.info(f"Tradier: Starting fluid IVx streaming for {symbol}")
+        
         expirations = await self.get_expiration_dates(symbol)
-        
+        if not expirations:
+            logger.warning(f"No expirations found for {symbol}")
+            return []
+
         if underlying_price is None:
-            try:
-                quote = await self.get_stock_quote(symbol)
-                if quote and quote.bid and quote.ask:
-                    underlying_price = (quote.bid + quote.ask) / 2
-            except Exception:
-                pass
+            quote = await self.get_stock_quote(symbol)
+            if quote and quote.bid and quote.ask:
+                underlying_price = (quote.bid + quote.ask) / 2
+            else:
+                logger.warning(f"Could not get underlying price for {symbol}")
+                return []
 
-        ivx_data = []
-        if underlying_price and underlying_price > 0:
-            for exp_date_obj in expirations:
-                exp_date = exp_date_obj['date']
-                # This is inefficient and should be optimized as per the plan
-                options_chain = await self.get_options_chain_basic(symbol, exp_date, underlying_price=underlying_price, include_greeks=True)
-                
-                # Calculate DTE
-                dte = (datetime.strptime(exp_date, "%Y-%m-%d").date() - datetime.now().date()).days
-
-                if options_chain:
-                    data = calculate_ivx_data(options_chain, underlying_price, dte)
-                    ivx_data.append({
-                        "expiration_date": exp_date,
-                        "ivx_percent": data["ivx_percent"],
-                        "expected_move_dollars": data["expected_move_dollars"]
-                    })
+        sorted_expirations = sorted(expirations, key=lambda x: x["date"])
+        total_expirations = len(sorted_expirations)
+        concurrency_limit = 5
+        semaphore = asyncio.Semaphore(concurrency_limit)
         
-        return ivx_data
+        logger.info(f"Tradier: Processing {total_expirations} expirations with concurrency limit of {concurrency_limit}")
+
+        async def worker(exp_date_obj):
+            async with semaphore:
+                return await self._get_ivx_for_expiration(symbol, exp_date_obj, underlying_price)
+
+        tasks = [worker(exp) for exp in sorted_expirations]
+        completed_count = 0
+        all_results = []
+
+        for future in asyncio.as_completed(tasks):
+            try:
+                result = await future
+                completed_count += 1
+                
+                if result:
+                    all_results.append(result)
+                    logger.info(f"Tradier: Completed IVx calculation {completed_count}/{total_expirations} for {result['expiration_date']}")
+                    if stream_callback:
+                        await stream_callback(symbol, result, completed_count, total_expirations)
+                else:
+                    logger.warning(f"Tradier: IVx calculation failed for an expiration ({completed_count}/{total_expirations})")
+            
+            except Exception as e:
+                completed_count += 1
+                logger.error(f"Tradier: Error processing an expiration task: {e}")
+
+        logger.info(f"Tradier: Successfully retrieved IVx for {len(all_results)}/{total_expirations} expirations for {symbol}")
+        return all_results
+
+    async def _get_ivx_for_expiration(self, symbol: str, exp_date_obj: dict, underlying_price: float) -> Optional[Dict[str, Any]]:
+        """Helper to get IVx for a single expiration date."""
+        from ..services.ivx_calculator import find_atm_strike, calculate_expected_move
+        exp_date = exp_date_obj['date']
+        exp_root_symbol = exp_date_obj.get('symbol', symbol)
+        exp_type = exp_date_obj.get('type')
+        
+        logger.debug(f"Processing IVx for {exp_root_symbol} {exp_date} ({exp_type})")
+
+        options_chain = await self.get_options_chain_basic(
+            symbol=exp_root_symbol,
+            expiry=exp_date,
+            underlying_price=underlying_price,
+            strike_count=20,
+            type=exp_type,
+            underlying_symbol=symbol,
+            include_greeks=True
+        )
+        if not options_chain:
+            logger.warning(f"No options chain found for {exp_root_symbol} {exp_date}")
+            return None
+
+        atm_strike_val = find_atm_strike(options_chain, underlying_price)
+        if not atm_strike_val:
+            logger.warning(f"Could not find ATM strike for {exp_root_symbol} {exp_date}")
+            return None
+
+        atm_call = next((c for c in options_chain if c.strike_price == atm_strike_val and c.type == 'call'), None)
+        atm_put = next((c for c in options_chain if c.strike_price == atm_strike_val and c.type == 'put'), None)
+
+        if not atm_call or not atm_put:
+            logger.warning(f"Could not find ATM call/put for {exp_root_symbol} {exp_date} at strike {atm_strike_val}")
+            return None
+
+        valid_ivs = [iv for iv in [atm_call.implied_volatility, atm_put.implied_volatility] if iv is not None]
+        
+        if not valid_ivs:
+            logger.warning(f"Failed to get IV for ATM options for {exp_root_symbol} {exp_date}")
+            return None
+
+        ivx = sum(valid_ivs) / len(valid_ivs)
+        dte = (datetime.strptime(exp_date, "%Y-%m-%d").date() - datetime.now().date()).days
+        expected_move = calculate_expected_move(underlying_price, ivx, dte)
+
+        return {
+            "expiration_date": exp_date,
+            "ivx_percent": round(ivx * 100, 2),
+            "expected_move_dollars": round(expected_move, 2)
+        }
     
     async def _send_to_cache_or_queue(self, market_data: MarketData):
         """Send market data to cache if available, otherwise to queue."""

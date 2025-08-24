@@ -7,6 +7,7 @@ class StockQuote(BaseModel):
     symbol: str
     ask: Optional[float] = None
     bid: Optional[float] = None
+    last: Optional[float] = None
     timestamp: str
 
 class OptionContract(BaseModel):
