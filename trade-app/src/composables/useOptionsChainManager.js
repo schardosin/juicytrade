@@ -321,15 +321,15 @@ export function useOptionsChainManager(
     // Reload all expanded expirations with new strike count
     const expandedList = Array.from(expandedExpirations.value);
     for (const expirationKey of expandedList) {
-      // Extract the actual date from the expiration key (format: "2025-08-18-weekly")
-      let actualDate;
-      if (expirationKey.includes('-weekly') || expirationKey.includes('-monthly')) {
-        const parts = expirationKey.split('-');
-        actualDate = parts.slice(0, 3).join('-'); // Get "2025-08-18" from "2025-08-18-weekly"
-      } else {
-        actualDate = expirationKey;
+      // Find the corresponding expiration data from expirationDates
+      const expirationData = expirationDates.value.find(exp => {
+        const uniqueKey = `${exp.date}-${exp.type}-${exp.symbol}`;
+        return uniqueKey === expirationKey;
+      });
+      
+      if (expirationData) {
+        await loadOptionsForExpiration(expirationKey, expirationData);
       }
-      await loadOptionsForExpiration(actualDate);
     }
 
     // Update subscriptions
@@ -347,15 +347,15 @@ export function useOptionsChainManager(
       // Reload all expanded expirations
       const expandedList = Array.from(expandedExpirations.value);
       for (const expirationKey of expandedList) {
-        // Extract the actual date from the expiration key (format: "2025-08-18-weekly")
-        let actualDate;
-        if (expirationKey.includes('-weekly') || expirationKey.includes('-monthly')) {
-          const parts = expirationKey.split('-');
-          actualDate = parts.slice(0, 3).join('-'); // Get "2025-08-18" from "2025-08-18-weekly"
-        } else {
-          actualDate = expirationKey;
+        // Find the corresponding expiration data from expirationDates
+        const expirationData = expirationDates.value.find(exp => {
+          const uniqueKey = `${exp.date}-${exp.type}-${exp.symbol}`;
+          return uniqueKey === expirationKey;
+        });
+        
+        if (expirationData) {
+          await loadOptionsForExpiration(expirationKey, expirationData);
         }
-        await loadOptionsForExpiration(actualDate);
       }
       
       // Update subscriptions

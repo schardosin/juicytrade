@@ -1017,7 +1017,7 @@ export default {
 }
 
 .expiration-content.expanded {
-  max-height: 2000px; /* Large enough for content */
+  max-height: 10000px; /* Large enough for 100+ strikes */
 }
 
 .content-wrapper {
