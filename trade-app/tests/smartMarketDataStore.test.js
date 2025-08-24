@@ -133,6 +133,9 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
     store.componentRegistrations.clear();
     store.symbolUsageCount.clear();
     
+    // Clear IVx data specifically
+    store.ivxDataBySymbol.clear();
+    
     // Reset system state
     store.systemState.isHealthy = true;
     store.systemState.failedComponents.clear();
@@ -1022,66 +1025,104 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
     describe('IVx Data Fetching & Processing', () => {
       it('fetches IVx data for symbol and processes correctly', async () => {
         const symbol = 'SPY';
+
+        // Get IVx data reference (this will set up streaming subscription)
+        const ivxDataRef = store.getIvxData(symbol);
         
-        // Fetch IVx data (method doesn't take underlyingPrice parameter)
-        await store.fetchIvxForSymbol(symbol);
-        
-        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledWith(symbol, undefined);
-        
+        // Initially should show loading state
+        expect(ivxDataRef.value.isLoading).toBe(true);
+
+        // Simulate WebSocket IVx updates (streaming approach)
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-01-19',
+            ivx_percent: 18.5,
+            expected_move_dollars: 12.45
+          }
+        });
+
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-02-16',
+            ivx_percent: 20.2,
+            expected_move_dollars: 15.30
+          }
+        });
+
         // Check that data was stored in the store
-        const allIvxData = store.data.get('ivx');
-        expect(allIvxData).toBeTruthy();
-        expect(allIvxData[symbol]).toBeTruthy();
-        expect(allIvxData[symbol].expirations).toHaveLength(2);
-        expect(allIvxData[symbol].expirations[0].expiration_date).toBe('2024-01-19');
-        expect(allIvxData[symbol].expirations[0].ivx_percent).toBe(18.5);
+        expect(ivxDataRef.value.isLoading).toBe(false);
+        expect(ivxDataRef.value.expirations).toHaveLength(2);
+        expect(ivxDataRef.value.expirations[0].expiration_date).toBe('2024-01-19');
+        expect(ivxDataRef.value.expirations[0].ivx_percent).toBe(18.5);
       });
 
       it('processes IVx data with correct structure', async () => {
         const symbol = 'AAPL';
-        const rawIvxData = [
-          {
+        
+        // Get IVx data reference
+        const ivxDataRef = store.getIvxData(symbol);
+        
+        // Simulate WebSocket IVx update with structured data
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
             expiration_date: '2024-03-15',
             ivx_percent: 25.8,
-            expected_move_dollars: 18.92,
-            expected_move_percent: 4.2,
-            atm_strike: 150,
-            atm_iv: 0.258
+            expected_move_dollars: 18.92
           }
-        ];
+        });
         
-        mockApi.fetchIvxForAllExpirations.mockResolvedValueOnce(rawIvxData);
-        
-        await store.fetchIvxForSymbol(symbol);
-        
-        const allIvxData = store.data.get('ivx');
-        expect(allIvxData[symbol]).toBeTruthy();
-        expect(allIvxData[symbol].expirations).toEqual(rawIvxData);
-        expect(allIvxData[symbol].lastUpdated).toBeGreaterThan(Date.now() - 1000);
+        // Check that data was processed correctly
+        expect(ivxDataRef.value.isLoading).toBe(false);
+        expect(ivxDataRef.value.expirations).toHaveLength(1);
+        expect(ivxDataRef.value.expirations[0].expiration_date).toBe('2024-03-15');
+        expect(ivxDataRef.value.expirations[0].ivx_percent).toBe(25.8);
+        expect(ivxDataRef.value.expirations[0].expected_move_dollars).toBe(18.92);
+        expect(ivxDataRef.value.lastUpdated).toBeGreaterThan(Date.now() - 1000);
       });
 
-      it('handles IVx API failures gracefully', async () => {
+      it('handles IVx streaming failures gracefully', async () => {
         const symbol = 'SPY';
-        const error = new Error('IVx API Error');
         
-        mockApi.fetchIvxForAllExpirations.mockRejectedValueOnce(error);
+        // Get IVx data reference
+        const ivxDataRef = store.getIvxData(symbol);
         
-        // The method doesn't throw, it handles errors internally
-        await store.fetchIvxForSymbol(symbol);
+        // Initially should show loading state since no data exists yet
+        expect(ivxDataRef.value.isLoading).toBe(true);
         
-        // The implementation logs the error but doesn't store error information in the data structure
-        // It simply doesn't update the data store when an error occurs
-        const allIvxData = store.data.get('ivx');
+        // Simulate malformed WebSocket IVx update (should not crash)
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: null // Invalid data
+        });
         
-        // Since the error occurred, no data should be stored for this symbol
-        if (allIvxData) {
-          expect(allIvxData[symbol]).toBeUndefined();
-        } else {
-          expect(allIvxData).toBeFalsy();
-        }
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            // Missing required fields
+            invalid_field: 'test'
+          }
+        });
         
-        // Verify the API was called with correct parameters
-        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledWith(symbol, undefined);
+        // After invalid updates, the data structure exists but has no valid expirations
+        expect(ivxDataRef.value.isLoading).toBe(false);
+        expect(ivxDataRef.value.expirations).toHaveLength(0);
+        
+        // Now send valid data
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-01-19',
+            ivx_percent: 18.5,
+            expected_move_dollars: 12.45
+          }
+        });
+        
+        // Should now have valid data
+        expect(ivxDataRef.value.isLoading).toBe(false);
+        expect(ivxDataRef.value.expirations).toHaveLength(1);
       });
     });
 
@@ -1095,11 +1136,12 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
           store.registerSymbolUsage(symbol, componentId);
         });
         
-        // Get tracked IVx symbols
-        const trackedSymbols = store.getTrackedIvxSymbols();
+        // For streaming IVx, tracked symbols are the same as registered symbols
+        // since IVx data comes via WebSocket for subscribed symbols
+        const registeredSymbols = Array.from(store.symbolUsageCount.keys());
         
-        expect(trackedSymbols).toEqual(expect.arrayContaining(symbols));
-        expect(trackedSymbols.length).toBe(symbols.length);
+        expect(registeredSymbols).toEqual(expect.arrayContaining(symbols));
+        expect(registeredSymbols.length).toBe(symbols.length);
       });
 
       it('ensures IVx subscription for tracked symbols', async () => {
@@ -1143,11 +1185,27 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
         // Get IVx data ref
         const ivxDataRef = store.getIvxData(symbol);
         
-        // Initially should show loading state
+        // Initially should show loading state since no data exists yet
         expect(ivxDataRef.value.isLoading).toBe(true);
         
-        // Fetch IVx data
-        await store.fetchIvxForSymbol(symbol);
+        // Simulate WebSocket IVx updates
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-01-19',
+            ivx_percent: 18.5,
+            expected_move_dollars: 12.45
+          }
+        });
+
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-02-16',
+            ivx_percent: 20.2,
+            expected_move_dollars: 15.30
+          }
+        });
         
         // Data should now be available reactively
         expect(ivxDataRef.value.isLoading).toBe(false);
@@ -1178,21 +1236,44 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
       it('handles IVx updates with different underlying prices', async () => {
         const symbol = 'SPY';
         
+        // Get IVx data reference
+        const ivxDataRef = store.getIvxData(symbol);
+        
         // Set up price data for the symbol
         store.stockPrices.set(symbol, { price: 500.00, timestamp: Date.now() });
         
-        // First fetch
-        await store.fetchIvxForSymbol(symbol);
-        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledWith(symbol, 500.00);
+        // Simulate IVx update with first price
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-01-19',
+            ivx_percent: 18.5,
+            expected_move_dollars: 12.45
+          }
+        });
         
-        // Update price and fetch again
+        expect(ivxDataRef.value.expirations).toHaveLength(1);
+        expect(ivxDataRef.value.expirations[0].ivx_percent).toBe(18.5);
+        
+        // Update price and simulate new IVx update for same expiration
         store.stockPrices.set(symbol, { price: 505.00, timestamp: Date.now() });
-        await store.fetchIvxForSymbol(symbol);
-        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledWith(symbol, 505.00);
-        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledTimes(2);
+        
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-01-19', // Same expiration - should update existing
+            ivx_percent: 19.2, // Updated IVx based on new price
+            expected_move_dollars: 13.10
+          }
+        });
+        
+        // Should still have only 1 expiration (updated the existing one)
+        expect(ivxDataRef.value.expirations).toHaveLength(1);
+        expect(ivxDataRef.value.expirations[0].ivx_percent).toBe(19.2);
+        expect(ivxDataRef.value.expirations[0].expected_move_dollars).toBe(13.10);
       });
 
-      it('fetches IVx for all tracked symbols', async () => {
+      it('handles IVx streaming for multiple symbols', async () => {
         const symbols = ['SPY', 'QQQ'];
         const componentId = 'multi-symbol';
         
@@ -1201,12 +1282,36 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
           store.registerSymbolUsage(symbol, componentId);
         });
         
-        // Fetch IVx for all symbols
-        const result = await store.fetchIvxForAllSymbols(symbols);
+        // Get IVx data references for all symbols
+        const ivxDataRefs = symbols.map(symbol => store.getIvxData(symbol));
         
-        expect(result).toBeTruthy();
-        expect(Object.keys(result)).toEqual(expect.arrayContaining(symbols));
-        expect(mockApi.fetchIvxForAllExpirations).toHaveBeenCalledTimes(symbols.length);
+        // Simulate WebSocket IVx updates for each symbol (only one expiration each)
+        store.handleIvxUpdate({
+          symbol: 'SPY',
+          data: {
+            expiration_date: '2024-01-19',
+            ivx_percent: 18.5,
+            expected_move_dollars: 12.45
+          }
+        });
+        
+        store.handleIvxUpdate({
+          symbol: 'QQQ',
+          data: {
+            expiration_date: '2024-01-19',
+            ivx_percent: 22.3,
+            expected_move_dollars: 15.67
+          }
+        });
+        
+        // Verify both symbols have IVx data
+        expect(ivxDataRefs[0].value.isLoading).toBe(false);
+        expect(ivxDataRefs[0].value.expirations).toHaveLength(1);
+        expect(ivxDataRefs[0].value.expirations[0].ivx_percent).toBe(18.5);
+        
+        expect(ivxDataRefs[1].value.isLoading).toBe(false);
+        expect(ivxDataRefs[1].value.expirations).toHaveLength(1);
+        expect(ivxDataRefs[1].value.expirations[0].ivx_percent).toBe(22.3);
       });
     });
 
@@ -1222,8 +1327,24 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
         const ivxDataRef = store.getIvxData(symbol);
         store.ensureIvxSubscription(symbol);
         
-        // Step 3: Fetch IVx data
-        await store.fetchIvxForSymbol(symbol);
+        // Step 3: Simulate WebSocket IVx data updates
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-01-19',
+            ivx_percent: 18.5,
+            expected_move_dollars: 12.45
+          }
+        });
+
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-02-16',
+            ivx_percent: 20.2,
+            expected_move_dollars: 15.30
+          }
+        });
         
         // Step 4: Verify data is available to component
         expect(ivxDataRef.value).toBeTruthy();
@@ -1257,8 +1378,24 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
         // Both ensure IVx subscription
         store.ensureIvxSubscription(symbol);
         
-        // Fetch data once
-        await store.fetchIvxForSymbol(symbol);
+        // Simulate WebSocket IVx data updates
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-01-19',
+            ivx_percent: 18.5,
+            expected_move_dollars: 12.45
+          }
+        });
+
+        store.handleIvxUpdate({
+          symbol: symbol,
+          data: {
+            expiration_date: '2024-02-16',
+            ivx_percent: 20.2,
+            expected_move_dollars: 15.30
+          }
+        });
         
         // Both components should have access to same data
         const ivxData1 = store.getIvxData(symbol);
@@ -1307,15 +1444,23 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
       it('handles high-frequency IVx updates without memory leaks', async () => {
         const symbol = 'SPY';
         
-        // Simulate multiple rapid IVx updates
+        // Simulate multiple rapid IVx updates via WebSocket
         for (let i = 0; i < 10; i++) {
-          await store.fetchIvxForSymbol(symbol);
+          store.handleIvxUpdate({
+            symbol: symbol,
+            data: {
+              expiration_date: '2024-01-19',
+              ivx_percent: 18.5 + (i * 0.1),
+              expected_move_dollars: 12.45 + (i * 0.1)
+            }
+          });
         }
         
-        // Should only have one IVx entry per symbol in the data store
-        const allIvxData = store.data.get('ivx');
-        expect(Object.keys(allIvxData)).toHaveLength(1);
-        expect(allIvxData[symbol]).toBeTruthy();
+        // Should only have one IVx entry per symbol in the ivxDataBySymbol Map
+        // All updates are for the same expiration, so should only have 1 expiration
+        const ivxData = store.getIvxData(symbol);
+        expect(ivxData.value.expirations).toHaveLength(1);
+        expect(ivxData.value.expirations[0].ivx_percent).toBe(19.4); // Last update: 18.5 + (9 * 0.1)
       });
     });
   });
