@@ -569,7 +569,8 @@ export default {
 
     const isAtTheMoney = (strike) => {
       if (!props.underlyingPrice) return false;
-      // Find the single closest strike to the underlying price
+      
+      // Get all available strikes for any loaded expiration
       const strikes = getStrikesForExpiration(
         expirationGroups.value.find(
           (exp) => exp.hasLoaded && exp.optionsData.length > 0
@@ -577,13 +578,22 @@ export default {
       );
       if (strikes.length === 0) return false;
 
-      const closestStrike = strikes.reduce((prev, curr) =>
-        Math.abs(curr - props.underlyingPrice) <
-        Math.abs(prev - props.underlyingPrice)
-          ? curr
-          : prev
-      );
-      return strike === closestStrike;
+      // Sort strikes to ensure proper ordering
+      const sortedStrikes = strikes.sort((a, b) => a - b);
+      
+      // Find the first strike that is above the underlying price
+      // The ATM line should appear at this strike to create the visual effect
+      // of the line being between the strikes that contain the current price
+      let upperStrike = null;
+      for (let i = 0; i < sortedStrikes.length; i++) {
+        if (sortedStrikes[i] > props.underlyingPrice) {
+          upperStrike = sortedStrikes[i];
+          break;
+        }
+      }
+      
+      // The ATM line appears at the upper strike (the first strike above the underlying price)
+      return strike === upperStrike;
     };
 
     // ITM/OTM detection functions
