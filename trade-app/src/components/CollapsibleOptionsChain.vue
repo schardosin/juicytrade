@@ -176,7 +176,7 @@
                       ITM
                     </div>
 
-                    <span class="strike-price">${{ strike.toFixed(0) }}</span>
+                    <span class="strike-price">${{ formatStrike(strike) }}</span>
 
                     <!-- ITM label below the line (right side) -->
                     <div
@@ -567,6 +567,20 @@ export default {
       return price.toFixed(2);
     };
 
+    const formatStrike = (strike) => {
+      if (strike === null || strike === undefined) return "-";
+      
+      // Check if the strike is a whole number
+      if (strike % 1 === 0) {
+        // It's a whole number, show without decimals
+        return strike.toString();
+      } else {
+        // It has decimals, show with minimal decimal places needed
+        // Remove trailing zeros by converting to string and back
+        return parseFloat(strike.toFixed(10)).toString();
+      }
+    };
+
     const isAtTheMoney = (strike) => {
       if (!props.underlyingPrice) return false;
       
@@ -752,6 +766,7 @@ export default {
       getPutDelta,
       getPutTheta,
       formatPrice,
+      formatStrike,
       isAtTheMoney,
       getITMLabel,
       getCallSelectionClass,
