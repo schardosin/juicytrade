@@ -1687,21 +1687,40 @@ class TastyTradeProvider(BaseProvider):
             logger.error(f"Error unsubscribing from TastyTrade symbols: {e}")
             return False
 
-    async def get_streaming_greeks_batch(self, symbols: List[str]) -> Dict[str, Dict]:
-        """Get streaming Greeks data for multiple option symbols."""
+    async def get_streaming_greeks_batch(self, symbols: List[str], timeout: int = 5) -> Dict[str, Dict]:
+        """
+        Subscribes to a list of option symbols and waits for their greeks data.
+        This is more efficient than calling get_streaming_greeks for each symbol individually.
+        """
+        await self._ensure_healthy_connection()
+
+        futures = {symbol: asyncio.get_running_loop().create_future() for symbol in symbols}
+        for symbol, future in futures.items():
+            self._greeks_requests[symbol] = future
+
+        await self.subscribe_to_symbols(symbols, data_types=['Greeks'])
+
+        tasks = [asyncio.wait_for(future, timeout=timeout) for future in futures.values()]
+        
+        results = {}
         try:
-            logger.info(f"TastyTrade: get_streaming_greeks_batch called with {len(symbols)} symbols")
-            
-            # For TastyTrade, streaming Greeks flow through WebSocket messages, not synchronous collection
-            # The streaming task (_process_streaming_data) handles all WebSocket communication
-            # Greeks data is sent to the frontend via WebSocket, not through this API endpoint
-            
-            logger.info("TastyTrade: Streaming Greeks flow through WebSocket messages, returning empty for API endpoint")
-            return {}
-            
-        except Exception as e:
-            logger.error(f"Error getting streaming Greeks batch: {e}")
-            return {}
+            greeks_list = await asyncio.gather(*tasks, return_exceptions=True)
+            for i, symbol in enumerate(symbols):
+                result = greeks_list[i]
+                if isinstance(result, Exception):
+                    logger.warning(f"Timeout or error waiting for greeks for {symbol}: {result}")
+                    results[symbol] = None
+                else:
+                    results[symbol] = result
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout waiting for greeks for batch of {len(symbols)} symbols")
+        finally:
+            await self.unsubscribe_from_symbols(symbols, data_types=['Greeks'])
+            for symbol in symbols:
+                if symbol in self._greeks_requests:
+                    del self._greeks_requests[symbol]
+        
+        return results
     
     # === Utility Methods ===
     
@@ -2312,6 +2331,79 @@ class TastyTradeProvider(BaseProvider):
         logger.info(f"Successfully retrieved IVx for {len(ivx_results)} expirations for {symbol}")
         return ivx_results
 
+    async def get_all_expirations_ivx_streaming(self, symbol: str, underlying_price: Optional[float] = None, stream_callback=None) -> List[Dict[str, Any]]:
+        """
+        Get IVx data for all expirations with a fluid, concurrent streaming implementation.
+        
+        This method uses a semaphore to limit concurrency, ensuring that a fixed number of
+        expirations are processed in parallel. As soon as one finishes, the next one starts,
+        preventing slow or failing expirations from blocking the entire stream.
+        
+        Args:
+            symbol: The underlying symbol
+            underlying_price: Current underlying price (will fetch if None)
+            stream_callback: Async callback to stream partial results
+        
+        Returns:
+            List of IVx data dictionaries.
+        """
+        logger.info(f"TastyTrade: Starting fluid IVx streaming for {symbol}")
+        
+        # 1. Get expirations and underlying price
+        expirations = await self.get_expiration_dates(symbol)
+        if not expirations:
+            logger.warning(f"No expirations found for {symbol}")
+            return []
+
+        if underlying_price is None:
+            quote = await self.get_stock_quote(symbol)
+            if quote and quote.bid and quote.ask:
+                underlying_price = (quote.bid + quote.ask) / 2
+            else:
+                logger.warning(f"Could not get underlying price for {symbol}")
+                return []
+
+        # 2. Ensure streaming is connected
+        await self._ensure_healthy_connection()
+
+        # 3. Sort expirations and set up concurrency controls
+        sorted_expirations = sorted(expirations, key=lambda x: x["date"])
+        total_expirations = len(sorted_expirations)
+        concurrency_limit = 5  # Process 5 expirations in parallel
+        semaphore = asyncio.Semaphore(concurrency_limit)
+        
+        logger.info(f"TastyTrade: Processing {total_expirations} expirations with concurrency limit of {concurrency_limit}")
+
+        # 4. Worker function to process a single expiration
+        async def worker(exp_date_obj):
+            async with semaphore:
+                return await self._get_ivx_for_expiration(symbol, exp_date_obj, underlying_price)
+
+        # 5. Create and process tasks
+        tasks = [worker(exp) for exp in sorted_expirations]
+        completed_count = 0
+        all_results = []
+
+        for future in asyncio.as_completed(tasks):
+            try:
+                result = await future
+                completed_count += 1
+                
+                if result:
+                    all_results.append(result)
+                    logger.info(f"TastyTrade: Completed IVx calculation {completed_count}/{total_expirations} for {result['expiration_date']}")
+                    if stream_callback:
+                        await stream_callback(symbol, result, completed_count, total_expirations)
+                else:
+                    logger.warning(f"TastyTrade: IVx calculation failed for an expiration ({completed_count}/{total_expirations})")
+            
+            except Exception as e:
+                completed_count += 1
+                logger.error(f"TastyTrade: Error processing an expiration task: {e}")
+
+        logger.info(f"TastyTrade: Successfully retrieved IVx for {len(all_results)}/{total_expirations} expirations for {symbol}")
+        return all_results
+
     async def _get_ivx_for_expiration(self, symbol: str, exp_date_obj: dict, underlying_price: float) -> Optional[Dict[str, Any]]:
         """Helper to get IVx for a single expiration date."""
         exp_date = exp_date_obj['date']
@@ -2347,16 +2439,18 @@ class TastyTradeProvider(BaseProvider):
             logger.warning(f"Could not find ATM call/put for {exp_root_symbol} {exp_date} at strike {atm_strike_val}")
             return None
 
-        # 4. Fetch IV for both using the streaming greeks helper
-        greeks_tasks = [
-            self.get_streaming_greeks(atm_call.symbol),
-            self.get_streaming_greeks(atm_put.symbol)
-        ]
-        greeks_results = await asyncio.gather(*greeks_tasks)
+        # 4. Fetch IV for both using the batch streaming greeks helper
+        symbols_to_fetch = [atm_call.symbol, atm_put.symbol]
+        try:
+            greeks_results_dict = await self.get_streaming_greeks_batch(symbols_to_fetch)
+        except asyncio.TimeoutError:
+            logger.warning(f"Timeout fetching greeks for {exp_root_symbol} {exp_date}")
+            return None
 
         valid_ivs = [
-            g.get('implied_volatility') for g in greeks_results 
-            if g and g.get('implied_volatility') is not None
+            greeks.get('implied_volatility') 
+            for greeks in greeks_results_dict.values() 
+            if greeks and greeks.get('implied_volatility') is not None
         ]
         
         if not valid_ivs:
@@ -2396,7 +2490,7 @@ class TastyTradeProvider(BaseProvider):
             if symbol in self._quote_requests:
                 del self._quote_requests[symbol]
 
-    async def get_streaming_greeks(self, symbol: str, timeout: int = 10) -> Optional[Dict]:
+    async def get_streaming_greeks(self, symbol: str, timeout: int = 5) -> Optional[Dict]:
         """Subscribes to an option symbol and waits for its greeks data."""
         await self._ensure_healthy_connection()
 

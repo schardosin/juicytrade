@@ -108,12 +108,41 @@ class IVxStreamingManager:
                 logger.error(f"Could not get underlying price for {symbol}")
                 return
             
-            # Use provider-specific IVx calculation method
+            # Use provider-specific IVx calculation method with streaming support
             logger.info(f"🔧 Using provider-specific IVx method for {symbol}")
             
-            # Check if provider has the get_all_expirations_ivx method
-            if hasattr(provider, 'get_all_expirations_ivx'):
-                logger.info(f"📊 Provider {provider.name} has get_all_expirations_ivx method")
+            # Check if provider supports streaming IVx calculation
+            if hasattr(provider, "get_all_expirations_ivx_streaming"):
+                logger.info(f"📊 Provider {provider.name} supports streaming IVx calculation")
+                
+                # Create streaming callback to broadcast partial results
+                async def stream_callback(symbol_name, ivx_data, completed, total):
+                    await self._broadcast_partial_ivx_data(symbol_name, ivx_data, completed, total)
+                
+                # Call provider-specific streaming method with timeout protection
+                try:
+                    # Set a reasonable timeout to prevent connection drops
+                    ivx_results = await asyncio.wait_for(
+                        provider.get_all_expirations_ivx_streaming(symbol, underlying_price, stream_callback),
+                        timeout=120.0  # 2 minute timeout for streaming method
+                    )
+                except asyncio.TimeoutError:
+                    logger.error(f"⏰ IVx streaming calculation timeout for {symbol} after 120 seconds")
+                    return
+                except Exception as e:
+                    logger.error(f"❌ Provider-specific IVx streaming calculation failed for {symbol}: {e}")
+                    return
+                
+                if ivx_results:
+                    # Cache the complete results
+                    ivx_cache.set(symbol, ivx_results)
+                    logger.info(f"✅ Completed streaming IVx calculation for {symbol}: {len(ivx_results)} expirations")
+                else:
+                    logger.warning(f"⚠️ Provider-specific IVx streaming calculation returned no results for {symbol}")
+                    
+            # Fallback to non-streaming method if streaming not supported
+            elif hasattr(provider, "get_all_expirations_ivx"):
+                logger.info(f"📊 Provider {provider.name} has get_all_expirations_ivx method (non-streaming fallback)")
                 
                 # Call provider-specific method with timeout protection
                 try:
@@ -130,7 +159,7 @@ class IVxStreamingManager:
                     return
                 
                 if ivx_results:
-                    # Stream results as they come in (simulate streaming for provider methods)
+                    # Stream results as they come in (simulate streaming for non-streaming provider methods)
                     for i, ivx_data in enumerate(ivx_results):
                         # Stream partial result
                         await self._broadcast_partial_ivx_data(symbol, ivx_data, i+1, len(ivx_results))
@@ -142,7 +171,7 @@ class IVxStreamingManager:
                 else:
                     logger.warning(f"⚠️ Provider-specific IVx calculation returned no results for {symbol}")
             else:
-                logger.warning(f"⚠️ Provider {provider.name} does not have get_all_expirations_ivx method")
+                logger.warning(f"⚠️ Provider {provider.name} does not have IVx calculation methods")
             
         except Exception as e:
             logger.error(f"❌ Error in provider-specific IVx calculation for {symbol}: {e}")
