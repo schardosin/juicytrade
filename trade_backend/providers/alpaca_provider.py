@@ -264,76 +264,58 @@ class AlpacaProvider(BaseProvider):
     async def get_expiration_dates(self, symbol: str) -> List[dict]:
         """Get available expiration dates for options on a symbol with universal enhanced structure."""
         try:
-            # Check cache first
             cached_dates = self._get_cached_expiration_dates(symbol)
             if cached_dates:
                 self._log_info(f"Using cached expiration dates for {symbol} ({len(cached_dates)} dates)")
                 return cached_dates
 
-            # Cache miss - fetch from API
             self._log_info(f"Cache miss - fetching expiration dates for {symbol} from API")
 
+            url = f"{self._get_base_url()}/v2/options/contracts"
+            api_key, api_secret = self._get_api_credentials()
+            
+            params = {
+                "underlying_symbols": symbol,
+                "status": "active",
+                "expiration_date_gte": date.today().strftime("%Y-%m-%d")
+            }
+            
+            headers = {
+                "APCA-API-KEY-ID": api_key,
+                "APCA-API-SECRET-KEY": api_secret,
+                "accept": "application/json"
+            }
+
             expiration_dates = set()
+            
             page_token = None
-            page_count = 0
-
             while True:
-                page_count += 1
-                # Use the data API snapshots endpoint
-                url = f"{self.data_url}/v1beta1/options/snapshots/{symbol}"
-                api_key, api_secret = self._get_api_credentials()
-
-                params = {
-                    "type": "call"  # Only fetch calls to reduce data volume
-                }
                 if page_token:
                     params["page_token"] = page_token
-
-                headers = {
-                    "APCA-API-KEY-ID": api_key,
-                    "APCA-API-SECRET-KEY": api_secret,
-                    "accept": "application/json"
-                }
-
+                
                 response = requests.get(url, headers=headers, params=params)
-
-                if response.status_code == 200:
-                    data = response.json()
-                    snapshots = data.get("snapshots", {})
-                    
-                    self._log_info(f"Page {page_count}: Retrieved {len(snapshots)} option snapshots for {symbol}")
-
-                    # Extract expiration dates from option symbols
-                    for option_symbol in snapshots.keys():
-                        expiry_date = self._extract_expiry_from_symbol(option_symbol)
-                        if expiry_date:
-                            expiration_dates.add(expiry_date)
-
-                    next_page_token = data.get("next_page_token")
-                    if next_page_token:
-                        page_token = next_page_token
-                    else:
-                        break
-                else:
-                    self._log_error(f"get_expiration_dates API call page {page_count}",
-                                  Exception(f"HTTP {response.status_code}: {response.text}"))
+                if response.status_code != 200:
+                    self._log_error(f"get_expiration_dates API call",
+                                    Exception(f"HTTP {response.status_code}: {response.text}"))
+                    break
+                
+                data = response.json()
+                contracts = data.get("option_contracts", [])
+                for contract in contracts:
+                    expiration_dates.add(contract["expiration_date"])
+                
+                page_token = data.get("next_page_token")
+                if not page_token:
                     break
 
             sorted_dates = sorted(list(expiration_dates))
             
-            # Create enhanced structure
             enhanced_dates = [
-                {
-                    "date": exp_date,
-                    "symbol": symbol,
-                    "type": "unknown"  # Alpaca does not distinguish between weekly and monthly
-                }
+                {"date": exp_date, "symbol": symbol, "type": "unknown"}
                 for exp_date in sorted_dates
             ]
 
             self._log_info(f"Retrieved {len(enhanced_dates)} total expiration dates for {symbol}")
-            
-            # Cache the results for daily use
             self._cache_expiration_dates(symbol, enhanced_dates)
             
             return enhanced_dates
