@@ -2384,7 +2384,8 @@ class AlpacaProvider(BaseProvider):
             
             # Get all snapshots for this expiration in one call
             params = {
-                "expiration_date": exp_date
+                "expiration_date": exp_date,
+                "limit": 1000
             }
             
             response = requests.get(url, headers=headers, params=params)
@@ -2409,6 +2410,10 @@ class AlpacaProvider(BaseProvider):
             # First pass: collect all strikes and organize data - FIXED ITERATION PATTERN
             for option_symbol, snapshot in snapshots.items():
                 try:
+                    # Ensure the snapshot has a valid quote before processing
+                    if not snapshot.get('latestQuote'):
+                        continue
+
                     # Extract implied volatility from snapshot
                     iv = snapshot.get('impliedVolatility')
                     if iv is None or float(iv) <= 0:
@@ -2518,3 +2523,97 @@ class AlpacaProvider(BaseProvider):
         except Exception as e:
             logger.error(f"Error getting ATM contracts for {symbol} {exp_date}: {e}")
             return []
+
+    async def get_all_expirations_ivx_streaming(self, symbol: str, underlying_price: Optional[float] = None, stream_callback=None) -> List[Dict[str, Any]]:
+        """
+        Get IVx data for all expirations with a fluid, concurrent streaming implementation.
+        """
+        logger.info(f"Alpaca: Starting fluid IVx streaming for {symbol}")
+        
+        expirations = await self.get_expiration_dates(symbol)
+        if not expirations:
+            logger.warning(f"No expirations found for {symbol}")
+            return []
+
+        if underlying_price is None:
+            quote = await self.get_stock_quote(symbol)
+            if quote and quote.bid and quote.ask:
+                underlying_price = (quote.bid + quote.ask) / 2
+            else:
+                logger.warning(f"Could not get underlying price for {symbol}")
+                return []
+
+        sorted_expirations = sorted(expirations, key=lambda x: x["date"])
+        total_expirations = len(sorted_expirations)
+        concurrency_limit = 5
+        semaphore = asyncio.Semaphore(concurrency_limit)
+        
+        logger.info(f"Alpaca: Processing {total_expirations} expirations with concurrency limit of {concurrency_limit}")
+
+        async def worker(exp_date_obj):
+            async with semaphore:
+                return await self._get_ivx_for_expiration(symbol, exp_date_obj, underlying_price)
+
+        tasks = [worker(exp) for exp in sorted_expirations]
+        completed_count = 0
+        all_results = []
+
+        for future in asyncio.as_completed(tasks):
+            try:
+                result = await future
+                completed_count += 1
+                
+                if result:
+                    all_results.append(result)
+                    logger.info(f"Alpaca: Completed IVx calculation {completed_count}/{total_expirations} for {result['expiration_date']}")
+                    if stream_callback:
+                        await stream_callback(symbol, result, completed_count, total_expirations)
+                else:
+                    logger.warning(f"Alpaca: IVx calculation failed for an expiration ({completed_count}/{total_expirations})")
+            
+            except Exception as e:
+                completed_count += 1
+                logger.error(f"Alpaca: Error processing an expiration task: {e}")
+
+        logger.info(f"Alpaca: Successfully retrieved IVx for {len(all_results)}/{total_expirations} expirations for {symbol}")
+        return all_results
+
+    async def _get_ivx_for_expiration(self, symbol: str, exp_date_obj: dict, underlying_price: float) -> Optional[Dict[str, Any]]:
+        """Helper to get IVx for a single expiration date."""
+        from ..services.ivx_calculator import find_atm_strike, calculate_expected_move
+        exp_date = exp_date_obj['date']
+        
+        logger.debug(f"Processing IVx for {symbol} {exp_date}")
+
+        atm_contracts = await self._get_atm_contracts_for_ivx(symbol, exp_date, underlying_price)
+        if not atm_contracts:
+            logger.warning(f"No ATM contracts found for {symbol} {exp_date}")
+            return None
+
+        atm_strike_val = find_atm_strike(atm_contracts, underlying_price)
+        if not atm_strike_val:
+            logger.warning(f"Could not find ATM strike for {symbol} {exp_date}")
+            return None
+
+        atm_call = next((c for c in atm_contracts if c.strike_price == atm_strike_val and c.type == 'call'), None)
+        atm_put = next((c for c in atm_contracts if c.strike_price == atm_strike_val and c.type == 'put'), None)
+
+        if not atm_call or not atm_put:
+            logger.warning(f"Could not find ATM call/put for {symbol} {exp_date} at strike {atm_strike_val}")
+            return None
+
+        valid_ivs = [iv for iv in [atm_call.implied_volatility, atm_put.implied_volatility] if iv is not None]
+        
+        if not valid_ivs:
+            logger.warning(f"Failed to get IV for ATM options for {symbol} {exp_date}")
+            return None
+
+        ivx = sum(valid_ivs) / len(valid_ivs)
+        dte = (datetime.strptime(exp_date, "%Y-%m-%d").date() - datetime.now().date()).days
+        expected_move = calculate_expected_move(underlying_price, ivx, dte)
+
+        return {
+            "expiration_date": exp_date,
+            "ivx_percent": round(ivx * 100, 2),
+            "expected_move_dollars": round(expected_move, 2)
+        }
