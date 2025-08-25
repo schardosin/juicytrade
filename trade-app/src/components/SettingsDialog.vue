@@ -28,7 +28,7 @@
       <!-- Main Content -->
       <div class="settings-content">
         <!-- Providers Tab -->
-        <div v-if="activeTab === 'providers'" class="tab-content">
+        <div v-if="activeTab === 'providers'" class="tab-content providers-tab-content">
           <ProvidersTab />
         </div>
 
@@ -271,6 +271,15 @@ export default {
 .tab-content {
   min-height: 100%;
   padding: var(--spacing-xl);
+}
+
+.providers-tab-content {
+  padding-bottom: 0;
+  padding-top: 12px;
+  position: relative;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
 }
 
 .placeholder-content {
