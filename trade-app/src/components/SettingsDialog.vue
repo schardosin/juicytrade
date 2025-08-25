@@ -6,15 +6,12 @@
     :draggable="false"
     class="settings-dialog"
     header="Settings"
-    :style="{ width: '1000px', height: '800px' }"
+    :style="{ width: '1100px', height: '800px' }"
     @hide="onClose"
   >
     <div class="settings-container">
       <!-- Left Sidebar -->
       <div class="settings-sidebar">
-        <div class="sidebar-header">
-          <h3>Settings</h3>
-        </div>
         <nav class="sidebar-nav">
           <button
             v-for="tab in tabs"
@@ -147,6 +144,14 @@ export default {
 };
 </script>
 
+<style>
+.p-dialog .p-dialog-content {
+    background-color: var(--bg-secondary) !important;
+    color: var(--text-secondary) !important;
+    padding: 0;
+}
+</style>
+
 <style scoped>
 .settings-dialog {
   --dialog-bg: var(--bg-secondary);
@@ -154,10 +159,12 @@ export default {
 }
 
 :deep(.p-dialog) {
-  background-color: var(--dialog-bg) !important;
-  border: 1px solid var(--dialog-border) !important;
+  background-color: var(--bg-primary) !important;
+  border: 1px solid var(--border-primary) !important;
   border-radius: var(--radius-lg) !important;
   box-shadow: var(--shadow-lg) !important;
+  padding: 0 !important;
+  margin: 0 !important;
 }
 
 :deep(.p-dialog-header) {
@@ -165,6 +172,7 @@ export default {
   border-bottom: 1px solid var(--border-primary) !important;
   color: var(--text-primary) !important;
   padding: var(--spacing-lg) var(--spacing-xl) !important;
+  margin: 0 !important;
 }
 
 :deep(.p-dialog-title) {
@@ -182,39 +190,28 @@ export default {
   color: var(--text-primary) !important;
 }
 
-:deep(.p-dialog-content) {
-  padding: 0 !important;
-  background-color: var(--dialog-bg) !important;
-  height: calc(800px - 80px) !important;
-  overflow: hidden !important;
-}
-
 .settings-container {
   display: flex;
-  height: 100%;
+  height: calc(800px - 80px);
+  min-height: calc(800px - 80px);
+  width: 100%;
   background-color: var(--bg-secondary);
+  margin: 0;
+  padding: 0;
 }
 
 .settings-sidebar {
-  width: 200px;
+  width: 250px;
+  min-width: 250px;
+  max-width: 250px;
   background-color: var(--bg-primary);
   border-right: 1px solid var(--border-primary);
   display: flex;
   flex-direction: column;
-}
-
-.sidebar-header {
-  padding: var(--spacing-lg) var(--spacing-md);
-  border-bottom: 1px solid var(--border-primary);
-}
-
-.sidebar-header h3 {
-  margin: 0;
-  font-size: var(--font-size-md);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+  height: calc(800px - 80px);
+  min-height: calc(800px - 80px);
+  flex-shrink: 0;
+  flex-grow: 0;
 }
 
 .sidebar-nav {
@@ -227,7 +224,7 @@ export default {
   align-items: center;
   gap: var(--spacing-sm);
   width: 100%;
-  padding: var(--spacing-sm) var(--spacing-md);
+  padding: var(--spacing-md) var(--spacing-lg);
   background: none;
   border: none;
   color: var(--text-secondary);
@@ -236,6 +233,7 @@ export default {
   cursor: pointer;
   transition: var(--transition-normal);
   text-align: left;
+  position: relative;
 }
 
 .nav-item:hover {
@@ -244,9 +242,9 @@ export default {
 }
 
 .nav-item.active {
-  background-color: var(--bg-quaternary);
+  background-color: var(--bg-tertiary);
   color: var(--text-primary);
-  border-right: 2px solid var(--color-primary);
+  border-right: 3px solid var(--color-info);
 }
 
 .nav-item i {
@@ -255,15 +253,24 @@ export default {
   text-align: center;
 }
 
+.nav-item span {
+  font-weight: var(--font-weight-medium);
+}
+
+.nav-item.active span {
+  font-weight: var(--font-weight-semibold);
+}
+
 .settings-content {
   flex: 1;
   background-color: var(--bg-secondary);
   overflow-y: auto;
+  min-height: 100%;
 }
 
 .tab-content {
-  height: 100%;
-  padding: var(--spacing-xl) var(--spacing-xl) 0 var(--spacing-xl);
+  min-height: 100%;
+  padding: var(--spacing-xl);
 }
 
 .placeholder-content {
@@ -271,14 +278,14 @@ export default {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  height: 100%;
+  min-height: 400px;
   text-align: center;
   color: var(--text-secondary);
 }
 
 .placeholder-content h3 {
   margin: 0 0 var(--spacing-md) 0;
-  font-size: var(--font-size-lg);
+  font-size: var(--font-size-xl);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
 }
@@ -287,6 +294,8 @@ export default {
   margin: 0;
   font-size: var(--font-size-md);
   color: var(--text-tertiary);
+  max-width: 400px;
+  line-height: 1.5;
 }
 
 /* Custom scrollbar for content area */
