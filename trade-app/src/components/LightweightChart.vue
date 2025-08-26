@@ -121,6 +121,7 @@ export default {
           color: props.theme === "dark" ? "#141519" : "#ffffff",
         },
         textColor: props.theme === "dark" ? "#d1d4dc" : "#191919",
+        attributionLogo: false,
       },
       grid: {
         vertLines: {
