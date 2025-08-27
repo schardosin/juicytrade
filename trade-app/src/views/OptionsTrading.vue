@@ -26,8 +26,8 @@
           @trade-mode-changed="onTradeModeChanged"
         />
 
-        <!-- Options Chain Section -->
-        <div class="options-section">
+        <!-- Options Mode: Options Chain Section -->
+        <div v-if="selectedTradeMode === 'options'" class="options-section">
           <!-- Collapsible Options Chain -->
           <div class="options-chain-wrapper">
             <CollapsibleOptionsChain
@@ -46,10 +46,24 @@
             />
           </div>
         </div>
+
+        <!-- Shares Mode: Chart Section -->
+        <div v-if="selectedTradeMode === 'shares'" class="shares-section">
+          <div class="chart-wrapper">
+            <LightweightChart
+              :symbol="currentSymbol"
+              :theme="'dark'"
+              :height="400"
+              :enableRealtime="true"
+              :livePrice="livePrice"
+            />
+          </div>
+        </div>
       </div>
 
-      <!-- Right Panel -->
+      <!-- Right Panel (only for Options mode) -->
       <RightPanel
+        v-if="selectedTradeMode === 'options'"
         :currentSymbol="currentSymbol"
         :currentPrice="currentPrice"
         :priceChange="priceChange"
@@ -77,14 +91,25 @@
       @clear-selections="clearAllSelections"
     />
 
-    <!-- Bottom Trading Panel -->
+    <!-- Options Trading Panel -->
     <BottomTradingPanel
+      v-if="selectedTradeMode === 'options'"
       :visible="showBottomPanel"
       :symbol="currentSymbol"
       :underlyingPrice="currentPrice"
       :moveStrike="optionsManager.moveStrike"
       @review-send="onReviewAndSend"
       @price-adjusted="onPriceAdjusted"
+    />
+
+    <!-- Shares Trading Panel -->
+    <SharesTradingPanel
+      v-if="selectedTradeMode === 'shares'"
+      :visible="showSharesPanel"
+      :symbol="currentSymbol"
+      :underlyingPrice="currentPrice"
+      @review-send="onSharesReviewAndSend"
+      @clear-trade="onSharesClearTrade"
     />
   </div>
 </template>
@@ -98,6 +123,8 @@ import SymbolHeader from "../components/SymbolHeader.vue";
 import CollapsibleOptionsChain from "../components/CollapsibleOptionsChain.vue";
 import PayoffChart from "../components/PayoffChart.vue";
 import BottomTradingPanel from "../components/BottomTradingPanel.vue";
+import SharesTradingPanel from "../components/SharesTradingPanel.vue";
+import LightweightChart from "../components/LightweightChart.vue";
 import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
 import RightPanel from "../components/RightPanel.vue";
 import { useOrderManagement } from "../composables/useOrderManagement";
@@ -120,6 +147,8 @@ export default {
     CollapsibleOptionsChain,
     PayoffChart,
     BottomTradingPanel,
+    SharesTradingPanel,
+    LightweightChart,
     OrderConfirmationDialog,
     RightPanel,
   },
@@ -193,6 +222,7 @@ export default {
     const selectedTradeMode = ref("options");
     const isRightPanelExpanded = ref(false);
     const showBottomPanel = ref(false);
+    const showSharesPanel = ref(false);
     const currentStrikeCount = ref(20);
     const adjustedNetCredit = ref(null);
     const rightPanelControlsChart = ref(false); // Flag to indicate RightPanel is controlling chart
@@ -461,7 +491,42 @@ export default {
 
     const onTradeModeChanged = (mode) => {
       selectedTradeMode.value = mode;
+      
+      // Clear selections when switching modes
+      clearAllSelections();
+      
+      // Show appropriate panels based on mode
+      if (mode === "shares") {
+        showBottomPanel.value = false;
+        showSharesPanel.value = true;
+        isRightPanelExpanded.value = false;
+      } else if (mode === "options") {
+        showSharesPanel.value = false;
+        // showBottomPanel will be controlled by options selection logic
+      }
     };
+
+    // Shares-specific methods
+    const onSharesReviewAndSend = (orderData) => {
+      // Hide shares panel and show confirmation dialog
+      showSharesPanel.value = false;
+      initializeOrder(orderData);
+    };
+
+    const onSharesClearTrade = () => {
+      // Clear any shares-specific state if needed
+      console.log("Shares trade cleared");
+    };
+
+    // Live price data for chart
+    const livePrice = computed(() => {
+      // This would come from the smart market data store
+      return {
+        price: currentPrice.value,
+        bid: currentPrice.value - 0.01,
+        ask: currentPrice.value + 0.01,
+      };
+    });
 
     const onRightPanelCollapsed = () => {
       // Right panel collapsed
@@ -792,6 +857,7 @@ export default {
       tradeModes,
       isRightPanelExpanded,
       showBottomPanel,
+      showSharesPanel,
 
       // Options Manager
       optionsManager,
@@ -801,6 +867,7 @@ export default {
       marketStatusClass,
       estimatedCost,
       rightPanelSection,
+      livePrice,
 
       // Methods
       onExpiryChange,
@@ -813,6 +880,8 @@ export default {
       handleOrderEdit,
       onSymbolSelected,
       onTradeModeChanged,
+      onSharesReviewAndSend,
+      onSharesClearTrade,
       onRightPanelCollapsed,
       onPositionsChanged,
       onExpirationExpanded,
@@ -1009,6 +1078,19 @@ export default {
   flex: 1;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
+}
+
+.shares-section {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.chart-wrapper {
+  flex: 1;
+  padding: 16px 24px;
   overflow: hidden;
 }
 
