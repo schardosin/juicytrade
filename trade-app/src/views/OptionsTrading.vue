@@ -61,9 +61,8 @@
         </div>
       </div>
 
-      <!-- Right Panel (only for Options mode) -->
+      <!-- Right Panel (visible in both Options and Shares modes) -->
       <RightPanel
-        v-if="selectedTradeMode === 'options'"
         :currentSymbol="currentSymbol"
         :currentPrice="currentPrice"
         :priceChange="priceChange"
