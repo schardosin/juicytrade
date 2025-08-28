@@ -640,7 +640,8 @@ export default {
 }
 
 /* Limit Price Section (matches BottomTradingPanel) */
-.limit-price-section {
+.limit-price-section,
+.stop-price-section {
   display: flex;
   flex-direction: column;
   gap: 8px;
