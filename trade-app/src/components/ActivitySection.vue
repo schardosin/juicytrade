@@ -99,9 +99,16 @@
                 getFillType(order)
               }}</span>
             </div>
-            <div class="order-value">
-              <span class="value-label">LIMIT</span>
+            <div v-if="shouldShowPrice(order)" class="order-value">
+              <span class="value-label">{{ getOrderValueLabel(order) }}</span>
               <span class="value-amount">{{ formatOrderPrice(order) }}</span>
+              <span class="value-type" :class="getFillTypeClass(order)">{{
+                getFillType(order)
+              }}</span>
+            </div>
+            <div v-else class="order-value">
+              <span class="value-label">MARKET</span>
+              <span class="value-amount">—</span>
               <span class="value-type" :class="getFillTypeClass(order)">{{
                 getFillType(order)
               }}</span>
@@ -490,6 +497,20 @@ export default {
         return Math.abs(order.avg_fill_price).toFixed(2);
       }
       return "0.00";
+    };
+
+    const getOrderValueLabel = (order) => {
+      // Return appropriate label based on order type
+      if (order.order_type?.toLowerCase() === 'market') {
+        return "MARKET";
+      } else {
+        return "LIMIT";
+      }
+    };
+
+    const shouldShowPrice = (order) => {
+      // Market orders don't have a predefined price, so don't show price field
+      return order.order_type?.toLowerCase() !== 'market';
     };
 
     const formatOrderValue = (order) => {
@@ -1083,6 +1104,8 @@ export default {
       getOrderQuantity,
       getFillType,
       getFillTypeClass,
+      getOrderValueLabel,
+      shouldShowPrice,
       formatLegExpiry,
       formatLegDays,
       formatLegStrike,

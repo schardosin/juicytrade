@@ -414,7 +414,13 @@ class PublicProvider(BaseProvider):
     # === Order Management Methods ===
 
     async def place_order(self, order_data: Dict[str, Any]) -> Order:
-        """Place a trading order."""
+        """
+        Place a trading order.
+
+        Fixed based on official Public.com API documentation:
+        - Removed incorrect 'amount' field calculation that conflicts with quantity/limit_price
+        - Simplified equity order mapping (no open/close indicators needed)
+        """
         token = await self._get_access_token()
         if not token:
             raise Exception("Failed to get access token")
@@ -424,27 +430,28 @@ class PublicProvider(BaseProvider):
             'Authorization': f'Bearer {token}',
             'Content-Type': 'application/json'
         }
-        
+
         # Generate unique order ID
         order_id = str(uuid.uuid4())
-        
+
         # Map our order format to Public's format
         order_side, open_close_indicator = self._map_order_side(order_data["side"])
         instrument_type = self._get_instrument_type(order_data["symbol"])
-        
+
         # Map time in force
         time_in_force = self._map_time_in_force(order_data["time_in_force"])
-        
-        # Build expiration object
+
+        # Build expiration object (required for Public API)
         expiration = {"timeInForce": time_in_force}
-        
+
         # If using GTD, we need to provide an expiration date
         # Default to 90 days from now for GTD orders
         if time_in_force == "GTD":
             gtd_date = datetime.now() + timedelta(days=90)
             # Format as ISO 8601 datetime with timezone
             expiration["expirationTime"] = gtd_date.strftime("%Y-%m-%dT00:00:00.000Z")
-        
+
+        # Build payload according to Public API documentation
         payload = {
             "orderId": order_id,
             "instrument": {
@@ -456,30 +463,29 @@ class PublicProvider(BaseProvider):
             "expiration": expiration,
             "quantity": str(order_data["qty"])
         }
-        
-        # Add limit price if needed
-        if order_data.get("limit_price"):
-            payload["limitPrice"] = str(order_data["limit_price"])
-        
+
+        # Add limit price if needed (separate from quantity)
+        limit_price = order_data.get("limit_price")
+        if limit_price is not None:
+            payload["limitPrice"] = str(limit_price)
+
         # Add stop price if needed
         if order_data.get("stop_price"):
             payload["stopPrice"] = str(order_data["stop_price"])
-        
-        # Add open/close indicator for options
-        if open_close_indicator:
+
+        # Add open/close indicator ONLY for options (not equity)
+        if open_close_indicator and instrument_type == "OPTION":
             payload["openCloseIndicator"] = open_close_indicator
-        
-        # Add amount field (may be required by Public API)
-        if order_data.get("limit_price") and order_data.get("qty"):
-            amount = float(order_data["limit_price"]) * float(order_data["qty"])
-            payload["amount"] = str(amount)
-        
+
         try:
+            # Log the payload for debugging
+            self._log_info(f"Placing order: {payload}")
+
             response = requests.post(url, headers=headers, json=payload)
             response.raise_for_status()
             response_data = response.json()
-            
-            # Return order object
+
+            # Return order object with proper asset class determination
             return Order(
                 id=response_data.get("orderId", order_id),
                 symbol=order_data["symbol"],
@@ -494,42 +500,151 @@ class PublicProvider(BaseProvider):
                 time_in_force=order_data["time_in_force"],
                 submitted_at=datetime.now().isoformat()
             )
-            
+
+        except requests.exceptions.HTTPError as http_e:
+            # Log specific HTTP error details for debugging
+            if hasattr(http_e, 'response') and http_e.response is not None:
+                self._log_error(f"place_order HTTP {http_e.response.status_code}: {http_e.response.text}")
+            else:
+                self._log_error("place_order", http_e)
+            raise
         except requests.exceptions.RequestException as e:
             self._log_error("place_order", e)
             raise
 
     async def preview_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Preview a trading order."""
+        """
+        Preview a trading order.
+
+        Fixed: Added Null check for order_data to prevent "object of type 'NoneType' has no len()" error
+        """
         token = await self._get_access_token()
         if not token:
             raise Exception("Failed to get access token")
 
-        legs = order_data.get("legs", [])
-        if len(legs) == 1:
-            url = f"{self.base_url}/userapigateway/trading/{self.account_id}/preflight/single-leg"
-            leg = legs[0]
-            order_side, open_close_indicator = self._map_order_side(leg["side"])
-            instrument_type = self._get_instrument_type(leg["symbol"])
-            
-            payload = {
-                "instrument": {
-                    "symbol": leg["symbol"],
-                    "type": instrument_type
-                },
-                "orderSide": order_side,
-                "orderType": order_data["order_type"].upper(),
-                "expiration": {
-                    "timeInForce": self._map_time_in_force(order_data["time_in_force"])
-                },
-                "quantity": str(leg["qty"]),
-                "limitPrice": str(abs(order_data["limit_price"]))
+        # Null check to prevent "object of type 'NoneType' has no len()" error
+        if order_data is None:
+            return {
+                "status": "error",
+                "validation_errors": ["Order data is None"],
+                "commission": 0,
+                "cost": 0,
+                "fees": 0,
+                "order_cost": 0,
+                "margin_change": 0,
+                "buying_power_effect": 0,
+                "day_trades": 0,
+                "estimated_total": 0
             }
-            if open_close_indicator:
-                payload["openCloseIndicator"] = open_close_indicator
+
+        # Ensure required fields exist and are not None
+        if not order_data.get("order_type") or not order_data.get("time_in_force"):
+            missing_fields = []
+            if not order_data.get("order_type"): missing_fields.append("order_type")
+            if not order_data.get("time_in_force"): missing_fields.append("time_in_force")
+            return {
+                "status": "error",
+                "validation_errors": [f"Missing required fields: {', '.join(missing_fields)}"],
+                "commission": 0,
+                "cost": 0,
+                "fees": 0,
+                "order_cost": 0,
+                "margin_change": 0,
+                "buying_power_effect": 0,
+                "day_trades": 0,
+                "estimated_total": 0
+            }
+
+        legs = order_data.get("legs", [])
+        if not legs:
+            legs = []
+
+        limit_price = order_data.get("limit_price")
+        if limit_price is None:
+            limit_price = 0.0  # Default for preview
+
+        # Determine instrument type for the order
+        symbol = order_data.get("symbol")
+        instrument_type = "EQUITY" if symbol and not self._is_option_symbol(symbol) else "OPTION"
+        self._log_info(f"Preview order for {instrument_type} symbol: {symbol}")
+
+        # Logic:
+        # 1. Equity orders: Always use single-leg endpoint (they don't have legs in traditional sense)
+        # 2. Option orders with 1 leg: single-leg endpoint
+        # 3. Option orders with 2+ legs: multi-leg endpoint
+        if instrument_type == "EQUITY" or len(legs) <= 1:
+            url = f"{self.base_url}/userapigateway/trading/{self.account_id}/preflight/single-leg"
+
+            # Handle equity orders vs option orders differently
+            if instrument_type == "EQUITY":
+                # Equity orders: use main order data, not legs
+                order_side, open_close_indicator = self._map_order_side(order_data["side"])
+                qty = order_data.get("qty", 1)
+
+                payload = {
+                    "instrument": {
+                        "symbol": order_data["symbol"],
+                        "type": "EQUITY"
+                    },
+                    "orderSide": order_side,
+                    "orderType": order_data["order_type"].upper(),
+                    "expiration": {
+                        "timeInForce": self._map_time_in_force(order_data["time_in_force"])
+                    },
+                    "quantity": str(qty)
+                }
+
+                # Only add limitPrice if it's not the default 0 (means it was set by user)
+                if limit_price != 0.0:
+                    payload["limitPrice"] = str(abs(limit_price))
+            else:
+                # Option orders: use legs data
+                if len(legs) > 0:
+                    leg = legs[0]
+                    order_side, open_close_indicator = self._map_order_side(leg["side"])
+                    option_instrument_type = self._get_instrument_type(leg["symbol"])
+                    qty = leg["qty"]
+
+                    payload = {
+                        "instrument": {
+                            "symbol": leg["symbol"],
+                            "type": option_instrument_type
+                        },
+                        "orderSide": order_side,
+                        "orderType": order_data["order_type"].upper(),
+                        "expiration": {
+                            "timeInForce": self._map_time_in_force(order_data["time_in_force"])
+                        },
+                        "quantity": str(qty)
+                    }
+                    # Only add limitPrice if it's not the default 0
+                    if limit_price != 0.0:
+                        payload["limitPrice"] = str(abs(limit_price))
+                    if open_close_indicator:
+                        payload["openCloseIndicator"] = open_close_indicator
+                else:
+                    # Fallback: treat as equity order
+                    order_side, open_close_indicator = self._map_order_side(order_data["side"])
+                    qty = order_data.get("qty", 1)
+
+                    payload = {
+                        "instrument": {
+                            "symbol": order_data["symbol"],
+                            "type": "EQUITY"
+                        },
+                        "orderSide": order_side,
+                        "orderType": order_data["order_type"].upper(),
+                        "expiration": {
+                            "timeInForce": self._map_time_in_force(order_data["time_in_force"])
+                        },
+                        "quantity": str(qty)
+                    }
+                    # Only add limitPrice if it's not the default 0
+                    if limit_price != 0.0:
+                        payload["limitPrice"] = str(abs(limit_price))
         else:
             url = f"{self.base_url}/userapigateway/trading/{self.account_id}/preflight/multi-leg"
-            
+
             legs_payload = []
             for leg in legs:
                 order_side, open_close_indicator = self._map_order_side(leg["side"])
@@ -553,9 +668,12 @@ class PublicProvider(BaseProvider):
                     "expirationTime": (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
                 },
                 "quantity": str(order_data.get("qty", 1)),
-                "limitPrice": str(order_data["limit_price"]),
                 "legs": legs_payload
             }
+
+            # Only add limitPrice if it's not the default 0
+            if limit_price != 0.0:
+                payload["limitPrice"] = str(limit_price)
 
         headers = {
             'Authorization': f'Bearer {token}',
@@ -563,6 +681,9 @@ class PublicProvider(BaseProvider):
         }
 
         try:
+            # Log the payload for debugging potential malformed JSON issues
+            self._log_info(f"Sending payload to Public API: {json.dumps(payload, indent=2)}")
+
             response = requests.post(url, headers=headers, json=payload)
             response.raise_for_status()
             preview_response = response.json()
@@ -570,6 +691,9 @@ class PublicProvider(BaseProvider):
             margin_impact = preview_response.get("marginImpact") or {}
             
             regulatory_fees = preview_response.get("regulatoryFees", {})
+            # Handle case where API returns None instead of empty dict
+            if regulatory_fees is None:
+                regulatory_fees = {}
             total_regulatory_fees = sum(float(fee) for fee in regulatory_fees.values() if fee)
             estimated_index_option_fee_raw = preview_response.get("estimatedIndexOptionFee", 0)
             estimated_index_option_fee = float(estimated_index_option_fee_raw) if estimated_index_option_fee_raw is not None else 0.0
@@ -658,11 +782,18 @@ class PublicProvider(BaseProvider):
             # Format as ISO 8601 datetime with timezone
             expiration["expirationTime"] = gtd_date.strftime("%Y-%m-%dT00:00:00.000Z")
         
+        # Handle limit_price safely
+        limit_price = order_data.get("limit_price")
+        qty = order_data.get("qty", 1)
+
+        if limit_price is None or qty is None:
+            raise ValueError("Limit price and quantity are required for multi-leg orders")
+
         payload = {
             "orderId": order_id,
-            "quantity": str(order_data.get("qty", 1)),
+            "quantity": str(qty),
             "type": order_data["order_type"].upper(),
-            "limitPrice": str(order_data["limit_price"]),
+            "limitPrice": str(limit_price),
             "expiration": expiration,
             "legs": legs
         }
