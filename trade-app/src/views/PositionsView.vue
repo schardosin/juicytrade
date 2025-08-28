@@ -466,6 +466,8 @@ export default {
       onOrderSuccess: () => {
         // Clear all selections when order is successful
         clearAllSelections();
+        // Also clear equity position selections
+        clearAllEquityPositions();
       }
     });
 
