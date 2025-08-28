@@ -79,7 +79,74 @@
 
       <!-- Center: Price Progress Bar -->
       <div class="price-section">
-        <div class="price-row">
+        <!-- Stop Price Section (shown above prices for stop orders) -->
+        <div v-if="needsStopPrice" class="stop-price-section">
+          <span class="price-label">Stop Trigger Price</span>
+          <div class="price-input-group">
+            <button
+              class="price-btn lock-btn"
+              :class="{ locked: stopPriceLocked }"
+              @click="toggleStopPriceLock"
+              :title="
+                stopPriceLocked
+                  ? 'Unlock automatic price updates'
+                  : 'Lock price (disable automatic updates)'
+              "
+            >
+              <div class="lock-icon" :class="{ locked: stopPriceLocked }">
+                <div class="lock-body"></div>
+                <div
+                  class="lock-shackle"
+                  :class="{ open: !stopPriceLocked }"
+                ></div>
+              </div>
+            </button>
+            <input
+              v-model="stopPrice"
+              type="number"
+              step="0.01"
+              class="price-input"
+            />
+            <button class="price-btn" @click="decrementStopPrice">-</button>
+            <button class="price-btn" @click="incrementStopPrice">+</button>
+          </div>
+        </div>
+
+        <!-- Limit Price Section (shown above prices for limit orders) -->
+        <div v-if="needsLimitPrice" class="limit-price-section">
+          <span class="price-label">Limit Price</span>
+          <div class="price-input-group">
+            <button
+              class="price-btn lock-btn"
+              :class="{ locked: priceLocked }"
+              @click="togglePriceLock"
+              :title="
+                priceLocked
+                  ? 'Unlock automatic price updates'
+                  : 'Lock price (disable automatic updates)'
+              "
+            >
+              <div class="lock-icon" :class="{ locked: priceLocked }">
+                <div class="lock-body"></div>
+                <div
+                  class="lock-shackle"
+                  :class="{ open: !priceLocked }"
+                ></div>
+              </div>
+            </button>
+            <input
+              v-model="limitPrice"
+              type="number"
+              step="0.01"
+              class="price-input"
+            />
+            <button class="price-btn" @click="decrementPrice">-</button>
+            <button class="price-btn" @click="incrementPrice">+</button>
+          </div>
+        </div>
+
+        <!-- Progress Bar Row -->
+        <div class="progress-row">
           <div class="bid-section">
             <span class="price-label">BID (OPP)</span>
             <div class="price-display">
@@ -118,39 +185,6 @@
               <span class="price-dot ask"></span>
               <span class="price-text">${{ askPrice.toFixed(2) }} db</span>
             </div>
-          </div>
-        </div>
-
-        <!-- Limit Price Section (only shown for limit orders) -->
-        <div v-if="needsLimitPrice" class="limit-price-row">
-          <span class="limit-label">Limit Price</span>
-          <div class="limit-input-group">
-            <button
-              class="price-btn lock-btn"
-              :class="{ locked: priceLocked }"
-              @click="togglePriceLock"
-              :title="
-                priceLocked
-                  ? 'Unlock automatic price updates'
-                  : 'Lock price (disable automatic updates)'
-              "
-            >
-              <div class="lock-icon" :class="{ locked: priceLocked }">
-                <div class="lock-body"></div>
-                <div
-                  class="lock-shackle"
-                  :class="{ open: !priceLocked }"
-                ></div>
-              </div>
-            </button>
-            <input
-              v-model="limitPrice"
-              type="number"
-              step="0.01"
-              class="limit-input"
-            />
-            <button class="price-btn" @click="decrementPrice">-</button>
-            <button class="price-btn" @click="incrementPrice">+</button>
           </div>
         </div>
       </div>
@@ -240,6 +274,7 @@ export default {
     const limitPrice = ref(0);
     const stopPrice = ref(0);
     const priceLocked = ref(false);
+    const stopPriceLocked = ref(false);
 
     // Get live price data
     const livePrice = computed(() => {
@@ -354,6 +389,10 @@ export default {
       priceLocked.value = !priceLocked.value;
     };
 
+    const toggleStopPriceLock = () => {
+      stopPriceLocked.value = !stopPriceLocked.value;
+    };
+
     // Check if user has existing position for this symbol (mock for now)
     const hasExistingPosition = ref(false); // In real app, this would check positions API
     
@@ -462,6 +501,7 @@ export default {
       limitPrice,
       stopPrice,
       priceLocked,
+      stopPriceLocked,
 
       // Computed
       bidPrice,
@@ -686,7 +726,52 @@ export default {
   gap: 12px;
 }
 
-.price-row {
+/* Limit Price Section (matches BottomTradingPanel) */
+.limit-price-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.price-input-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 1;
+}
+
+.price-input {
+  background-color: var(--bg-quaternary);
+  border: 1px solid var(--border-secondary);
+  color: var(--text-primary);
+  padding: 6px 12px;
+  border-radius: 4px;
+  text-align: center;
+  font-size: 14px;
+  font-weight: 600;
+  flex: 1;
+  min-width: 80px;
+}
+
+.price-input:focus {
+  outline: none;
+  border-color: var(--color-brand);
+}
+
+/* Hide number input arrows/spinners */
+.price-input::-webkit-outer-spin-button,
+.price-input::-webkit-inner-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}
+
+.price-input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
+/* Progress Row */
+.progress-row {
   display: flex;
   align-items: center;
   gap: 16px;

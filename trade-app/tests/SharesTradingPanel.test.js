@@ -327,8 +327,8 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
       await orderTypeSelect.setValue('limit');
       await nextTick();
 
-      const limitPriceRow = wrapper.find('.limit-price-row');
-      expect(limitPriceRow.exists()).toBe(true);
+      const limitPriceSection = wrapper.find('.limit-price-section');
+      expect(limitPriceSection.exists()).toBe(true);
     });
 
     it('hides limit price input for market orders', async () => {
@@ -336,8 +336,8 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
       await orderTypeSelect.setValue('market');
       await nextTick();
 
-      const limitPriceRow = wrapper.find('.limit-price-row');
-      expect(limitPriceRow.exists()).toBe(false);
+      const limitPriceSection = wrapper.find('.limit-price-section');
+      expect(limitPriceSection.exists()).toBe(false);
     });
 
     it('shows limit price input for stop limit orders', async () => {
@@ -345,8 +345,8 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
       await orderTypeSelect.setValue('stop_limit');
       await nextTick();
 
-      const limitPriceRow = wrapper.find('.limit-price-row');
-      expect(limitPriceRow.exists()).toBe(true);
+      const limitPriceSection = wrapper.find('.limit-price-section');
+      expect(limitPriceSection.exists()).toBe(true);
     });
   });
 
@@ -399,7 +399,7 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
     });
 
     it('displays limit price controls for limit orders', () => {
-      const limitInput = wrapper.find('.limit-input');
+      const limitInput = wrapper.find('.price-input');
       const priceButtons = wrapper.findAll('.price-btn');
       const lockBtn = wrapper.find('.lock-btn');
 
@@ -409,14 +409,14 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
     });
 
     it('initializes limit price to mid price', () => {
-      const limitInput = wrapper.find('.limit-input');
+      const limitInput = wrapper.find('.price-input');
       const expectedMidPrice = wrapper.vm.midPrice;
       
       expect(parseFloat(limitInput.element.value)).toBeCloseTo(expectedMidPrice, 2);
     });
 
     it('increments limit price when + button clicked', async () => {
-      const limitInput = wrapper.find('.limit-input');
+      const limitInput = wrapper.find('.price-input');
       const initialPrice = parseFloat(limitInput.element.value);
       
       const incrementBtn = wrapper.findAll('.price-btn').find(btn => btn.text() === '+');
@@ -426,7 +426,7 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
     });
 
     it('decrements limit price when - button clicked', async () => {
-      const limitInput = wrapper.find('.limit-input');
+      const limitInput = wrapper.find('.price-input');
       const initialPrice = parseFloat(limitInput.element.value);
       
       const decrementBtn = wrapper.findAll('.price-btn').find(btn => btn.text() === '-');
@@ -515,7 +515,7 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
     });
 
     it('calculates left progress when limit price below mid', async () => {
-      const limitInput = wrapper.find('.limit-input');
+      const limitInput = wrapper.find('.price-input');
       const midPrice = wrapper.vm.midPrice;
       const bidPrice = wrapper.vm.bidPrice;
       
@@ -529,7 +529,7 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
     });
 
     it('calculates right progress when limit price above mid', async () => {
-      const limitInput = wrapper.find('.limit-input');
+      const limitInput = wrapper.find('.price-input');
       const midPrice = wrapper.vm.midPrice;
       
       // Set limit price above mid
@@ -542,7 +542,7 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
     });
 
     it('shows no progress when limit price equals mid', async () => {
-      const limitInput = wrapper.find('.limit-input');
+      const limitInput = wrapper.find('.price-input');
       const midPrice = wrapper.vm.midPrice;
       
       await limitInput.setValue(midPrice.toString());
@@ -686,7 +686,7 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
       await orderTypeSelect.setValue('limit');
       await nextTick();
 
-      const limitInput = wrapper.find('.limit-input');
+      const limitInput = wrapper.find('.price-input');
       await limitInput.setValue('642.75');
 
       const reviewBtn = wrapper.find('.review-btn');
@@ -859,7 +859,7 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
       await orderTypeSelect.setValue('limit');
       await nextTick();
 
-      const limitInput = wrapper.find('.limit-input');
+      const limitInput = wrapper.find('.price-input');
       
       // Test very large price
       await limitInput.setValue('99999.99');

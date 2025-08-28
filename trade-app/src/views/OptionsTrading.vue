@@ -49,15 +49,13 @@
 
         <!-- Shares Mode: Chart Section -->
         <div v-if="selectedTradeMode === 'shares'" class="shares-section">
-          <div class="chart-wrapper">
-            <LightweightChart
-              :symbol="currentSymbol"
-              :theme="'dark'"
-              :height="400"
-              :enableRealtime="true"
-              :livePrice="livePrice"
-            />
-          </div>
+          <LightweightChart
+            :symbol="currentSymbol"
+            :theme="'dark'"
+            :height="chartHeight"
+            :enableRealtime="true"
+            :livePrice="livePrice"
+          />
         </div>
       </div>
 
@@ -517,6 +515,13 @@ export default {
       console.log("Shares trade cleared");
     };
 
+    // Chart height calculation (similar to ChartView)
+    const chartHeight = computed(() => {
+      // Calculate chart height based on available space
+      // Account for TopBar (~60px), SymbolHeader (~80px), and trading panel (~200px)
+      return window.innerHeight - 340;
+    });
+
     // Live price data for chart
     const livePrice = computed(() => {
       // This would come from the smart market data store
@@ -867,6 +872,7 @@ export default {
       estimatedCost,
       rightPanelSection,
       livePrice,
+      chartHeight,
 
       // Methods
       onExpiryChange,
