@@ -553,56 +553,59 @@ describe('SharesTradingPanel - Shares Trading Interface', () => {
     });
   });
 
-  describe('Statistics Display', () => {
-    beforeEach(() => {
+  describe('Stop Price Controls', () => {
+    beforeEach(async () => {
       wrapper = mount(SharesTradingPanel, {
         props: {
           visible: true,
           symbol: 'SPY'
         }
       });
+
+      // Switch to stop market order to show stop price controls
+      const orderTypeSelect = wrapper.find('.order-type-section .config-select');
+      await orderTypeSelect.setValue('stop_market');
+      await nextTick();
     });
 
-    it('displays all required statistics', () => {
-      const statGroups = wrapper.findAll('.stat-group');
-      
-      expect(statGroups.length).toBe(8);
-      
-      const statLabels = statGroups.map(group => group.find('.stat-label').text());
-      expect(statLabels).toContain('Position');
-      expect(statLabels).toContain('Avg Cost');
-      expect(statLabels).toContain('Day P&L');
-      expect(statLabels).toContain('Total P&L');
-      expect(statLabels).toContain('Day Change');
-      expect(statLabels).toContain('Market Cap');
-      expect(statLabels).toContain('Volume');
-      expect(statLabels).toContain('Buying Power');
+    it('displays stop price controls for stop orders', () => {
+      const stopPriceSection = wrapper.find('.stop-price-section');
+      const stopInput = wrapper.find('.stop-price-section .price-input');
+      const stopLockBtn = wrapper.find('.stop-price-section .lock-btn');
+
+      expect(stopPriceSection.exists()).toBe(true);
+      expect(stopInput.exists()).toBe(true);
+      expect(stopLockBtn.exists()).toBe(true);
     });
 
-    it('displays default mock values correctly', () => {
-      const stats = wrapper.vm.stats;
-      
-      expect(stats.position).toBe('0');
-      expect(stats.avgCost).toBe('0.00');
-      expect(stats.dayPL).toBe(0);
-      expect(stats.totalPL).toBe(0);
-      expect(stats.dayChange).toBe(0);
-      expect(stats.marketCap).toBe('2.1T');
-      expect(stats.volume).toBe('51.5M');
-      expect(stats.buyingPower).toBe('10,000');
+    it('shows stop price for stop market orders', async () => {
+      const orderTypeSelect = wrapper.find('.order-type-section .config-select');
+      await orderTypeSelect.setValue('stop_market');
+      await nextTick();
+
+      const stopPriceSection = wrapper.find('.stop-price-section');
+      expect(stopPriceSection.exists()).toBe(true);
     });
 
-    it('applies correct CSS classes for positive/negative values', () => {
-      // Mock positive values
-      wrapper.vm.stats.dayPL = 150;
-      wrapper.vm.stats.totalPL = 500;
-      wrapper.vm.stats.dayChange = 2.5;
-      
-      // Force reactivity
-      wrapper.vm.$forceUpdate();
-      
-      // Note: This test would need the actual implementation to set positive/negative classes
-      // The current mock implementation returns 0 values
+    it('shows stop price for stop limit orders', async () => {
+      const orderTypeSelect = wrapper.find('.order-type-section .config-select');
+      await orderTypeSelect.setValue('stop_limit');
+      await nextTick();
+
+      const stopPriceSection = wrapper.find('.stop-price-section');
+      const limitPriceSection = wrapper.find('.limit-price-section');
+      expect(stopPriceSection.exists()).toBe(true);
+      expect(limitPriceSection.exists()).toBe(true);
+    });
+
+    it('toggles stop price lock when lock button clicked', async () => {
+      const stopLockBtn = wrapper.find('.stop-price-section .lock-btn');
+      expect(wrapper.vm.stopPriceLocked).toBe(false);
+
+      await stopLockBtn.trigger('click');
+
+      expect(wrapper.vm.stopPriceLocked).toBe(true);
+      expect(stopLockBtn.classes()).toContain('locked');
     });
   });
 

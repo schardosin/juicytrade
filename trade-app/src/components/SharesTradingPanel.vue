@@ -1,42 +1,6 @@
 <template>
   <!-- Simplified Bottom Trading Panel for Shares -->
   <div v-if="visible" class="bottom-panel slide-up">
-    <!-- Top Stats Row -->
-    <div class="stats-row">
-      <div class="stat-group">
-        <span class="stat-label">Position</span>
-        <span class="stat-value">{{ stats.position }}</span>
-      </div>
-      <div class="stat-group">
-        <span class="stat-label">Avg Cost</span>
-        <span class="stat-value">${{ stats.avgCost }}</span>
-      </div>
-      <div class="stat-group">
-        <span class="stat-label">Day P&L</span>
-        <span class="stat-value" :class="stats.dayPL >= 0 ? 'positive' : 'negative'">${{ stats.dayPL }}</span>
-      </div>
-      <div class="stat-group">
-        <span class="stat-label">Total P&L</span>
-        <span class="stat-value" :class="stats.totalPL >= 0 ? 'positive' : 'negative'">${{ stats.totalPL }}</span>
-      </div>
-      <div class="stat-group">
-        <span class="stat-label">Day Change</span>
-        <span class="stat-value" :class="stats.dayChange >= 0 ? 'positive' : 'negative'">{{ stats.dayChange }}%</span>
-      </div>
-      <div class="stat-group">
-        <span class="stat-label">Market Cap</span>
-        <span class="stat-value">{{ stats.marketCap }}</span>
-      </div>
-      <div class="stat-group">
-        <span class="stat-label">Volume</span>
-        <span class="stat-value">{{ stats.volume }}</span>
-      </div>
-      <div class="stat-group">
-        <span class="stat-label">Buying Power</span>
-        <span class="stat-value">${{ stats.buyingPower }}</span>
-      </div>
-    </div>
-
     <!-- Main Trading Row -->
     <div class="trading-row">
       <!-- Left Side: Order Side and Quantity -->
@@ -339,20 +303,6 @@ export default {
       return 0;
     });
 
-    // Stats calculations (mock data for now)
-    const stats = computed(() => {
-      // In a real implementation, this would come from positions data
-      return {
-        position: "0", // Current position quantity
-        avgCost: "0.00", // Average cost basis
-        dayPL: 0, // Day P&L
-        totalPL: 0, // Total P&L
-        dayChange: 0, // Day change percentage
-        marketCap: "2.1T", // Market cap (mock)
-        volume: "51.5M", // Volume (mock)
-        buyingPower: "10,000", // Available buying power (mock)
-      };
-    });
 
     const canSubmit = computed(() => {
       return quantity.value > 0 && props.symbol;
@@ -511,7 +461,6 @@ export default {
       needsStopPrice,
       leftProgressPercent,
       rightProgressPercent,
-      stats,
       canSubmit,
 
       // Methods
@@ -522,6 +471,7 @@ export default {
       incrementStopPrice,
       decrementStopPrice,
       togglePriceLock,
+      toggleStopPriceLock,
       handleReviewSend,
       handleClear,
     };
@@ -547,43 +497,6 @@ export default {
 
 .bottom-panel.slide-up {
   transform: translateY(0);
-}
-
-/* Stats Row - Very Compact */
-.stats-row {
-  display: flex;
-  justify-content: space-between;
-  padding: 6px var(--spacing-lg);
-  background-color: var(--bg-primary);
-  border-bottom: 1px solid var(--border-primary);
-}
-
-.stat-group {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 60px;
-}
-
-.stat-label {
-  font-size: 9px;
-  color: var(--text-tertiary);
-  font-weight: var(--font-weight-medium);
-  margin-bottom: 2px;
-}
-
-.stat-value {
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-primary);
-}
-
-.stat-value.positive {
-  color: var(--color-success);
-}
-
-.stat-value.negative {
-  color: var(--color-danger);
 }
 
 /* Main Trading Row */
@@ -1137,11 +1050,6 @@ export default {
   .right-controls {
     min-width: auto;
     width: 100%;
-  }
-
-  .stats-row {
-    flex-wrap: wrap;
-    gap: 4px;
   }
 
   .config-row {
