@@ -515,11 +515,33 @@ export default {
       console.log("Shares trade cleared");
     };
 
-    // Chart height calculation (similar to ChartView)
+    // Window height tracking for responsive chart
+    const windowHeight = ref(window.innerHeight);
+    
+    // Dynamic chart height calculation
     const chartHeight = computed(() => {
-      // Calculate chart height based on available space
-      // Account for TopBar (~60px), SymbolHeader (~80px), and trading panel (~200px)
-      return window.innerHeight - 340;
+      // Calculate available space dynamically
+      // TopBar: ~60px, SymbolHeader: ~80px
+      const fixedElements = 140;
+      
+      // Trading panel height varies based on mode and visibility
+      let tradingPanelHeight = 0;
+      if (selectedTradeMode.value === 'shares' && showSharesPanel.value) {
+        // SharesTradingPanel without stats header is smaller (~160px)
+        tradingPanelHeight = 160;
+      } else if (selectedTradeMode.value === 'options' && showBottomPanel.value) {
+        // BottomTradingPanel with stats is larger (~200px)
+        tradingPanelHeight = 200;
+      }
+      
+      // Chart controls at bottom: ~60px
+      const chartControls = 60;
+      
+      // Calculate remaining space for chart using reactive window height
+      const availableHeight = windowHeight.value - fixedElements - tradingPanelHeight - chartControls;
+      
+      // Ensure minimum height
+      return Math.max(availableHeight, 300);
     });
 
     // Live price data for chart
@@ -672,6 +694,11 @@ export default {
       }
     };
 
+    // Window resize handler for responsive chart
+    const handleWindowResize = () => {
+      windowHeight.value = window.innerHeight;
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       // The SmartMarketDataStore is already connected via main.js.
@@ -704,12 +731,18 @@ export default {
       };
 
       window.addEventListener("websocket-recovered", handleSystemRecovery);
+      
+      // Add window resize listener for responsive chart
+      window.addEventListener('resize', handleWindowResize);
     });
 
     onUnmounted(() => {
       const cleanup = setupSymbolSelectionListener();
       cleanup();
-      // No need to remove the event listener here as it's tied to the component's lifecycle
+      
+      // Remove window resize listener
+      window.removeEventListener('resize', handleWindowResize);
+      // No need to remove the websocket-recovered event listener here as it's tied to the component's lifecycle
     });
 
     // Watchers
