@@ -354,15 +354,22 @@ export default {
       priceLocked.value = !priceLocked.value;
     };
 
+    // Check if user has existing position for this symbol (mock for now)
+    const hasExistingPosition = ref(false); // In real app, this would check positions API
+    
     const handleReviewSend = () => {
+      // Smart logic: If user selects "sell" but has no existing positions, treat as short sell
+      const isShortSell = orderSide.value === 'sell' && !hasExistingPosition.value;
+      
       const orderData = {
         symbol: props.symbol,
-        side: orderSide.value,
+        side: orderSide.value, // Send the actual side (buy or sell)
         quantity: quantity.value,
         orderType: selectedOrderType.value,
         timeInForce: selectedTimeInForce.value,
         limitPrice: needsLimitPrice.value ? limitPrice.value : null,
         stopPrice: needsStopPrice.value ? stopPrice.value : null,
+        is_short_sell: isShortSell, // Backend will convert to sell_short if true
         estimatedCost: calculateEstimatedCost(),
         accountName: "Paper Trading Account", // This would come from account data
       };

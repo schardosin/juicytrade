@@ -171,12 +171,13 @@ class OrderService {
 
   /**
    * Determine if order is single-leg or multi-leg
-   * @param {Array} legs - Order legs
+   * @param {Array} legs - Order legs (may be undefined for equity orders)
    * @returns {string} 'single-leg' or 'multi-leg'
    */
   determineOrderType(legs) {
+    // For equity orders (no legs), treat as single-leg
     if (!legs || legs.length === 0) {
-      throw new Error('No legs provided');
+      return 'single-leg';
     }
     
     if (legs.length === 1) {
@@ -203,18 +204,48 @@ class OrderService {
       quantity = 1,
       timeInForce = "day",
       orderType = "limit",
+      side,
+      stopPrice,
     } = orderData;
 
-    // Use limitPrice if available, otherwise fall back to orderPrice
-    // FIXED: Trust the UI to send correctly signed values - no more sign correction
-    const price = limitPrice !== undefined ? limitPrice : orderPrice;
+    // Check if this is an equity order (no legs, has symbol and side)
+    if (!legs && symbol && side) {
+      // Equity order
+      const payload = {
+        symbol: symbol,
+        side: side,
+        qty: quantity,
+        order_type: orderType.toLowerCase(),
+        time_in_force: timeInForce.toLowerCase(),
+      };
 
-    return {
-      legs: this.formatLegs(legs),
-      order_type: orderType.toLowerCase(),
-      time_in_force: timeInForce.toLowerCase(),
-      limit_price: price, // Backend expects limit_price, not order_price
-    };
+      // Add short sell flag if present
+      if (orderData.is_short_sell) {
+        payload.is_short_sell = true;
+      }
+
+      // Add price parameters based on order type
+      if (limitPrice !== undefined && (orderType === "limit" || orderType === "stop_limit")) {
+        payload.limit_price = limitPrice;
+      }
+      if (stopPrice !== undefined && (orderType === "stop" || orderType === "stop_limit" || orderType === "stop_market")) {
+        payload.stop_price = stopPrice;
+      }
+
+      return payload;
+    } else {
+      // Options order (legacy format)
+      // Use limitPrice if available, otherwise fall back to orderPrice
+      // FIXED: Trust the UI to send correctly signed values - no more sign correction
+      const price = limitPrice !== undefined ? limitPrice : orderPrice;
+
+      return {
+        legs: this.formatLegs(legs),
+        order_type: orderType.toLowerCase(),
+        time_in_force: timeInForce.toLowerCase(),
+        limit_price: price, // Backend expects limit_price, not order_price
+      };
+    }
   }
 
   /**
@@ -279,31 +310,49 @@ class OrderService {
       errors.push("Symbol is required");
     }
 
-    if (!orderData.expiry) {
-      errors.push("Expiry date is required");
-    }
+    // Check if this is an equity order (no legs)
+    if (!orderData.legs && orderData.side) {
+      // Equity order validation
+      if (!orderData.side) {
+        errors.push("Order side is required");
+      }
+      if (!orderData.quantity || orderData.quantity <= 0) {
+        errors.push("Quantity must be greater than 0");
+      }
+      if (orderData.orderType === "limit" && (!orderData.limitPrice || orderData.limitPrice <= 0)) {
+        errors.push("Limit price is required for limit orders");
+      }
+      if ((orderData.orderType === "stop" || orderData.orderType === "stop_limit") && (!orderData.stopPrice || orderData.stopPrice <= 0)) {
+        errors.push("Stop price is required for stop orders");
+      }
+    } else {
+      // Options order validation (legacy)
+      if (!orderData.expiry) {
+        errors.push("Expiry date is required");
+      }
 
-    if (!orderData.legs || orderData.legs.length === 0) {
-      errors.push("At least one leg is required");
-    }
+      if (!orderData.legs || orderData.legs.length === 0) {
+        errors.push("At least one leg is required");
+      }
 
-    if (orderData.orderPrice === null || orderData.orderPrice === undefined) {
-      errors.push("Order price is required");
-    }
+      if (orderData.orderPrice === null || orderData.orderPrice === undefined) {
+        errors.push("Order price is required");
+      }
 
-    // Validate legs
-    if (orderData.legs) {
-      orderData.legs.forEach((leg, index) => {
-        if (!leg.symbol) {
-          errors.push(`Leg ${index + 1}: Symbol is required`);
-        }
-        if (!leg.side) {
-          errors.push(`Leg ${index + 1}: Side is required`);
-        }
-        if (!leg.ratio_qty) {
-          errors.push(`Leg ${index + 1}: Quantity is required`);
-        }
-      });
+      // Validate legs
+      if (orderData.legs) {
+        orderData.legs.forEach((leg, index) => {
+          if (!leg.symbol) {
+            errors.push(`Leg ${index + 1}: Symbol is required`);
+          }
+          if (!leg.side) {
+            errors.push(`Leg ${index + 1}: Side is required`);
+          }
+          if (!leg.ratio_qty) {
+            errors.push(`Leg ${index + 1}: Quantity is required`);
+          }
+        });
+      }
     }
 
     return {

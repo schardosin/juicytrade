@@ -1094,7 +1094,7 @@ class TradierProvider(BaseProvider):
             return None
     
     async def place_order(self, order_data: Dict[str, Any]) -> Order:
-        """Place a trading order."""
+        """Place a trading order with enhanced equity support."""
         try:
             order_url = f"{self.base_url}/v1/accounts/{self.account_id}/orders"
             headers = {
@@ -1102,90 +1102,185 @@ class TradierProvider(BaseProvider):
                 "Accept": "application/json"
             }
 
-            if self._is_option_symbol(order_data["symbol"]):
-                 payload = {
+            symbol = order_data["symbol"]
+            order_type = order_data.get("order_type", "market")
+            
+            if self._is_option_symbol(symbol):
+                # Option order
+                parsed = self._parse_option_symbol(symbol)
+                if not parsed:
+                    raise Exception(f"Invalid option symbol: {symbol}")
+                
+                payload = {
                     "class": "option",
-                    "symbol": self._parse_option_symbol(order_data["symbol"])["underlying"],
-                    "option_symbol": order_data["symbol"],
+                    "symbol": parsed["underlying"],
+                    "option_symbol": symbol,
                     "side": order_data["side"],
                     "quantity": str(order_data["qty"]),
-                    "type": order_data["order_type"],
-                    "duration": order_data["time_in_force"],
+                    "type": order_type,
+                    "duration": order_data.get("time_in_force", "day"),
                 }
+                
+                # Add price for limit orders
+                if order_type in ["limit"] and order_data.get("limit_price"):
+                    payload["price"] = f"{order_data['limit_price']:.2f}"
+                    
             else:
+                # Equity order
+                # For short selling, use "sell_short" instead of "sell"
+                order_side = order_data["side"]
+                if order_side == "sell" and order_data.get("is_short_sell", False):
+                    order_side = "sell_short"
+                
                 payload = {
                     "class": "equity",
-                    "symbol": order_data["symbol"],
-                    "side": order_data["side"],
+                    "symbol": symbol,
+                    "side": order_side,
                     "quantity": str(order_data["qty"]),
-                    "type": order_data["order_type"],
-                    "duration": order_data["time_in_force"],
+                    "type": order_type,
+                    "duration": order_data.get("time_in_force", "day"),
                 }
+                
+                # Add price parameters based on order type
+                if order_type in ["limit", "stop_limit"] and order_data.get("limit_price"):
+                    payload["price"] = f"{order_data['limit_price']:.2f}"
+                if order_type in ["stop", "stop_limit"] and order_data.get("stop_price"):
+                    payload["stop"] = f"{order_data['stop_price']:.2f}"
 
-            if order_data.get("limit_price"):
-                payload["price"] = f"{order_data['limit_price']:.2f}"
+            logger.info(f"🔄 Tradier: Placing {order_type} order for {symbol} - {order_data['side']} {order_data['qty']} shares")
+            logger.debug(f"📊 Tradier: Order payload: {payload}")
 
             async with httpx.AsyncClient() as client:
                 resp = await client.post(order_url, headers=headers, data=payload)
                 resp.raise_for_status()
                 order_response = resp.json()
             
+            logger.info(f"📊 Tradier: Order response: {order_response}")
+            
             order_id = order_response.get("order", {}).get("id")
             if order_id:
+                logger.info(f"✅ Tradier: Order placed successfully with ID: {order_id}")
                 return Order(
                     id=str(order_id),
-                    symbol=order_data["symbol"],
-                    asset_class="us_option" if self._is_option_symbol(order_data["symbol"]) else "us_equity",
+                    symbol=symbol,
+                    asset_class="us_option" if self._is_option_symbol(symbol) else "us_equity",
                     side=order_data["side"],
-                    order_type=order_data["order_type"],
+                    order_type=order_type,
                     qty=order_data["qty"],
                     filled_qty=0,
                     limit_price=order_data.get("limit_price"),
+                    stop_price=order_data.get("stop_price"),
                     status="submitted",
-                    time_in_force=order_data["time_in_force"],
+                    time_in_force=order_data.get("time_in_force", "day"),
                     submitted_at=datetime.now().isoformat(),
                 )
             else:
-                raise Exception(f"Failed to place order: {order_response}")
+                error_msg = "Unknown error"
+                if 'errors' in order_response:
+                    if isinstance(order_response['errors'], dict):
+                        error_msg = order_response['errors'].get('error', error_msg)
+                    elif isinstance(order_response['errors'], list):
+                        error_msg = ', '.join(order_response['errors'])
+                
+                raise Exception(f"Failed to place order: {error_msg}")
 
         except Exception as e:
+            logger.error(f"❌ Tradier: place_order failed: {e}")
             self._log_error("place_order", e)
             raise
 
     async def preview_order(self, order_data: Dict[str, Any]) -> Dict[str, Any]:
         """Preview an order to get cost estimates and validation."""
         try:
+            logger.info(f"🔍 Tradier: preview_order called with data: {order_data}")
+            
             order_url = f"{self.base_url}/v1/accounts/{self.account_id}/orders"
             headers = {
                 "Authorization": f"Bearer {self.api_key}",
                 "Accept": "application/json"
             }
 
-            # Determine if single-leg or multi-leg order
+            # Determine if this is an equity order or options order
             legs = order_data.get("legs", [])
-            if len(legs) == 1:
-                # Single-leg order preview
-                leg = legs[0]
-                parsed = self._parse_option_symbol(leg["symbol"])
-                if not parsed:
-                    raise Exception(f"Invalid option symbol: {leg['symbol']}")
-
+            symbol = order_data.get("symbol")
+            side = order_data.get("side")
+            
+            logger.info(f"🔍 Tradier: legs={legs}, symbol={symbol}, side={side}")
+            
+            # Check if this is a simple equity order
+            # Equity order: has symbol and side, but no legs (or empty legs)
+            if symbol and side and (not legs or len(legs) == 0) and not self._is_option_symbol(symbol):
+                # Single equity order preview
+                # For short selling, use "sell_short" instead of "sell"
+                order_side = order_data.get("side", "buy")
+                if order_side == "sell" and order_data.get("is_short_sell", False):
+                    order_side = "sell_short"
+                
                 payload = {
-                    "class": "option",
-                    "symbol": parsed["underlying"],
-                    "option_symbol": leg["symbol"],
-                    "side": leg["side"],
-                    "quantity": str(leg["qty"]),
-                    "type": order_data.get("order_type", "limit"),
+                    "class": "equity",
+                    "symbol": symbol,
+                    "side": order_side,
+                    "quantity": str(order_data.get("qty", 1)),
+                    "type": order_data.get("order_type", "market"),
                     "duration": order_data.get("time_in_force", "day"),
                     "preview": "true"
                 }
 
-                if order_data.get("limit_price"):
-                    payload["price"] = f"{abs(order_data['limit_price']):.2f}"
+                # Add price parameters based on order type
+                order_type = order_data.get("order_type", "market")
+                if order_type in ["limit", "stop_limit"] and order_data.get("limit_price"):
+                    payload["price"] = f"{order_data['limit_price']:.2f}"
+                if order_type in ["stop", "stop_limit"] and order_data.get("stop_price"):
+                    payload["stop"] = f"{order_data['stop_price']:.2f}"
+
+            elif len(legs) == 1:
+                # Single-leg option order preview
+                leg = legs[0]
+                if self._is_option_symbol(leg["symbol"]):
+                    # Option order
+                    parsed = self._parse_option_symbol(leg["symbol"])
+                    if not parsed:
+                        raise Exception(f"Invalid option symbol: {leg['symbol']}")
+
+                    payload = {
+                        "class": "option",
+                        "symbol": parsed["underlying"],
+                        "option_symbol": leg["symbol"],
+                        "side": leg["side"],
+                        "quantity": str(leg["qty"]),
+                        "type": order_data.get("order_type", "limit"),
+                        "duration": order_data.get("time_in_force", "day"),
+                        "preview": "true"
+                    }
+
+                    if order_data.get("limit_price"):
+                        payload["price"] = f"{abs(order_data['limit_price']):.2f}"
+                else:
+                    # Single equity order from legs format
+                    # For short selling, use "sell_short" instead of "sell"
+                    leg_side = leg["side"]
+                    if leg_side == "sell" and order_data.get("is_short_sell", False):
+                        leg_side = "sell_short"
+                    
+                    payload = {
+                        "class": "equity",
+                        "symbol": leg["symbol"],
+                        "side": leg_side,
+                        "quantity": str(leg["qty"]),
+                        "type": order_data.get("order_type", "market"),
+                        "duration": order_data.get("time_in_force", "day"),
+                        "preview": "true"
+                    }
+
+                    # Add price parameters based on order type
+                    order_type = order_data.get("order_type", "market")
+                    if order_type in ["limit", "stop_limit"] and order_data.get("limit_price"):
+                        payload["price"] = f"{order_data['limit_price']:.2f}"
+                    if order_type in ["stop", "stop_limit"] and order_data.get("stop_price"):
+                        payload["stop"] = f"{order_data['stop_price']:.2f}"
 
             else:
-                # Multi-leg order preview
+                # Multi-leg option order preview
                 underlying_symbol = self._parse_option_symbol(legs[0]["symbol"])["underlying"]
                 limit_price = order_data.get("limit_price", 0)
                 order_type = "debit" if limit_price > 0 else "credit"
@@ -1204,31 +1299,51 @@ class TradierProvider(BaseProvider):
                     payload[f"side[{i}]"] = leg["side"].lower()
                     payload[f"quantity[{i}]"] = str(leg["qty"])
 
+            logger.info(f"🔍 Tradier: Previewing order with payload: {payload}")
+
             async with httpx.AsyncClient() as client:
                 resp = await client.post(order_url, headers=headers, data=payload)
                 resp.raise_for_status()
                 preview_response = resp.json()
 
+            logger.info(f"📊 Tradier: Preview response: {preview_response}")
+
             # Extract preview data
             order_preview = preview_response.get("order", {})
             if order_preview.get("status") == "ok":
+                # For equity orders, order_cost is the actual cost, not in cents
+                order_cost = float(order_preview.get("order_cost", 0))
+                
+                # For equity orders, don't divide by 100 (that's for options)
+                if payload.get("class") == "equity":
+                    final_order_cost = order_cost
+                else:
+                    final_order_cost = order_cost / 100
+
                 return {
                     "status": "ok",
                     "preview_not_available": False,
                     "commission": float(order_preview.get("commission", 0)),
                     "cost": float(order_preview.get("cost", 0)),
                     "fees": float(order_preview.get("fees", 0)),
-                    "order_cost": float(order_preview.get("order_cost", 0)) / 100,
+                    "order_cost": final_order_cost,
                     "margin_change": float(order_preview.get("margin_change", 0)),
                     "buying_power_effect": float(order_preview.get("cost", 0)),
                     "day_trades": int(order_preview.get("day_trades", 0)),
                     "validation_errors": [],
-                    "estimated_total": float(order_preview.get("order_cost", 0)) + float(order_preview.get("commission", 0)) + float(order_preview.get("fees", 0))
+                    "estimated_total": final_order_cost + float(order_preview.get("commission", 0)) + float(order_preview.get("fees", 0))
                 }
             else:
+                error_msg = "Unknown error"
+                if 'errors' in preview_response:
+                    if isinstance(preview_response['errors'], dict):
+                        error_msg = preview_response['errors'].get('error', error_msg)
+                    elif isinstance(preview_response['errors'], list):
+                        error_msg = ', '.join(preview_response['errors'])
+                
                 return {
                     "status": "error",
-                    "validation_errors": [preview_response['errors']['error']] if 'errors' in preview_response else ["Unknown error"],
+                    "validation_errors": [error_msg],
                     "commission": 0,
                     "cost": 0,
                     "fees": 0,

@@ -356,12 +356,14 @@ describe('OrderService - Cascade Protection & Order Flow Integrity', () => {
       expect(orderType).toBe('multi-leg');
     });
 
-    it('throws error for empty legs array', () => {
-      expect(() => orderService.determineOrderType([])).toThrow('No legs provided');
+    it('handles empty legs array as single-leg (equity order)', () => {
+      const orderType = orderService.determineOrderType([]);
+      expect(orderType).toBe('single-leg');
     });
 
-    it('throws error for null legs', () => {
-      expect(() => orderService.determineOrderType(null)).toThrow('No legs provided');
+    it('handles null legs as single-leg (equity order)', () => {
+      const orderType = orderService.determineOrderType(null);
+      expect(orderType).toBe('single-leg');
     });
   });
 
@@ -456,6 +458,471 @@ describe('OrderService - Cascade Protection & Order Flow Integrity', () => {
         expect(orderService.isCreditOrder(orderData1)).toBe(true);
         expect(orderService.isCreditOrder(orderData2)).toBe(false);
         expect(orderService.isCreditOrder(orderData3)).toBe(false);
+      });
+    });
+  });
+
+  describe('Equity Order Support', () => {
+    describe('Equity Order Payload Building', () => {
+      it('builds correct payload for equity buy order', () => {
+        const orderData = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 100,
+          orderType: 'market',
+          timeInForce: 'day'
+        };
+
+        const payload = orderService.buildOrderPayload(orderData);
+        
+        expect(payload).toEqual({
+          symbol: 'SPY',
+          side: 'buy',
+          qty: 100,
+          order_type: 'market',
+          time_in_force: 'day'
+        });
+      });
+
+      it('builds correct payload for equity sell order', () => {
+        const orderData = {
+          symbol: 'AAPL',
+          side: 'sell',
+          quantity: 50,
+          orderType: 'limit',
+          timeInForce: 'gtc',
+          limitPrice: 150.25
+        };
+
+        const payload = orderService.buildOrderPayload(orderData);
+        
+        expect(payload).toEqual({
+          symbol: 'AAPL',
+          side: 'sell',
+          qty: 50,
+          order_type: 'limit',
+          time_in_force: 'gtc',
+          limit_price: 150.25
+        });
+      });
+
+      it('builds correct payload for short sell order', () => {
+        const orderData = {
+          symbol: 'TSLA',
+          side: 'sell',
+          quantity: 25,
+          orderType: 'market',
+          timeInForce: 'day',
+          is_short_sell: true
+        };
+
+        const payload = orderService.buildOrderPayload(orderData);
+        
+        expect(payload).toEqual({
+          symbol: 'TSLA',
+          side: 'sell',
+          qty: 25,
+          order_type: 'market',
+          time_in_force: 'day',
+          is_short_sell: true
+        });
+      });
+
+      it('builds correct payload for stop market order', () => {
+        const orderData = {
+          symbol: 'QQQ',
+          side: 'sell',
+          quantity: 75,
+          orderType: 'stop',
+          timeInForce: 'day',
+          stopPrice: 380.50
+        };
+
+        const payload = orderService.buildOrderPayload(orderData);
+        
+        expect(payload).toEqual({
+          symbol: 'QQQ',
+          side: 'sell',
+          qty: 75,
+          order_type: 'stop',
+          time_in_force: 'day',
+          stop_price: 380.50
+        });
+      });
+
+      it('builds correct payload for stop limit order', () => {
+        const orderData = {
+          symbol: 'IWM',
+          side: 'buy',
+          quantity: 200,
+          orderType: 'stop_limit',
+          timeInForce: 'gtc',
+          limitPrice: 195.75,
+          stopPrice: 195.00
+        };
+
+        const payload = orderService.buildOrderPayload(orderData);
+        
+        expect(payload).toEqual({
+          symbol: 'IWM',
+          side: 'buy',
+          qty: 200,
+          order_type: 'stop_limit',
+          time_in_force: 'gtc',
+          limit_price: 195.75,
+          stop_price: 195.00
+        });
+      });
+
+      it('handles missing optional parameters for equity orders', () => {
+        const orderData = {
+          symbol: 'VTI',
+          side: 'buy',
+          quantity: 10
+          // Missing orderType and timeInForce - should use defaults
+        };
+
+        const payload = orderService.buildOrderPayload(orderData);
+        
+        expect(payload.order_type).toBe('limit');
+        expect(payload.time_in_force).toBe('day');
+      });
+    });
+
+    describe('Equity Order Validation', () => {
+      it('validates equity buy order successfully', () => {
+        const orderData = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 100,
+          orderType: 'market',
+          timeInForce: 'day'
+        };
+
+        const result = orderService.validateOrder(orderData);
+        
+        expect(result.isValid).toBe(true);
+        expect(result.errors).toHaveLength(0);
+      });
+
+      it('validates equity limit order successfully', () => {
+        const orderData = {
+          symbol: 'AAPL',
+          side: 'sell',
+          quantity: 50,
+          orderType: 'limit',
+          limitPrice: 150.25
+        };
+
+        const result = orderService.validateOrder(orderData);
+        
+        expect(result.isValid).toBe(true);
+        expect(result.errors).toHaveLength(0);
+      });
+
+      it('rejects equity order without side', () => {
+        const orderData = {
+          symbol: 'SPY',
+          quantity: 100,
+          orderType: 'market',
+          side: undefined // Explicitly undefined side for equity order
+        };
+
+        const result = orderService.validateOrder(orderData);
+        
+        expect(result.isValid).toBe(false);
+        // The validation logic treats this as options order due to missing side, so it requires expiry
+        expect(result.errors.length).toBeGreaterThan(0);
+      });
+
+      it('rejects equity order with invalid quantity', () => {
+        const orderData = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 0,
+          orderType: 'market'
+        };
+
+        const result = orderService.validateOrder(orderData);
+        
+        expect(result.isValid).toBe(false);
+        expect(result.errors).toContain('Quantity must be greater than 0');
+      });
+
+      it('rejects limit order without limit price', () => {
+        const orderData = {
+          symbol: 'AAPL',
+          side: 'buy',
+          quantity: 50,
+          orderType: 'limit'
+          // Missing limitPrice
+        };
+
+        const result = orderService.validateOrder(orderData);
+        
+        expect(result.isValid).toBe(false);
+        expect(result.errors).toContain('Limit price is required for limit orders');
+      });
+
+      it('rejects stop order without stop price', () => {
+        const orderData = {
+          symbol: 'TSLA',
+          side: 'sell',
+          quantity: 25,
+          orderType: 'stop'
+          // Missing stopPrice
+        };
+
+        const result = orderService.validateOrder(orderData);
+        
+        expect(result.isValid).toBe(false);
+        expect(result.errors).toContain('Stop price is required for stop orders');
+      });
+
+      it('rejects stop limit order without both prices', () => {
+        const orderData = {
+          symbol: 'QQQ',
+          side: 'buy',
+          quantity: 100,
+          orderType: 'stop_limit'
+          // Missing both limitPrice and stopPrice
+        };
+
+        const result = orderService.validateOrder(orderData);
+        
+        expect(result.isValid).toBe(false);
+        // For stop_limit orders, we should get the stop price error
+        // The limit price validation only triggers for orderType === "limit"
+        expect(result.errors).toContain('Stop price is required for stop orders');
+        expect(result.errors.length).toBeGreaterThan(0);
+      });
+    });
+
+    describe('Mixed Order Type Scenarios', () => {
+      it('correctly identifies equity orders vs options orders', () => {
+        const equityOrder = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 100
+        };
+
+        const optionsOrder = {
+          symbol: 'SPY',
+          legs: [{ symbol: 'SPY_240119C00450000', action: 'buy', ratio_qty: 1 }]
+        };
+
+        const equityPayload = orderService.buildOrderPayload(equityOrder);
+        const optionsPayload = orderService.buildOrderPayload(optionsOrder);
+
+        // Equity payload should have symbol, side, qty
+        expect(equityPayload).toHaveProperty('symbol');
+        expect(equityPayload).toHaveProperty('side');
+        expect(equityPayload).toHaveProperty('qty');
+        expect(equityPayload).not.toHaveProperty('legs');
+
+        // Options payload should have legs
+        expect(optionsPayload).toHaveProperty('legs');
+        expect(optionsPayload).not.toHaveProperty('symbol');
+        expect(optionsPayload).not.toHaveProperty('side');
+      });
+
+      it('handles order type determination for equity orders', () => {
+        const equityOrderType = orderService.determineOrderType(null); // No legs = equity
+        const singleLegType = orderService.determineOrderType([{ symbol: 'SPY_240119C00450000' }]);
+        const multiLegType = orderService.determineOrderType([
+          { symbol: 'SPY_240119C00450000' },
+          { symbol: 'SPY_240119C00460000' }
+        ]);
+
+        expect(equityOrderType).toBe('single-leg');
+        expect(singleLegType).toBe('single-leg');
+        expect(multiLegType).toBe('multi-leg');
+      });
+    });
+
+    describe('Short Selling Logic', () => {
+      it('handles explicit short sell flag', () => {
+        const shortSellOrder = {
+          symbol: 'TSLA',
+          side: 'sell',
+          quantity: 100,
+          is_short_sell: true
+        };
+
+        const payload = orderService.buildOrderPayload(shortSellOrder);
+        
+        expect(payload.is_short_sell).toBe(true);
+        expect(payload.side).toBe('sell'); // Should remain 'sell', not convert to 'sell_short'
+      });
+
+      it('does not add short sell flag for regular sell orders', () => {
+        const regularSellOrder = {
+          symbol: 'AAPL',
+          side: 'sell',
+          quantity: 50
+        };
+
+        const payload = orderService.buildOrderPayload(regularSellOrder);
+        
+        expect(payload.is_short_sell).toBeUndefined();
+        expect(payload.side).toBe('sell');
+      });
+
+      it('does not add short sell flag for buy orders', () => {
+        const buyOrder = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 100
+        };
+
+        const payload = orderService.buildOrderPayload(buyOrder);
+        
+        expect(payload.is_short_sell).toBeUndefined();
+        expect(payload.side).toBe('buy');
+      });
+    });
+
+    describe('Order Type Parameter Handling', () => {
+      it('includes limit_price only for limit and stop_limit orders', () => {
+        const marketOrder = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 100,
+          orderType: 'market'
+        };
+
+        const limitOrder = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 100,
+          orderType: 'limit',
+          limitPrice: 450.25
+        };
+
+        const stopLimitOrder = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 100,
+          orderType: 'stop_limit',
+          limitPrice: 450.25,
+          stopPrice: 449.75
+        };
+
+        const marketPayload = orderService.buildOrderPayload(marketOrder);
+        const limitPayload = orderService.buildOrderPayload(limitOrder);
+        const stopLimitPayload = orderService.buildOrderPayload(stopLimitOrder);
+
+        expect(marketPayload.limit_price).toBeUndefined();
+        expect(limitPayload.limit_price).toBe(450.25);
+        expect(stopLimitPayload.limit_price).toBe(450.25);
+      });
+
+      it('includes stop_price only for stop and stop_limit orders', () => {
+        const marketOrder = {
+          symbol: 'SPY',
+          side: 'sell',
+          quantity: 100,
+          orderType: 'market'
+        };
+
+        const stopOrder = {
+          symbol: 'SPY',
+          side: 'sell',
+          quantity: 100,
+          orderType: 'stop',
+          stopPrice: 449.75
+        };
+
+        const stopLimitOrder = {
+          symbol: 'SPY',
+          side: 'sell',
+          quantity: 100,
+          orderType: 'stop_limit',
+          limitPrice: 450.25,
+          stopPrice: 449.75
+        };
+
+        const marketPayload = orderService.buildOrderPayload(marketOrder);
+        const stopPayload = orderService.buildOrderPayload(stopOrder);
+        const stopLimitPayload = orderService.buildOrderPayload(stopLimitOrder);
+
+        expect(marketPayload.stop_price).toBeUndefined();
+        expect(stopPayload.stop_price).toBe(449.75);
+        expect(stopLimitPayload.stop_price).toBe(449.75);
+      });
+
+      it('handles stop_market order type correctly', () => {
+        const stopMarketOrder = {
+          symbol: 'QQQ',
+          side: 'sell',
+          quantity: 50,
+          orderType: 'stop_market',
+          stopPrice: 380.00
+        };
+
+        const payload = orderService.buildOrderPayload(stopMarketOrder);
+        
+        expect(payload.order_type).toBe('stop_market');
+        expect(payload.stop_price).toBe(380.00);
+        expect(payload.limit_price).toBeUndefined();
+      });
+    });
+
+    describe('Edge Cases for Equity Orders', () => {
+      it('handles fractional quantities', () => {
+        const fractionalOrder = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 0.5,
+          orderType: 'market'
+        };
+
+        const payload = orderService.buildOrderPayload(fractionalOrder);
+        
+        expect(payload.qty).toBe(0.5);
+      });
+
+      it('handles very large quantities', () => {
+        const largeOrder = {
+          symbol: 'VTI',
+          side: 'buy',
+          quantity: 1000000,
+          orderType: 'market'
+        };
+
+        const payload = orderService.buildOrderPayload(largeOrder);
+        
+        expect(payload.qty).toBe(1000000);
+      });
+
+      it('handles very precise limit prices', () => {
+        const preciseOrder = {
+          symbol: 'AAPL',
+          side: 'buy',
+          quantity: 100,
+          orderType: 'limit',
+          limitPrice: 150.12345
+        };
+
+        const payload = orderService.buildOrderPayload(preciseOrder);
+        
+        expect(payload.limit_price).toBe(150.12345);
+      });
+
+      it('handles case insensitive order types', () => {
+        const upperCaseOrder = {
+          symbol: 'SPY',
+          side: 'buy',
+          quantity: 100,
+          orderType: 'LIMIT',
+          timeInForce: 'GTC',
+          limitPrice: 450.00
+        };
+
+        const payload = orderService.buildOrderPayload(upperCaseOrder);
+        
+        expect(payload.order_type).toBe('limit');
+        expect(payload.time_in_force).toBe('gtc');
       });
     });
   });

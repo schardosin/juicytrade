@@ -158,14 +158,21 @@ class OrderRequest(BaseModel):
     time_in_force: str = "day"
     limit_price: Optional[float] = None
     stop_price: Optional[float] = None
+    is_short_sell: Optional[bool] = None
 
 class MultiLegOrderRequest(BaseModel):
-    legs: List[Dict[str, Any]]
+    legs: Optional[List[Dict[str, Any]]] = None  # Made optional for equity orders
     action: Optional[str] = None
     qty: int = 1
     order_type: str = "limit"
     time_in_force: str = "day"
     limit_price: Optional[float] = None
+    stop_price: Optional[float] = None
+    
+    # Equity order fields
+    symbol: Optional[str] = None
+    side: Optional[str] = None
+    is_short_sell: Optional[bool] = None
 
 class PositionGroup(BaseModel):
     """Position group model for order chain grouping."""
