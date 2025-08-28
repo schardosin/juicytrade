@@ -214,6 +214,11 @@ export default {
       type: Number,
       default: 0,
     },
+    // NEW: Position data for pre-population
+    selectedPosition: {
+      type: Object,
+      default: null,
+    },
   },
   emits: ["review-send", "clear-trade"],
   setup(props, { emit }) {
@@ -438,6 +443,33 @@ export default {
           resetToDefaults();
         }
       }
+    );
+
+    // NEW: Watch for selectedPosition changes to pre-populate form
+    watch(
+      () => props.selectedPosition,
+      (newPosition) => {
+        if (newPosition) {
+          // Pre-populate with position data for closing
+          orderSide.value = newPosition.side; // Already set to opposite side for closing
+          quantity.value = newPosition.quantity; // Already set to position quantity
+          
+          // Set hasExistingPosition to true since we're closing a position
+          hasExistingPosition.value = true;
+          
+          console.log(`📋 SharesTradingPanel: Pre-populated with position data:`, {
+            symbol: newPosition.symbol,
+            side: newPosition.side,
+            quantity: newPosition.quantity,
+            originalQuantity: newPosition.original_quantity,
+            avgEntryPrice: newPosition.avg_entry_price
+          });
+        } else {
+          // Reset to defaults when no position selected
+          hasExistingPosition.value = false;
+        }
+      },
+      { immediate: true }
     );
 
     // Component cleanup system

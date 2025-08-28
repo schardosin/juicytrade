@@ -344,13 +344,23 @@
       @clear-selections="clearAllSelections"
     />
 
-    <!-- Bottom Trading Panel -->
+    <!-- Bottom Trading Panel for Options -->
     <BottomTradingPanel
       :visible="hasSelectedLegs"
       :symbol="currentSymbol"
       :underlyingPrice="currentPrice"
       @review-send="onReviewSend"
       @price-adjusted="onPriceAdjusted"
+    />
+
+    <!-- Shares Trading Panel for Equity Positions -->
+    <SharesTradingPanel
+      :visible="hasSelectedEquityPositions"
+      :symbol="selectedEquityPositions.length > 0 ? selectedEquityPositions[0].symbol : currentSymbol"
+      :underlyingPrice="currentPrice"
+      :selectedPosition="selectedEquityPositions.length > 0 ? selectedEquityPositions[0] : null"
+      @review-send="onEquityReviewSend"
+      @clear-trade="onEquityClearTrade"
     />
   </div>
 </template>
@@ -362,6 +372,7 @@ import SideNav from "../components/SideNav.vue";
 import RightPanel from "../components/RightPanel.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
 import BottomTradingPanel from "../components/BottomTradingPanel.vue";
+import SharesTradingPanel from "../components/SharesTradingPanel.vue";
 import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { useMarketData } from "../composables/useMarketData.js";
@@ -379,6 +390,7 @@ export default {
     RightPanel,
     SymbolHeader,
     BottomTradingPanel,
+    SharesTradingPanel,
     OrderConfirmationDialog,
   },
   setup() {
@@ -411,6 +423,33 @@ export default {
 
     // Selected legs integration - same pattern as OptionsTrading
     const { selectedLegs, hasSelectedLegs, addLeg, removeLeg, clearAll } = useSelectedLegs();
+
+    // NEW: Equity position selection state management
+    const selectedEquityPositions = ref([]);
+    const hasSelectedEquityPositions = computed(() => selectedEquityPositions.value.length > 0);
+    
+    // Helper functions for equity position management
+    const addEquityPosition = (position) => {
+      const existingIndex = selectedEquityPositions.value.findIndex(p => p.symbol === position.symbol);
+      if (existingIndex === -1) {
+        selectedEquityPositions.value.push(position);
+      }
+    };
+    
+    const removeEquityPosition = (symbol) => {
+      const index = selectedEquityPositions.value.findIndex(p => p.symbol === symbol);
+      if (index > -1) {
+        selectedEquityPositions.value.splice(index, 1);
+      }
+    };
+    
+    const clearAllEquityPositions = () => {
+      selectedEquityPositions.value = [];
+    };
+    
+    const isEquityPositionSelected = (symbol) => {
+      return selectedEquityPositions.value.some(p => p.symbol === symbol);
+    };
 
     // Use centralized order management with cleanup callback
     const {
@@ -1239,6 +1278,17 @@ export default {
       adjustedNetCredit.value = priceData.adjustedNetCredit;
     };
 
+    // NEW: Equity position event handlers
+    const onEquityReviewSend = (orderData) => {
+      // Initialize the order confirmation dialog for equity orders
+      initializeOrder(orderData);
+    };
+
+    const onEquityClearTrade = () => {
+      // Clear all equity position selections
+      clearAllEquityPositions();
+    };
+
     // Position leg selection functions
     const isLegSelected = (legSymbol) => {
       return selectedLegs.value.some(leg => leg.symbol === legSymbol);
@@ -1247,18 +1297,98 @@ export default {
     const togglePositionLegSelection = async (leg, strategy, group) => {
       const legSymbol = leg.symbol;
       const underlyingSymbol = group.symbol;
+      const isEquityPosition = leg.asset_class === 'us_equity';
+      // Handle equity positions differently from options
+      if (isEquityPosition) {
+        // For equity positions, change symbol first if needed
+        const needsSymbolChange = legSymbol !== currentSymbol.value;
 
+        console.log(`🎯 PositionsView: Equity selection for ${legSymbol}, needsSymbolChange: ${needsSymbolChange}`);
+
+        // Change symbol FIRST if needed, then handle equity selection
+        if (needsSymbolChange) {
+          try {
+            console.log(`🔄 PositionsView: Changing symbol from ${currentSymbol.value} to ${legSymbol}`);
+            
+            // Set flag to prevent chart updates during transition
+            isSymbolTransitioning.value = true;
+            
+            // Change symbol synchronously and wait for positions to load
+            const symbolData = {
+              symbol: legSymbol,
+              description: "", // Will be fetched by SymbolHeader
+              exchange: "", // Will be fetched by SymbolHeader
+            };
+            
+            // Use the global symbol update function directly
+            await updateSymbol(symbolData);
+            
+            // Wait for all reactive updates to complete
+            await nextTick();
+            
+            // Wait for underlying price to be available
+            let retryCount = 0;
+            const maxRetries = 20; // Max 2 seconds
+            while ((!currentPrice.value || currentPrice.value === 0) && retryCount < maxRetries) {
+              await new Promise(resolve => setTimeout(resolve, 100));
+              retryCount++;
+            }
+            
+            if (retryCount >= maxRetries) {
+              console.warn(`⚠️ PositionsView: Timeout waiting for price data for ${legSymbol}`);
+            } else {
+              console.log(`✅ PositionsView: Symbol change completed, current symbol: ${currentSymbol.value}, price: ${currentPrice.value}`);
+            }
+            
+            // Clear the transition flag
+            isSymbolTransitioning.value = false;
+            
+          } catch (error) {
+            console.error('❌ Error changing symbol before equity selection:', error);
+            // Clear the transition flag even on error
+            isSymbolTransitioning.value = false;
+          }
+        }
+
+        // Now handle equity position selection after symbol change is complete
+        if (isEquityPositionSelected(legSymbol)) {
+          // Remove from equity selection
+          removeEquityPosition(legSymbol);
+        } else {
+          // Get current market price and live prices
+          const currentMarketPrice = getLegCurrentPrice(leg);
+          const livePrice = getLivePrice(leg.symbol);
+          const bidPrice = livePrice?.bid || livePrice?.price || leg.current_price || leg.last_price || currentMarketPrice;
+          const askPrice = livePrice?.ask || livePrice?.price || leg.current_price || leg.last_price || currentMarketPrice;
+          
+          // Create equity position for closing
+          const equityPosition = {
+            symbol: leg.symbol,
+            side: leg.qty > 0 ? 'sell' : 'buy', // Opposite side for closing
+            quantity: Math.abs(leg.qty), // Use position quantity
+            current_price: currentMarketPrice,
+            bid: bidPrice,
+            ask: askPrice,
+            avg_entry_price: leg.avg_entry_price,
+            // Position-specific data
+            original_quantity: Math.abs(leg.qty),
+            original_avg_entry_price: leg.avg_entry_price,
+            unrealized_pl: leg.unrealized_pl,
+            asset_class: 'us_equity'
+          };
+          
+          addEquityPosition(equityPosition);
+        }
+        return; // Exit early for equity positions
+      }
+
+      // OPTIONS LOGIC (existing logic for options)
       // Map weekly symbols to their root symbols (e.g., SPXW -> SPX, NDXP -> NDX)
       const rootSymbol = mapToRootSymbol(underlyingSymbol);
       const needsSymbolChange = rootSymbol && rootSymbol !== currentSymbol.value;
-
-      console.log(`🎯 PositionsView: Leg selection for ${legSymbol}, underlying: ${underlyingSymbol}, needsSymbolChange: ${needsSymbolChange}`);
-
       // 🔑 KEY FIX: Change symbol FIRST if needed, then handle leg selection
       if (needsSymbolChange) {
         try {
-          console.log(`🔄 PositionsView: Changing symbol from ${currentSymbol.value} to ${rootSymbol}`);
-          
           // Set flag to prevent chart updates during transition
           isSymbolTransitioning.value = true;
           
@@ -1302,7 +1432,7 @@ export default {
         }
       }
 
-      // Now handle leg selection after symbol change is complete
+      // Now handle option leg selection after symbol change is complete
       if (isLegSelected(legSymbol)) {
         // Remove from selection
         removeLeg(legSymbol);
@@ -1729,6 +1859,13 @@ export default {
       handleOrderResultClose,
       clearAllSelections,
       handleOrderEdit,
+      
+      // NEW: Equity position management
+      selectedEquityPositions,
+      hasSelectedEquityPositions,
+      isEquityPositionSelected,
+      onEquityReviewSend,
+      onEquityClearTrade,
     };
   },
 };
