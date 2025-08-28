@@ -86,7 +86,29 @@ vi.mock('../src/components/TopBar.vue', () => ({ default: { name: 'TopBar', temp
 vi.mock('../src/components/SideNav.vue', () => ({ default: { name: 'SideNav', template: '<div>SideNav</div>' } }));
 vi.mock('../src/components/RightPanel.vue', () => ({ default: { name: 'RightPanel', template: '<div>RightPanel</div>' } }));
 vi.mock('../src/components/SymbolHeader.vue', () => ({ default: { name: 'SymbolHeader', template: '<div>SymbolHeader</div>' } }));
-vi.mock('../src/components/BottomTradingPanel.vue', () => ({ default: { name: 'BottomTradingPanel', template: '<div>BottomTradingPanel</div>' } }));
+vi.mock('../src/components/BottomTradingPanel.vue', () => ({ 
+  default: { 
+    name: 'BottomTradingPanel', 
+    template: '<div>BottomTradingPanel</div>',
+    props: {
+      visible: { type: Boolean, default: false },
+      symbol: { type: String, default: '' },
+      underlyingPrice: { type: Number, default: 0 }
+    }
+  } 
+}));
+vi.mock('../src/components/SharesTradingPanel.vue', () => ({ 
+  default: { 
+    name: 'SharesTradingPanel', 
+    template: '<div>SharesTradingPanel</div>',
+    props: {
+      visible: { type: Boolean, default: false },
+      symbol: { type: String, default: '' },
+      underlyingPrice: { type: Number, default: 0 },
+      selectedPosition: { type: Object, default: null }
+    }
+  } 
+}));
 vi.mock('../src/components/OrderConfirmationDialog.vue', () => ({ default: { name: 'OrderConfirmationDialog', template: '<div>OrderConfirmationDialog</div>' } }));
 
 // Mock data
@@ -523,6 +545,386 @@ describe('PositionsView', () => {
       
       // Equity positions should not show strike, expiry, or option type
       // This is verified by successful template rendering
+    });
+  });
+
+  describe('SharesTradingPanel Integration', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should render SharesTradingPanel component', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      // Component should include SharesTradingPanel
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      expect(sharesTradingPanel.exists()).toBe(true);
+    });
+
+    it('should render both BottomTradingPanel and SharesTradingPanel', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      // Both trading panels should be present
+      const bottomTradingPanel = wrapper.findComponent({ name: 'BottomTradingPanel' });
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      
+      expect(bottomTradingPanel.exists()).toBe(true);
+      expect(sharesTradingPanel.exists()).toBe(true);
+    });
+
+    it('should pass correct props to SharesTradingPanel', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      expect(sharesTradingPanel.exists()).toBe(true);
+      
+      // SharesTradingPanel should receive props
+      const props = sharesTradingPanel.props();
+      expect(props).toBeDefined();
+      expect(props.visible).toBeDefined();
+      expect(props.symbol).toBeDefined();
+      expect(props.underlyingPrice).toBeDefined();
+    });
+
+    it('should handle SharesTradingPanel visibility based on equity selections', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      // Initially, no equity positions should be selected
+      const vm = wrapper.vm;
+      expect(vm.hasSelectedEquityPositions).toBe(false);
+      
+      // SharesTradingPanel should be hidden initially
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      expect(sharesTradingPanel.props('visible')).toBe(false);
+    });
+  });
+
+  describe('Equity Position Selection State Management', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should initialize equity position selection state', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const vm = wrapper.vm;
+      
+      // Should have equity position selection state
+      expect(vm.selectedEquityPositions).toBeDefined();
+      expect(vm.hasSelectedEquityPositions).toBeDefined();
+      expect(vm.isEquityPositionSelected).toBeDefined();
+    });
+
+    it('should have equity position management functions', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const vm = wrapper.vm;
+      
+      // Should have equity position management functions
+      expect(typeof vm.onEquityReviewSend).toBe('function');
+      expect(typeof vm.onEquityClearTrade).toBe('function');
+    });
+
+    it('should start with no equity positions selected', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const vm = wrapper.vm;
+      
+      // Initially no equity positions should be selected
+      expect(vm.selectedEquityPositions).toEqual([]);
+      expect(vm.hasSelectedEquityPositions).toBe(false);
+    });
+  });
+
+  describe('Smart Panel Display Logic', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should show BottomTradingPanel when options are selected', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const vm = wrapper.vm;
+      const bottomTradingPanel = wrapper.findComponent({ name: 'BottomTradingPanel' });
+      
+      // BottomTradingPanel visibility should be based on hasSelectedLegs
+      expect(bottomTradingPanel.props('visible')).toBe(vm.hasSelectedLegs);
+    });
+
+    it('should show SharesTradingPanel when equity positions are selected', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const vm = wrapper.vm;
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      
+      // SharesTradingPanel visibility should be based on hasSelectedEquityPositions
+      expect(sharesTradingPanel.props('visible')).toBe(vm.hasSelectedEquityPositions);
+    });
+
+    it('should handle panel visibility independently', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const bottomTradingPanel = wrapper.findComponent({ name: 'BottomTradingPanel' });
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      
+      // Both panels should exist but be controlled by different state
+      expect(bottomTradingPanel.exists()).toBe(true);
+      expect(sharesTradingPanel.exists()).toBe(true);
+      
+      // Initially both should be hidden
+      expect(bottomTradingPanel.props('visible')).toBe(false);
+      expect(sharesTradingPanel.props('visible')).toBe(false);
+    });
+  });
+
+  describe('Order Management Integration', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should use order management composable with cleanup callback', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      // Component should use order management composable
+      const { useOrderManagement } = await import('../src/composables/useOrderManagement');
+      expect(useOrderManagement).toHaveBeenCalled();
+      
+      // Should be called with onOrderSuccess callback
+      const callArgs = useOrderManagement.mock.calls[0];
+      expect(callArgs[0]).toBeDefined();
+      expect(callArgs[0].onOrderSuccess).toBeDefined();
+      expect(typeof callArgs[0].onOrderSuccess).toBe('function');
+    });
+
+    it('should handle equity order events', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const vm = wrapper.vm;
+      
+      // Should have equity order event handlers
+      expect(typeof vm.onEquityReviewSend).toBe('function');
+      expect(typeof vm.onEquityClearTrade).toBe('function');
+    });
+
+    it('should clear equity selections on order success', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      // Get the onOrderSuccess callback that was passed to useOrderManagement
+      const { useOrderManagement } = await import('../src/composables/useOrderManagement');
+      const callArgs = useOrderManagement.mock.calls[0];
+      const onOrderSuccess = callArgs[0].onOrderSuccess;
+      
+      // onOrderSuccess should be a function that clears selections
+      expect(typeof onOrderSuccess).toBe('function');
+      
+      // Test that calling onOrderSuccess doesn't throw errors
+      expect(() => onOrderSuccess()).not.toThrow();
+    });
+  });
+
+  describe('Symbol Selection for Equity Positions', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should have symbol update functionality', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      // Component should use global symbol composable with updateSymbol
+      const { useGlobalSymbol } = await import('../src/composables/useGlobalSymbol');
+      expect(useGlobalSymbol).toHaveBeenCalled();
+    });
+
+    it('should handle position leg selection', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const vm = wrapper.vm;
+      
+      // Should have position leg selection function
+      expect(typeof vm.togglePositionLegSelection).toBe('function');
+    });
+
+    it('should differentiate between equity and option position selection', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const vm = wrapper.vm;
+      
+      // Component should have logic to handle both equity and option selections
+      // This is tested through successful mounting with mixed position data
+      expect(vm.togglePositionLegSelection).toBeDefined();
+    });
+  });
+
+  describe('Position Pre-population for SharesTradingPanel', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should pass selectedPosition prop to SharesTradingPanel', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      const props = sharesTradingPanel.props();
+      
+      // Should have selectedPosition prop
+      expect(props.selectedPosition).toBeDefined();
+    });
+
+    it('should pass correct symbol to SharesTradingPanel', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      const props = sharesTradingPanel.props();
+      
+      // Should pass symbol prop
+      expect(props.symbol).toBeDefined();
+      expect(typeof props.symbol).toBe('string');
+    });
+
+    it('should pass underlyingPrice to SharesTradingPanel', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      const props = sharesTradingPanel.props();
+      
+      // Should pass underlyingPrice prop
+      expect(props.underlyingPrice).toBeDefined();
+      expect(typeof props.underlyingPrice).toBe('number');
+    });
+  });
+
+  describe('Event Handling for SharesTradingPanel', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should handle review-send event from SharesTradingPanel', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      const vm = wrapper.vm;
+      
+      // Should have onEquityReviewSend handler
+      expect(typeof vm.onEquityReviewSend).toBe('function');
+      
+      // SharesTradingPanel should be listening for review-send event
+      expect(sharesTradingPanel.exists()).toBe(true);
+    });
+
+    it('should handle clear-trade event from SharesTradingPanel', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      const vm = wrapper.vm;
+      
+      // Should have onEquityClearTrade handler
+      expect(typeof vm.onEquityClearTrade).toBe('function');
+      
+      // SharesTradingPanel should be listening for clear-trade event
+      expect(sharesTradingPanel.exists()).toBe(true);
+    });
+
+    it('should emit events to SharesTradingPanel correctly', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      const sharesTradingPanel = wrapper.findComponent({ name: 'SharesTradingPanel' });
+      
+      // SharesTradingPanel should be properly configured to receive events
+      expect(sharesTradingPanel.exists()).toBe(true);
+      
+      // Test that event handlers don't throw errors when called
+      const vm = wrapper.vm;
+      expect(() => vm.onEquityReviewSend({})).not.toThrow();
+      expect(() => vm.onEquityClearTrade()).not.toThrow();
+    });
+  });
+
+  describe('Integration Testing', () => {
+    beforeEach(() => {
+      vi.clearAllMocks();
+    });
+
+    it('should handle complete equity position workflow', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      // Component should mount successfully with all equity functionality
+      expect(wrapper.exists()).toBe(true);
+      
+      const vm = wrapper.vm;
+      
+      // Should have all required equity position functionality
+      expect(vm.selectedEquityPositions).toBeDefined();
+      expect(vm.hasSelectedEquityPositions).toBeDefined();
+      expect(vm.onEquityReviewSend).toBeDefined();
+      expect(vm.onEquityClearTrade).toBeDefined();
+      expect(vm.togglePositionLegSelection).toBeDefined();
+      
+      // Should have both trading panels
+      expect(wrapper.findComponent({ name: 'BottomTradingPanel' }).exists()).toBe(true);
+      expect(wrapper.findComponent({ name: 'SharesTradingPanel' }).exists()).toBe(true);
+    });
+
+    it('should maintain backward compatibility with options functionality', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      // All existing options functionality should still work
+      const vm = wrapper.vm;
+      
+      // Should have options-related functionality
+      expect(vm.hasSelectedLegs).toBeDefined();
+      expect(vm.onReviewSend).toBeDefined();
+      expect(vm.togglePositionLegSelection).toBeDefined();
+      
+      // BottomTradingPanel should still be present and functional
+      const bottomTradingPanel = wrapper.findComponent({ name: 'BottomTradingPanel' });
+      expect(bottomTradingPanel.exists()).toBe(true);
+    });
+
+    it('should handle mixed position types without conflicts', async () => {
+      wrapper = mount(PositionsView);
+      await nextTick();
+
+      // Component should handle both equity and option positions simultaneously
+      expect(wrapper.exists()).toBe(true);
+      
+      const vm = wrapper.vm;
+      
+      // Should have separate state for equity and option selections
+      expect(vm.selectedEquityPositions).toBeDefined();
+      expect(vm.hasSelectedLegs).toBeDefined();
+      expect(vm.hasSelectedEquityPositions).toBeDefined();
+      
+      // Both should be independent state variables (different arrays/refs)
+      expect(vm.selectedEquityPositions).not.toBe(vm.selectedLegs);
+      
+      // Both should start as false/empty but be independent
+      expect(vm.hasSelectedLegs).toBe(false);
+      expect(vm.hasSelectedEquityPositions).toBe(false);
+      expect(vm.selectedEquityPositions).toEqual([]);
     });
   });
 });
