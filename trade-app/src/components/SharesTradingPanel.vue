@@ -210,6 +210,10 @@ export default {
       type: Number,
       default: null,
     },
+    resetTrigger: {
+      type: Number,
+      default: 0,
+    },
   },
   emits: ["review-send", "clear-trade"],
   setup(props, { emit }) {
@@ -366,14 +370,26 @@ export default {
       emit("review-send", orderData);
     };
 
-    const handleClear = () => {
+    const resetToDefaults = () => {
+      // Lock prices to prevent watchers from overriding reset values
+      priceLocked.value = true;
+      stopPriceLocked.value = true;
+      
+      // Reset all values
       quantity.value = 1; // Reset to default of 1
       orderSide.value = "buy";
       selectedOrderType.value = "market";
       selectedTimeInForce.value = "day";
       limitPrice.value = 0;
       stopPrice.value = 0;
+      
+      // Unlock prices after reset is complete
       priceLocked.value = false;
+      stopPriceLocked.value = false;
+    };
+
+    const handleClear = () => {
+      resetToDefaults();
       emit("clear-trade");
     };
 
@@ -410,6 +426,16 @@ export default {
         }
         if (newType === "stop_market" || newType === "stop_limit") {
           stopPrice.value = parseFloat(midPrice.value.toFixed(2));
+        }
+      }
+    );
+
+    // Watch for reset trigger from parent component
+    watch(
+      () => props.resetTrigger,
+      (newValue, oldValue) => {
+        if (newValue > oldValue && newValue > 0) {
+          resetToDefaults();
         }
       }
     );
@@ -474,6 +500,7 @@ export default {
       toggleStopPriceLock,
       handleReviewSend,
       handleClear,
+      resetToDefaults,
     };
   },
 };

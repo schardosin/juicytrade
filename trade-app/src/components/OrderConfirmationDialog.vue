@@ -10,14 +10,14 @@
           <span>Trade</span>
         </div>
         <div class="trade-actions">
-          <button class="clear-trade-btn" @click="handleCancel">
+          <button class="clear-trade-btn" @click="handleClearTrade">
             🗑️ Clear Trade
           </button>
         </div>
       </div>
 
-      <!-- Trade Stats Bar -->
-      <div class="trade-stats">
+      <!-- Trade Stats Bar (hidden for equity orders) -->
+      <div v-if="!isEquityOrder" class="trade-stats">
         <div class="stat-item">
           <span class="stat-label">POP</span>
           <span class="stat-value">59%</span>
@@ -234,7 +234,7 @@ export default {
       default: false,
     },
   },
-  emits: ["hide", "confirm", "cancel", "edit", "clear-selections", "order-confirmed", "close"],
+  emits: ["hide", "confirm", "cancel", "edit", "clear-selections", "order-confirmed", "close", "clear-trade-reset"],
   setup(props, { emit }) {
     // Use unified market data composable (same as TopBar)
     const { getBalance, getAccountInfo } = useMarketData();
@@ -628,6 +628,18 @@ export default {
       return expiry.toString();
     };
 
+    // Handle clear trade - different behavior for equity vs options
+    const handleClearTrade = () => {
+      if (isEquityOrder.value) {
+        // For equity orders: emit a special event to reset shares panel but keep it visible
+        emit("clear-trade-reset");
+        emit("hide");
+      } else {
+        // For options orders: use the existing cancel behavior
+        handleCancel();
+      }
+    };
+
     // Handle cancel
     const handleCancel = () => {
       emit("clear-selections"); // Clear all selected options
@@ -798,6 +810,7 @@ export default {
       handleCancel,
       handleEdit,
       handleConfirm,
+      handleClearTrade,
       handleKeydown,
     };
   },

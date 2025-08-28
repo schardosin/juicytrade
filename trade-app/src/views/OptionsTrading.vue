@@ -86,6 +86,7 @@
       @cancel="handleOrderCancellation"
       @edit="handleOrderEdit"
       @clear-selections="clearAllSelections"
+      @clear-trade-reset="handleClearTradeReset"
     />
 
     <!-- Options Trading Panel -->
@@ -101,10 +102,12 @@
 
     <!-- Shares Trading Panel -->
     <SharesTradingPanel
+      ref="sharesTradingPanelRef"
       v-if="selectedTradeMode === 'shares'"
       :visible="showSharesPanel"
       :symbol="currentSymbol"
       :underlyingPrice="currentPrice"
+      :resetTrigger="resetSharesPanelTrigger"
       @review-send="onSharesReviewAndSend"
       @clear-trade="onSharesClearTrade"
     />
@@ -150,6 +153,9 @@ export default {
     RightPanel,
   },
   setup() {
+    // Component refs
+    const sharesTradingPanelRef = ref(null);
+    
     const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
     const { getIvxData } = useMarketData();
@@ -456,8 +462,12 @@ export default {
     // onUpdateLegQuantity is no longer needed - quantity updates are handled by the centralized store
 
     const handleOrderEdit = () => {
-      // Hide confirmation dialog and show bottom trading panel
-      showBottomPanel.value = true;
+      // Hide confirmation dialog and show appropriate trading panel based on mode
+      if (selectedTradeMode.value === 'shares') {
+        showSharesPanel.value = true;
+      } else if (selectedTradeMode.value === 'options') {
+        showBottomPanel.value = true;
+      }
       // Also need to hide the confirmation dialog
       handleOrderCancellation();
     };
@@ -513,6 +523,24 @@ export default {
     const onSharesClearTrade = () => {
       // Clear any shares-specific state if needed
       console.log("Shares trade cleared");
+    };
+
+    // Create a reactive trigger for reset
+    const resetSharesPanelTrigger = ref(0);
+    
+    const handleClearTradeReset = async () => {
+      // Reset SharesTradingPanel to default values while keeping it visible
+      // This is called when the Clear Trade button is clicked for equity orders
+      
+      // First ensure we're in shares mode
+      selectedTradeMode.value = "shares";
+      showSharesPanel.value = true;
+      
+      // Wait for component to be rendered
+      await nextTick();
+      
+      // Trigger reset via reactive property instead of ref
+      resetSharesPanelTrigger.value++;
     };
 
     // Window height tracking for responsive chart
@@ -920,6 +948,8 @@ export default {
       onTradeModeChanged,
       onSharesReviewAndSend,
       onSharesClearTrade,
+      handleClearTradeReset,
+      resetSharesPanelTrigger,
       onRightPanelCollapsed,
       onPositionsChanged,
       onExpirationExpanded,

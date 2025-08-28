@@ -1238,8 +1238,8 @@ class TastyTradeProvider(BaseProvider):
             # Transform our standard order format to TastyTrade format
             tastytrade_order = self._transform_to_tastytrade_order(order_data)
             
-            # Log the order being sent for debugging
-            logger.info(f"TastyTrade: Sending order: {tastytrade_order}")
+            # Log the order being sent for debugging in JSON format
+            logger.info(f"TastyTrade: Sending order payload: {json.dumps(tastytrade_order, indent=2)}")
             
             url = f"{self.base_url}/accounts/{self.account_id}/orders"
             headers = {
@@ -1256,6 +1256,28 @@ class TastyTradeProvider(BaseProvider):
                 logger.info(f"TastyTrade: Order response status: {response.status_code}")
                 if response.status_code != 200:
                     logger.error(f"TastyTrade: Order response body: {response.text}")
+                
+                # Handle 422 responses specially - they contain error details in the body
+                if response.status_code == 422:
+                    try:
+                        response_data = response.json()
+                        error_data = response_data.get("error", {})
+                        
+                        if error_data:
+                            error_messages = []
+                            
+                            # Extract only the detailed error messages from errors array
+                            errors_array = error_data.get("errors", [])
+                            for error in errors_array:
+                                error_message = error.get("message", "")
+                                if error_message:
+                                    error_messages.append(error_message)
+                            
+                            error_msg = "; ".join(error_messages) if error_messages else "Order validation failed"
+                            raise Exception(f"Order validation failed: {error_msg}")
+                    except json.JSONDecodeError:
+                        logger.error("Failed to parse 422 response JSON")
+                        raise Exception("Order validation failed - unable to parse error details")
                 
                 response.raise_for_status()
                 
@@ -1278,6 +1300,9 @@ class TastyTradeProvider(BaseProvider):
 
             tastytrade_order = self._transform_to_tastytrade_multi_leg_order(order_data)
             
+            # Log the payload being sent to TastyTrade in JSON format
+            logger.info(f"TastyTrade: Sending dry-run payload: {json.dumps(tastytrade_order, indent=2)}")
+            
             url = f"{self.base_url}/accounts/{self.account_id}/orders/dry-run"
             headers = {
                 "Authorization": self._session_token,
@@ -1288,10 +1313,82 @@ class TastyTradeProvider(BaseProvider):
 
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.post(url, headers=headers, json=tastytrade_order)
+                
+                # Handle 422 responses specially - they contain error details in the body
+                if response.status_code == 422:
+                    try:
+                        response_data = response.json()
+                        error_data = response_data.get("error", {})
+                        
+                        if error_data:
+                            error_messages = []
+                            
+                            # Extract only the detailed error messages from errors array
+                            errors_array = error_data.get("errors", [])
+                            for error in errors_array:
+                                error_message = error.get("message", "")
+                                if error_message:
+                                    error_messages.append(error_message)
+                            
+                            return {
+                                "status": "error",
+                                "validation_errors": error_messages if error_messages else ["Order validation failed"],
+                                "commission": 0,
+                                "cost": 0,
+                                "fees": 0,
+                                "order_cost": 0,
+                                "margin_change": 0,
+                                "buying_power_effect": 0,
+                                "day_trades": 0,
+                                "estimated_total": 0
+                            }
+                    except Exception as e:
+                        logger.error(f"Error parsing 422 response: {e}")
+                        return {
+                            "status": "error",
+                            "validation_errors": ["Order validation failed - unable to parse error details"],
+                            "commission": 0,
+                            "cost": 0,
+                            "fees": 0,
+                            "order_cost": 0,
+                            "margin_change": 0,
+                            "buying_power_effect": 0,
+                            "day_trades": 0,
+                            "estimated_total": 0
+                        }
+                
+                # For other status codes, raise for status as usual
                 response.raise_for_status()
                 
-                data = response.json().get("data", {})
+                response_data = response.json()
+                data = response_data.get("data", {})
+                error_data = response_data.get("error", {})
                 
+                # Check for errors first
+                if error_data:
+                    error_messages = []
+                    
+                    # Extract only the detailed error messages from errors array
+                    errors_array = error_data.get("errors", [])
+                    for error in errors_array:
+                        error_message = error.get("message", "")
+                        if error_message:
+                            error_messages.append(error_message)
+                    
+                    return {
+                        "status": "error",
+                        "validation_errors": error_messages,
+                        "commission": 0,
+                        "cost": 0,
+                        "fees": 0,
+                        "order_cost": 0,
+                        "margin_change": 0,
+                        "buying_power_effect": 0,
+                        "day_trades": 0,
+                        "estimated_total": 0
+                    }
+                
+                # Check for warnings (keep existing logic for backward compatibility)
                 warnings = data.get("warnings", [])
                 if warnings:
                     # Filter out informational warnings
@@ -1965,15 +2062,27 @@ class TastyTradeProvider(BaseProvider):
                 "stop_limit": "Stop Limit"
             }
             
-            # Map our actions to TastyTrade format
+            # Map our actions to TastyTrade format - but we'll handle sell dynamically
             action_map = {
                 "buy": "Buy to Open",
-                "sell": "Sell to Close",
+                "sell": "Sell to Close",  # Will be overridden below for short sells
                 "buy_to_open": "Buy to Open",
                 "sell_to_open": "Sell to Open",
                 "buy_to_close": "Buy to Close",
                 "sell_to_close": "Sell to Close"
             }
+            
+            # Determine the correct action for sell orders
+            side = order_data.get("side", "buy").lower()
+            if side == "sell":
+                # Check if this is a short sell
+                is_short_sell = order_data.get("is_short_sell", False)
+                if is_short_sell:
+                    action = "Sell to Open"  # Short selling
+                else:
+                    action = "Sell to Close"  # Closing existing position
+            else:
+                action = action_map.get(side, "Buy to Open")
             
             # Map our time in force to TastyTrade format
             tif_map = {
@@ -1989,12 +2098,12 @@ class TastyTradeProvider(BaseProvider):
             
             # Build TastyTrade order
             tastytrade_order = {
-                "order-type": order_type_map.get(order_data.get("type", "limit").lower(), "Limit"),
+                "order-type": order_type_map.get(order_data.get("order_type", "limit").lower(), "Limit"),
                 "time-in-force": tif_map.get(order_data.get("time_in_force", "day").lower(), "Day"),
                 "legs": [
                     {
                         "instrument-type": instrument_type,
-                        "action": action_map.get(order_data.get("side", "buy").lower(), "Buy to Open"),
+                        "action": action,
                         "quantity": int(order_data.get("quantity", 1)),
                         "symbol": symbol
                     }
@@ -2002,14 +2111,36 @@ class TastyTradeProvider(BaseProvider):
             }
             
             # Add price for limit orders
-            if order_data.get("type", "").lower() == "limit" and order_data.get("price"):
-                tastytrade_order["price"] = float(order_data["price"])
-                # Determine price effect (Debit/Credit) based on action
-                action = order_data.get("side", "buy").lower()
-                if action in ["buy", "buy_to_open"]:
-                    tastytrade_order["price-effect"] = "Debit"
+            order_type = order_data.get("order_type", "").lower()
+            if order_type in ["limit", "stop_limit"]:
+                # Check multiple possible price fields
+                price = (order_data.get("price") or 
+                        order_data.get("limit_price") or 
+                        order_data.get("net_price") or
+                        order_data.get("premium"))
+                
+                if price is not None:  # Allow 0 price
+                    price_float = float(price)
+                    
+                    # TastyTrade requires positive prices and correct price-effect
+                    tastytrade_order["price"] = abs(price_float)  # Always make price positive
+                    
+                    # Determine price-effect based on order side and price sign
+                    side = order_data.get("side", "buy").lower()
+                    if price_float < 0:
+                        # Negative price explicitly indicates credit
+                        tastytrade_order["price-effect"] = "Credit"
+                    elif side in ["sell", "sell_to_open", "sell_to_close"]:
+                        # Selling typically receives credit (you get money)
+                        tastytrade_order["price-effect"] = "Credit"
+                    else:
+                        # Buying typically pays debit (you pay money)
+                        tastytrade_order["price-effect"] = "Debit"
                 else:
-                    tastytrade_order["price-effect"] = "Credit"
+                    # If no price provided, this is likely an error - log it
+                    logger.warning(f"TastyTrade: No price found in order data for limit order: {order_data}")
+                    # Don't set a default price - let TastyTrade reject it with a proper error
+                    raise ValueError("Limit order requires a price but none was provided")
             
             # Add stop price for stop orders
             if order_data.get("stop_price"):
@@ -2052,8 +2183,11 @@ class TastyTradeProvider(BaseProvider):
             
             # Build legs with proper symbol conversion
             legs = []
-            for leg in order_data.get("legs", []):
-                original_symbol = leg.get("symbol", "")
+            order_legs = order_data.get("legs") or []
+            
+            # If no legs provided, this is a single-leg order - create leg from order data
+            if not order_legs:
+                original_symbol = order_data.get("symbol", "")
                 
                 # Convert symbol to TastyTrade format if it's an option
                 if self._is_option_symbol(original_symbol):
@@ -2063,25 +2197,53 @@ class TastyTradeProvider(BaseProvider):
                     tastytrade_symbol = original_symbol
                     instrument_type = "Equity"
                 
+                # Determine the correct action for sell orders
+                side = order_data.get("side", "buy").lower()
+                if side == "sell":
+                    # Check if this is a short sell
+                    is_short_sell = order_data.get("is_short_sell", False)
+                    if is_short_sell:
+                        action = "Sell to Open"  # Short selling
+                    else:
+                        action = "Sell to Close"  # Closing existing position
+                else:
+                    action = action_map.get(side, "Buy to Open")
+                
                 legs.append({
                     "instrument-type": instrument_type,
-                    "action": action_map.get(leg.get("side", "buy").lower(), "Buy to Open"),
-                    "quantity": int(leg.get("quantity", 1)),
+                    "action": action,
+                    "quantity": int(order_data.get("qty", 1)),
                     "symbol": tastytrade_symbol
                 })
+            else:
+                # Process multi-leg order
+                for leg in order_legs:
+                    original_symbol = leg.get("symbol", "")
+                
+                    # Convert symbol to TastyTrade format if it's an option
+                    if self._is_option_symbol(original_symbol):
+                        tastytrade_symbol = self.convert_symbol_to_provider_format(original_symbol)
+                        instrument_type = "Equity Option"
+                    else:
+                        tastytrade_symbol = original_symbol
+                        instrument_type = "Equity"
+                    
+                    legs.append({
+                        "instrument-type": instrument_type,
+                        "action": action_map.get(leg.get("side", "buy").lower(), "Buy to Open"),
+                        "quantity": int(leg.get("quantity", 1)),
+                        "symbol": tastytrade_symbol
+                    })
             
             # Build TastyTrade multi-leg order
             tastytrade_order = {
-                "order-type": order_type_map.get(order_data.get("type", "limit").lower(), "Limit"),
+                "order-type": order_type_map.get(order_data.get("order_type", "limit").lower(), "Limit"),
                 "time-in-force": tif_map.get(order_data.get("time_in_force", "day").lower(), "Day"),
                 "legs": legs
             }
             
             # Add price and price-effect for limit orders (required for TastyTrade)
-            order_type = order_data.get("type", "limit").lower()
-            
-            # Log the incoming order data for debugging
-            logger.info(f"TastyTrade: Processing order data: {order_data}")
+            order_type = order_data.get("order_type", "limit").lower()
             
             if order_type in ["limit", "stop_limit"]:  # Both limit and stop_limit need price
                 # Check multiple possible price fields
@@ -2094,18 +2256,20 @@ class TastyTradeProvider(BaseProvider):
                     price_float = float(price)
                     
                     # TastyTrade requires positive prices and correct price-effect
-                    if price_float < 0:
-                        # Negative price means this is a credit spread - we receive money
-                        tastytrade_order["price"] = abs(price_float)  # Make price positive
-                        tastytrade_order["price-effect"] = "Credit"   # We receive credit
-                        logger.info(f"TastyTrade: Converted negative price {price} to positive {abs(price_float)} with Credit effect")
-                    else:
-                        # Positive price means this is a debit spread - we pay money
-                        tastytrade_order["price"] = price_float
-                        tastytrade_order["price-effect"] = order_data.get("price_effect", "Debit")
-                        logger.info(f"TastyTrade: Using positive price {price_float} with Debit effect")
+                    tastytrade_order["price"] = abs(price_float)  # Always make price positive
                     
-                    logger.info(f"TastyTrade: Final order price={tastytrade_order['price']} and price-effect={tastytrade_order['price-effect']}")
+                    # Determine price-effect based on order side and price sign
+                    side = order_data.get("side")
+                    if price_float < 0:
+                        # Negative price explicitly indicates credit
+                        tastytrade_order["price-effect"] = "Credit"
+                    elif side and side.lower() in ["sell", "sell_to_open", "sell_to_close"]:
+                        # Selling typically receives credit (you get money)
+                        tastytrade_order["price-effect"] = "Credit"
+                    else:
+                        # For multi-leg orders or buy orders, determine from price sign
+                        # If price is positive and we don't have a clear sell side, default to Debit
+                        tastytrade_order["price-effect"] = "Debit"
                 else:
                     # If no price provided, this is likely an error - log it
                     logger.warning(f"TastyTrade: No price found in order data for limit order: {order_data}")
@@ -2113,8 +2277,12 @@ class TastyTradeProvider(BaseProvider):
                     raise ValueError("Limit order requires a price but none was provided")
             elif order_type == "market":
                 # Market orders don't need price but may need price-effect for multi-leg
-                if len(order_data.get("legs", [])) > 1:
+                order_legs_check = order_data.get("legs") or []
+                if len(order_legs_check) > 1:
                     tastytrade_order["price-effect"] = order_data.get("price_effect", "Debit")
+            
+            # Log the final TastyTrade order payload
+            logger.info(f"TastyTrade: Final multi-leg order payload: {tastytrade_order}")
             
             return tastytrade_order
             
