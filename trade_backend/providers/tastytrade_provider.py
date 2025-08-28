@@ -2425,14 +2425,51 @@ class TastyTradeProvider(BaseProvider):
             # Convert TastyTrade symbol to standard OCC format for UI consistency
             standard_symbol = self.convert_symbol_to_standard_format(symbol)
             
+            # Map TastyTrade instrument-type to our standard asset_class
+            instrument_type = raw_position.get("instrument-type", "")
+            if instrument_type == "Equity":
+                asset_class = "us_equity"
+            elif instrument_type == "Equity Option":
+                asset_class = "us_option"
+            else:
+                asset_class = "unknown"
+            
+            # Determine side based on quantity
+            qty = raw_position.get("quantity", 0)
+            side = "long" if qty >= 0 else "short"
+            
+            # Get TastyTrade-specific fields
+            avg_open_price = float(raw_position.get("average-open-price", 0)) if raw_position.get("average-open-price") else 0
+            close_price = float(raw_position.get("close-price", 0)) if raw_position.get("close-price") else 0
+            quantity = float(qty)
+            multiplier = float(raw_position.get("multiplier", 1))
+            
+            # Calculate cost basis (total amount paid/received for the position)
+            cost_basis = avg_open_price * quantity * multiplier
+            
+            # Calculate current market value
+            market_value = close_price * quantity * multiplier
+            
+            # Calculate unrealized P/L
+            unrealized_pl = market_value - cost_basis
+            
+            # Handle cost-effect (Credit means we received money, so cost_basis should be negative)
+            cost_effect = raw_position.get("cost-effect", "")
+            if cost_effect == "Credit":
+                cost_basis = -abs(cost_basis)  # Make cost basis negative for credits
+            
             return Position(
                 symbol=standard_symbol,  # UI gets standard OCC format
-                quantity=raw_position.get("quantity", 0),
-                average_price=raw_position.get("average-price"),
-                market_value=raw_position.get("market-value"),
-                unrealized_pnl=raw_position.get("unrealized-day-gain-loss"),
-                realized_pnl=raw_position.get("realized-day-gain-loss"),
-                instrument_type=raw_position.get("instrument-type", "")
+                qty=float(qty),
+                side=side,
+                market_value=market_value,
+                cost_basis=cost_basis,
+                unrealized_pl=unrealized_pl,
+                current_price=close_price,
+                avg_entry_price=avg_open_price,  # Use average-open-price directly
+                asset_class=asset_class,
+                lastday_price=float(raw_position.get("average-daily-market-close-price", 0)) if raw_position.get("average-daily-market-close-price") else None,
+                date_acquired=raw_position.get("created-at")  # Use created-at as acquisition date
             )
             
         except Exception as e:
@@ -3126,6 +3163,238 @@ class TastyTradeProvider(BaseProvider):
             logger.error(f"TastyTrade: Error during connection recovery: {e}")
             streaming_health_manager.record_error(self._connection_id, f"Recovery error: {e}")
             return False
+
+    async def get_positions_enhanced(self) -> Dict[str, Any]:
+        """Get enhanced positions grouped by date_acquired (same order timing)."""
+        try:
+            logger.debug("🔍 TastyTrade: Getting enhanced positions grouped by acquisition date...")
+
+            # 1. Get current positions only (no additional API calls needed)
+            current_positions = await self.get_positions()
+            if not current_positions:
+                logger.info("TastyTrade: No current positions found")
+                return {"enhanced": True, "symbol_groups": []}
+            
+            # 2. Group by date_acquired instead of expensive order chain analysis
+            symbol_groups = await self._create_date_based_hierarchical_groups(current_positions)
+
+            logger.debug(f"✅ TastyTrade: Created {len(symbol_groups)} symbol groups using date_acquired grouping")
+            return {"enhanced": True, "symbol_groups": symbol_groups}
+            
+        except Exception as e:
+            self._log_error("get_positions_enhanced", e)
+            return {"enhanced": True, "symbol_groups": []}
+
+    async def _create_date_based_hierarchical_groups(self, positions: List[Position]) -> List[Dict[str, Any]]:
+        """Create hierarchical groups based on date_acquired (same order timing)."""
+        try:
+            from datetime import datetime
+            
+            logger.debug("📊 TastyTrade: Creating date-based hierarchical symbol groups")
+            
+            # Step 1: Group positions by underlying symbol first
+            symbol_groups = {}
+            
+            for position in positions:
+                # Determine underlying symbol
+                if self._is_option_symbol(position.symbol):
+                    parsed = self._parse_option_symbol(position.symbol)
+                    underlying = parsed["underlying"] if parsed else position.symbol
+                    asset_class = "options"
+                else:
+                    underlying = position.symbol
+                    asset_class = "stocks"
+                
+                if underlying not in symbol_groups:
+                    symbol_groups[underlying] = {
+                        "symbol": underlying,
+                        "asset_class": asset_class,
+                        "positions": []
+                    }
+                
+                symbol_groups[underlying]["positions"].append(position)
+            
+            # Step 2: Within each underlying, group by date_acquired
+            result = []
+            for underlying, symbol_group in symbol_groups.items():
+                strategies = await self._group_by_date_acquired(symbol_group["positions"])
+                
+                result.append({
+                    "symbol": underlying,
+                    "asset_class": symbol_group["asset_class"],
+                    "strategies": strategies
+                })
+            
+            logger.debug(f"✅ TastyTrade: Created {len(result)} date-based symbol groups")
+            return result
+            
+        except Exception as e:
+            self._log_error("_create_date_based_hierarchical_groups", e)
+            return []
+
+    async def _group_by_date_acquired(self, positions: List[Position]) -> List[Dict[str, Any]]:
+        """Group positions by their date_acquired timestamp."""
+        try:
+            from datetime import datetime
+            
+            logger.debug(f"📊 TastyTrade: Grouping {len(positions)} positions by date_acquired")
+            
+            # Group by date_acquired
+            date_groups = {}
+            
+            for position in positions:
+                # Use date_acquired as the grouping key
+                date_key = position.date_acquired or "unknown"
+                
+                # For more precise grouping, we can truncate to minute precision
+                # This handles cases where positions from the same order might have slightly different timestamps
+                if date_key != "unknown":
+                    try:
+                        # Parse the date and truncate to minute precision for grouping
+                        dt = datetime.fromisoformat(date_key.replace('Z', '+00:00'))
+                        # Group by minute precision (same order should be within the same minute)
+                        date_key = dt.strftime('%Y-%m-%d %H:%M')
+                    except (ValueError, TypeError):
+                        logger.warning(f"TastyTrade: Could not parse date_acquired: {date_key}")
+                        # Keep original value if parsing fails
+                        pass
+                
+                if date_key not in date_groups:
+                    date_groups[date_key] = []
+                
+                date_groups[date_key].append(position)
+            
+            logger.debug(f"📊 TastyTrade: Created {len(date_groups)} date-based groups")
+            
+            # Convert to strategy format
+            strategies = []
+            for date_key, date_positions in date_groups.items():
+                strategy_name = self._detect_strategy_name(date_positions)
+                
+                # Calculate DTE if options are present
+                dte = self._calculate_dte_for_positions(date_positions)
+                
+                # Calculate strategy totals (static data only)
+                strategy_total_qty = sum(pos.qty for pos in date_positions)
+                strategy_cost_basis = sum(pos.cost_basis for pos in date_positions)
+                
+                # Create legs with static broker data
+                legs = await self._convert_positions_to_legs(date_positions)
+                
+                strategy = {
+                    "name": strategy_name,
+                    "total_qty": strategy_total_qty,
+                    "cost_basis": strategy_cost_basis,
+                    "dte": dte,
+                    "legs": legs,
+                    "date_acquired": date_key  # Include the grouping date for reference
+                }
+                strategies.append(strategy)
+            
+            logger.debug(f"📊 TastyTrade: Created {len(strategies)} strategies from date grouping")
+            return strategies
+            
+        except Exception as e:
+            self._log_error("_group_by_date_acquired", e)
+            return []
+
+    def _calculate_dte_for_positions(self, positions: List[Position]) -> Optional[int]:
+        """Calculate days to expiration for a group of positions."""
+        try:
+            from datetime import datetime
+            
+            # Find the earliest expiration date among option positions
+            expiry_dates = []
+            for pos in positions:
+                if self._is_option_symbol(pos.symbol):
+                    parsed = self._parse_option_symbol(pos.symbol)
+                    if parsed and parsed.get("expiry"):
+                        expiry_dates.append(parsed["expiry"])
+            
+            if expiry_dates:
+                # Use the earliest expiration date
+                earliest_expiry = min(expiry_dates)
+                try:
+                    expiry_date = datetime.strptime(earliest_expiry, "%Y-%m-%d")
+                    dte = (expiry_date - datetime.now()).days
+                    return dte
+                except ValueError:
+                    return None
+            
+            return None
+            
+        except Exception as e:
+            self._log_error("_calculate_dte_for_positions", e)
+            return None
+
+    async def _convert_positions_to_legs(self, positions: List[Position]) -> List[Dict[str, Any]]:
+        """Convert positions to leg format with static broker data."""
+        try:
+            legs = []
+            for pos in positions:
+                legs.append({
+                    "symbol": pos.symbol,
+                    "qty": pos.qty,
+                    "avg_entry_price": pos.avg_entry_price,
+                    "cost_basis": pos.cost_basis,
+                    "asset_class": pos.asset_class,
+                    "lastday_price": pos.lastday_price,
+                    "date_acquired": pos.date_acquired  # Include for reference
+                })
+            
+            return legs
+            
+        except Exception as e:
+            self._log_error("_convert_positions_to_legs", e)
+            return []
+
+    def _detect_strategy_name(self, positions: List[Position]) -> str:
+        """Detect strategy name based on positions using centralized strategy detection."""
+        try:
+            if len(positions) == 1:
+                if self._is_option_symbol(positions[0].symbol):
+                    return "Single Option"
+                else:
+                    return "Stock Position"
+            
+            # For multi-leg strategies, use the centralized strategy detection
+            option_positions = [pos for pos in positions if self._is_option_symbol(pos.symbol)]
+            
+            if len(option_positions) >= 2:
+                # Convert positions to legs format expected by detectStrategy
+                legs = []
+                for pos in option_positions:
+                    # Determine side based on quantity (positive = buy, negative = sell)
+                    side = "buy_to_open" if pos.qty > 0 else "sell_to_open"
+                    legs.append({
+                        "symbol": pos.symbol,
+                        "side": side,
+                        "qty": abs(pos.qty)
+                    })
+
+                # Use centralized strategy detection
+                try:
+                    from ..utils.optionsStrategies import detectStrategy
+                    strategy = detectStrategy(legs)
+                    return strategy
+                except ImportError as e:
+                    logger.warning(f"TastyTrade: Could not import detectStrategy: {e}")
+                    # Fallback to generic naming
+                    pass
+
+            # Fallback to generic naming
+            if len(positions) == 2:
+                return "2-Leg Strategy"
+            elif len(positions) == 4:
+                return "4-Leg Strategy"
+            elif len(positions) == 6:
+                return "6-Leg Strategy"
+            else:
+                return f"{len(positions)}-Leg Strategy"
+
+        except Exception as e:
+            self._log_error("_detect_strategy_name", e)
+            return "Unknown Strategy"
 
     async def health_check(self) -> Dict[str, Any]:
         """Perform a health check on the TastyTrade provider."""

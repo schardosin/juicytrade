@@ -28,14 +28,14 @@
           <div class="header-left">
             <div class="position-type-tabs">
               <button
-                :class="['tab-button', { active: selectedType === 'options' }]"
-                @click="selectedType = 'options'"
+                :class="['tab-button', { active: showOptions }]"
+                @click="toggleFilter('options')"
               >
                 Options
               </button>
               <button
-                :class="['tab-button', { active: selectedType === 'stocks' }]"
-                @click="selectedType = 'stocks'"
+                :class="['tab-button', { active: showStocks }]"
+                @click="toggleFilter('stocks')"
               >
                 Stocks
               </button>
@@ -202,27 +202,33 @@
                                   formatLegQty(leg.qty)
                                 }}</span>
                                 <div class="leg-details">
-                                  <span class="expiry-date">{{
-                                    formatLegDate(leg)
-                                  }}</span>
-                                  <span class="day-indicator">{{
-                                    formatLegDays(leg)
-                                  }}</span>
-                                  <span class="strike-price">{{
-                                    formatLegStrike(leg)
-                                  }}</span>
-                                  <span
-                                    class="option-type"
-                                    :class="getLegTypeClass(leg)"
-                                  >
-                                    {{ formatLegType(leg) }}
-                                  </span>
-                                  <span
-                                    v-if="isLegITM(leg)"
-                                    class="itm-indicator"
-                                  >
-                                    ITM
-                                  </span>
+                                  <!-- Show "Shares" for equity positions, options details for options -->
+                                  <template v-if="leg.asset_class === 'us_equity'">
+                                    <span class="shares-label">Shares</span>
+                                  </template>
+                                  <template v-else>
+                                    <span class="expiry-date">{{
+                                      formatLegDate(leg)
+                                    }}</span>
+                                    <span class="day-indicator">{{
+                                      formatLegDays(leg)
+                                    }}</span>
+                                    <span class="strike-price">{{
+                                      formatLegStrike(leg)
+                                    }}</span>
+                                    <span
+                                      class="option-type"
+                                      :class="getLegTypeClass(leg)"
+                                    >
+                                      {{ formatLegType(leg) }}
+                                    </span>
+                                    <span
+                                      v-if="isLegITM(leg)"
+                                      class="itm-indicator"
+                                    >
+                                      ITM
+                                    </span>
+                                  </template>
                                 </div>
                               </div>
                             </td>
@@ -304,7 +310,7 @@
 
         <!-- Empty State -->
         <div v-else class="empty-state">
-          <p>No {{ selectedType }} positions found.</p>
+          <p>No positions found.</p>
         </div>
       </div>
 
@@ -392,8 +398,8 @@ export default {
     const registeredSymbols = new Set();
 
     // Smart Market Data integration - same pattern as other components
-    const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
-    const liveOptionPrices = reactive(new Map());
+    const { getStockPrice: getSmartStockPrice, getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
+    const livePrices = reactive(new Map());
 
     // Single registration method per component to prevent double registration
     const ensureSymbolRegistration = (symbol) => {
@@ -449,7 +455,9 @@ export default {
     const loading = ref(false); // Start with false since data loads automatically
     const error = ref(null);
     const positionGroups = ref([]);
-    const selectedType = ref("options");
+    // Filter state - both can be active at the same time
+    const showOptions = ref(true);
+    const showStocks = ref(true);
     const expandedGroups = ref([]);
     const isRightPanelExpanded = ref(false);
     const adjustedNetCredit = ref(null); // Add adjustedNetCredit for limit price functionality
@@ -501,14 +509,26 @@ export default {
     // Real-time update interval
     let updateInterval = null;
 
+    // Toggle filter method
+    const toggleFilter = (type) => {
+      if (type === 'options') {
+        showOptions.value = !showOptions.value;
+      } else if (type === 'stocks') {
+        showStocks.value = !showStocks.value;
+      }
+    };
+
     // Computed properties
     const filteredPositionGroups = computed(() => {
       return positionGroups.value.filter((group) => {
-        if (selectedType.value === "options") {
-          return group.asset_class === "options";
-        } else {
-          return group.asset_class === "stocks";
+        // Handle both old format ("options"/"stocks") and new format ("us_option"/"us_equity")
+        if ((group.asset_class === "options" || group.asset_class === "us_option") && showOptions.value) {
+          return true;
         }
+        if ((group.asset_class === "stocks" || group.asset_class === "us_equity") && showStocks.value) {
+          return true;
+        }
+        return false;
       });
     });
 
@@ -526,47 +546,59 @@ export default {
       );
     });
 
-    // Live price function - same pattern as CollapsibleOptionsChain
+    // Live price function - handles both stocks and options
     const getLivePrice = (symbol) => {
       if (!symbol) return null;
 
-      if (!liveOptionPrices.has(symbol)) {
+      if (!livePrices.has(symbol)) {
         // Ensure symbol is registered (only once per component)
         ensureSymbolRegistration(symbol);
         
-        // Call getSmartOptionPrice only once to set up the subscription and heartbeat
-        liveOptionPrices.set(symbol, getSmartOptionPrice(symbol));
+        // Use appropriate smart market data method based on symbol type
+        if (smartMarketDataStore.isOptionSymbol(symbol)) {
+          livePrices.set(symbol, getSmartOptionPrice(symbol));
+        } else {
+          livePrices.set(symbol, getSmartStockPrice(symbol));
+        }
       }
-      return liveOptionPrices.get(symbol)?.value;
+      return livePrices.get(symbol)?.value;
     };
 
 
     // Get current market price (mid of bid/ask) for P/L calculation
     const getLegCurrentPrice = (leg) => {
-      if (leg.asset_class !== "us_option") return leg.current_price || 0;
-
       const livePrice = getLivePrice(leg.symbol);
 
-      // Prioritize live prices, but fall back to leg's static data
-      const bid = livePrice?.bid ?? leg.bid;
-      const ask = livePrice?.ask ?? leg.ask;
+      if (leg.asset_class === "us_option") {
+        // Option logic - use bid/ask mid-price
+        const bid = livePrice?.bid ?? leg.bid;
+        const ask = livePrice?.ask ?? leg.ask;
 
-      // If both bid and ask are present and positive, use mid-price
-      if (bid > 0 && ask > 0) {
-        return (bid + ask) / 2;
+        // If both bid and ask are present and positive, use mid-price
+        if (bid > 0 && ask > 0) {
+          return (bid + ask) / 2;
+        }
+
+        // If only one side is positive, use that side
+        if (bid > 0) return bid;
+        if (ask > 0) return ask;
+        
+        // If both are explicitly zero, the option is worthless
+        if (bid === 0 && ask === 0) {
+          return 0;
+        }
+
+        // Fallback to other price fields, but NOT entry price
+        return leg.current_price || leg.last_price || 0;
+      } else {
+        // Equity logic - use live stock price
+        if (livePrice?.price) {
+          return livePrice.price;
+        }
+        
+        // Fallback to static data for equity positions
+        return leg.current_price || leg.last_price || leg.avg_entry_price || 0;
       }
-
-      // If only one side is positive, use that side
-      if (bid > 0) return bid;
-      if (ask > 0) return ask;
-      
-      // If both are explicitly zero, the option is worthless
-      if (bid === 0 && ask === 0) {
-        return 0;
-      }
-
-      // Fallback to other price fields, but NOT entry price
-      return leg.current_price || leg.last_price || 0;
     };
 
     // Calculate live P/L for individual leg
@@ -915,20 +947,34 @@ export default {
 
     // Get live bid price for a leg
     const getLegBid = (leg) => {
-      if (leg.asset_class !== "us_option") return "$0.00";
       const livePrice = getLivePrice(leg.symbol);
-      // Use nullish coalescing to fall back to original bid price
-      const bidPrice = livePrice?.bid ?? leg.bid ?? 0;
-      return formatCurrency(bidPrice);
+      
+      if (leg.asset_class === "us_option") {
+        // Option logic - use live bid or fallback to static bid
+        const bidPrice = livePrice?.bid ?? leg.bid ?? 0;
+        return formatCurrency(bidPrice);
+      } else {
+        // Equity logic - for stocks, bid/ask is usually very close to current price
+        // Use live price or fallback to static data
+        const bidPrice = livePrice?.bid ?? livePrice?.price ?? leg.current_price ?? leg.last_price ?? 0;
+        return formatCurrency(bidPrice);
+      }
     };
 
     // Get live ask price for a leg
     const getLegAsk = (leg) => {
-      if (leg.asset_class !== "us_option") return "$0.00";
       const livePrice = getLivePrice(leg.symbol);
-      // Use nullish coalescing to fall back to original ask price
-      const askPrice = livePrice?.ask ?? leg.ask ?? 0;
-      return formatCurrency(askPrice);
+      
+      if (leg.asset_class === "us_option") {
+        // Option logic - use live ask or fallback to static ask
+        const askPrice = livePrice?.ask ?? leg.ask ?? 0;
+        return formatCurrency(askPrice);
+      } else {
+        // Equity logic - for stocks, bid/ask is usually very close to current price
+        // Use live price or fallback to static data
+        const askPrice = livePrice?.ask ?? livePrice?.price ?? leg.current_price ?? leg.last_price ?? 0;
+        return formatCurrency(askPrice);
+      }
     };
 
     // Format P/L for display
@@ -1330,7 +1376,8 @@ export default {
               symbolGroup.strategies.forEach((strategy) => {
                 if (strategy.legs) {
                   strategy.legs.forEach((leg) => {
-                    if (leg.asset_class === "us_option" && leg.symbol) {
+                    // Subscribe to ALL position symbols for live price updates, not just options
+                    if (leg.symbol) {
                       symbols.add(leg.symbol);
                     }
                   });
@@ -1551,7 +1598,7 @@ export default {
       
       // Clear local tracking
       registeredSymbols.clear();
-      liveOptionPrices.clear();
+      livePrices.clear();
     };
 
     // Watch for symbol changes to clean up old registrations
@@ -1589,7 +1636,8 @@ export default {
       loading,
       error,
       positionGroups,
-      selectedType,
+      showOptions,
+      showStocks,
       expandedGroups,
 
       // Computed
@@ -1599,6 +1647,7 @@ export default {
 
       // Methods
       fetchPositions,
+      toggleFilter,
       toggleExpand,
       formatCurrency,
       formatNumber,
@@ -2172,6 +2221,15 @@ export default {
   padding: 1px 4px;
   border-radius: 2px;
   text-transform: uppercase;
+}
+
+.leg-description .shares-label {
+  font-size: 12px;
+  color: var(--text-primary, #ffffff);
+  background-color: var(--bg-tertiary, #1a1d23);
+  padding: 2px 6px;
+  border-radius: 3px;
+  font-weight: 500;
 }
 
 /* Update option type classes to work with new structure */
