@@ -119,6 +119,14 @@ export function useMarketData() {
   };
 
   /**
+   * Get 6 months of daily candles with cache and current-day merge
+   * Specialized fast path used by chart default (Daily + 6M)
+   */
+  const getHistoricalDailySixMonths = async (symbol, options = {}) => {
+    return await smartMarketDataStore.getDaily6MHistory(symbol, options);
+  };
+
+  /**
    * Symbol lookup - call API directly (not through data store)
    */
   const lookupSymbols = async (query, forceRefresh = false) => {
@@ -220,6 +228,7 @@ export function useMarketData() {
     // On-demand data (Cached)
     getOptionsChain,
     getHistoricalData,
+    getHistoricalDailySixMonths,
     lookupSymbols,
     getExpirationDates,
 

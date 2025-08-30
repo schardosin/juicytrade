@@ -84,7 +84,7 @@ export default {
     const selectedDateRange = ref("6M");
 
     // Use unified market data composable
-    const { getHistoricalData } = useMarketData();
+    const { getHistoricalData, getHistoricalDailySixMonths } = useMarketData();
 
     let chart = null;
     let candlestickSeries = null;
@@ -345,17 +345,17 @@ export default {
         const start_date = calculateStartDate(dateRange);
         const limit = calculateLimit(timeframe, dateRange);
 
-        const params = {
-          timeframe,
-          limit,
-          start_date,
-        };
-
-        // Use unified data access instead of direct axios call
-        const data = await getHistoricalData(symbol, timeframe, {
-          limit,
-          start_date,
-        });
+        // Choose fast path for default Daily + 6M to leverage cache + live updates
+        let data;
+        if (timeframe === "D" && dateRange === "6M") {
+          data = await getHistoricalDailySixMonths(symbol);
+        } else {
+          // Use unified data access instead of direct axios call
+          data = await getHistoricalData(symbol, timeframe, {
+            limit,
+            start_date,
+          });
+        }
 
         if (data && data.bars) {
           const bars = data.bars;

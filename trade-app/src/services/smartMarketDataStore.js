@@ -415,6 +415,15 @@ class SmartMarketDataStore {
     this.keepaliveInterval = 15000; // Send keep-alive every 15 seconds
     this.debounceDelay = 100; // 100ms debounce for backend updates
 
+    // Current symbol's daily 6M data (simplified single-symbol approach)
+    this.currentSymbolDaily6M = {
+      symbol: null,
+      bars: [],
+      lastUpdated: null,
+      providerIdentity: null,
+      isLoading: false
+    };
+
     // Internal state
     this.updateTimer = null;
     this.greeksUpdateTimer = null; // Timer for Greeks periodic updates
@@ -1138,6 +1147,9 @@ class SmartMarketDataStore {
       this.optionPrices.set(symbol, priceData);
     } else {
       this.stockPrices.set(symbol, priceData);
+      
+      // Update today's candle in daily 6M data if this is a stock price
+      this.updateTodaysCandleWithPrice(symbol, finalPrice);
     }
 
     // Update access timestamp only if actively subscribed (avoid unnecessary Map operations)
@@ -1641,6 +1653,23 @@ class SmartMarketDataStore {
   }
 
   /**
+   * Subscribe to a symbol
+   */
+  async subscribeToSymbol(symbol) {
+    this.activeSubscriptions.add(symbol);
+
+    // For stock symbols, proactively load daily 6M data in background
+    if (symbol.length <= 10) { // Stock symbol
+      this.ensureCurrentSymbolDaily6M(symbol).catch(err => {
+        console.warn(`⚠️ Background daily 6M load failed for ${symbol}:`, err.message);
+      });
+    }
+
+    // Schedule backend update
+    this.scheduleBackendUpdate();
+  }
+
+  /**
    * Set loading state
    */
   setLoading(key, isLoading) {
@@ -1691,6 +1720,220 @@ class SmartMarketDataStore {
     }
   }
 
+  // ===== Current Symbol Daily 6M Data Management =====
+
+  /**
+   * Get 6 months of daily candles for current symbol with live-updated today's candle
+   * Returns an object shaped like the API: { bars: [...] }
+   */
+  async getDaily6MHistory(symbol) {
+    if (!symbol) {
+      return { bars: [] };
+    }
+
+    // Ensure we have data for this symbol
+    await this.ensureCurrentSymbolDaily6M(symbol);
+
+    // Wait for loading to complete if still in progress
+    if (this.currentSymbolDaily6M.isLoading) {
+      // Poll until loading is complete or timeout
+      const maxWaitTime = 10000; // 10 seconds max wait
+      const pollInterval = 100; // Check every 100ms
+      let waitTime = 0;
+      
+      while (this.currentSymbolDaily6M.isLoading && waitTime < maxWaitTime) {
+        await new Promise(resolve => setTimeout(resolve, pollInterval));
+        waitTime += pollInterval;
+      }
+    }
+
+    // Return current data (always up-to-date with live prices)
+    return { bars: this.currentSymbolDaily6M.bars };
+  }
+
+  /**
+   * Ensure current symbol's daily 6M data is loaded and up-to-date
+   */
+  async ensureCurrentSymbolDaily6M(symbol) {
+    // If symbol changed, clear and reload
+    if (this.currentSymbolDaily6M.symbol !== symbol) {
+      await this.loadCurrentSymbolDaily6M(symbol);
+    }
+  }
+
+  /**
+   * Load 6M daily data for a symbol (background fetch)
+   */
+  async loadCurrentSymbolDaily6M(symbol) {
+    if (!symbol) return;
+
+    // Clear previous data
+    this.currentSymbolDaily6M = {
+      symbol: symbol,
+      bars: [],
+      lastUpdated: null,
+      providerIdentity: null,
+      isLoading: true
+    };
+
+    try {
+      // Get provider identity for consistency
+      const providerIdentity = await this.computeProviderIdentity();
+      
+      // Fetch 6M baseline data
+      const sixMonthsAgo = this.getSixMonthsAgoISO();
+      const baseline = await api.getHistoricalData(symbol, "D", {
+        start_date: sixMonthsAgo
+      });
+      
+      const baselineBars = baseline && baseline.bars ? baseline.bars : [];
+      
+      // Update current symbol data
+      this.currentSymbolDaily6M = {
+        symbol: symbol,
+        bars: baselineBars,
+        lastUpdated: Date.now(),
+        providerIdentity: providerIdentity,
+        isLoading: false
+      };
+
+      console.log(`📊 Loaded ${baselineBars.length} daily bars for ${symbol}`);
+      
+    } catch (err) {
+      console.error(`❌ Failed to load 6M daily data for ${symbol}:`, err);
+      this.currentSymbolDaily6M.isLoading = false;
+    }
+  }
+
+  /**
+   * Update today's candle with live price data
+   */
+  updateTodaysCandleWithPrice(symbol, price) {
+    // Only update if this is the current symbol
+    if (this.currentSymbolDaily6M.symbol !== symbol || !this.currentSymbolDaily6M.bars.length) {
+      return;
+    }
+
+    const todayDate = this.formatISODate(new Date());
+    const bars = this.currentSymbolDaily6M.bars;
+    const lastBarIndex = bars.length - 1;
+    
+    if (lastBarIndex < 0) return;
+
+    const lastBar = bars[lastBarIndex];
+    const lastBarDate = this.extractDateString(lastBar.time);
+
+    if (lastBarDate === todayDate) {
+      // Update existing today's candle
+      bars[lastBarIndex] = {
+        ...lastBar,
+        high: Math.max(lastBar.high, price),
+        low: Math.min(lastBar.low, price),
+        close: price
+        // Keep original open and time
+      };
+    } else {
+      // Create new candle for today
+      bars.push({
+        time: todayDate,
+        open: price,
+        high: price,
+        low: price,
+        close: price,
+        volume: 0 // Will be updated if volume data available
+      });
+    }
+
+    this.currentSymbolDaily6M.lastUpdated = Date.now();
+  }
+
+  /**
+   * Compute provider identity string for consistency checking
+   */
+  async computeProviderIdentity() {
+    try {
+      const config = await this.getData("providers.config");
+      const routed = config?.service_routing?.historical_data ?? null;
+      if (routed) {
+        return `historical:${routed}`;
+      }
+      const compact = {
+        service_routing: config?.service_routing || {},
+        provider_instances_count: Array.isArray(config?.provider_instances)
+          ? config.provider_instances.length
+          : 0
+      };
+      return `config:${JSON.stringify(compact)}`;
+    } catch {
+      return "config:unknown";
+    }
+  }
+
+  /**
+   * Clear current symbol data
+   */
+  clearCurrentSymbolDaily6M() {
+    this.currentSymbolDaily6M = {
+      symbol: null,
+      bars: [],
+      lastUpdated: null,
+      providerIdentity: null,
+      isLoading: false
+    };
+  }
+
+  /**
+   * Extract YYYY-MM-DD string from various time formats
+   */
+  extractDateString(timeVal) {
+    if (!timeVal && timeVal !== 0) return null;
+
+    if (typeof timeVal === "string") {
+      if (!timeVal.includes(" ")) {
+        return timeVal;
+      }
+      const dt = new Date(timeVal);
+      if (!isNaN(dt.getTime())) {
+        return this.formatISODate(dt);
+      }
+      return null;
+    }
+
+    if (typeof timeVal === "number") {
+      const ms = timeVal < 2e10 ? timeVal * 1000 : timeVal;
+      const d = new Date(ms);
+      return this.formatISODate(d);
+    }
+
+    if (typeof timeVal === "object" && timeVal.year && timeVal.month && timeVal.day) {
+      const y = timeVal.year;
+      const m = String(timeVal.month).padStart(2, "0");
+      const dd = String(timeVal.day).padStart(2, "0");
+      return `${y}-${m}-${dd}`;
+    }
+
+    return null;
+  }
+
+  /**
+   * Format date to YYYY-MM-DD
+   */
+  formatISODate(d) {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  /**
+   * Six months ago date in YYYY-MM-DD
+   */
+  getSixMonthsAgoISO() {
+    const now = new Date();
+    const sixMonthsAgo = new Date(now.getFullYear(), now.getMonth() - 6, now.getDate());
+    return this.formatISODate(sixMonthsAgo);
+  }
+
   /**
    * Update provider configuration
    * Updates the provider config and refreshes the data
@@ -1714,6 +1957,9 @@ class SmartMarketDataStore {
         const updatedConfig = response.data || response;
         this.updateData(key, updatedConfig);
       }
+
+      // Provider change invalidates current symbol data
+      this.clearCurrentSymbolDaily6M();
 
       // Also refresh available providers in case capabilities changed
       await this.getData("providers.available", { forceRefresh: true });
@@ -1745,6 +1991,9 @@ class SmartMarketDataStore {
     this.cache.clear();
     this.loading.clear();
     this.errors.clear();
+
+    // Clear current symbol data
+    this.clearCurrentSymbolDaily6M();
 
     // Clear timers
     this.timers.forEach((timer) => clearInterval(timer));
