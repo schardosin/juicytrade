@@ -60,6 +60,7 @@ The backend is designed to support multiple brokerage providers, with a clear di
 - **Consistent Theme Architecture**: Comprehensive CSS custom properties system ensuring visual consistency across all components, with standardized RightPanel integration and modern chart controls styling.
 - **Advanced Watchlist Management**: Comprehensive watchlist system with multiple watchlist support, real-time price updates, smart data integration, and professional trading interface for monitoring multiple symbols simultaneously.
 - **Centralized Selected Legs Management**: Sophisticated multi-source option leg selection system enabling seamless trading workflow across all components with unified analysis and order management.
+- **Historical Data Caching System** ⭐ *NEW*: Live-updating historical data cache system optimized for Daily/6M charts with instant loading, real-time today's candle updates, and zero network delays for the most common chart configuration.
 
 ### Supported Providers
 
