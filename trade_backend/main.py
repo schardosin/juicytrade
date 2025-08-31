@@ -31,6 +31,7 @@ from .services.ivx_calculator import calculate_ivx_data
 from .services.ivx_cache import ivx_cache
 from .ivx_streaming_manager import IVxStreamingManager
 from .strategies.api_endpoints import router as strategies_router
+from .strategies.execution_engine import StrategyExecutionEngine
 from datetime import datetime
 
 # Configure logging
@@ -64,6 +65,15 @@ async def lifespan(app: FastAPI):
         logger.info("🔄 Starting IVx streaming manager...")
         await ivx_streaming_manager.start()
         logger.info("✅ IVx streaming manager started")
+        
+        # Initialize Strategy Execution Engine
+        logger.info("🔄 Initializing Strategy Execution Engine...")
+        strategy_execution_engine = StrategyExecutionEngine()
+        await strategy_execution_engine.initialize()
+        
+        # Make strategy engine available globally
+        app.state.strategy_execution_engine = strategy_execution_engine
+        logger.info("✅ Strategy Execution Engine initialized")
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize streaming: {e}")

@@ -92,12 +92,13 @@
 
           <div class="form-field">
             <label for="strategy-description">Description</label>
-            <Textarea
+            <textarea
               id="strategy-description"
               v-model="strategyDescription"
               placeholder="Describe what your strategy does..."
               rows="3"
-              auto-resize
+              class="p-inputtextarea p-inputtext p-component"
+              style="resize: vertical; min-height: 80px;"
             />
           </div>
         </div>
@@ -165,7 +166,7 @@ export default {
   emits: ['update:visible', 'uploaded'],
   setup(props, { emit }) {
     const { uploadStrategy: uploadStrategyAction } = useStrategyData()
-    const { addNotification } = useNotifications()
+    const { showSuccess, showError } = useNotifications()
 
     // Dialog state
     const dialogVisible = computed({
@@ -280,11 +281,10 @@ export default {
         const result = await uploadStrategyAction(selectedFile.value, config)
 
         if (result.success) {
-          addNotification({
-            type: 'success',
-            message: `Strategy "${config.name}" uploaded successfully`,
-            duration: 5000
-          })
+          showSuccess(
+            `Strategy "${config.name}" uploaded successfully`,
+            'Upload Success'
+          )
 
           emit('uploaded', result)
           closeDialog()
@@ -301,11 +301,10 @@ export default {
         console.error('Strategy upload error:', error)
         uploadError.value = error.message || 'Upload failed due to network error'
         
-        addNotification({
-          type: 'error',
-          message: 'Failed to upload strategy',
-          duration: 5000
-        })
+        showError(
+          'Failed to upload strategy',
+          'Upload Error'
+        )
       } finally {
         isUploading.value = false
       }

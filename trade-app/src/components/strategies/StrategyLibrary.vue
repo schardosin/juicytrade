@@ -155,7 +155,6 @@
               class="p-button-text p-button-sm p-button-success"
               title="Start Strategy"
               @click="startStrategy(strategy.strategy_id)"
-              :loading="isLoading(`start_strategy_${strategy.strategy_id}`)"
             />
             <Button
               v-else-if="strategy.is_running && !strategy.is_paused"
@@ -163,7 +162,6 @@
               class="p-button-text p-button-sm p-button-warning"
               title="Pause Strategy"
               @click="pauseStrategy(strategy.strategy_id)"
-              :loading="isLoading(`pause_strategy_${strategy.strategy_id}`)"
             />
             <Button
               v-else-if="strategy.is_paused"
@@ -171,7 +169,6 @@
               class="p-button-text p-button-sm p-button-success"
               title="Resume Strategy"
               @click="resumeStrategy(strategy.strategy_id)"
-              :loading="isLoading(`resume_strategy_${strategy.strategy_id}`)"
             />
             <Button
               icon="pi pi-eye"
@@ -185,12 +182,12 @@
               title="Backtest Strategy"
               @click="backtestStrategy(strategy.strategy_id)"
             />
+            <!-- DELETE BUTTON - Always visible, no loading state -->
             <Button
               icon="pi pi-trash"
-              class="p-button-text p-button-sm p-button-danger"
+              class="p-button-text p-button-sm p-button-danger delete-btn"
               title="Delete Strategy"
               @click="confirmDeleteStrategy(strategy)"
-              :loading="isLoading(`delete_strategy_${strategy.strategy_id}`)"
             />
           </div>
         </div>
@@ -339,7 +336,7 @@ export default {
   },
   setup() {
     const router = useRouter()
-    const { addNotification } = useNotifications()
+    const { showSuccess, showError } = useNotifications()
     
     // Smart Data System Integration
     const {
@@ -446,51 +443,45 @@ export default {
     const startStrategy = async (strategyId) => {
       try {
         await startStrategyAction(strategyId)
-        addNotification({
-          type: 'success',
-          message: 'Strategy started successfully',
-          duration: 3000
-        })
+        showSuccess(
+          'Strategy started successfully',
+          'Strategy Started'
+        )
       } catch (error) {
-        addNotification({
-          type: 'error',
-          message: `Failed to start strategy: ${error.message}`,
-          duration: 5000
-        })
+        showError(
+          `Failed to start strategy: ${error.message}`,
+          'Start Error'
+        )
       }
     }
 
     const pauseStrategy = async (strategyId) => {
       try {
         await pauseStrategyAction(strategyId)
-        addNotification({
-          type: 'success',
-          message: 'Strategy paused successfully',
-          duration: 3000
-        })
+        showSuccess(
+          'Strategy paused successfully',
+          'Strategy Paused'
+        )
       } catch (error) {
-        addNotification({
-          type: 'error',
-          message: `Failed to pause strategy: ${error.message}`,
-          duration: 5000
-        })
+        showError(
+          `Failed to pause strategy: ${error.message}`,
+          'Pause Error'
+        )
       }
     }
 
     const resumeStrategy = async (strategyId) => {
       try {
         await resumeStrategyAction(strategyId)
-        addNotification({
-          type: 'success',
-          message: 'Strategy resumed successfully',
-          duration: 3000
-        })
+        showSuccess(
+          'Strategy resumed successfully',
+          'Strategy Resumed'
+        )
       } catch (error) {
-        addNotification({
-          type: 'error',
-          message: `Failed to resume strategy: ${error.message}`,
-          duration: 5000
-        })
+        showError(
+          `Failed to resume strategy: ${error.message}`,
+          'Resume Error'
+        )
       }
     }
 
@@ -513,19 +504,17 @@ export default {
       isDeleting.value = true
       try {
         await deleteStrategyAction(strategyToDelete.value.strategy_id)
-        addNotification({
-          type: 'success',
-          message: `Strategy "${strategyToDelete.value.name}" deleted successfully`,
-          duration: 3000
-        })
+        showSuccess(
+          `Strategy "${strategyToDelete.value.name}" deleted successfully`,
+          'Strategy Deleted'
+        )
         showDeleteDialog.value = false
         strategyToDelete.value = null
       } catch (error) {
-        addNotification({
-          type: 'error',
-          message: `Failed to delete strategy: ${error.message}`,
-          duration: 5000
-        })
+        showError(
+          `Failed to delete strategy: ${error.message}`,
+          'Delete Error'
+        )
       } finally {
         isDeleting.value = false
       }
@@ -533,11 +522,10 @@ export default {
 
     const handleStrategyUploaded = () => {
       showUploadDialog.value = false
-      addNotification({
-        type: 'success',
-        message: 'Strategy uploaded successfully',
-        duration: 3000
-      })
+      showSuccess(
+        'Strategy uploaded successfully',
+        'Upload Success'
+      )
     }
 
     // Utility methods (same as dashboard)
@@ -922,6 +910,17 @@ export default {
   justify-content: flex-end;
   gap: var(--spacing-xs);
   flex-wrap: wrap;
+  min-height: 40px; /* Ensure consistent height */
+}
+
+/* Make delete button more visible */
+.delete-btn {
+  color: var(--color-danger) !important;
+}
+
+.delete-btn:hover {
+  background-color: var(--color-danger) !important;
+  color: white !important;
 }
 
 /* Strategy List */

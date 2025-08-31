@@ -219,7 +219,7 @@ export default {
   },
   setup() {
     const router = useRouter()
-    const { addNotification } = useNotifications()
+    const { showSuccess, showError } = useNotifications()
     
     // Smart Data System Integration - "Dumb Component" Pattern
     const {
@@ -289,61 +289,54 @@ export default {
     const pauseStrategy = async (strategyId) => {
       try {
         await pauseStrategyAction(strategyId)
-        addNotification({
-          type: 'success',
-          message: 'Strategy paused successfully',
-          duration: 3000
-        })
+        showSuccess(
+          'Strategy paused successfully',
+          'Strategy Paused'
+        )
       } catch (error) {
-        addNotification({
-          type: 'error',
-          message: `Failed to pause strategy: ${error.message}`,
-          duration: 5000
-        })
+        showError(
+          `Failed to pause strategy: ${error.message}`,
+          'Pause Error'
+        )
       }
     }
 
     const resumeStrategy = async (strategyId) => {
       try {
         await resumeStrategyAction(strategyId)
-        addNotification({
-          type: 'success',
-          message: 'Strategy resumed successfully',
-          duration: 3000
-        })
+        showSuccess(
+          'Strategy resumed successfully',
+          'Strategy Resumed'
+        )
       } catch (error) {
-        addNotification({
-          type: 'error',
-          message: `Failed to resume strategy: ${error.message}`,
-          duration: 5000
-        })
+        showError(
+          `Failed to resume strategy: ${error.message}`,
+          'Resume Error'
+        )
       }
     }
 
     const stopStrategy = async (strategyId) => {
       try {
         await stopStrategyAction(strategyId)
-        addNotification({
-          type: 'success',
-          message: 'Strategy stopped successfully',
-          duration: 3000
-        })
+        showSuccess(
+          'Strategy stopped successfully',
+          'Strategy Stopped'
+        )
       } catch (error) {
-        addNotification({
-          type: 'error',
-          message: `Failed to stop strategy: ${error.message}`,
-          duration: 5000
-        })
+        showError(
+          `Failed to stop strategy: ${error.message}`,
+          'Stop Error'
+        )
       }
     }
 
     const handleStrategyUploaded = () => {
       showUploadDialog.value = false
-      addNotification({
-        type: 'success',
-        message: 'Strategy uploaded successfully',
-        duration: 3000
-      })
+      showSuccess(
+        'Strategy uploaded successfully',
+        'Upload Success'
+      )
     }
 
     // Utility methods

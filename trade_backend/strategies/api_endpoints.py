@@ -13,7 +13,7 @@ These endpoints integrate with the frontend to provide a complete strategy manag
 import asyncio
 import logging
 from typing import List, Dict, Any, Optional
-from fastapi import APIRouter, HTTPException, Form, File, UploadFile
+from fastapi import APIRouter, HTTPException, Form, File, UploadFile, Request
 from pydantic import BaseModel, Field
 
 # No authentication needed for now - single user system
@@ -26,7 +26,6 @@ logger = logging.getLogger(__name__)
 # Initialize strategy management system (singleton pattern)
 _strategy_registry = None
 _strategy_validator = None
-_execution_engine = None
 
 def get_strategy_registry():
     global _strategy_registry
@@ -40,11 +39,13 @@ def get_strategy_validator():
         _strategy_validator = StrategyValidator()
     return _strategy_validator
 
-def get_execution_engine():
-    global _execution_engine
-    if _execution_engine is None:
-        _execution_engine = StrategyExecutionEngine()
-    return _execution_engine
+def get_execution_engine(request=None):
+    """Get the strategy execution engine from app state"""
+    from fastapi import Request
+    if request and hasattr(request.app.state, 'strategy_execution_engine'):
+        return request.app.state.strategy_execution_engine
+    # Fallback for when request is not available
+    return None
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 
@@ -205,15 +206,27 @@ async def get_user_strategies():
 
 
 @router.get("/stats", response_model=ExecutionStats)
-async def get_system_stats():
+async def get_system_stats(request: Request):
     """
     Get system-wide trading statistics.
 
     Returns execution engine statistics.
     """
     try:
-        stats = get_execution_engine().get_execution_stats()
-        return ExecutionStats(**stats)
+        execution_engine = get_execution_engine(request)
+        if execution_engine:
+            stats = execution_engine.get_execution_stats()
+            return ExecutionStats(**stats)
+        else:
+            # Return default stats if engine not available
+            return ExecutionStats(
+                total_strategies=0,
+                running_strategies=0,
+                paused_strategies=0,
+                total_pnl=0.0,
+                total_trades=0,
+                uptime_seconds=0.0
+            )
 
     except Exception as e:
         logger.error(f"Error getting system stats: {str(e)}")
@@ -246,7 +259,7 @@ async def get_strategy(strategy_id: str):
     Returns strategy metadata and current status.
     """
     try:
-        strategy_metadata = await strategy_registry.get_strategy_details(strategy_id)
+        strategy_metadata = await get_strategy_registry().get_strategy_details(strategy_id)
 
         if not strategy_metadata:
             raise HTTPException(status_code=404, detail="Strategy not found")
@@ -272,7 +285,7 @@ async def update_strategy(strategy_id: str, updates: StrategyUpdateRequest):
     """
     try:
         # Perform update
-        update_result = await strategy_registry.update_strategy(strategy_id, updates.dict(exclude_unset=True))
+        update_result = await get_strategy_registry().update_strategy(strategy_id, updates.dict(exclude_unset=True))
 
         if not update_result.get("success"):
             raise HTTPException(
@@ -304,7 +317,7 @@ async def delete_strategy(strategy_id: str):
     """
     try:
         # Delete strategy
-        success = await strategy_registry.delete_strategy(strategy_id)
+        success = await get_strategy_registry().delete_strategy(strategy_id)
 
         if success:
             return {
@@ -327,7 +340,7 @@ async def delete_strategy(strategy_id: str):
 # ============================================================================
 
 @router.post("/{strategy_id}/start", response_model=Dict[str, Any])
-async def start_strategy(strategy_id: str, execution_request: StrategyExecutionRequest):
+async def start_strategy(strategy_id: str, execution_request: StrategyExecutionRequest, request: Request):
     """
     Start executing a strategy.
 
@@ -337,10 +350,15 @@ async def start_strategy(strategy_id: str, execution_request: StrategyExecutionR
     Start strategy in live or backtesting mode.
     """
     try:
-        # Get strategy class
-        strategy_class = await strategy_registry.get_strategy(strategy_id)
-        if not strategy_class:
+        # Get strategy instance
+        strategy_instance = await get_strategy_registry().get_strategy(strategy_id)
+        if not strategy_instance:
             raise HTTPException(status_code=404, detail="Strategy not found")
+
+        # Get execution engine
+        execution_engine = get_execution_engine(request)
+        if not execution_engine:
+            raise HTTPException(status_code=503, detail="Strategy execution engine not available")
 
         # Merge configurations
         config = execution_request.config or {}
@@ -348,7 +366,7 @@ async def start_strategy(strategy_id: str, execution_request: StrategyExecutionR
         config['strategy_id'] = strategy_id
 
         # Start execution
-        success = await execution_engine.start_strategy(strategy_id, strategy_class(), config)
+        success = await execution_engine.start_strategy(strategy_id, strategy_instance, config)
 
         if success:
             logger.info(f"Strategy started: {strategy_id}")
@@ -369,7 +387,7 @@ async def start_strategy(strategy_id: str, execution_request: StrategyExecutionR
 
 
 @router.post("/{strategy_id}/stop", response_model=Dict[str, Any])
-async def stop_strategy(strategy_id: str):
+async def stop_strategy(strategy_id: str, request: Request):
     """
     Stop a running strategy.
 
@@ -378,6 +396,10 @@ async def stop_strategy(strategy_id: str):
     Returns stop confirmation.
     """
     try:
+        execution_engine = get_execution_engine(request)
+        if not execution_engine:
+            raise HTTPException(status_code=503, detail="Strategy execution engine not available")
+
         success = await execution_engine.stop_strategy(strategy_id)
 
         if success:
@@ -398,7 +420,7 @@ async def stop_strategy(strategy_id: str):
 
 
 @router.post("/{strategy_id}/pause", response_model=Dict[str, Any])
-async def pause_strategy(strategy_id: str):
+async def pause_strategy(strategy_id: str, request: Request):
     """
     Pause a running strategy.
 
@@ -407,6 +429,10 @@ async def pause_strategy(strategy_id: str):
     Returns pause confirmation.
     """
     try:
+        execution_engine = get_execution_engine(request)
+        if not execution_engine:
+            raise HTTPException(status_code=503, detail="Strategy execution engine not available")
+
         success = await execution_engine.pause_strategy(strategy_id)
 
         if success:
@@ -421,7 +447,7 @@ async def pause_strategy(strategy_id: str):
 
 
 @router.post("/{strategy_id}/resume", response_model=Dict[str, Any])
-async def resume_strategy(strategy_id: str):
+async def resume_strategy(strategy_id: str, request: Request):
     """
     Resume a paused strategy.
 
@@ -430,6 +456,10 @@ async def resume_strategy(strategy_id: str):
     Returns resume confirmation.
     """
     try:
+        execution_engine = get_execution_engine(request)
+        if not execution_engine:
+            raise HTTPException(status_code=503, detail="Strategy execution engine not available")
+
         success = await execution_engine.resume_strategy(strategy_id)
 
         if success:
@@ -444,7 +474,7 @@ async def resume_strategy(strategy_id: str):
 
 
 @router.get("/{strategy_id}/status", response_model=StrategyStatus)
-async def get_strategy_status(strategy_id: str):
+async def get_strategy_status(strategy_id: str, request: Request):
     """
     Get the current status of a strategy.
 
@@ -453,6 +483,10 @@ async def get_strategy_status(strategy_id: str):
     Returns execution status and performance metrics.
     """
     try:
+        execution_engine = get_execution_engine(request)
+        if not execution_engine:
+            raise HTTPException(status_code=503, detail="Strategy execution engine not available")
+
         status = execution_engine.get_strategy_status(strategy_id)
 
         if status is None:
@@ -483,7 +517,7 @@ async def validate_strategy(strategy_id: str):
     try:
         # Get strategy file (simplified - would need actual file access)
         # This would need enhancement for actual file retrieval
-        validation_result = await strategy_validator.validate_existing_strategy(strategy_id)
+        validation_result = await get_strategy_validator().validate_existing_strategy(strategy_id)
 
         return ValidationResult(
             success=validation_result.success,

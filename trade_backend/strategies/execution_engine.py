@@ -32,6 +32,19 @@ class StrategyExecutionEngine:
         
         # Mock performance data
         self.strategy_performance = {}
+        
+        # Initialization flag
+        self.initialized = False
+    
+    async def initialize(self):
+        """Initialize the execution engine."""
+        try:
+            logger.info("Initializing Strategy Execution Engine...")
+            self.initialized = True
+            logger.info("Strategy Execution Engine initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize Strategy Execution Engine: {e}")
+            raise
     
     async def start_strategy(self, strategy_id: str, strategy_instance: Any, config: Dict[str, Any]) -> bool:
         """Start executing a strategy."""
