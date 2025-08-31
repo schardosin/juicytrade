@@ -209,6 +209,7 @@
 
 <script>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { useRouter } from "vue-router";
 import webSocketClient from "../services/webSocketClient";
 import { useMarketData } from "../composables/useMarketData.js";
 import SettingsDialog from "./SettingsDialog.vue";
@@ -219,6 +220,8 @@ export default {
     SettingsDialog,
   },
   setup() {
+    const router = useRouter();
+    
     // Use unified market data composable
     const { 
       lookupSymbols, 
@@ -273,7 +276,7 @@ export default {
     const navLinks = [
       { label: "Dashboard", value: "Dashboard" },
       { label: "Trading", value: "Trading" },
-      { label: "Manage", value: "Manage" },
+      { label: "Strategies", value: "Strategies" },
     ];
 
     // User menu items
@@ -430,7 +433,21 @@ export default {
     // Methods
     const setActiveLink = (link) => {
       activeLink.value = link;
-      // Here you would typically handle routing
+      
+      // Handle routing based on the selected link
+      switch (link) {
+        case 'Dashboard':
+          // TODO: Navigate to dashboard when implemented
+          break;
+        case 'Trading':
+          router.push('/');
+          break;
+        case 'Strategies':
+          router.push('/strategies');
+          break;
+        default:
+          break;
+      }
     };
 
     const performSearch = async () => {

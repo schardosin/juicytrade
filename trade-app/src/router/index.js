@@ -4,6 +4,7 @@ import ChartView from "../views/ChartView.vue";
 import PositionsView from "../views/PositionsView.vue";
 import SmartMarketDataTest from "../components/SmartMarketDataTest.vue";
 import SetupView from "../views/SetupView.vue";
+import StrategiesView from "../views/StrategiesView.vue";
 import { api } from "../services/api.js";
 
 const routes = [
@@ -55,6 +56,48 @@ const routes = [
     meta: {
       title: "Smart Market Data Test - Trading Platform",
     },
+  },
+  {
+    path: "/strategies",
+    name: "Strategies",
+    component: StrategiesView,
+    meta: {
+      title: "Strategies - Trading Platform",
+    },
+    children: [
+      {
+        path: "",
+        name: "StrategyDashboard",
+        component: () => import("../components/strategies/StrategyDashboard.vue"),
+        meta: {
+          title: "Strategy Dashboard - Trading Platform",
+        },
+      },
+      {
+        path: "library",
+        name: "StrategyLibrary",
+        component: () => import("../components/strategies/StrategyLibrary.vue"),
+        meta: {
+          title: "Strategy Library - Trading Platform",
+        },
+      },
+      {
+        path: "monitor/:id",
+        name: "StrategyMonitor",
+        component: () => import("../components/strategies/StrategyMonitor.vue"),
+        meta: {
+          title: "Strategy Monitor - Trading Platform",
+        },
+      },
+      {
+        path: "backtest/:id",
+        name: "StrategyBacktest",
+        component: () => import("../components/strategies/StrategyBacktest.vue"),
+        meta: {
+          title: "Strategy Backtest - Trading Platform",
+        },
+      },
+    ],
   },
 ];
 

@@ -30,6 +30,7 @@ from .greeks_manager import greeks_manager
 from .services.ivx_calculator import calculate_ivx_data
 from .services.ivx_cache import ivx_cache
 from .ivx_streaming_manager import IVxStreamingManager
+from .strategies.api_endpoints import router as strategies_router
 from datetime import datetime
 
 # Configure logging
@@ -109,6 +110,9 @@ manager.set_ivx_streaming_manager(ivx_streaming_manager)
 # CRITICAL: Set the global ivx_streaming_manager reference BEFORE streaming starts
 from .ivx_streaming_manager import set_global_ivx_streaming_manager
 set_global_ivx_streaming_manager(ivx_streaming_manager)
+
+# === Register Strategy Router ===
+app.include_router(strategies_router)
 
 # === API Endpoints ===
 
