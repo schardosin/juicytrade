@@ -45,6 +45,27 @@ class MovingAverageStrategy(BaseStrategy):
     5. Handle position management and state tracking
     """
     
+    def __init__(self, strategy_id: str, data_provider, order_executor, config: Dict[str, Any]):
+        """
+        Initialize the Moving Average Strategy.
+        
+        Args:
+            strategy_id: Unique identifier for this strategy instance
+            data_provider: Data provider for market data
+            order_executor: Order executor for trade execution
+            config: Strategy configuration parameters
+        """
+        super().__init__(strategy_id, data_provider, order_executor, config)
+        
+        # Initialize strategy-specific attributes
+        self.symbol = None
+        self.fast_period = None
+        self.slow_period = None
+        self.stop_loss_pct = None
+        self.take_profit_pct = None
+        
+        self.log_info(f"MovingAverageStrategy instance created with ID: {strategy_id}")
+    
     async def initialize_strategy(self):
         """Initialize the moving average strategy with actions"""
         
@@ -500,6 +521,23 @@ class SimpleMovingAverageStrategy(BaseStrategy):
     Simplified version of the MA strategy for demonstration purposes.
     Shows the minimal implementation needed for an action-based strategy.
     """
+    
+    def __init__(self, strategy_id: str, data_provider, order_executor, config: Dict[str, Any]):
+        """
+        Initialize the Simple Moving Average Strategy.
+        
+        Args:
+            strategy_id: Unique identifier for this strategy instance
+            data_provider: Data provider for market data
+            order_executor: Order executor for trade execution
+            config: Strategy configuration parameters
+        """
+        super().__init__(strategy_id, data_provider, order_executor, config)
+        
+        # Initialize strategy-specific attributes
+        self.symbol = None
+        
+        self.log_info(f"SimpleMovingAverageStrategy instance created with ID: {strategy_id}")
     
     async def initialize_strategy(self):
         """Minimal strategy initialization"""

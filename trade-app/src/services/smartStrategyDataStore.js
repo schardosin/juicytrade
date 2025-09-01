@@ -177,11 +177,29 @@ class SmartStrategyDataStore {
         await this.loadUserStrategies()
         return response.data
       } else {
-        throw new Error(response.data.error || 'Upload failed')
+        // Return validation failure details instead of throwing error
+        console.log('Strategy validation failed:', response.data)
+        return {
+          success: false,
+          error: response.data.error || 'Upload failed',
+          message: response.data.message,
+          validation_details: response.data.validation_details
+        }
       }
     } catch (error) {
       console.error('Strategy upload failed:', error)
       this.errors.set('upload_strategy', error.message)
+      
+      // Check if this is an axios error with response data
+      if (error.response && error.response.data) {
+        return {
+          success: false,
+          error: error.response.data.error || 'Upload failed',
+          message: error.response.data.message,
+          validation_details: error.response.data.validation_details
+        }
+      }
+      
       throw error
     } finally {
       this.loading.delete('upload_strategy')

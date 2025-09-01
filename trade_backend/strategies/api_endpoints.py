@@ -151,7 +151,13 @@ async def upload_strategy(
                 "success": False,
                 "error": "Validation Failed",
                 "message": validation_result.message,
-                "validation_details": validation_result.details
+                "validation_details": {
+                    "validation_steps": validation_result.validation_steps,
+                    "errors": validation_result.errors,
+                    "warnings": validation_result.warnings,
+                    "suggestions": validation_result.suggestions,
+                    **validation_result.details
+                }
             }
 
         # Register the strategy
