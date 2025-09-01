@@ -230,7 +230,7 @@ export default {
   setup() {
     const route = useRoute()
     const router = useRouter()
-    const { addNotification } = useNotifications()
+    const { showSuccess, showError } = useNotifications()
     const { getMyStrategies, getStrategyBacktest, isLoading } = useStrategyData()
 
     const strategies = getMyStrategies()
@@ -279,11 +279,10 @@ export default {
     // Methods
     const runBacktest = async () => {
       if (!isConfigValid.value) {
-        addNotification({
-          type: 'error',
-          message: 'Please check your backtest configuration',
-          duration: 3000
-        })
+        showError(
+          'Please check your backtest configuration',
+          'Configuration Error'
+        )
         return
       }
 
@@ -302,22 +301,20 @@ export default {
         
         if (result.success) {
           backtestResults.value = result.data
-          addNotification({
-            type: 'success',
-            message: 'Backtest completed successfully',
-            duration: 3000
-          })
+          showSuccess(
+            'Backtest completed successfully',
+            'Backtest Complete'
+          )
         } else {
           throw new Error(result.error || 'Backtest failed')
         }
       } catch (error) {
         console.error('Backtest failed:', error)
         backtestError.value = error.message
-        addNotification({
-          type: 'error',
-          message: `Backtest failed: ${error.message}`,
-          duration: 5000
-        })
+        showError(
+          `Backtest failed: ${error.message}`,
+          'Backtest Error'
+        )
       }
     }
 
@@ -352,11 +349,10 @@ export default {
       document.body.removeChild(link)
       URL.revokeObjectURL(url)
 
-      addNotification({
-        type: 'success',
-        message: 'Backtest results exported successfully',
-        duration: 3000
-      })
+      showSuccess(
+        'Backtest results exported successfully',
+        'Export Complete'
+      )
     }
 
     // Utility methods

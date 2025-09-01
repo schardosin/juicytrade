@@ -66,6 +66,15 @@ async def lifespan(app: FastAPI):
         await ivx_streaming_manager.start()
         logger.info("✅ IVx streaming manager started")
         
+        # Initialize Strategy Database
+        logger.info("🔄 Initializing Strategy Database...")
+        from .strategies.database import strategy_db_manager
+        db_success = strategy_db_manager.initialize()
+        if db_success:
+            logger.info("✅ Strategy Database initialized")
+        else:
+            logger.error("❌ Strategy Database initialization failed")
+        
         # Initialize Strategy Execution Engine
         logger.info("🔄 Initializing Strategy Execution Engine...")
         strategy_execution_engine = StrategyExecutionEngine()

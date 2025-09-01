@@ -11,8 +11,17 @@ from datetime import datetime, timedelta
 import asyncio
 import logging
 
-from ..models import StockQuote, OptionContract
-from ..provider_manager import provider_manager
+# Import with try/except to handle both direct execution and module import
+try:
+    from ..models import StockQuote, OptionContract
+    from ..provider_manager import provider_manager
+except ImportError:
+    # Fallback for direct execution or testing
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent))
+    from models import StockQuote, OptionContract
+    from provider_manager import provider_manager
 
 logger = logging.getLogger(__name__)
 
