@@ -97,6 +97,22 @@ const routes = [
           title: "Strategy Backtest - Trading Platform",
         },
       },
+      {
+        path: "backtest",
+        name: "StrategyBacktesting",
+        component: () => import("../components/strategies/StrategyBacktesting.vue"),
+        meta: {
+          title: "Strategy Backtesting - Trading Platform",
+        },
+      },
+      {
+        path: "live",
+        name: "StrategyLiveTrading",
+        component: () => import("../components/strategies/StrategyLiveTrading.vue"),
+        meta: {
+          title: "Live Trading - Trading Platform",
+        },
+      },
     ],
   },
 ];

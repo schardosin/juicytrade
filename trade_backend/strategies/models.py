@@ -220,6 +220,210 @@ class StrategyTrade(Base):
             "volume": self.volume
         }
 
+class StrategyConfiguration(Base):
+    """
+    Strategy configuration model - stores reusable parameter sets.
+    Enables multiple configurations per strategy template.
+    """
+    __tablename__ = "strategy_configurations"
+    
+    # Primary identification
+    config_id = Column(String, primary_key=True)
+    strategy_id = Column(String, ForeignKey("strategies.strategy_id"), nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    
+    # Configuration details
+    name = Column(String)  # Optional user-friendly name
+    description = Column(Text)  # Optional description
+    
+    # Parameters (JSON storage)
+    parameters = Column(JSON, nullable=False)  # Strategy parameters
+    
+    # Metadata
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
+    last_used = Column(DateTime)
+    
+    # Usage statistics
+    backtest_count = Column(Integer, default=0)
+    live_deployment_count = Column(Integer, default=0)
+    
+    # Status
+    is_active = Column(Boolean, default=True)
+    
+    # Relationships
+    strategy = relationship("Strategy", backref="configurations")
+    backtest_runs = relationship("BacktestRun", back_populates="configuration", cascade="all, delete-orphan")
+    live_deployments = relationship("LiveDeployment", back_populates="configuration", cascade="all, delete-orphan")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for API responses"""
+        return {
+            "config_id": self.config_id,
+            "strategy_id": self.strategy_id,
+            "user_id": self.user_id,
+            "name": self.name,
+            "description": self.description,
+            "parameters": self.parameters or {},
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+            "last_used": self.last_used.isoformat() if self.last_used else None,
+            "backtest_count": self.backtest_count,
+            "live_deployment_count": self.live_deployment_count,
+            "is_active": self.is_active
+        }
+
+class BacktestRun(Base):
+    """
+    Backtest run model - stores backtest execution history and results.
+    Links configurations to specific backtest periods and results.
+    """
+    __tablename__ = "backtest_runs"
+    
+    # Primary identification
+    run_id = Column(String, primary_key=True)
+    config_id = Column(String, ForeignKey("strategy_configurations.config_id"), nullable=False, index=True)
+    strategy_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    
+    # Backtest parameters
+    start_date = Column(DateTime, nullable=False)
+    end_date = Column(DateTime, nullable=False)
+    initial_capital = Column(Float, nullable=False)
+    speed_multiplier = Column(Integer, default=1000)
+    
+    # Execution details
+    status = Column(String, default="pending")  # 'pending', 'running', 'completed', 'failed'
+    progress = Column(Float, default=0.0)  # 0.0 to 1.0
+    
+    # Timestamps
+    created_at = Column(DateTime, server_default=func.now())
+    started_at = Column(DateTime)
+    completed_at = Column(DateTime)
+    
+    # Results (JSON storage for flexibility)
+    results = Column(JSON)  # Complete backtest results
+    
+    # Summary metrics (for quick access)
+    final_capital = Column(Float)
+    total_return = Column(Float)
+    total_return_pct = Column(Float)
+    total_trades = Column(Integer, default=0)
+    winning_trades = Column(Integer, default=0)
+    losing_trades = Column(Integer, default=0)
+    win_rate = Column(Float)
+    profit_factor = Column(Float)
+    sharpe_ratio = Column(Float)
+    max_drawdown = Column(Float)
+    max_drawdown_pct = Column(Float)
+    
+    # Error handling
+    error_message = Column(Text)
+    error_details = Column(JSON)
+    
+    # Relationships
+    configuration = relationship("StrategyConfiguration", back_populates="backtest_runs")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for API responses"""
+        return {
+            "run_id": self.run_id,
+            "config_id": self.config_id,
+            "strategy_id": self.strategy_id,
+            "user_id": self.user_id,
+            "start_date": self.start_date.isoformat() if self.start_date else None,
+            "end_date": self.end_date.isoformat() if self.end_date else None,
+            "initial_capital": self.initial_capital,
+            "speed_multiplier": self.speed_multiplier,
+            "status": self.status,
+            "progress": self.progress,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "started_at": self.started_at.isoformat() if self.started_at else None,
+            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "results": self.results,
+            "final_capital": self.final_capital,
+            "total_return": self.total_return,
+            "total_return_pct": self.total_return_pct,
+            "total_trades": self.total_trades,
+            "winning_trades": self.winning_trades,
+            "losing_trades": self.losing_trades,
+            "win_rate": self.win_rate,
+            "profit_factor": self.profit_factor,
+            "sharpe_ratio": self.sharpe_ratio,
+            "max_drawdown": self.max_drawdown,
+            "max_drawdown_pct": self.max_drawdown_pct,
+            "error_message": self.error_message
+        }
+
+class LiveDeployment(Base):
+    """
+    Live deployment model - tracks active strategy deployments.
+    Links configurations to live trading instances.
+    """
+    __tablename__ = "live_deployments"
+    
+    # Primary identification
+    deployment_id = Column(String, primary_key=True)
+    config_id = Column(String, ForeignKey("strategy_configurations.config_id"), nullable=False, index=True)
+    strategy_id = Column(String, nullable=False, index=True)
+    user_id = Column(String, nullable=False, index=True)
+    
+    # Deployment details
+    name = Column(String)  # Optional deployment name
+    status = Column(String, default="active")  # 'active', 'paused', 'stopped'
+    
+    # Timestamps
+    deployed_at = Column(DateTime, server_default=func.now())
+    last_activity = Column(DateTime, server_default=func.now())
+    stopped_at = Column(DateTime)
+    
+    # Performance tracking
+    initial_capital = Column(Float)
+    current_capital = Column(Float)
+    total_pnl = Column(Float, default=0.0)
+    unrealized_pnl = Column(Float, default=0.0)
+    total_trades = Column(Integer, default=0)
+    winning_trades = Column(Integer, default=0)
+    losing_trades = Column(Integer, default=0)
+    
+    # Risk metrics
+    max_drawdown = Column(Float, default=0.0)
+    current_drawdown = Column(Float, default=0.0)
+    
+    # Error tracking
+    error_count = Column(Integer, default=0)
+    last_error = Column(Text)
+    last_error_time = Column(DateTime)
+    
+    # Relationships
+    configuration = relationship("StrategyConfiguration", back_populates="live_deployments")
+    
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for API responses"""
+        return {
+            "deployment_id": self.deployment_id,
+            "config_id": self.config_id,
+            "strategy_id": self.strategy_id,
+            "user_id": self.user_id,
+            "name": self.name,
+            "status": self.status,
+            "deployed_at": self.deployed_at.isoformat() if self.deployed_at else None,
+            "last_activity": self.last_activity.isoformat() if self.last_activity else None,
+            "stopped_at": self.stopped_at.isoformat() if self.stopped_at else None,
+            "initial_capital": self.initial_capital,
+            "current_capital": self.current_capital,
+            "total_pnl": self.total_pnl,
+            "unrealized_pnl": self.unrealized_pnl,
+            "total_trades": self.total_trades,
+            "winning_trades": self.winning_trades,
+            "losing_trades": self.losing_trades,
+            "max_drawdown": self.max_drawdown,
+            "current_drawdown": self.current_drawdown,
+            "error_count": self.error_count,
+            "last_error": self.last_error,
+            "last_error_time": self.last_error_time.isoformat() if self.last_error_time else None
+        }
+
 class StrategyPerformance(Base):
     """
     Daily performance snapshots - for analytics and reporting.

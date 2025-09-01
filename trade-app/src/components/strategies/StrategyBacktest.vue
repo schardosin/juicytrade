@@ -36,54 +36,125 @@
         </h2>
         
         <div class="config-form">
-          <div class="form-row">
-            <div class="form-group">
-              <label for="start-date">Start Date</label>
-              <Calendar
-                id="start-date"
-                v-model="backtestConfig.start_date"
-                date-format="yy-mm-dd"
-                :max-date="maxStartDate"
-                placeholder="Select start date"
-              />
+          <!-- Framework Parameters -->
+          <div class="config-section">
+            <h3 class="section-title">Framework Settings</h3>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="start-date">Start Date</label>
+                <Calendar
+                  id="start-date"
+                  v-model="backtestConfig.start_date"
+                  date-format="yy-mm-dd"
+                  :max-date="maxStartDate"
+                  placeholder="Select start date"
+                />
+              </div>
+              <div class="form-group">
+                <label for="end-date">End Date</label>
+                <Calendar
+                  id="end-date"
+                  v-model="backtestConfig.end_date"
+                  date-format="yy-mm-dd"
+                  :min-date="backtestConfig.start_date"
+                  :max-date="new Date()"
+                  placeholder="Select end date"
+                />
+              </div>
             </div>
-            <div class="form-group">
-              <label for="end-date">End Date</label>
-              <Calendar
-                id="end-date"
-                v-model="backtestConfig.end_date"
-                date-format="yy-mm-dd"
-                :min-date="backtestConfig.start_date"
-                :max-date="new Date()"
-                placeholder="Select end date"
-              />
+
+            <div class="form-row">
+              <div class="form-group">
+                <label for="initial-capital">Initial Capital ($)</label>
+                <InputNumber
+                  id="initial-capital"
+                  v-model="backtestConfig.initial_capital"
+                  :min="1000"
+                  :max="1000000"
+                  :step="1000"
+                  mode="currency"
+                  currency="USD"
+                  locale="en-US"
+                />
+              </div>
+              <div class="form-group">
+                <label for="speed-multiplier">Speed Multiplier</label>
+                <Dropdown
+                  id="speed-multiplier"
+                  v-model="backtestConfig.speed_multiplier"
+                  :options="speedOptions"
+                  option-label="label"
+                  option-value="value"
+                  placeholder="Select speed"
+                />
+              </div>
             </div>
           </div>
 
-          <div class="form-row">
-            <div class="form-group">
-              <label for="initial-capital">Initial Capital ($)</label>
-              <InputNumber
-                id="initial-capital"
-                v-model="backtestConfig.initial_capital"
-                :min="1000"
-                :max="1000000"
-                :step="1000"
-                mode="currency"
-                currency="USD"
-                locale="en-US"
-              />
-            </div>
-            <div class="form-group">
-              <label for="speed-multiplier">Speed Multiplier</label>
-              <Dropdown
-                id="speed-multiplier"
-                v-model="backtestConfig.speed_multiplier"
-                :options="speedOptions"
-                option-label="label"
-                option-value="value"
-                placeholder="Select speed"
-              />
+          <!-- Strategy Parameters -->
+          <div v-if="strategyParameters" class="config-section">
+            <h3 class="section-title">Strategy Parameters</h3>
+            <div class="parameters-grid">
+              <div
+                v-for="(param, paramName) in strategyParameters.parameters"
+                :key="paramName"
+                class="form-group"
+                :class="{ 'full-width': param.type === 'string' && paramName === 'symbol' }"
+              >
+                <label :for="paramName" class="parameter-label">
+                  {{ formatParameterName(paramName) }}
+                  <span v-if="param.description" class="parameter-description">
+                    {{ param.description }}
+                  </span>
+                </label>
+
+                <!-- String Input -->
+                <InputText
+                  v-if="param.type === 'string'"
+                  :id="paramName"
+                  v-model="strategyConfig[paramName]"
+                  :placeholder="param.default || 'Enter value'"
+                  class="parameter-input"
+                />
+
+                <!-- Integer Input -->
+                <InputNumber
+                  v-else-if="param.type === 'integer'"
+                  :id="paramName"
+                  v-model="strategyConfig[paramName]"
+                  :min="param.min"
+                  :max="param.max"
+                  :step="1"
+                  :placeholder="param.default?.toString() || '0'"
+                  class="parameter-input"
+                />
+
+                <!-- Float Input -->
+                <InputNumber
+                  v-else-if="param.type === 'float'"
+                  :id="paramName"
+                  v-model="strategyConfig[paramName]"
+                  :min="param.min"
+                  :max="param.max"
+                  :step="0.1"
+                  :min-fraction-digits="1"
+                  :max-fraction-digits="2"
+                  :placeholder="param.default?.toString() || '0.0'"
+                  class="parameter-input"
+                />
+
+                <!-- Boolean Input -->
+                <div v-else-if="param.type === 'boolean'" class="boolean-input">
+                  <Checkbox
+                    :id="paramName"
+                    v-model="strategyConfig[paramName]"
+                    :binary="true"
+                  />
+                  <label :for="paramName" class="checkbox-label">
+                    {{ param.default ? 'Enabled' : 'Disabled' }}
+                  </label>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -171,6 +242,78 @@
         </div>
       </div>
 
+      <!-- Action Execution Metrics (New) -->
+      <div v-if="backtestResults.action_metrics" class="action-metrics">
+        <h3 class="metrics-title">
+          <i class="pi pi-cog"></i>
+          Action Execution Analysis
+        </h3>
+        <div class="action-metrics-grid">
+          <div class="metric-card">
+            <div class="metric-icon info">
+              <i class="pi pi-play"></i>
+            </div>
+            <div class="metric-content">
+              <div class="metric-value">{{ backtestResults.action_metrics.total_actions || 0 }}</div>
+              <div class="metric-label">Total Actions</div>
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-icon success">
+              <i class="pi pi-check-circle"></i>
+            </div>
+            <div class="metric-content">
+              <div class="metric-value">{{ backtestResults.action_metrics.successful_actions || 0 }}</div>
+              <div class="metric-label">Successful Actions</div>
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-icon danger">
+              <i class="pi pi-times-circle"></i>
+            </div>
+            <div class="metric-content">
+              <div class="metric-value">{{ backtestResults.action_metrics.failed_actions || 0 }}</div>
+              <div class="metric-label">Failed Actions</div>
+            </div>
+          </div>
+
+          <div class="metric-card">
+            <div class="metric-icon warning">
+              <i class="pi pi-percentage"></i>
+            </div>
+            <div class="metric-content">
+              <div class="metric-value">{{ formatPercentage(backtestResults.action_metrics.action_success_rate || 0) }}</div>
+              <div class="metric-label">Success Rate</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Strategy Checkpoints (New) -->
+      <div v-if="backtestResults.checkpoints && backtestResults.checkpoints.length" class="checkpoints-section">
+        <h3 class="checkpoints-title">
+          <i class="pi pi-map-marker"></i>
+          Strategy Checkpoints
+        </h3>
+        <div class="checkpoints-list">
+          <div
+            v-for="checkpoint in backtestResults.checkpoints.slice(0, 10)"
+            :key="checkpoint.name"
+            class="checkpoint-item"
+          >
+            <div class="checkpoint-icon">
+              <i class="pi pi-circle-fill"></i>
+            </div>
+            <div class="checkpoint-content">
+              <div class="checkpoint-name">{{ checkpoint.name }}</div>
+              <div class="checkpoint-time">{{ formatDate(checkpoint.timestamp) }}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
       <!-- Trade History -->
       <div class="trade-history">
         <h3 class="history-title">Trade History</h3>
@@ -224,6 +367,7 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStrategyData } from '../../composables/useStrategyData.js'
 import { useNotifications } from '../../composables/useNotifications.js'
+import api from '../../services/api.js'
 
 export default {
   name: 'StrategyBacktest',
@@ -240,6 +384,10 @@ export default {
       const strategy = strategies.value.find(s => s.strategy_id === strategyId.value)
       return strategy?.name || 'Unknown Strategy'
     })
+
+    // Strategy parameters
+    const strategyParameters = ref(null)
+    const strategyConfig = ref({})
 
     // Backtest configuration
     const backtestConfig = ref({
@@ -276,6 +424,38 @@ export default {
              backtestConfig.value.start_date < backtestConfig.value.end_date
     })
 
+    // Load strategy parameters
+    const loadStrategyParameters = async () => {
+      try {
+        const response = await api.get(`/api/strategies/${strategyId.value}/parameters`)
+        if (response.data.success) {
+          strategyParameters.value = response.data
+          
+          // Initialize strategy config with default values
+          const config = {}
+          Object.entries(response.data.parameters).forEach(([paramName, param]) => {
+            config[paramName] = param.default
+          })
+          strategyConfig.value = config
+          
+          console.log('Strategy parameters loaded:', response.data)
+        }
+      } catch (error) {
+        console.error('Failed to load strategy parameters:', error)
+        showError(
+          'Failed to load strategy configuration',
+          'Configuration Error'
+        )
+      }
+    }
+
+    // Initialize on mount
+    onMounted(() => {
+      if (strategyId.value) {
+        loadStrategyParameters()
+      }
+    })
+
     // Methods
     const runBacktest = async () => {
       if (!isConfigValid.value) {
@@ -300,7 +480,32 @@ export default {
         const result = await getStrategyBacktest(strategyId.value, config)
         
         if (result.success) {
-          backtestResults.value = result.data
+          // Transform the new comprehensive results to match UI expectations
+          const transformedResults = {
+            // Extract metrics from the new nested structure
+            total_pnl: result.data.metrics.pnl.total_pnl,
+            total_return: result.data.metrics.pnl.total_return,
+            total_trades: result.data.metrics.trading.total_trades,
+            win_rate: result.data.metrics.trading.win_rate,
+            max_profit: result.data.metrics.pnl.max_profit,
+            max_loss: result.data.metrics.pnl.max_loss,
+            sharpe_ratio: result.data.metrics.risk.sharpe_ratio,
+            max_drawdown: result.data.metrics.risk.max_drawdown,
+            
+            // Use the trades array directly
+            trades: result.data.trades || [],
+            
+            // Add additional data from new system
+            action_metrics: result.data.metrics.actions,
+            equity_curve: result.data.equity_curve,
+            checkpoints: result.data.checkpoints,
+            action_log: result.data.action_log,
+            
+            // Keep original structure for backward compatibility
+            ...result.data
+          }
+          
+          backtestResults.value = transformedResults
           showSuccess(
             'Backtest completed successfully',
             'Backtest Complete'
@@ -389,10 +594,19 @@ export default {
       })
     }
 
+    // Parameter formatting utility
+    const formatParameterName = (paramName) => {
+      return paramName
+        .replace(/_/g, ' ')
+        .replace(/\b\w/g, l => l.toUpperCase())
+    }
+
     return {
       // Data
       strategyId,
       strategyName,
+      strategyParameters,
+      strategyConfig,
       backtestConfig,
       speedOptions,
       backtestResults,
@@ -407,12 +621,14 @@ export default {
       runBacktest,
       resetConfig,
       exportResults,
+      loadStrategyParameters,
 
       // Utility methods
       getPnLClass,
       formatCurrency,
       formatPercentage,
-      formatDate
+      formatDate,
+      formatParameterName
     }
   }
 }
@@ -598,6 +814,95 @@ export default {
   justify-content: flex-start;
 }
 
+/* Configuration Sections */
+.config-section {
+  padding: var(--spacing-lg) 0;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.config-section:last-child {
+  border-bottom: none;
+}
+
+.section-title {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--spacing-lg) 0;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.section-title::before {
+  content: '';
+  width: 4px;
+  height: 20px;
+  background: var(--color-brand);
+  border-radius: var(--radius-sm);
+}
+
+/* Strategy Parameters */
+.parameters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: var(--spacing-lg);
+}
+
+.parameter-label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  margin-bottom: var(--spacing-xs);
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.parameter-description {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-normal);
+  font-style: italic;
+}
+
+.parameter-input {
+  width: 100%;
+}
+
+.boolean-input {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) 0;
+}
+
+.checkbox-label {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  user-select: none;
+}
+
+.form-group.full-width {
+  grid-column: 1 / -1;
+}
+
+/* Parameter input focus states */
+.parameter-input:focus {
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 2px rgba(var(--color-brand-rgb), 0.1);
+}
+
+/* Parameter validation states */
+.parameter-input.p-invalid {
+  border-color: var(--color-danger);
+}
+
+.parameter-input.p-invalid:focus {
+  box-shadow: 0 0 0 2px rgba(var(--color-danger-rgb), 0.1);
+}
+
 /* Backtest Results */
 .backtest-results {
   margin-bottom: var(--spacing-xl);
@@ -706,6 +1011,97 @@ export default {
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
   font-weight: var(--font-weight-medium);
+}
+
+/* Action Metrics Section */
+.action-metrics {
+  margin-bottom: var(--spacing-xl);
+}
+
+.metrics-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--spacing-lg) 0;
+}
+
+.metrics-title i {
+  color: var(--color-brand);
+}
+
+.action-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--spacing-md);
+}
+
+/* Checkpoints Section */
+.checkpoints-section {
+  margin-bottom: var(--spacing-xl);
+}
+
+.checkpoints-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--spacing-lg) 0;
+}
+
+.checkpoints-title i {
+  color: var(--color-brand);
+}
+
+.checkpoints-list {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  max-height: 300px;
+  overflow-y: auto;
+}
+
+.checkpoint-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) 0;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.checkpoint-item:last-child {
+  border-bottom: none;
+}
+
+.checkpoint-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  color: var(--color-brand);
+  font-size: var(--font-size-xs);
+}
+
+.checkpoint-content {
+  flex: 1;
+}
+
+.checkpoint-name {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  margin-bottom: 2px;
+}
+
+.checkpoint-time {
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
 }
 
 /* Trade History */

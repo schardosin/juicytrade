@@ -1,614 +1,551 @@
 """
-Example Moving Average Crossover Strategy
+Example Moving Average Strategy - Action-Based Framework
 
-This is a complete example of how to implement a trading strategy using the BaseStrategy framework.
-Users can copy this structure and modify the trading logic for their own strategies.
+This is a simple example strategy that demonstrates how to use the new action-based
+BaseStrategy framework. It shows how to convert traditional indicator-based strategies
+to use the powerful action system.
 
 Strategy Description:
-This strategy generates buy/sell signals based on moving average crossovers.
-- Enter long when fast MA crosses above slow MA
-- Exit long when fast MA crosses below slow MA
-- Includes trend confirmation and position management
+This strategy generates buy/sell signals based on moving average crossovers using
+the action-based framework:
+- Uses TimeAction to start monitoring at market open
+- Uses MonitorAction to watch for crossover conditions
+- Uses TradeAction to execute trades
+- Includes proper state management and checkpoints
 
 Key Features:
-- Technical indicator calculation
-- Risk management
-- Rule-based decision making
-- UI feedback for rule evaluation
-- Position sizing based on strategy parameters
+- Action-based execution flow
+- State management with checkpoints
+- Time-based triggers
+- Condition monitoring
+- Risk management integration
 """
 
-from typing import Dict, List, Any, Optional
-from datetime import datetime
-from .base_strategy import BaseStrategy, StrategyResult, MarketData, StrategyMetadata
+import logging
+from datetime import datetime, timedelta
+from typing import Dict, Any, Optional, List
+
+from .base_strategy import BaseStrategy
+from .actions import ActionContext
+
+logger = logging.getLogger(__name__)
 
 
-class MovingAverageCrossoverStrategy(BaseStrategy):
+class MovingAverageStrategy(BaseStrategy):
     """
-    Moving Average Crossover Strategy Implementation
-
-    This strategy demonstrates:
-    1. Complex rule evaluation
-    2. Multiple trading signals
-    3. Technical indicator calculation
-    4. Position management
-    5. Risk controls
-    6. UI feedback for rule states
+    Moving Average Crossover Strategy using Action-Based Framework
+    
+    This strategy demonstrates how to implement traditional technical analysis
+    strategies using the new action-based system:
+    
+    1. Wait for market open (TimeAction)
+    2. Monitor for MA crossover conditions (MonitorAction)
+    3. Execute trades when conditions are met (TradeAction)
+    4. Manage risk with stop-loss and take-profit (MonitorAction)
+    5. Handle position management and state tracking
     """
-
-    def __init__(self, data_provider=None, order_executor=None, config: Dict[str, Any] = None):
-        super().__init__(data_provider, order_executor, config)
-
-        # Strategy-specific state
-        self.price_history = []
-        self.fast_ma_history = []
-        self.slow_ma_history = []
-        self.current_position = None
-        self.entry_price = None
-
-        # Strategy parameters from configuration
-        self.fast_period = self.config.get('fast_period', 5)
-        self.slow_period = self.config.get('slow_period', 20)
-        self.stop_loss_pct = self.config.get('stop_loss_pct', 2.0)
-        self.take_profit_pct = self.config.get('take_profit_pct', 5.0)
-        self.risk_per_trade_pct = self.config.get('risk_per_trade_pct', 1.0)
-
-    def initialize(self) -> None:
-        """
-        Strategy initialization - called once when strategy starts.
-
-        This is where to:
-        - Subscribe to required symbols
-        - Initialize strategy-specific state
-        - Load historical data if needed
-        - Set up any required indicators
-        """
-        # Get symbol from configuration
-        self.symbol = self.config.get('symbol', 'AAPL')
-
-        # Subscribe to real-time market data
-        self.subscribe_symbol(self.symbol)
-
-        # Set strategy metadata for UI display
-        self.metadata.update({
-            'name': 'Moving Average Crossover Strategy',
-            'description': 'Trades based on fast/slow moving average crossovers',
-            'rules': [
-                {'id': 'ma_crossover', 'description': 'Wait for fast MA to cross above slow MA'},
-                {'id': 'trend_confirmation', 'description': 'Require upward trend confirmation'},
-                {'id': 'volume_filter', 'description': 'Apply volume-based filtering'},
-                {'id': 'position_size', 'description': 'Calculate appropriate position size'},
-                {'id': 'risk_management', 'description': 'Apply stop-loss and take-profit rules'},
-                {'id': 'exit_signal', 'description': 'Generate exit signals when conditions met'}
-            ]
-        })
-
-        # Load historical data for initial indicator calculation
-        try:
-            historical_data = self.data_provider.get_recent_candles(self.symbol, limit=self.slow_period + 10)
-            if historical_data:
-                # Initialize price history with recent closes
-                self.price_history = [candle['close'] for candle in historical_data if isinstance(candle, dict)]
-                self.log_info(f"Loaded {len(self.price_history)} historical prices for indicator calculation")
-        except Exception as e:
-            self.log_warning(f"Could not load historical data: {e}")
-
-    def on_market_data(self, symbol: str, data: MarketData) -> Optional[StrategyResult]:
-        """
-        Main market data processing function.
-
-        This is called whenever new market data arrives for subscribed symbols.
-        Contains the core trading logic and rule evaluation.
-
-        Args:
-            symbol: The symbol this data is for
-            data: MarketData object with current market information
-
-        Returns:
-            StrategyResult if strategy wants to execute a trade, None otherwise
-        """
-        try:
-            if symbol != self.symbol:
-                return None  # Ignore data for other symbols
-
-            # Update internal price history
-            self.price_history.append(data.price)
-            if len(self.price_history) > self.slow_period * 2:
-                self.price_history = self.price_history[-self.slow_period * 2:]
-
-            # Not enough data yet
-            if len(self.price_history) < self.slow_period:
-                self.log_info(f"Collecting price data... {len(self.price_history)}/{self.slow_period}")
-                return None
-
-            # Calculate technical indicators
-            fast_ma = self._calculate_moving_average(self.price_history, self.fast_period)
-            slow_ma = self._calculate_moving_average(self.price_history, self.slow_period)
-
-            # Store for visualization
-            self.fast_ma_history.append(fast_ma)
-            self.slow_ma_history.append(slow_ma)
-
-            # Keep reasonable history length
-            if len(self.fast_ma_history) > 100:
-                self.fast_ma_history = self.fast_ma_history[-100:]
-                self.slow_ma_history = self.slow_ma_history[-100:]
-
-            # Evaluate trading rules
-            signal = self._evaluate_trading_rules(
-                symbol, data, fast_ma, slow_ma
-            )
-
-            if signal:
-                self.log_info(f"Generated signal: {signal.action} {signal.symbol} x{signal.quantity}")
-
-            return signal
-
-        except Exception as e:
-            self.log_error(f"Error processing market data: {e}")
-            return None
-
-    def on_position_update(self, symbol: str, position_data: Dict[str, Any]) -> None:
-        """
-        Handle position updates from broker.
-
-        Called when position changes occur (fills, partial fills, etc.)
-
-        Args:
-            symbol: Position symbol
-            position_data: Updated position information
-        """
-        super().on_position_update(symbol, position_data)
-
-        # Update strategy-specific position tracking
-        quantity = position_data.get('quantity', 0)
-        price = position_data.get('avg_price', 0)
-
-        if quantity != 0:
-            self.current_position = quantity
-            if self.entry_price is None:
-                self.entry_price = price
-        else:
-            # Position closed
-            self.current_position = None
-            self.entry_price = None
-
-        self.log_info(f"Position update: {symbol} = {quantity} shares @ {price}")
-
-    def on_order_status(self, order_id: str, status: str, details: Dict[str, Any]) -> None:
-        """
-        Handle order status updates.
-
-        Called when order status changes.
-
-        Args:
-            order_id: Order identifier
-            status: New order status
-            details: Additional order details
-        """
-        super().on_order_status(order_id, status, details)
-
-        if status == 'FILLED':
-            # Update position tracking
-            side = details.get('side', '').lower()
-            quantity = details.get('quantity', 0)
-            price = details.get('avg_fill_price', 0)
-
-            if side == 'buy' and not self.current_position:
-                self.current_position = quantity
-                self.entry_price = price
-                self.log_info(f"Position opened: {quantity} shares @ {price}")
-            elif side == 'sell' and self.current_position:
-                self.current_position = 0
-                self.entry_price = None
-                pnl = (price - self.entry_price) * quantity if self.entry_price else 0
-                self.log_info(f"Position closed: {quantity} shares @ {price}, P&L: ${pnl:.2f}")
-
-    def get_strategy_metadata(self) -> StrategyMetadata:
-        """
-        Return comprehensive strategy metadata for UI display and monitoring.
-
-        This information is used by the trading platform to:
-        - Display strategy information in UI
-        - Show configuration options
-        - Report on strategy performance and rule states
-        - Validate strategy parameters
-        """
-        return StrategyMetadata(
-            name=f"Moving Average Crossover ({self.fast_period}/{self.slow_period})",
-            description=f"Trades based on {self.fast_period}-period MA crossing above/below {self.slow_period}-period MA",
-            author="Strategy Framework Example",
-            version="1.0.0",
-            risk_level="MEDIUM",
-            max_positions=1,
-            max_daily_loss_pct=25.0,  # Stop strategy if daily loss exceeds 25%
-            position_size_pct=self.risk_per_trade_pct,
-            preferred_symbols=[self.symbol],
-            asset_classes=["equity"],
-            rules=[
-                {'id': 'ma_crossover', 'description': 'Fast MA crosses above/below slow MA'},
-                {'id': 'trend_confirmation', 'description': 'Upward/downward trend confirmation'},
-                {'id': 'volume_filter', 'description': 'Minimum volume requirement'},
-                {'id': 'position_size', 'description': 'Risk-based position sizing'},
-                {'id': 'risk_management', 'description': 'Stop-loss and take-profit rules'},
-                {'id': 'exit_signal', 'description': 'Exit position when conditions met'}
-            ],
-            parameters={
-                'fast_period': {
-                    'type': 'integer',
-                    'default': 5,
-                    'min': 2,
-                    'max': 20,
-                    'description': 'Fast moving average period'
-                },
-                'slow_period': {
-                    'type': 'integer',
-                    'default': 20,
-                    'min': 10,
-                    'max': 50,
-                    'description': 'Slow moving average period'
-                },
-                'stop_loss_pct': {
-                    'type': 'float',
-                    'default': 2.0,
-                    'min': 0.5,
-                    'max': 10.0,
-                    'description': 'Stop loss percentage'
-                },
-                'take_profit_pct': {
-                    'type': 'float',
-                    'default': 5.0,
-                    'min': 1.0,
-                    'max': 20.0,
-                    'description': 'Take profit percentage'
-                },
-                'risk_per_trade_pct': {
-                    'type': 'float',
-                    'default': 1.0,
-                    'min': 0.1,
-                    'max': 5.0,
-                    'description': 'Risk per trade as % of capital'
-                },
-                'enable_volume_filter': {
-                    'type': 'boolean',
-                    'default': True,
-                    'description': 'Apply minimum volume filter'
-                }
-            }
+    
+    async def initialize_strategy(self):
+        """Initialize the moving average strategy with actions"""
+        
+        # Get strategy parameters from config
+        self.symbol = self.get_config_value("symbol", "SPY")
+        self.fast_period = self.get_config_value("fast_period", 10)
+        self.slow_period = self.get_config_value("slow_period", 30)
+        self.stop_loss_pct = self.get_config_value("stop_loss_pct", 2.0)
+        self.take_profit_pct = self.get_config_value("take_profit_pct", 5.0)
+        
+        # Initialize strategy state
+        self.set_state("symbol", self.symbol)
+        self.set_state("fast_period", self.fast_period)
+        self.set_state("slow_period", self.slow_period)
+        self.set_state("price_history", [])
+        self.set_state("fast_ma_history", [])
+        self.set_state("slow_ma_history", [])
+        self.set_state("current_position", 0)
+        self.set_state("entry_price", None)
+        self.set_state("last_crossover", None)
+        
+        # Action 1: Wait for market open to start monitoring
+        self.add_time_action(
+            trigger_time="09:30",  # Market open
+            callback=self.start_monitoring,
+            name="wait_for_market_open"
         )
-
-    # ============================================================================
-    # Private helper methods
-    # ============================================================================
-
-    def _calculate_moving_average(self, price_history: List[float], period: int) -> float:
-        """
-        Calculate simple moving average.
-
-        Args:
-            price_history: List of recent prices
-            period: Number of periods for the moving average
-
-        Returns:
-            Calculated moving average
-        """
+        
+        self.log_info(f"Moving Average Strategy initialized for {self.symbol}")
+        self.log_info(f"Parameters: Fast={self.fast_period}, Slow={self.slow_period}")
+        
+        self.add_checkpoint("strategy_initialized", {
+            "symbol": self.symbol,
+            "fast_period": self.fast_period,
+            "slow_period": self.slow_period
+        })
+    
+    async def start_monitoring(self, context: ActionContext):
+        """Start monitoring for moving average crossovers"""
+        self.log_info("Market opened - starting MA crossover monitoring")
+        
+        # Action 2: Monitor for price updates and calculate MAs
+        self.add_monitor_action(
+            name="price_monitor",
+            condition=lambda ctx: self.update_indicators(ctx),
+            callback=self.check_crossover_signals,
+            continuous=True
+        )
+        
+        # Action 3: Monitor existing positions for risk management
+        self.add_monitor_action(
+            name="risk_monitor",
+            condition=lambda ctx: self.check_risk_management(ctx),
+            callback=self.handle_risk_exit,
+            continuous=True
+        )
+        
+        self.add_checkpoint("monitoring_started")
+    
+    def update_indicators(self, context: ActionContext) -> bool:
+        """Update price history and calculate moving averages"""
+        try:
+            # Get current price (mock implementation)
+            current_price = self.get_mock_price(context)
+            if current_price is None:
+                return False
+            
+            # Update price history
+            price_history = self.get_state("price_history", [])
+            price_history.append(current_price)
+            
+            # Keep only what we need
+            max_history = max(self.fast_period, self.slow_period) + 10
+            if len(price_history) > max_history:
+                price_history = price_history[-max_history:]
+            
+            self.set_state("price_history", price_history)
+            
+            # Calculate moving averages if we have enough data
+            if len(price_history) >= self.slow_period:
+                fast_ma = self.calculate_ma(price_history, self.fast_period)
+                slow_ma = self.calculate_ma(price_history, self.slow_period)
+                
+                # Update MA history
+                fast_ma_history = self.get_state("fast_ma_history", [])
+                slow_ma_history = self.get_state("slow_ma_history", [])
+                
+                fast_ma_history.append(fast_ma)
+                slow_ma_history.append(slow_ma)
+                
+                # Keep reasonable history
+                if len(fast_ma_history) > 100:
+                    fast_ma_history = fast_ma_history[-100:]
+                    slow_ma_history = slow_ma_history[-100:]
+                
+                self.set_state("fast_ma_history", fast_ma_history)
+                self.set_state("slow_ma_history", slow_ma_history)
+                self.set_state("current_fast_ma", fast_ma)
+                self.set_state("current_slow_ma", slow_ma)
+                
+                if self.debug:
+                    self.log_info(f"Updated MAs: Fast={fast_ma:.2f}, Slow={slow_ma:.2f}, Price={current_price:.2f}")
+                
+                return True  # Indicators updated successfully
+            
+            return False  # Not enough data yet
+            
+        except Exception as e:
+            self.log_error(f"Error updating indicators: {e}")
+            return False
+    
+    async def check_crossover_signals(self, context: ActionContext):
+        """Check for moving average crossover signals"""
+        try:
+            fast_ma_history = self.get_state("fast_ma_history", [])
+            slow_ma_history = self.get_state("slow_ma_history", [])
+            
+            if len(fast_ma_history) < 2 or len(slow_ma_history) < 2:
+                return  # Need at least 2 points for crossover
+            
+            # Current and previous values
+            fast_ma = fast_ma_history[-1]
+            slow_ma = slow_ma_history[-1]
+            prev_fast_ma = fast_ma_history[-2]
+            prev_slow_ma = slow_ma_history[-2]
+            
+            current_position = self.get_state("current_position", 0)
+            
+            # Check for bullish crossover (buy signal)
+            if (prev_fast_ma <= prev_slow_ma and fast_ma > slow_ma and current_position <= 0):
+                self.log_info(f"BULLISH CROSSOVER: Fast MA ({fast_ma:.2f}) crossed above Slow MA ({slow_ma:.2f})")
+                
+                # Close short position if we have one
+                if current_position < 0:
+                    await self.close_position(context, "Cover short on bullish crossover")
+                
+                # Open long position
+                await self.open_long_position(context, fast_ma, slow_ma)
+                
+                self.set_state("last_crossover", "bullish")
+                self.add_checkpoint("bullish_crossover", {
+                    "fast_ma": fast_ma,
+                    "slow_ma": slow_ma,
+                    "timestamp": context.current_time.isoformat()
+                })
+            
+            # Check for bearish crossover (sell signal)
+            elif (prev_fast_ma >= prev_slow_ma and fast_ma < slow_ma and current_position >= 0):
+                self.log_info(f"BEARISH CROSSOVER: Fast MA ({fast_ma:.2f}) crossed below Slow MA ({slow_ma:.2f})")
+                
+                # Close long position if we have one
+                if current_position > 0:
+                    await self.close_position(context, "Close long on bearish crossover")
+                
+                # Open short position (optional - can be disabled)
+                if self.get_config_value("allow_short", False):
+                    await self.open_short_position(context, fast_ma, slow_ma)
+                
+                self.set_state("last_crossover", "bearish")
+                self.add_checkpoint("bearish_crossover", {
+                    "fast_ma": fast_ma,
+                    "slow_ma": slow_ma,
+                    "timestamp": context.current_time.isoformat()
+                })
+                
+        except Exception as e:
+            self.log_error(f"Error checking crossover signals: {e}")
+    
+    async def open_long_position(self, context: ActionContext, fast_ma: float, slow_ma: float):
+        """Open a long position"""
+        try:
+            # Calculate position size
+            position_size = self.calculate_position_size()
+            
+            if position_size <= 0:
+                self.log_warning("Cannot open position - insufficient capital or invalid size")
+                return
+            
+            # Add trade action to buy
+            self.add_trade_action(
+                name="buy_long_position",
+                trade_type="BUY",
+                symbol=self.symbol,
+                quantity=position_size
+            )
+            
+            # Update state
+            current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
+            self.set_state("current_position", position_size)
+            self.set_state("entry_price", current_price)
+            self.set_state("position_type", "long")
+            
+            self.log_info(f"Opening LONG position: {position_size} shares at ${current_price:.2f}")
+            
+        except Exception as e:
+            self.log_error(f"Error opening long position: {e}")
+    
+    async def open_short_position(self, context: ActionContext, fast_ma: float, slow_ma: float):
+        """Open a short position"""
+        try:
+            # Calculate position size
+            position_size = self.calculate_position_size()
+            
+            if position_size <= 0:
+                self.log_warning("Cannot open position - insufficient capital or invalid size")
+                return
+            
+            # Add trade action to sell short
+            self.add_trade_action(
+                name="sell_short_position",
+                trade_type="SELL_SHORT",
+                symbol=self.symbol,
+                quantity=position_size
+            )
+            
+            # Update state
+            current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
+            self.set_state("current_position", -position_size)  # Negative for short
+            self.set_state("entry_price", current_price)
+            self.set_state("position_type", "short")
+            
+            self.log_info(f"Opening SHORT position: {position_size} shares at ${current_price:.2f}")
+            
+        except Exception as e:
+            self.log_error(f"Error opening short position: {e}")
+    
+    async def close_position(self, context: ActionContext, reason: str):
+        """Close current position"""
+        try:
+            current_position = self.get_state("current_position", 0)
+            if current_position == 0:
+                return  # No position to close
+            
+            # Determine trade action
+            if current_position > 0:
+                # Close long position
+                trade_type = "SELL"
+                quantity = current_position
+            else:
+                # Close short position
+                trade_type = "BUY_TO_COVER"
+                quantity = abs(current_position)
+            
+            # Add trade action
+            self.add_trade_action(
+                name="close_position",
+                trade_type=trade_type,
+                symbol=self.symbol,
+                quantity=quantity
+            )
+            
+            # Calculate P&L
+            entry_price = self.get_state("entry_price", 0)
+            current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
+            
+            if entry_price and current_price:
+                if current_position > 0:  # Long position
+                    pnl = (current_price - entry_price) * current_position
+                else:  # Short position
+                    pnl = (entry_price - current_price) * abs(current_position)
+                
+                self.update_pnl(pnl)
+                self.log_info(f"Closing position: {reason}, P&L: ${pnl:.2f}")
+            
+            # Reset position state
+            self.set_state("current_position", 0)
+            self.set_state("entry_price", None)
+            self.set_state("position_type", None)
+            
+            self.add_checkpoint("position_closed", {
+                "reason": reason,
+                "pnl": pnl if 'pnl' in locals() else 0,
+                "timestamp": context.current_time.isoformat()
+            })
+            
+        except Exception as e:
+            self.log_error(f"Error closing position: {e}")
+    
+    def check_risk_management(self, context: ActionContext) -> bool:
+        """Check if risk management rules are triggered"""
+        try:
+            current_position = self.get_state("current_position", 0)
+            if current_position == 0:
+                return False  # No position to manage
+            
+            entry_price = self.get_state("entry_price")
+            if not entry_price:
+                return False
+            
+            price_history = self.get_state("price_history", [])
+            if not price_history:
+                return False
+            
+            current_price = price_history[-1]
+            
+            # Calculate P&L percentage
+            if current_position > 0:  # Long position
+                pnl_pct = (current_price - entry_price) / entry_price * 100
+            else:  # Short position
+                pnl_pct = (entry_price - current_price) / entry_price * 100
+            
+            # Check stop loss
+            if pnl_pct <= -self.stop_loss_pct:
+                self.set_state("exit_reason", f"Stop loss triggered: {pnl_pct:.1f}%")
+                return True
+            
+            # Check take profit
+            if pnl_pct >= self.take_profit_pct:
+                self.set_state("exit_reason", f"Take profit triggered: {pnl_pct:.1f}%")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            self.log_error(f"Error checking risk management: {e}")
+            return False
+    
+    async def handle_risk_exit(self, context: ActionContext):
+        """Handle risk management exit"""
+        exit_reason = self.get_state("exit_reason", "Risk management exit")
+        await self.close_position(context, exit_reason)
+    
+    def calculate_position_size(self) -> int:
+        """Calculate position size based on risk management"""
+        try:
+            # Simple position sizing - could be enhanced
+            account_balance = self.get_config_value("account_balance", 10000)
+            risk_per_trade = self.get_config_value("risk_per_trade_pct", 1.0) / 100
+            
+            price_history = self.get_state("price_history", [])
+            if not price_history:
+                return 0
+            
+            current_price = price_history[-1]
+            risk_amount = account_balance * risk_per_trade
+            stop_distance = current_price * (self.stop_loss_pct / 100)
+            
+            if stop_distance <= 0:
+                return 0
+            
+            position_size = int(risk_amount / stop_distance)
+            
+            # Apply limits
+            min_size = self.get_config_value("min_position_size", 10)
+            max_size = self.get_config_value("max_position_size", 1000)
+            
+            return max(min_size, min(position_size, max_size))
+            
+        except Exception as e:
+            self.log_error(f"Error calculating position size: {e}")
+            return 0
+    
+    def calculate_ma(self, price_history: List[float], period: int) -> float:
+        """Calculate simple moving average"""
         if len(price_history) < period:
             return price_history[-1] if price_history else 0
-
+        
         return sum(price_history[-period:]) / period
-
-    def _evaluate_trading_rules(self, symbol: str, data: MarketData,
-                               fast_ma: float, slow_ma: float) -> Optional[StrategyResult]:
-        """
-        Evaluate all trading rules and determine if a trade should be executed.
-
-        Args:
-            symbol: Trading symbol
-            data: Current market data
-            fast_ma: Fast moving average
-            slow_ma: Slow moving average
-
-        Returns:
-            StrategyResult if trade should be executed, None otherwise
-        """
-        current_price = data.price
-        current_volume = data.volume
-
-        # =====================================================================
-        # Rule 1: Moving Average Crossover Check
-        # =====================================================================
-        crossover_signal = self._check_ma_crossover(fast_ma, slow_ma)
-
-        if crossover_signal['signal'] == 'BUY':
-            self.update_rule_state('ma_crossover', True, f"Fast MA ({fast_ma:.2f}) > Slow MA ({slow_ma:.2f})")
-        elif crossover_signal['signal'] == 'SELL':
-            self.update_rule_state('ma_crossover', True, f"Fast MA ({fast_ma:.2f}) < Slow MA ({slow_ma:.2f})")
-
-        if not crossover_signal['signal']:
-            self.update_rule_state('ma_crossover', False, "Waiting for crossover")
-            self.update_rule_state('trend_confirmation', False)
+    
+    def get_mock_price(self, context: ActionContext) -> Optional[float]:
+        """Get mock price data for testing (replace with real data provider)"""
+        try:
+            # Mock price generation for testing
+            import random
+            base_price = 100.0
+            
+            # Get previous price for continuity
+            price_history = self.get_state("price_history", [])
+            if price_history:
+                base_price = price_history[-1]
+            
+            # Add some random movement
+            change_pct = random.uniform(-0.01, 0.01)  # ±1% change
+            new_price = base_price * (1 + change_pct)
+            
+            return round(new_price, 2)
+            
+        except Exception as e:
+            self.log_error(f"Error getting mock price: {e}")
             return None
+    
+    def get_strategy_metadata(self) -> Dict[str, Any]:
+        """Return strategy metadata"""
+        # Get default values for metadata (don't depend on initialized attributes)
+        default_symbol = getattr(self, 'symbol', 'SPY')
+        default_fast = getattr(self, 'fast_period', 10)
+        default_slow = getattr(self, 'slow_period', 30)
+        
+        return {
+            "name": "Moving Average Crossover Strategy",
+            "description": f"Action-based MA crossover strategy ({default_fast}/{default_slow})",
+            "version": "2.0.0",
+            "author": "Action Framework Example",
+            "risk_level": "MEDIUM",
+            "max_positions": 1,
+            "preferred_symbols": [default_symbol],
+            "parameters": {
+                "symbol": {
+                    "type": "string",
+                    "default": "SPY",
+                    "description": "Trading symbol"
+                },
+                "fast_period": {
+                    "type": "integer",
+                    "default": 10,
+                    "min": 2,
+                    "max": 50,
+                    "description": "Fast moving average period"
+                },
+                "slow_period": {
+                    "type": "integer",
+                    "default": 30,
+                    "min": 10,
+                    "max": 200,
+                    "description": "Slow moving average period"
+                },
+                "stop_loss_pct": {
+                    "type": "float",
+                    "default": 2.0,
+                    "min": 0.5,
+                    "max": 10.0,
+                    "description": "Stop loss percentage"
+                },
+                "take_profit_pct": {
+                    "type": "float",
+                    "default": 5.0,
+                    "min": 1.0,
+                    "max": 20.0,
+                    "description": "Take profit percentage"
+                },
+                "allow_short": {
+                    "type": "boolean",
+                    "default": False,
+                    "description": "Allow short positions"
+                },
+                "risk_per_trade_pct": {
+                    "type": "float",
+                    "default": 1.0,
+                    "min": 0.1,
+                    "max": 5.0,
+                    "description": "Risk per trade as % of capital"
+                }
+            }
+        }
 
-        # =====================================================================
-        # Rule 2: Trend Confirmation
-        # =====================================================================
-        trend_confirmed = self._confirm_trend(crossover_signal['signal'])
 
-        if not trend_confirmed:
-            self.update_rule_state('trend_confirmation', False, "Trend not confirmed")
-            return None
+# ============================================================================
+# Alternative Simple Moving Average Strategy (Minimal Example)
+# ============================================================================
 
-        self.update_rule_state('trend_confirmation', True, "Trend confirmed")
-
-        # =====================================================================
-        # Rule 3: Volume Filter (if enabled)
-        # =====================================================================
-        if self.config.get('enable_volume_filter', True):
-            if not self._check_volume_filter(current_volume, data):
-                self.update_rule_state('volume_filter', False, f"Volume too low: {current_volume}")
-                return None
-
-        self.update_rule_state('volume_filter', True, "Volume filter passed")
-
-        # =====================================================================
-        # Rule 4: Position Size Calculation
-        # =====================================================================
-        position_quantity = self.calculate_position_size(
-            symbol,
-            self.risk_per_trade_pct * self.config.get('account_balance', 10000)  # Assume $10k default
+class SimpleMovingAverageStrategy(BaseStrategy):
+    """
+    Simplified version of the MA strategy for demonstration purposes.
+    Shows the minimal implementation needed for an action-based strategy.
+    """
+    
+    async def initialize_strategy(self):
+        """Minimal strategy initialization"""
+        self.symbol = self.get_config_value("symbol", "SPY")
+        
+        # Simple action: Buy at market open, sell at market close
+        self.add_time_action("09:30", self.buy_signal, "market_open_buy")
+        self.add_time_action("15:30", self.sell_signal, "market_close_sell")
+        
+        self.log_info(f"Simple MA Strategy initialized for {self.symbol}")
+    
+    async def buy_signal(self, context: ActionContext):
+        """Simple buy signal"""
+        self.add_trade_action(
+            name="daily_buy",
+            trade_type="BUY",
+            symbol=self.symbol,
+            quantity=100
         )
-
-        if position_quantity <= 0:
-            self.update_rule_state('position_size', False, "Insufficient capital")
-            return None
-
-        self.update_rule_state('position_size', True, f"Position size: {position_quantity} shares")
-
-        # =====================================================================
-        # Rule 5: Risk Management - Exit signals if we have a position
-        # =====================================================================
-        exit_signal = self._check_risk_management(current_price)
-        if exit_signal:
-            self.update_rule_state('risk_management', True, exit_signal['reason'])
-
-            return StrategyResult(
-                action='CLOSE_POSITION',
-                symbol=symbol,
-                quantity=abs(self.current_position),  # Close entire position
-                reason=f"Exit signal: {exit_signal['reason']}"
-            )
-
-        # =====================================================================
-        # Rule 6: Generate Entry Signal
-        # =====================================================================
-        signal = crossover_signal['signal']
-
-        # Reverse signal if we're closing a short position (simplified logic)
-        if self.current_position and ((signal == 'BUY' and self.current_position < 0) or
-                                    (signal == 'SELL' and self.current_position > 0)):
-            reason = f"Exit {signal} signal for existing position"
-            self.update_rule_state('exit_signal', True, reason)
-        else:
-            # Entry signal for new position
-            reason = f"Entry {signal} signal on MA crossover"
-            self.update_rule_state('exit_signal', False)
-
-        return StrategyResult(
-            action=signal,
-            symbol=symbol,
-            quantity=position_quantity,
-            order_type='MARKET',
-            reason=reason,
-            rule_id='ma_crossover'
+        self.log_info("Executed daily buy signal")
+    
+    async def sell_signal(self, context: ActionContext):
+        """Simple sell signal"""
+        self.add_trade_action(
+            name="daily_sell",
+            trade_type="SELL",
+            symbol=self.symbol,
+            quantity=100
         )
-
-    def _check_ma_crossover(self, fast_ma: float, slow_ma: float) -> Dict[str, str]:
-        """
-        Check for moving average crossover signal.
-
-        Args:
-            fast_ma: Fast moving average
-            slow_ma: Slow moving average
-
-        Returns:
-            Dictionary with crossover signal information
-        """
-        if len(self.fast_ma_history) < 2 or len(self.slow_ma_history) < 2:
-            return {'signal': None, 'description': 'Not enough data', 'strength': 0}
-
-        # Get previous values
-        prev_fast = self.fast_ma_history[-2]
-        prev_slow = self.slow_ma_history[-2]
-
-        # Determine crossover type and strength
-        if fast_ma > slow_ma and prev_fast <= prev_slow:
-            # Bullish crossover
-            strength = self._calculate_crossover_strength(fast_ma, slow_ma, 'bullish')
-            return {'signal': 'BUY', 'description': 'Bullish crossover', 'strength': strength}
-        elif fast_ma < slow_ma and prev_fast >= prev_slow:
-            # Bearish crossover
-            strength = self._calculate_crossover_strength(fast_ma, slow_ma, 'bearish')
-            return {'signal': 'SELL', 'description': 'Bearish crossover', 'strength': strength}
-
-        return {'signal': None, 'description': 'No crossover', 'strength': 0}
-
-    def _calculate_crossover_strength(self, fast_ma: float, slow_ma: float, direction: str) -> float:
-        """
-        Calculate the strength of a crossover signal.
-
-        Args:
-            fast_ma: Fast moving average
-            slow_ma: Slow moving average
-            direction: 'bullish' or 'bearish'
-
-        Returns:
-            Crossover strength (0.0 to 1.0)
-        """
-        # Simple strength calculation based on MA difference
-        diff_pct = abs(fast_ma - slow_ma) / slow_ma
-
-        # Strength increases with percentage difference, capped at 100%
-        strength = min(diff_pct * 100, 1.0)  # Convert to fraction
-
-        # Adjust based on trend direction consistency
-        if len(self.fast_ma_history) >= 5:
-            # Check if the last 5 MAs are consistently trending in the signal direction
-            fast_trend = (self.fast_ma_history[-1] > self.fast_ma_history[-5]) if direction == 'bullish' else (self.fast_ma_history[-1] < self.fast_ma_history[-5])
-            slow_trend = (self.slow_ma_history[-1] > self.slow_ma_history[-5]) if direction == 'bullish' else (self.slow_ma_history[-1] < self.slow_ma_history[-5])
-
-            if fast_trend and slow_trend:
-                strength *= 1.2  # Boost strength for consistent trend
-            else:
-                strength *= 0.8  # Reduce strength for conflicting trend
-
-        return strength
-
-    def _confirm_trend(self, signal: str) -> bool:
-        """
-        Confirm that the crossover aligns with the broader trend.
-
-        Args:
-            signal: 'BUY' or 'SELL'
-
-        Returns:
-            True if trend is confirmed, False otherwise
-        """
-        if len(self.price_history) < 10:
-            return False  # Not enough data
-
-        # Calculate trend slope over last 10 periods
-        recent_prices = self.price_history[-10:]
-        if len(recent_prices) < 2:
-            return False
-
-        # Simple linear regression slope approximation
-        n = len(recent_prices)
-        x = list(range(n))
-
-        slope = sum((x_i - sum(x)/n) * (y_i - sum(recent_prices)/n) for x_i, y_i in zip(x, recent_prices))
-        slope /= sum((x_i - sum(x)/n) ** 2 for x_i in x)
-
-        # For BUY signals, we want positive slope
-        # For SELL signals, we want negative slope
-        expected_sign = 1 if signal == 'BUY' else -1
-
-        return slope * expected_sign > 0
-
-    def _check_volume_filter(self, volume: float, data: MarketData) -> bool:
-        """
-        Apply volume filtering to avoid low liquidity trades.
-
-        Args:
-            volume: Current volume
-            data: Market data
-
-        Returns:
-            True if volume filter passes, False otherwise
-        """
-        # Get minimum volume from configuration
-        min_volume = self.config.get('min_volume', 1000)
-
-        # Basic volume check
-        if volume < min_volume:
-            return False
-
-        # Additional liquidity checks
-        spread = (data.ask - data.bid) / data.bid
-        max_spread_pct = self.config.get('max_spread_pct', 0.01)  # 1% maximum spread
-
-        if spread > max_spread_pct:
-            self.log_warning(f"Wide spread detected: {spread * 100:.2f}%")
-            return False
-
-        return True
-
-    def _check_risk_management(self, current_price: float) -> Optional[Dict[str, str]]:
-        """
-        Check for risk management signals (stop-loss, take-profit).
-
-        Args:
-            current_price: Current market price
-
-        Returns:
-            Dict with exit signal or None
-        """
-        if not self.current_position or not self.entry_price:
-            return None
-
-        # Calculate current P&L percentage
-        pnl_pct = (current_price - self.entry_price) / self.entry_price
-
-        # Check stop loss
-        if self.current_position > 0:  # Long position
-            if pnl_pct <= -self.stop_loss_pct / 100:
-                return {'reason': f"Stop loss triggered: {pnl_pct * 100:.1f}%"}
-            elif pnl_pct >= self.take_profit_pct / 100:
-                return {'reason': f"Take profit triggered: +{pnl_pct * 100:.1f}%"}
-        else:  # Short position
-            if pnl_pct >= self.stop_loss_pct / 100:  # P&L is negative for profit on shorts
-                return {'reason': f"Stop loss triggered: {pnl_pct * 100:.1f}%"}
-            elif pnl_pct <= -self.take_profit_pct / 100:
-                return {'reason': f"Take profit triggered: {pnl_pct * 100:.1f}%"}
-
-        return None
-
-    def calculate_position_size(self, symbol: str, risk_amount: float) -> int:
-        """
-        Calculate position size based on risk management.
-
-        Args:
-            symbol: Trading symbol
-            risk_amount: Amount of capital to risk on this trade
-
-        Returns:
-            Number of shares to trade
-        """
-        # Get current price
-        current_price = self.get_current_price(symbol)
-        if not current_price:
-            return 0
-
-        # Calculate stop loss distance
-        stop_distance = current_price * (self.stop_loss_pct / 100)
-
-        # Calculate position size based on risk
-        max_quantity = int(risk_amount / stop_distance)
-
-        # Apply limits
-        min_quantity = self.config.get('min_position_size', 10)
-        max_quantity = min(max_quantity, self.config.get('max_position_size', 1000))
-
-        return max(min_quantity, min(max_quantity, max_quantity))
-
-    def should_stop_strategy(self) -> bool:
-        """
-        Check if strategy should be stopped.
-
-        Returns:
-            True if strategy should be stopped, False otherwise
-        """
-        # Check daily loss limit
-        max_daily_loss = self.get_strategy_metadata().max_daily_loss_pct
-        if max_daily_loss and self.current_pnl < -max_daily_loss * self.config.get('account_balance', 10000):
-            self.log_warning(f"Strategy stopped due to daily loss limit: ${self.current_pnl:.2f}")
-            return True
-
-        # Check for excessive consecutive losses (simple example)
-        recent_losses = getattr(self, '_recent_losses', 0)
-        if recent_losses >= self.config.get('max_consecutive_losses', 5):
-            self.log_warning(f"Strategy stopped due to {recent_losses} consecutive losses")
-            return True
-
-        return False
-
-    def log_info(self, message: str) -> None:
-        """Log an information message with strategy context."""
-        self.logger.info(f"MAStrategy[{self.symbol}]: {message}")
-
-    def log_warning(self, message: str) -> None:
-        """Log a warning message with strategy context."""
-        self.logger.warning(f"MAStrategy[{self.symbol}]: {message}")
-
-    def log_error(self, message: str) -> None:
-        """Log an error message with strategy context."""
-        self.logger.error(f"MAStrategy[{self.symbol}]: {message}")
+        self.log_info("Executed daily sell signal")
+    
+    def get_strategy_metadata(self) -> Dict[str, Any]:
+        """Return simple strategy metadata"""
+        return {
+            "name": "Simple Moving Average Strategy",
+            "description": "Minimal example: Buy at open, sell at close",
+            "version": "1.0.0",
+            "author": "Action Framework",
+            "risk_level": "LOW",
+            "max_positions": 1,
+            "preferred_symbols": [self.symbol],
+            "parameters": {
+                "symbol": {
+                    "type": "string",
+                    "default": "SPY",
+                    "description": "Trading symbol"
+                }
+            }
+        }

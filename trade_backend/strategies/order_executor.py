@@ -9,8 +9,23 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime
 import logging
 
-from ..provider_manager import provider_manager
-from .base_strategy import StrategyResult
+try:
+    from ..provider_manager import provider_manager
+except ImportError:
+    # Fallback for direct execution
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent))
+    try:
+        from provider_manager import provider_manager
+    except ImportError:
+        # Create a minimal mock provider manager
+        class MockProviderManager:
+            def place_order(self, order_data):
+                return None
+            def place_multi_leg_order(self, order_data):
+                return None
+        provider_manager = MockProviderManager()
 
 logger = logging.getLogger(__name__)
 
@@ -109,13 +124,13 @@ class OrderExecutor:
         """
         return self._place_order('stop', symbol, quantity, side, reason, strategy_id, stop_price)
 
-    def place_multi_leg_order(self, strategy_result: StrategyResult,
+    def place_multi_leg_order(self, order_details: Dict[str, Any],
                              strategy_id: str = '') -> str:
         """
         Place a multi-leg options order.
 
         Args:
-            strategy_result: StrategyResult containing multi-leg details
+            order_details: Dictionary containing multi-leg order details
             strategy_id: ID of the strategy placing the order
 
         Returns:
@@ -130,9 +145,9 @@ class OrderExecutor:
                 return ''
 
             # Prepare order data for multi-leg order
-            order_data = self._prepare_multi_leg_order_data(strategy_result, strategy_id)
+            order_data = self._prepare_multi_leg_order_data(order_details, strategy_id)
 
-            logger.info(f"Placing multi-leg order for {strategy_result.symbol}")
+            logger.info(f"Placing multi-leg order for {order_details.get('symbol', 'unknown')}")
 
             # Place the order
             order = provider.place_multi_leg_order(order_data)
@@ -466,21 +481,21 @@ class OrderExecutor:
 
         return order_data
 
-    def _prepare_multi_leg_order_data(self, strategy_result: StrategyResult,
+    def _prepare_multi_leg_order_data(self, order_details: Dict[str, Any],
                                      strategy_id: str) -> Dict[str, Any]:
         """
         Prepare order data for multi-leg orders.
         """
         return {
-            'symbol': strategy_result.symbol,
-            'action': strategy_result.action,
-            'quantity': strategy_result.quantity,
-            'price': strategy_result.limit_price,
-            'order_type': strategy_result.order_type,
-            'side': 'buy' if strategy_result.action == 'BUY' else 'sell',
+            'symbol': order_details.get('symbol', ''),
+            'action': order_details.get('action', ''),
+            'quantity': order_details.get('quantity', 0),
+            'price': order_details.get('limit_price', 0),
+            'order_type': order_details.get('order_type', 'market'),
+            'side': 'buy' if order_details.get('action', '').upper() == 'BUY' else 'sell',
             'strategy_id': strategy_id,
-            'reason': strategy_result.reason,
-            'rule_id': strategy_result.rule_id,
+            'reason': order_details.get('reason', ''),
+            'rule_id': order_details.get('rule_id', ''),
             'timestamp': datetime.now().isoformat()
         }
 

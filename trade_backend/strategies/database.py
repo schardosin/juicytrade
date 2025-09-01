@@ -10,7 +10,21 @@ from sqlalchemy import create_engine, event, text
 from sqlalchemy.orm import sessionmaker, Session
 from sqlalchemy.engine import Engine
 from contextlib import contextmanager
-from ..path_manager import path_manager
+try:
+    from ..path_manager import path_manager
+except ImportError:
+    # Fallback for direct execution
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent.parent))
+    try:
+        from path_manager import path_manager
+    except ImportError:
+        # Create a minimal path manager fallback
+        class MockPathManager:
+            def get_strategies_db_path(self):
+                return "strategies.db"
+        path_manager = MockPathManager()
 from .models import Base
 
 logger = logging.getLogger(__name__)

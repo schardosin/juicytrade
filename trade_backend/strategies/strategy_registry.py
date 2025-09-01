@@ -80,7 +80,7 @@ class StrategyRegistry:
                 "validation_steps": validation_result.details.get("steps", [])
             })
             
-            # Store strategy in database
+            # Store strategy in database (store handles duplicate detection)
             result = self.store.add_strategy(
                 user_id=user_id,
                 name=strategy_name,
@@ -96,15 +96,16 @@ class StrategyRegistry:
                 return {
                     "success": True,
                     "strategy_id": result["strategy_id"],
-                    "message": f"Strategy '{strategy_name}' uploaded and validated successfully",
+                    "message": result.get("message", f"Strategy '{strategy_name}' uploaded and validated successfully"),
                     "strategy_name": strategy_name,
-                    "validation_details": validation_result.details
+                    "validation_details": validation_result.details,
+                    "updated": result.get("updated", False)
                 }
             else:
                 logger.error(f"❌ Failed to store strategy: {result.get('error', 'Unknown error')}")
                 return {
                     "success": False,
-                    "error": "Storage Failed",
+                    "error": result.get("error", "Storage Failed"),
                     "message": result.get("message", "Failed to store strategy in database")
                 }
                 
@@ -181,17 +182,38 @@ class StrategyRegistry:
         Uses safe execution environment.
         """
         try:
-            # Create a safe execution environment
+            # Create a safe execution environment with all necessary imports
+            from .actions import ActionContext
+            from . import actions
+            
             exec_globals = {
                 '__builtins__': __builtins__,
+                '__name__': f'strategy_{strategy_id}',
+                '__file__': f'<strategy_{strategy_id}>',
                 'BaseStrategy': BaseStrategy,
-                'StrategyResult': None,  # Import from base_strategy if needed
+                'ActionContext': ActionContext,
+                'actions': actions,
                 'datetime': datetime,
-                'logging': logging
+                'logging': logging,
+                # Add common imports that strategies might need
+                'typing': __import__('typing'),
+                'Optional': __import__('typing').Optional,
+                'List': __import__('typing').List,
+                'Dict': __import__('typing').Dict,
+                'Any': __import__('typing').Any,
             }
             
-            # Execute the strategy code
-            exec(python_code, exec_globals)
+            # Preprocess the code to replace relative imports with absolute references
+            processed_code = python_code.replace(
+                'from .base_strategy import BaseStrategy', 
+                '# BaseStrategy already available in globals'
+            ).replace(
+                'from .actions import ActionContext',
+                '# ActionContext already available in globals'
+            )
+            
+            # Execute the processed strategy code
+            exec(processed_code, exec_globals)
             
             # Find the strategy class (should inherit from BaseStrategy)
             strategy_class = None

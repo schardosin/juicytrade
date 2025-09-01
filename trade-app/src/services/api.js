@@ -882,6 +882,288 @@ export const api = {
       };
     }
   },
+
+  // Generic GET method for API calls
+  async get(url) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}${url}`);
+      return response;
+    } catch (error) {
+      console.error(`Error making GET request to ${url}:`, error);
+      throw error;
+    }
+  },
+
+  // Generic POST method for API calls
+  async post(url, data) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}${url}`, data);
+      return response;
+    } catch (error) {
+      console.error(`Error making POST request to ${url}:`, error);
+      throw error;
+    }
+  },
+
+  // === Strategy Management APIs ===
+
+  // Get all user strategies
+  async getStrategies() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/api/strategies/my`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching strategies:", error);
+      throw error;
+    }
+  },
+
+  // Get strategy details
+  async getStrategy(strategyId) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/strategies/${strategyId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching strategy details:", error);
+      throw error;
+    }
+  },
+
+  // Get strategy parameters schema
+  async getStrategyParameters(strategyId) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/strategies/${strategyId}/parameters`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching strategy parameters:", error);
+      throw error;
+    }
+  },
+
+  // Upload new strategy
+  async uploadStrategy(file, name, description = "") {
+    try {
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('name', name);
+      formData.append('description', description);
+
+      const response = await axios.post(`${API_BASE_URL}/strategies/upload`, formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      return response.data;
+    } catch (error) {
+      console.error("Error uploading strategy:", error);
+      throw error;
+    }
+  },
+
+  // Update strategy
+  async updateStrategy(strategyId, updates) {
+    try {
+      const response = await axios.put(`${API_BASE_URL}/strategies/${strategyId}`, updates);
+      return response.data;
+    } catch (error) {
+      console.error("Error updating strategy:", error);
+      throw error;
+    }
+  },
+
+  // Delete strategy
+  async deleteStrategy(strategyId) {
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/api/strategies/${strategyId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error deleting strategy:", error);
+      throw error;
+    }
+  },
+
+  // === Strategy Configuration Management APIs ===
+
+  // Get all configurations for a strategy
+  async getStrategyConfigurations(strategyId) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/strategies/${strategyId}/configs`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching strategy configurations:", error);
+      throw error;
+    }
+  },
+
+  // Get specific configuration
+  async getConfiguration(configId) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/strategies/configs/${configId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching configuration:", error);
+      throw error;
+    }
+  },
+
+  // Create new configuration
+  async createConfiguration(strategyId, configData) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/strategies/${strategyId}/configs`, configData);
+      return response.data;
+    } catch (error) {
+      console.error("Error creating configuration:", error);
+      throw error;
+    }
+  },
+
+  // Update configuration
+  async updateConfiguration(configId, configData) {
+    try {
+      const response = await axios.put(`${API_BASE_URL}/strategies/configs/${configId}`, configData);
+      return response.data;
+    } catch (error) {
+      console.error("Error updating configuration:", error);
+      throw error;
+    }
+  },
+
+  // Delete configuration
+  async deleteConfiguration(configId) {
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/strategies/configs/${configId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error deleting configuration:", error);
+      throw error;
+    }
+  },
+
+  // === Backtest Management APIs ===
+
+  // Run backtest with configuration
+  async runBacktest(backtestRequest) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/strategies/backtest/run`, backtestRequest);
+      return response.data;
+    } catch (error) {
+      console.error("Error running backtest:", error);
+      throw error;
+    }
+  },
+
+  // Get all backtest runs (optionally filtered by strategy)
+  async getBacktestRuns(strategyId = null) {
+    try {
+      const params = strategyId ? { strategy_id: strategyId } : {};
+      const response = await axios.get(`${API_BASE_URL}/api/strategies/backtest/runs`, { params });
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching backtest runs:", error);
+      throw error;
+    }
+  },
+
+  // Get specific backtest run
+  async getBacktestRun(runId) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/strategies/backtest/runs/${runId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching backtest run:", error);
+      throw error;
+    }
+  },
+
+  // Delete backtest run
+  async deleteBacktestRun(runId) {
+    try {
+      const response = await axios.delete(`${API_BASE_URL}/strategies/backtest/runs/${runId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error deleting backtest run:", error);
+      throw error;
+    }
+  },
+
+  // === Strategy Execution Management APIs ===
+
+  // Start strategy execution
+  async startStrategy(strategyId, executionRequest) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/strategies/${strategyId}/start`, executionRequest);
+      return response.data;
+    } catch (error) {
+      console.error("Error starting strategy:", error);
+      throw error;
+    }
+  },
+
+  // Stop strategy execution
+  async stopStrategy(strategyId) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/strategies/${strategyId}/stop`);
+      return response.data;
+    } catch (error) {
+      console.error("Error stopping strategy:", error);
+      throw error;
+    }
+  },
+
+  // Pause strategy execution
+  async pauseStrategy(strategyId) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/strategies/${strategyId}/pause`);
+      return response.data;
+    } catch (error) {
+      console.error("Error pausing strategy:", error);
+      throw error;
+    }
+  },
+
+  // Resume strategy execution
+  async resumeStrategy(strategyId) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/strategies/${strategyId}/resume`);
+      return response.data;
+    } catch (error) {
+      console.error("Error resuming strategy:", error);
+      throw error;
+    }
+  },
+
+  // Get strategy execution status
+  async getStrategyStatus(strategyId) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/strategies/${strategyId}/status`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching strategy status:", error);
+      throw error;
+    }
+  },
+
+  // Get system statistics
+  async getSystemStats() {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/strategies/stats`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching system stats:", error);
+      throw error;
+    }
+  },
+
+  // Validate strategy
+  async validateStrategy(strategyId) {
+    try {
+      const response = await axios.post(`${API_BASE_URL}/strategies/${strategyId}/validate`);
+      return response.data;
+    } catch (error) {
+      console.error("Error validating strategy:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;

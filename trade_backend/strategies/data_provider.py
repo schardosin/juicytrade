@@ -20,8 +20,16 @@ except ImportError:
     import sys
     from pathlib import Path
     sys.path.append(str(Path(__file__).parent.parent))
-    from models import StockQuote, OptionContract
-    from provider_manager import provider_manager
+    try:
+        from models import StockQuote, OptionContract
+        from provider_manager import provider_manager
+    except ImportError:
+        # If still failing, create minimal mock classes
+        class StockQuote:
+            pass
+        class OptionContract:
+            pass
+        provider_manager = None
 
 logger = logging.getLogger(__name__)
 

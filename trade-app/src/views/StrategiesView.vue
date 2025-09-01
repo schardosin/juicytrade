@@ -5,8 +5,8 @@
 
     <!-- Main Layout -->
     <div class="main-layout">
-      <!-- Left Navigation -->
-      <SideNav />
+      <!-- Strategy-Specific Left Navigation -->
+      <StrategySideNav />
 
       <!-- Content Area -->
       <div class="content-area">
@@ -18,13 +18,13 @@
 
 <script>
 import TopBar from '../components/TopBar.vue'
-import SideNav from '../components/SideNav.vue'
+import StrategySideNav from '../components/strategies/StrategySideNav.vue'
 
 export default {
   name: 'StrategiesView',
   components: {
     TopBar,
-    SideNav
+    StrategySideNav
   }
 }
 </script>

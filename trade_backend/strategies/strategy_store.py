@@ -12,6 +12,7 @@ from typing import Dict, List, Optional, Any
 from datetime import datetime
 from sqlalchemy.orm import Session
 from sqlalchemy import and_, or_, desc, asc
+from sqlalchemy.exc import IntegrityError
 from .database import strategy_db_manager
 from .models import Strategy, StrategyExecution, StrategyTrade, StrategyPerformance
 
@@ -31,7 +32,7 @@ class StrategyStore:
         base_name = name.lower().replace(' ', '_').replace('(', '').replace(')', '')
         base_id = f"strategy_{user_id}_{base_name}"
         
-        # Ensure uniqueness
+        # Ensure uniqueness (check ALL strategies, not just active ones)
         counter = 1
         strategy_id = base_id
         while not self.validate_strategy_id(strategy_id):
@@ -45,12 +46,12 @@ class StrategyStore:
         return hashlib.sha256(content.encode('utf-8')).hexdigest()
     
     def validate_strategy_id(self, strategy_id: str) -> bool:
-        """Check if strategy ID is unique (similar to ProviderCredentialStore.validate_instance_id)"""
+        """Check if strategy ID is unique - checks ALL strategies including inactive ones"""
         try:
             with self.db_manager.get_session() as session:
+                # Check for ANY strategy with this ID (active or inactive)
                 existing = session.query(Strategy).filter(
-                    Strategy.strategy_id == strategy_id,
-                    Strategy.is_active == True
+                    Strategy.strategy_id == strategy_id
                 ).first()
                 return existing is None
         except Exception as e:
@@ -120,16 +121,108 @@ class StrategyStore:
             logger.error(f"❌ Error getting strategy code {strategy_id}: {e}")
             return None
     
-    def add_strategy(self, user_id: str, name: str, description: str, 
+    def get_strategy_by_hash(self, user_id: str, file_hash: str) -> Optional[Dict[str, Any]]:
+        """Get strategy by file hash to detect duplicates - checks active strategies only"""
+        try:
+            with self.db_manager.get_session() as session:
+                strategy = session.query(Strategy).filter(
+                    Strategy.user_id == user_id,
+                    Strategy.file_hash == file_hash,
+                    Strategy.is_active == True
+                ).first()
+                
+                return strategy.to_dict() if strategy else None
+        except Exception as e:
+            logger.error(f"❌ Error getting strategy by hash: {e}")
+            return None
+    
+    def get_strategy_by_name_and_user(self, user_id: str, name: str) -> Optional[Dict[str, Any]]:
+        """Get strategy by name and user - checks ALL strategies including inactive ones"""
+        try:
+            with self.db_manager.get_session() as session:
+                strategy = session.query(Strategy).filter(
+                    Strategy.user_id == user_id,
+                    Strategy.name == name
+                ).first()
+                
+                return strategy.to_dict() if strategy else None
+        except Exception as e:
+            logger.error(f"❌ Error getting strategy by name: {e}")
+            return None
+    
+    def add_strategy(self, user_id: str, name: str, description: str,
                     python_code: str, filename: str, metadata: Dict[str, Any],
                     validation_details: Optional[Dict] = None) -> Dict[str, Any]:
         """Add new strategy (similar to add_instance)"""
         try:
+            # Calculate file hash first to check for duplicates
+            file_hash = self._calculate_file_hash(python_code)
+            
+            # Check if strategy with same content already exists (active strategies only)
+            existing_strategy = self.get_strategy_by_hash(user_id, file_hash)
+            if existing_strategy:
+                logger.info(f"🔄 Strategy with same content already exists, updating: {existing_strategy['strategy_id']}")
+                
+                # Update existing strategy instead of creating duplicate
+                update_success = self.update_strategy(
+                    existing_strategy['strategy_id'],
+                    name=name,
+                    description=description,
+                    validation_details=validation_details,
+                    validation_count=existing_strategy.get('validation_count', 0) + 1
+                )
+                
+                if update_success:
+                    return {
+                        "success": True,
+                        "strategy_id": existing_strategy['strategy_id'],
+                        "message": f"Strategy '{name}' updated successfully (already existed)",
+                        "updated": True
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "error": "Update failed",
+                        "message": "Failed to update existing strategy"
+                    }
+            
+            # Check if there's an inactive strategy with the same name
+            existing_by_name = self.get_strategy_by_name_and_user(user_id, name)
+            if existing_by_name and not existing_by_name.get('is_active', True):
+                logger.info(f"🔄 Reactivating inactive strategy: {existing_by_name['strategy_id']}")
+                
+                # Reactivate and update the inactive strategy
+                with self.db_manager.get_session() as session:
+                    strategy = session.query(Strategy).filter(
+                        Strategy.strategy_id == existing_by_name['strategy_id']
+                    ).first()
+                    
+                    if strategy:
+                        # Update the strategy with new content
+                        strategy.is_active = True
+                        strategy.python_code = python_code
+                        strategy.file_hash = file_hash
+                        strategy.file_size = len(python_code.encode('utf-8'))
+                        strategy.description = description
+                        strategy.filename = filename
+                        strategy.strategy_metadata = metadata
+                        strategy.validation_details = validation_details
+                        strategy.validation_status = "passed" if validation_details and validation_details.get("success") else "failed"
+                        strategy.validation_count = existing_by_name.get('validation_count', 0) + 1
+                        strategy.updated_at = datetime.now()
+                        
+                        session.commit()
+                        
+                        logger.info(f"✅ Reactivated strategy: {strategy.strategy_id}")
+                        return {
+                            "success": True,
+                            "strategy_id": strategy.strategy_id,
+                            "message": f"Strategy '{name}' reactivated and updated successfully",
+                            "updated": True
+                        }
+            
             # Generate unique strategy ID
             strategy_id = self._generate_strategy_id(user_id, name)
-            
-            # Calculate file hash
-            file_hash = self._calculate_file_hash(python_code)
             file_size = len(python_code.encode('utf-8'))
             
             with self.db_manager.get_session() as session:
@@ -163,6 +256,14 @@ class StrategyStore:
                     "message": f"Strategy '{name}' added successfully"
                 }
                 
+        except IntegrityError as e:
+            logger.error(f"❌ Integrity error adding strategy (likely duplicate): {e}")
+            # Handle the case where strategy_id already exists despite our checks
+            return {
+                "success": False,
+                "error": "Duplicate strategy",
+                "message": "A strategy with this name already exists. Please use a different name or update the existing strategy."
+            }
         except Exception as e:
             logger.error(f"❌ Error adding strategy: {e}")
             return {

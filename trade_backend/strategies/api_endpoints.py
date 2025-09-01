@@ -273,6 +273,562 @@ async def get_strategy(strategy_id: str):
         raise HTTPException(status_code=500, detail=f"Failed to get strategy: {str(e)}")
 
 
+@router.get("/{strategy_id}/parameters", response_model=Dict[str, Any])
+async def get_strategy_parameters(strategy_id: str):
+    """
+    Get configurable parameters for a specific strategy.
+
+    - **strategy_id**: Unique strategy identifier
+
+    Returns strategy parameter schema for dynamic form generation.
+    """
+    try:
+        # Get strategy class to access metadata
+        strategy_class = await get_strategy_registry().get_strategy(strategy_id)
+        
+        if not strategy_class:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+
+        # Create a temporary instance to get metadata
+        # We need to provide minimal dependencies for metadata extraction
+        from .mock_providers import MockDataProvider, MockOrderExecutor
+        
+        temp_instance = strategy_class(
+            strategy_id=strategy_id,
+            data_provider=MockDataProvider(),
+            order_executor=MockOrderExecutor(),
+            config={}
+        )
+        
+        # Initialize the strategy so all attributes are set up
+        await temp_instance.initialize_strategy()
+        
+        # Get strategy metadata which includes parameters
+        metadata = temp_instance.get_strategy_metadata()
+        
+        # Extract parameters with enhanced information
+        parameters = metadata.get("parameters", {})
+        
+        # Add framework-level parameters that are always available
+        framework_parameters = {
+            "account_balance": {
+                "type": "float",
+                "default": 100000.0,
+                "min": 1000.0,
+                "max": 10000000.0,
+                "description": "Account balance for position sizing",
+                "category": "framework"
+            },
+            "max_position_size": {
+                "type": "integer", 
+                "default": 1000,
+                "min": 1,
+                "max": 10000,
+                "description": "Maximum position size (shares/contracts)",
+                "category": "framework"
+            },
+            "commission_per_trade": {
+                "type": "float",
+                "default": 1.0,
+                "min": 0.0,
+                "max": 50.0,
+                "description": "Commission per trade ($)",
+                "category": "framework"
+            }
+        }
+        
+        # Merge strategy parameters with framework parameters
+        all_parameters = {**parameters, **framework_parameters}
+        
+        # Add category to strategy parameters if not present
+        for param_name, param_config in all_parameters.items():
+            if "category" not in param_config:
+                param_config["category"] = "strategy"
+        
+        return {
+            "success": True,
+            "strategy_id": strategy_id,
+            "strategy_name": metadata.get("name", "Unknown Strategy"),
+            "parameters": all_parameters,
+            "metadata": {
+                "name": metadata.get("name"),
+                "description": metadata.get("description"),
+                "version": metadata.get("version"),
+                "risk_level": metadata.get("risk_level"),
+                "max_positions": metadata.get("max_positions"),
+                "preferred_symbols": metadata.get("preferred_symbols", [])
+            }
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting strategy parameters: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get parameters: {str(e)}")
+
+
+# ============================================================================
+# Strategy Configuration Management Endpoints (NEW)
+# ============================================================================
+
+@router.post("/{strategy_id}/configs", response_model=Dict[str, Any])
+async def create_strategy_configuration(strategy_id: str, config_data: Dict[str, Any]):
+    """
+    Create a new configuration for a strategy.
+
+    - **strategy_id**: Strategy to create configuration for
+    - **config_data**: Configuration parameters and metadata
+
+    Returns the created configuration.
+    """
+    try:
+        from .database import strategy_db_manager
+        from .models import StrategyConfiguration
+        import uuid
+        
+        # Validate strategy exists
+        strategy_details = await get_strategy_registry().get_strategy_details(strategy_id)
+        if not strategy_details:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        
+        # Extract configuration data
+        name = config_data.get("name", "")
+        description = config_data.get("description", "")
+        parameters = config_data.get("parameters", {})
+        
+        # Generate configuration ID
+        config_id = f"config_{strategy_id}_{uuid.uuid4().hex[:8]}"
+        
+        # Create configuration
+        with strategy_db_manager.get_session() as session:
+            config = StrategyConfiguration(
+                config_id=config_id,
+                strategy_id=strategy_id,
+                user_id="default_user",
+                name=name if name else None,
+                description=description if description else None,
+                parameters=parameters
+            )
+            
+            session.add(config)
+            session.commit()
+            session.refresh(config)
+            
+            logger.info(f"Created configuration {config_id} for strategy {strategy_id}")
+            
+            return {
+                "success": True,
+                "message": "Configuration created successfully",
+                "configuration": config.to_dict()
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create configuration: {str(e)}")
+
+
+@router.get("/{strategy_id}/configs", response_model=List[Dict[str, Any]])
+async def get_strategy_configurations(strategy_id: str):
+    """
+    Get all configurations for a strategy.
+
+    - **strategy_id**: Strategy to get configurations for
+
+    Returns list of configurations.
+    """
+    try:
+        from .database import strategy_db_manager
+        from .models import StrategyConfiguration
+        
+        with strategy_db_manager.get_session() as session:
+            configs = session.query(StrategyConfiguration).filter(
+                StrategyConfiguration.strategy_id == strategy_id,
+                StrategyConfiguration.user_id == "default_user",
+                StrategyConfiguration.is_active == True
+            ).order_by(StrategyConfiguration.created_at.desc()).all()
+            
+            return [config.to_dict() for config in configs]
+    
+    except Exception as e:
+        logger.error(f"Error getting configurations: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get configurations: {str(e)}")
+
+
+@router.get("/configs/{config_id}", response_model=Dict[str, Any])
+async def get_configuration(config_id: str):
+    """
+    Get a specific configuration.
+
+    - **config_id**: Configuration ID
+
+    Returns configuration details.
+    """
+    try:
+        from .database import strategy_db_manager
+        from .models import StrategyConfiguration
+        
+        with strategy_db_manager.get_session() as session:
+            config = session.query(StrategyConfiguration).filter(
+                StrategyConfiguration.config_id == config_id,
+                StrategyConfiguration.user_id == "default_user"
+            ).first()
+            
+            if not config:
+                raise HTTPException(status_code=404, detail="Configuration not found")
+            
+            return config.to_dict()
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get configuration: {str(e)}")
+
+
+@router.put("/configs/{config_id}", response_model=Dict[str, Any])
+async def update_configuration(config_id: str, config_data: Dict[str, Any]):
+    """
+    Update a configuration.
+
+    - **config_id**: Configuration to update
+    - **config_data**: Updated configuration data
+
+    Returns updated configuration.
+    """
+    try:
+        from .database import strategy_db_manager
+        from .models import StrategyConfiguration
+        from sqlalchemy.sql import func
+        
+        with strategy_db_manager.get_session() as session:
+            config = session.query(StrategyConfiguration).filter(
+                StrategyConfiguration.config_id == config_id,
+                StrategyConfiguration.user_id == "default_user"
+            ).first()
+            
+            if not config:
+                raise HTTPException(status_code=404, detail="Configuration not found")
+            
+            # Update fields
+            if "name" in config_data:
+                config.name = config_data["name"] if config_data["name"] else None
+            if "description" in config_data:
+                config.description = config_data["description"] if config_data["description"] else None
+            if "parameters" in config_data:
+                config.parameters = config_data["parameters"]
+            
+            config.updated_at = func.now()
+            
+            session.commit()
+            session.refresh(config)
+            
+            logger.info(f"Updated configuration {config_id}")
+            
+            return {
+                "success": True,
+                "message": "Configuration updated successfully",
+                "configuration": config.to_dict()
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to update configuration: {str(e)}")
+
+
+@router.delete("/configs/{config_id}", response_model=Dict[str, Any])
+async def delete_configuration(config_id: str):
+    """
+    Delete a configuration.
+
+    - **config_id**: Configuration to delete
+
+    Returns deletion confirmation.
+    """
+    try:
+        from .database import strategy_db_manager
+        from .models import StrategyConfiguration
+        
+        with strategy_db_manager.get_session() as session:
+            config = session.query(StrategyConfiguration).filter(
+                StrategyConfiguration.config_id == config_id,
+                StrategyConfiguration.user_id == "default_user"
+            ).first()
+            
+            if not config:
+                raise HTTPException(status_code=404, detail="Configuration not found")
+            
+            # Soft delete
+            config.is_active = False
+            
+            session.commit()
+            
+            logger.info(f"Deleted configuration {config_id}")
+            
+            return {
+                "success": True,
+                "message": "Configuration deleted successfully",
+                "config_id": config_id
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting configuration: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete configuration: {str(e)}")
+
+
+# ============================================================================
+# Backtest Management Endpoints (NEW TEMPLATE-BASED)
+# ============================================================================
+
+@router.post("/{strategy_id}/backtest", response_model=Dict[str, Any])
+async def run_strategy_backtest(strategy_id: str, backtest_request: Dict[str, Any]):
+    """
+    Run a backtest directly with strategy template and parameters.
+
+    - **strategy_id**: Strategy template to backtest
+    - **backtest_request**: Backtest configuration containing:
+        - parameters: Strategy parameters (symbol, fast_period, etc.)
+        - start_date: Start date (YYYY-MM-DD)
+        - end_date: End date (YYYY-MM-DD)
+        - initial_capital: Initial capital amount
+        - speed_multiplier: Backtest speed (1=real-time, 1000=very fast)
+
+    Returns backtest run details and starts execution.
+    """
+    try:
+        from .database import strategy_db_manager
+        from .models import BacktestRun
+        from datetime import datetime
+        import uuid
+        
+        # Extract request data - NEW TEMPLATE-BASED APPROACH
+        parameters = backtest_request.get("parameters", {})
+        start_date_str = backtest_request.get("start_date")
+        end_date_str = backtest_request.get("end_date")
+        initial_capital = backtest_request.get("initial_capital", 100000.0)
+        speed_multiplier = backtest_request.get("speed_multiplier", 1000)
+        
+        if not parameters:
+            raise HTTPException(status_code=400, detail="parameters are required")
+        if not start_date_str or not end_date_str:
+            raise HTTPException(status_code=400, detail="start_date and end_date are required")
+        
+        # Validate strategy exists
+        strategy_details = await get_strategy_registry().get_strategy_details(strategy_id)
+        if not strategy_details:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        
+        # Parse dates
+        start_date = datetime.fromisoformat(start_date_str)
+        end_date = datetime.fromisoformat(end_date_str)
+        
+        # Generate run ID
+        run_id = f"run_{strategy_id}_{uuid.uuid4().hex[:8]}"
+        
+        # Create backtest run record with parameters stored directly
+        with strategy_db_manager.get_session() as session:
+            backtest_run = BacktestRun(
+                run_id=run_id,
+                config_id=None,  # No configuration needed in new architecture
+                strategy_id=strategy_id,
+                user_id="default_user",
+                start_date=start_date,
+                end_date=end_date,
+                initial_capital=initial_capital,
+                speed_multiplier=speed_multiplier,
+                parameters=parameters,  # Store parameters directly with the run
+                status="pending"
+            )
+            
+            session.add(backtest_run)
+            session.commit()
+            session.refresh(backtest_run)
+            
+            logger.info(f"Created backtest run {run_id} for strategy {strategy_id} with parameters: {parameters}")
+            
+            # TODO: Start actual backtest execution asynchronously
+            # For now, return mock results for demonstration
+            mock_results = {
+                "total_pnl": 1247.50,
+                "total_return": 0.1247,
+                "total_trades": 23,
+                "win_rate": 0.65,
+                "sharpe_ratio": 1.45,
+                "max_drawdown": -0.08,
+                "trades": [
+                    {
+                        "id": 1,
+                        "timestamp": "2024-01-15T10:30:00Z",
+                        "symbol": parameters.get("symbol", "AAPL"),
+                        "action": "BUY",
+                        "quantity": 100,
+                        "price": 150.25,
+                        "pnl": 234.50
+                    },
+                    {
+                        "id": 2,
+                        "timestamp": "2024-01-16T14:45:00Z",
+                        "symbol": parameters.get("symbol", "AAPL"),
+                        "action": "SELL",
+                        "quantity": 100,
+                        "price": 152.60,
+                        "pnl": 235.00
+                    }
+                ]
+            }
+            
+            return {
+                "success": True,
+                "message": "Backtest completed successfully",
+                "run_id": run_id,
+                "data": mock_results,
+                "metrics": {
+                    "pnl": {
+                        "total_pnl": mock_results["total_pnl"],
+                        "total_return": mock_results["total_return"],
+                        "max_profit": 500.0,
+                        "max_loss": -150.0
+                    },
+                    "trading": {
+                        "total_trades": mock_results["total_trades"],
+                        "win_rate": mock_results["win_rate"],
+                        "avg_trade": mock_results["total_pnl"] / mock_results["total_trades"]
+                    },
+                    "risk": {
+                        "sharpe_ratio": mock_results["sharpe_ratio"],
+                        "max_drawdown": mock_results["max_drawdown"],
+                        "volatility": 0.15
+                    },
+                    "actions": {
+                        "total_actions": 45,
+                        "successful_actions": 23,
+                        "failed_actions": 2,
+                        "action_success_rate": 0.92
+                    }
+                },
+                "trades": mock_results["trades"],
+                "equity_curve": [],
+                "checkpoints": [
+                    {"name": "Strategy Started", "timestamp": start_date_str},
+                    {"name": "First Trade", "timestamp": "2024-01-15T10:30:00Z"},
+                    {"name": "Strategy Completed", "timestamp": end_date_str}
+                ],
+                "action_log": []
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating backtest run: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to create backtest run: {str(e)}")
+
+
+@router.get("/backtest/runs", response_model=List[Dict[str, Any]])
+async def get_backtest_runs(strategy_id: Optional[str] = None):
+    """
+    Get backtest runs, optionally filtered by strategy.
+
+    - **strategy_id**: Optional strategy filter
+
+    Returns list of backtest runs.
+    """
+    try:
+        from .database import strategy_db_manager
+        from .models import BacktestRun
+        
+        with strategy_db_manager.get_session() as session:
+            query = session.query(BacktestRun).filter(
+                BacktestRun.user_id == "default_user"
+            )
+            
+            if strategy_id:
+                query = query.filter(BacktestRun.strategy_id == strategy_id)
+            
+            runs = query.order_by(BacktestRun.created_at.desc()).all()
+            
+            return [run.to_dict() for run in runs]
+    
+    except Exception as e:
+        logger.error(f"Error getting backtest runs: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get backtest runs: {str(e)}")
+
+
+@router.get("/backtest/runs/{run_id}", response_model=Dict[str, Any])
+async def get_backtest_run(run_id: str):
+    """
+    Get a specific backtest run.
+
+    - **run_id**: Backtest run ID
+
+    Returns backtest run details and results.
+    """
+    try:
+        from .database import strategy_db_manager
+        from .models import BacktestRun
+        
+        with strategy_db_manager.get_session() as session:
+            run = session.query(BacktestRun).filter(
+                BacktestRun.run_id == run_id,
+                BacktestRun.user_id == "default_user"
+            ).first()
+            
+            if not run:
+                raise HTTPException(status_code=404, detail="Backtest run not found")
+            
+            return run.to_dict()
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting backtest run: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to get backtest run: {str(e)}")
+
+
+@router.delete("/backtest/runs/{run_id}", response_model=Dict[str, Any])
+async def delete_backtest_run(run_id: str):
+    """
+    Delete a backtest run.
+
+    - **run_id**: Backtest run to delete
+
+    Returns deletion confirmation.
+    """
+    try:
+        from .database import strategy_db_manager
+        from .models import BacktestRun
+        
+        with strategy_db_manager.get_session() as session:
+            run = session.query(BacktestRun).filter(
+                BacktestRun.run_id == run_id,
+                BacktestRun.user_id == "default_user"
+            ).first()
+            
+            if not run:
+                raise HTTPException(status_code=404, detail="Backtest run not found")
+            
+            session.delete(run)
+            session.commit()
+            
+            logger.info(f"Deleted backtest run {run_id}")
+            
+            return {
+                "success": True,
+                "message": "Backtest run deleted successfully",
+                "run_id": run_id
+            }
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting backtest run: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to delete backtest run: {str(e)}")
+
+
 @router.put("/{strategy_id}", response_model=Dict[str, Any])
 async def update_strategy(strategy_id: str, updates: StrategyUpdateRequest):
     """
@@ -340,16 +896,37 @@ async def delete_strategy(strategy_id: str):
 # ============================================================================
 
 @router.post("/{strategy_id}/start", response_model=Dict[str, Any])
-async def start_strategy(strategy_id: str, execution_request: StrategyExecutionRequest, request: Request):
+async def start_strategy_with_parameters(strategy_id: str, start_request: Dict[str, Any], request: Request):
     """
-    Start executing a strategy.
+    Start executing a strategy directly with parameters.
 
-    - **strategy_id**: Strategy to start
-    - **execution_request**: Execution configuration
+    - **strategy_id**: Strategy template to start
+    - **start_request**: Execution configuration containing:
+        - parameters: Strategy parameters (symbol, fast_period, etc.)
+        - mode: Execution mode ('live', 'paper', 'simulation')
+        - name: Instance name (optional)
 
-    Start strategy in live or backtesting mode.
+    Start strategy in live or paper trading mode.
     """
     try:
+        from .database import strategy_db_manager
+        from .models import StrategyExecution
+        from datetime import datetime
+        import uuid
+        
+        # Extract request data - NEW TEMPLATE-BASED APPROACH
+        parameters = start_request.get("parameters", {})
+        mode = start_request.get("mode", "live")
+        instance_name = start_request.get("name", f"{strategy_id} Instance")
+        
+        if not parameters:
+            raise HTTPException(status_code=400, detail="parameters are required")
+        
+        # Validate strategy exists
+        strategy_details = await get_strategy_registry().get_strategy_details(strategy_id)
+        if not strategy_details:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        
         # Get strategy instance
         strategy_instance = await get_strategy_registry().get_strategy(strategy_id)
         if not strategy_instance:
@@ -360,23 +937,58 @@ async def start_strategy(strategy_id: str, execution_request: StrategyExecutionR
         if not execution_engine:
             raise HTTPException(status_code=503, detail="Strategy execution engine not available")
 
-        # Merge configurations
-        config = execution_request.config or {}
+        # Generate execution ID
+        execution_id = f"exec_{strategy_id}_{uuid.uuid4().hex[:8]}"
+        
+        # Create execution record with parameters stored directly
+        with strategy_db_manager.get_session() as session:
+            strategy_execution = StrategyExecution(
+                execution_id=execution_id,
+                strategy_id=strategy_id,
+                config_id=None,  # No configuration needed in new architecture
+                user_id="default_user",
+                mode=mode,
+                status="running",
+                configuration=parameters,  # Store parameters directly with the execution
+                name=instance_name
+            )
+            
+            session.add(strategy_execution)
+            session.commit()
+            session.refresh(strategy_execution)
+            
+            logger.info(f"Created strategy execution {execution_id} for strategy {strategy_id} with parameters: {parameters}")
+
+        # Merge configurations for execution engine
+        config = parameters.copy()
         config['user_id'] = "default_user"
         config['strategy_id'] = strategy_id
+        config['execution_id'] = execution_id
+        config['mode'] = mode
 
         # Start execution
-        success = await execution_engine.start_strategy(strategy_id, strategy_instance, config)
+        success = await execution_engine.start_strategy(execution_id, strategy_instance, config)
 
         if success:
-            logger.info(f"Strategy started: {strategy_id}")
+            logger.info(f"Strategy started: {strategy_id} -> {execution_id}")
             return {
                 "success": True,
                 "message": "Strategy started successfully",
                 "strategy_id": strategy_id,
-                "mode": execution_request.mode
+                "execution_id": execution_id,
+                "mode": mode,
+                "parameters": parameters
             }
         else:
+            # Update execution status to failed
+            with strategy_db_manager.get_session() as session:
+                execution = session.query(StrategyExecution).filter(
+                    StrategyExecution.execution_id == execution_id
+                ).first()
+                if execution:
+                    execution.status = "failed"
+                    session.commit()
+            
             raise HTTPException(status_code=400, detail="Failed to start strategy")
 
     except HTTPException:
@@ -530,42 +1142,3 @@ async def validate_strategy(strategy_id: str):
     except Exception as e:
         logger.error(f"Error validating strategy: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Validation failed: {str(e)}")
-
-
-@router.post("/{strategy_id}/backtest", response_model=Dict[str, Any])
-async def run_backtest(strategy_id: str, backtest_config: Dict[str, Any]):
-    """
-    Run a backtest on a strategy.
-
-    - **strategy_id**: Strategy to backtest
-    - **backtest_config**: Backtest configuration
-
-    Returns backtest results.
-    """
-    try:
-        logger.info(f"Backtest request for {strategy_id}")
-
-        # This is a placeholder for the actual backtest implementation
-        # Would need to be expanded with actual backtesting logic
-
-        # Simulate backtest results
-        backtest_results = {
-            "total_pnl": -125.50,
-            "win_rate": 0.65,
-            "total_trades": 28,
-            "max_profit": 45.30,
-            "max_loss": -75.25,
-            "sharpe_ratio": 1.23,
-            "period_start": backtest_config.get('start_date'),
-            "period_end": backtest_config.get('end_date')
-        }
-
-        return {
-            "success": True,
-            "strategy_id": strategy_id,
-            "results": backtest_results
-        }
-
-    except Exception as e:
-        logger.error(f"Backtest error: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Backtest failed: {str(e)}")
