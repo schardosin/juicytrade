@@ -618,6 +618,7 @@ async def run_strategy_backtest(strategy_id: str, backtest_request: Dict[str, An
         end_date_str = backtest_request.get("end_date")
         initial_capital = backtest_request.get("initial_capital", 100000.0)
         speed_multiplier = backtest_request.get("speed_multiplier", 1000)
+        timeframe = backtest_request.get("timeframe", "1min")  # Add timeframe parameter
         
         if not parameters:
             raise HTTPException(status_code=400, detail="parameters are required")
@@ -657,75 +658,117 @@ async def run_strategy_backtest(strategy_id: str, backtest_request: Dict[str, An
             
             logger.info(f"Created backtest run {run_id} for strategy {strategy_id} with parameters: {parameters}")
             
-            # TODO: Start actual backtest execution asynchronously
-            # For now, return mock results for demonstration
-            mock_results = {
-                "total_pnl": 1247.50,
-                "total_return": 0.1247,
-                "total_trades": 23,
-                "win_rate": 0.65,
-                "sharpe_ratio": 1.45,
-                "max_drawdown": -0.08,
-                "trades": [
-                    {
-                        "id": 1,
-                        "timestamp": "2024-01-15T10:30:00Z",
-                        "symbol": parameters.get("symbol", "AAPL"),
-                        "action": "BUY",
-                        "quantity": 100,
-                        "price": 150.25,
-                        "pnl": 234.50
-                    },
-                    {
-                        "id": 2,
-                        "timestamp": "2024-01-16T14:45:00Z",
-                        "symbol": parameters.get("symbol", "AAPL"),
-                        "action": "SELL",
-                        "quantity": 100,
-                        "price": 152.60,
-                        "pnl": 235.00
+            # Start actual backtest execution
+            try:
+                # Get strategy class
+                strategy_class = await get_strategy_registry().get_strategy(strategy_id)
+                if not strategy_class:
+                    raise HTTPException(status_code=404, detail="Strategy class not found")
+                
+                # Create strategy instance with parameters
+                from .mock_providers import MockDataProvider, MockOrderExecutor
+                
+                strategy_instance = strategy_class(
+                    strategy_id=strategy_id,
+                    data_provider=MockDataProvider(),
+                    order_executor=MockOrderExecutor(),
+                    config=parameters
+                )
+                
+                # Initialize the strategy
+                await strategy_instance.initialize_strategy()
+                
+                # Create backtest engine with real provider manager
+                from .backtest_engine import StrategyBacktestEngine
+                
+                # Get provider manager from the main application
+                provider_manager = None
+                try:
+                    from ..provider_manager import provider_manager as global_provider_manager
+                    provider_manager = global_provider_manager
+                    logger.info("Using real provider manager for backtest")
+                except ImportError:
+                    logger.warning("Could not import provider manager, using mock data")
+                
+                backtest_engine = StrategyBacktestEngine(
+                    initial_capital=initial_capital,
+                    commission_per_trade=parameters.get("commission_per_trade", 1.0),
+                    slippage_bps=2.0,
+                    provider_manager=provider_manager,
+                    timeframe=timeframe  # Pass timeframe to backtest engine
+                )
+                
+                # Run the backtest
+                symbols = [parameters.get("symbol", "SPY")]
+                backtest_results = await backtest_engine.run_backtest(
+                    strategy=strategy_instance,
+                    start_date=start_date,
+                    end_date=end_date,
+                    symbols=symbols,
+                    speed_multiplier=speed_multiplier
+                )
+                
+                if not backtest_results.get("success"):
+                    # Update run status to failed
+                    backtest_run.status = "failed"
+                    backtest_run.error_message = backtest_results.get("error", "Backtest execution failed")
+                    session.commit()
+                    
+                    return {
+                        "success": False,
+                        "message": "Backtest execution failed",
+                        "error": backtest_results.get("error", "Unknown error"),
+                        "run_id": run_id
                     }
-                ]
-            }
-            
-            return {
-                "success": True,
-                "message": "Backtest completed successfully",
-                "run_id": run_id,
-                "data": mock_results,
-                "metrics": {
-                    "pnl": {
-                        "total_pnl": mock_results["total_pnl"],
-                        "total_return": mock_results["total_return"],
-                        "max_profit": 500.0,
-                        "max_loss": -150.0
-                    },
-                    "trading": {
-                        "total_trades": mock_results["total_trades"],
-                        "win_rate": mock_results["win_rate"],
-                        "avg_trade": mock_results["total_pnl"] / mock_results["total_trades"]
-                    },
-                    "risk": {
-                        "sharpe_ratio": mock_results["sharpe_ratio"],
-                        "max_drawdown": mock_results["max_drawdown"],
-                        "volatility": 0.15
-                    },
-                    "actions": {
-                        "total_actions": 45,
-                        "successful_actions": 23,
-                        "failed_actions": 2,
-                        "action_success_rate": 0.92
-                    }
-                },
-                "trades": mock_results["trades"],
-                "equity_curve": [],
-                "checkpoints": [
-                    {"name": "Strategy Started", "timestamp": start_date_str},
-                    {"name": "First Trade", "timestamp": "2024-01-15T10:30:00Z"},
-                    {"name": "Strategy Completed", "timestamp": end_date_str}
-                ],
-                "action_log": []
-            }
+                
+                # Serialize datetime objects in results before storing
+                def serialize_datetime_objects(obj):
+                    """Recursively serialize datetime objects in nested data structures"""
+                    if hasattr(obj, 'isoformat'):
+                        return obj.isoformat()
+                    elif isinstance(obj, dict):
+                        return {key: serialize_datetime_objects(value) for key, value in obj.items()}
+                    elif isinstance(obj, list):
+                        return [serialize_datetime_objects(item) for item in obj]
+                    else:
+                        return obj
+                
+                # Serialize all datetime objects in backtest results
+                serialized_results = serialize_datetime_objects(backtest_results)
+                
+                # Update run with results
+                backtest_run.status = "completed"
+                backtest_run.results = serialized_results
+                session.commit()
+                
+                logger.info(f"Backtest completed successfully for run {run_id}")
+                
+                return {
+                    "success": True,
+                    "message": "Backtest completed successfully",
+                    "run_id": run_id,
+                    "data": backtest_results,
+                    "metrics": backtest_results.get("metrics", {}),
+                    "trades": backtest_results.get("trades", []),
+                    "equity_curve": backtest_results.get("equity_curve", []),
+                    "checkpoints": backtest_results.get("checkpoints", []),
+                    "action_log": backtest_results.get("action_log", [])
+                }
+                
+            except Exception as backtest_error:
+                logger.error(f"Backtest execution failed: {str(backtest_error)}")
+                
+                # Update run status to failed
+                backtest_run.status = "failed"
+                backtest_run.error_message = str(backtest_error)
+                session.commit()
+                
+                return {
+                    "success": False,
+                    "message": "Backtest execution failed",
+                    "error": str(backtest_error),
+                    "run_id": run_id
+                }
     
     except HTTPException:
         raise

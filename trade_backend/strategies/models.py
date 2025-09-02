@@ -276,15 +276,18 @@ class StrategyConfiguration(Base):
 class BacktestRun(Base):
     """
     Backtest run model - stores backtest execution history and results.
-    Links configurations to specific backtest periods and results.
+    NEW TEMPLATE-BASED ARCHITECTURE: Parameters stored directly with runs.
     """
     __tablename__ = "backtest_runs"
     
     # Primary identification
     run_id = Column(String, primary_key=True)
-    config_id = Column(String, ForeignKey("strategy_configurations.config_id"), nullable=False, index=True)
+    config_id = Column(String, ForeignKey("strategy_configurations.config_id"), nullable=True, index=True)  # Made nullable for new architecture
     strategy_id = Column(String, nullable=False, index=True)
     user_id = Column(String, nullable=False, index=True)
+    
+    # NEW: Direct parameter storage (template-based approach)
+    parameters = Column(JSON)  # Strategy parameters stored directly with the run
     
     # Backtest parameters
     start_date = Column(DateTime, nullable=False)
@@ -331,6 +334,7 @@ class BacktestRun(Base):
             "config_id": self.config_id,
             "strategy_id": self.strategy_id,
             "user_id": self.user_id,
+            "parameters": self.parameters or {},  # NEW: Include parameters in response
             "start_date": self.start_date.isoformat() if self.start_date else None,
             "end_date": self.end_date.isoformat() if self.end_date else None,
             "initial_capital": self.initial_capital,

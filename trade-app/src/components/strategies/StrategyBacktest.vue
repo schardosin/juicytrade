@@ -65,6 +65,17 @@
 
             <div class="form-row">
               <div class="form-group">
+                <label for="timeframe">Data Timeframe</label>
+                <Dropdown
+                  id="timeframe"
+                  v-model="backtestConfig.timeframe"
+                  :options="timeframeOptions"
+                  option-label="label"
+                  option-value="value"
+                  placeholder="Select timeframe"
+                />
+              </div>
+              <div class="form-group">
                 <label for="initial-capital">Initial Capital ($)</label>
                 <InputNumber
                   id="initial-capital"
@@ -77,6 +88,9 @@
                   locale="en-US"
                 />
               </div>
+            </div>
+
+            <div class="form-row">
               <div class="form-group">
                 <label for="speed-multiplier">Speed Multiplier</label>
                 <Dropdown
@@ -87,6 +101,9 @@
                   option-value="value"
                   placeholder="Select speed"
                 />
+              </div>
+              <div class="form-group">
+                <!-- Empty space for layout balance -->
               </div>
             </div>
           </div>
@@ -394,7 +411,8 @@ export default {
       start_date: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000), // 30 days ago
       end_date: new Date(),
       initial_capital: 10000,
-      speed_multiplier: 1
+      speed_multiplier: 1,
+      timeframe: "1m"  // Use framework standard timeframe
     })
 
     // Speed options
@@ -403,6 +421,17 @@ export default {
       { label: '10x (Fast)', value: 10 },
       { label: '100x (Very Fast)', value: 100 },
       { label: '1000x (Maximum)', value: 1000 }
+    ]
+
+    // Timeframe options (using framework standard)
+    const timeframeOptions = [
+      { label: '1 Minute', value: '1m' },
+      { label: '5 Minutes', value: '5m' },
+      { label: '15 Minutes', value: '15m' },
+      { label: '30 Minutes', value: '30m' },
+      { label: '1 Hour', value: '1h' },
+      { label: '4 Hours', value: '4h' },
+      { label: 'Daily', value: 'D' }
     ]
 
     // State
@@ -470,13 +499,17 @@ export default {
         backtestError.value = null
         backtestResults.value = null
 
+        // NEW TEMPLATE-BASED APPROACH: Include strategy parameters directly
         const config = {
+          parameters: strategyConfig.value, // Include strategy parameters
           start_date: backtestConfig.value.start_date.toISOString().split('T')[0],
           end_date: backtestConfig.value.end_date.toISOString().split('T')[0],
           initial_capital: backtestConfig.value.initial_capital,
-          speed_multiplier: backtestConfig.value.speed_multiplier
+          speed_multiplier: backtestConfig.value.speed_multiplier,
+          timeframe: backtestConfig.value.timeframe  // Include timeframe
         }
 
+        console.log('Running backtest with config:', config)
         const result = await getStrategyBacktest(strategyId.value, config)
         
         if (result.success) {
@@ -567,6 +600,7 @@ export default {
     }
 
     const formatCurrency = (amount) => {
+      if (amount === null || amount === undefined) return '$0.00'
       const value = Math.abs(amount || 0)
       const sign = amount >= 0 ? '+' : '-'
       return `${sign}$${value.toLocaleString('en-US', {
@@ -576,6 +610,7 @@ export default {
     }
 
     const formatPercentage = (value) => {
+      if (value === null || value === undefined) return '0.00%'
       const percentage = (value || 0) * 100
       const sign = percentage >= 0 ? '+' : ''
       return `${sign}${percentage.toFixed(2)}%`
@@ -609,6 +644,7 @@ export default {
       strategyConfig,
       backtestConfig,
       speedOptions,
+      timeframeOptions,  // Add timeframe options
       backtestResults,
       backtestError,
 

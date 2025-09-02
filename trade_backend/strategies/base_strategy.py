@@ -393,28 +393,34 @@ class BaseStrategy(ABC):
                 except Exception as e:
                     self.logger.error(f"Error executing scheduled event {event['name']}: {e}")
             
-            # Execute pending actions
-            next_action = self.action_queue.get_next_action()
-            if next_action:
-                # Set current action context
-                self.state.set_current_action(next_action.name)
-                
-                # Execute action
-                result = await self.action_executor.execute_action(next_action, context)
-                
-                # Update statistics
-                self.execution_stats["actions_executed"] += 1
-                if result.success:
-                    self.execution_stats["actions_successful"] += 1
-                else:
-                    self.execution_stats["actions_failed"] += 1
-                
-                # Handle trade actions
-                if isinstance(next_action, TradeAction) and result.success and not result.dry_run:
-                    self.execution_stats["trades_executed"] += 1
-                
-                # Clear current action context
-                self.state.clear_current_action()
+            # Execute all active actions (especially important for continuous monitoring)
+            active_actions = self.action_queue.get_active_actions()
+            
+            for action in active_actions:
+                try:
+                    # Set current action context
+                    self.state.set_current_action(action.name)
+                    
+                    # Execute action
+                    result = await self.action_executor.execute_action(action, context)
+                    
+                    # Update statistics
+                    self.execution_stats["actions_executed"] += 1
+                    if result.success:
+                        self.execution_stats["actions_successful"] += 1
+                    else:
+                        self.execution_stats["actions_failed"] += 1
+                    
+                    # Handle trade actions
+                    if isinstance(action, TradeAction) and result.success and not result.dry_run:
+                        self.execution_stats["trades_executed"] += 1
+                    
+                    # Clear current action context
+                    self.state.clear_current_action()
+                    
+                except Exception as e:
+                    self.logger.error(f"Error executing action {action.name}: {e}")
+                    self.execution_stats["error_count"] += 1
             
             # Call legacy market data handler if overridden
             if hasattr(self, '_has_market_data_handler'):
@@ -568,19 +574,31 @@ class BaseStrategy(ABC):
                 "name": action.name,
                 "type": action.__class__.__name__,
                 "status": action.status.value,
-                "created_at": action.created_at.isoformat(),
+                "created_at": action.created_at.isoformat() if action.created_at else None,
                 "started_at": action.started_at.isoformat() if action.started_at else None,
                 "completed_at": action.completed_at.isoformat() if action.completed_at else None,
                 "execution_log": action.execution_log.copy()
             }
             
             if action.result:
-                entry["result"] = {
+                result_data = {
                     "success": action.result.success,
                     "error": action.result.error,
                     "dry_run": action.result.dry_run,
                     "details": action.result.details
                 }
+                
+                # Ensure action result data is JSON serializable
+                if action.result.data:
+                    serialized_data = {}
+                    for key, value in action.result.data.items():
+                        if hasattr(value, 'isoformat'):
+                            serialized_data[key] = value.isoformat()
+                        else:
+                            serialized_data[key] = value
+                    result_data["data"] = serialized_data
+                
+                entry["result"] = result_data
             
             log_entries.append(entry)
         
@@ -588,11 +606,27 @@ class BaseStrategy(ABC):
     
     def get_checkpoints(self) -> List[Dict[str, Any]]:
         """Get strategy checkpoints"""
-        return self.state.list_checkpoints()
+        checkpoints = self.state.list_checkpoints()
+        # Ensure all datetime objects are serialized
+        for checkpoint in checkpoints:
+            if 'timestamp' in checkpoint and hasattr(checkpoint['timestamp'], 'isoformat'):
+                checkpoint['timestamp'] = checkpoint['timestamp'].isoformat()
+            elif 'timestamp' in checkpoint:
+                checkpoint['timestamp'] = str(checkpoint['timestamp'])
+        return checkpoints
     
     def get_state_history(self) -> List[Dict[str, Any]]:
         """Get state change history"""
-        return [change.to_dict() for change in self.state.state_history[-50:]]  # Last 50 changes
+        history = []
+        for change in self.state.state_history[-50:]:  # Last 50 changes
+            change_dict = change.to_dict()
+            # Ensure datetime objects are serialized
+            if 'timestamp' in change_dict and hasattr(change_dict['timestamp'], 'isoformat'):
+                change_dict['timestamp'] = change_dict['timestamp'].isoformat()
+            elif 'timestamp' in change_dict:
+                change_dict['timestamp'] = str(change_dict['timestamp'])
+            history.append(change_dict)
+        return history
     
     # ========================================================================
     # Utility Methods

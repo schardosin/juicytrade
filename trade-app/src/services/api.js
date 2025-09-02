@@ -1078,7 +1078,7 @@ export const api = {
   // Delete backtest run
   async deleteBacktestRun(runId) {
     try {
-      const response = await axios.delete(`${API_BASE_URL}/strategies/backtest/runs/${runId}`);
+      const response = await axios.delete(`${API_BASE_URL}/api/strategies/backtest/runs/${runId}`);
       return response.data;
     } catch (error) {
       console.error("Error deleting backtest run:", error);

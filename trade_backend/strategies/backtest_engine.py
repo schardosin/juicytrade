@@ -161,16 +161,16 @@ class BacktestMetrics:
 # Historical Data Provider (Mock Implementation)
 # ============================================================================
 
-class HistoricalDataProvider:
+class RealHistoricalDataProvider:
     """
-    Mock historical data provider for backtesting.
-    In production, this would connect to your actual data source.
+    Real historical data provider for backtesting using the actual provider system.
     """
     
-    def __init__(self):
+    def __init__(self, provider_manager=None):
+        self.provider_manager = provider_manager
         self.data_cache = {}
     
-    def get_historical_data(
+    async def get_historical_data(
         self,
         symbol: str,
         start_date: datetime,
@@ -178,39 +178,151 @@ class HistoricalDataProvider:
         interval: str = "1min"
     ) -> pd.DataFrame:
         """
-        Get historical OHLCV data for a symbol.
+        Get historical OHLCV data for a symbol using real providers.
         
         Returns DataFrame with columns: timestamp, open, high, low, close, volume
         """
-        # Mock implementation - generates realistic-looking data
-        date_range = pd.date_range(start=start_date, end=end_date, freq="1min")
+        if not self.provider_manager:
+            logger.warning("No provider manager available, falling back to mock data")
+            return self._generate_mock_data(symbol, start_date, end_date, interval)
         
-        # Filter to market hours (9:30 AM - 4:00 PM ET)
-        market_hours = date_range[
-            (date_range.time >= pd.Timestamp("09:30").time()) &
-            (date_range.time <= pd.Timestamp("16:00").time()) &
-            (date_range.weekday < 5)  # Monday=0, Friday=4
-        ]
+        try:
+            # Map interval to provider format
+            timeframe_map = {
+                "1min": "1m",
+                "5min": "5m", 
+                "15min": "15m",
+                "1hour": "1h",
+                "1day": "D",
+                "D": "D"
+            }
+            
+            provider_timeframe = timeframe_map.get(interval, "1m")
+            
+            # Get historical bars from real provider
+            bars = await self.provider_manager.get_historical_bars(
+                symbol=symbol,
+                timeframe=provider_timeframe,
+                start_date=start_date.strftime('%Y-%m-%d'),
+                end_date=end_date.strftime('%Y-%m-%d'),
+                limit=100000  # Large limit to get all data
+            )
+            
+            if not bars:
+                logger.warning(f"No historical data returned for {symbol}, using mock data")
+                return self._generate_mock_data(symbol, start_date, end_date, interval)
+            
+            # Convert bars to DataFrame
+            data = []
+            for i, bar in enumerate(bars):
+                # Debug: Log first few bars to see the structure
+                if i < 3:
+                    logger.info(f"Bar {i}: {bar}")
+                
+                # Parse timestamp - handle different formats
+                timestamp = None
+                if isinstance(bar.get('timestamp'), str):
+                    timestamp = pd.to_datetime(bar['timestamp'])
+                elif bar.get('timestamp') is not None:
+                    timestamp = bar.get('timestamp')
+                elif bar.get('time') is not None:
+                    # Try 'time' field as alternative
+                    timestamp = pd.to_datetime(bar['time'])
+                elif bar.get('datetime') is not None:
+                    # Try 'datetime' field as alternative
+                    timestamp = pd.to_datetime(bar['datetime'])
+                else:
+                    # Log the bar structure to understand what fields are available
+                    logger.warning(f"No timestamp found in bar: {list(bar.keys())}")
+                
+                data.append({
+                    "timestamp": timestamp,
+                    "open": float(bar.get('open', 0)),
+                    "high": float(bar.get('high', 0)),
+                    "low": float(bar.get('low', 0)),
+                    "close": float(bar.get('close', 0)),
+                    "volume": int(bar.get('volume', 0))
+                })
+            
+            df = pd.DataFrame(data)
+            
+            # Sort by timestamp
+            if not df.empty:
+                df = df.sort_values('timestamp').reset_index(drop=True)
+                logger.info(f"Retrieved {len(df)} real historical data points for {symbol}")
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"Error getting real historical data for {symbol}: {e}")
+            logger.info("Falling back to mock data generation")
+            return self._generate_mock_data(symbol, start_date, end_date, interval)
+    
+    def _generate_mock_data(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        interval: str = "1min"
+    ) -> pd.DataFrame:
+        """
+        Fallback mock data generation when real data is not available.
+        """
+        logger.info(f"Generating mock data for {symbol} from {start_date} to {end_date}")
+        
+        # Generate time range based on interval
+        if interval == "1day" or interval == "D":
+            freq = "D"
+        elif interval == "1hour":
+            freq = "H"
+        elif interval == "15min":
+            freq = "15min"
+        elif interval == "5min":
+            freq = "5min"
+        else:
+            freq = "1min"
+        
+        date_range = pd.date_range(start=start_date, end=end_date, freq=freq)
+        
+        # Filter to market hours for intraday data
+        if freq != "D":
+            market_hours = date_range[
+                (date_range.time >= pd.Timestamp("09:30").time()) &
+                (date_range.time <= pd.Timestamp("16:00").time()) &
+                (date_range.weekday < 5)  # Monday=0, Friday=4
+            ]
+        else:
+            # For daily data, just filter weekdays
+            market_hours = date_range[date_range.weekday < 5]
         
         if len(market_hours) == 0:
             return pd.DataFrame()
         
-        # Generate mock price data
+        # Generate realistic price data
         np.random.seed(hash(symbol) % 2**32)  # Consistent data for same symbol
         
         base_price = 100.0 if symbol == "SPY" else 50.0
-        returns = np.random.normal(0, 0.001, len(market_hours))  # 0.1% volatility per minute
+        
+        # Adjust volatility based on timeframe
+        if freq == "D":
+            volatility = 0.02  # 2% daily volatility
+        elif freq == "H":
+            volatility = 0.005  # 0.5% hourly volatility
+        else:
+            volatility = 0.001  # 0.1% minute volatility
+        
+        returns = np.random.normal(0, volatility, len(market_hours))
         prices = base_price * np.exp(np.cumsum(returns))
         
         # Generate OHLCV data
         data = []
         for i, timestamp in enumerate(market_hours):
             price = prices[i]
-            noise = np.random.normal(0, 0.0005)  # Small noise for OHLC
+            noise = np.random.normal(0, volatility * 0.5)
             
             open_price = price + noise
-            high_price = price + abs(noise) + np.random.exponential(0.001)
-            low_price = price - abs(noise) - np.random.exponential(0.001)
+            high_price = price + abs(noise) + np.random.exponential(volatility * 0.5)
+            low_price = price - abs(noise) - np.random.exponential(volatility * 0.5)
             close_price = price
             volume = int(np.random.exponential(1000))
             
@@ -260,15 +372,18 @@ class StrategyBacktestEngine:
         initial_capital: float = 100000.0,
         commission_per_trade: float = 1.0,
         slippage_bps: float = 2.0,  # Basis points
-        market_type: MarketType = MarketType.STOCK
+        market_type: MarketType = MarketType.STOCK,
+        provider_manager=None,
+        timeframe: str = "1min"  # Add configurable timeframe
     ):
         self.initial_capital = initial_capital
         self.commission_per_trade = commission_per_trade
         self.slippage_bps = slippage_bps
         self.market_type = market_type
+        self.timeframe = timeframe  # Store timeframe for data fetching
         
-        # Data provider
-        self.data_provider = HistoricalDataProvider()
+        # Data provider - use real provider if available
+        self.data_provider = RealHistoricalDataProvider(provider_manager)
         
         # Backtest state
         self.current_capital = initial_capital
@@ -336,7 +451,7 @@ class StrategyBacktestEngine:
                 "metrics": metrics.to_dict(),
                 "trades": [trade.to_dict() for trade in self.trades],
                 "final_positions": {symbol: pos.to_dict() for symbol, pos in self.positions.items()},
-                "equity_curve": [{"timestamp": ts.isoformat(), "equity": equity} for ts, equity in self.equity_curve],
+                "equity_curve": [{"timestamp": ts.isoformat() if ts and hasattr(ts, 'isoformat') else str(ts) if ts else None, "equity": equity} for ts, equity in self.equity_curve],
                 "action_log": strategy.get_action_log(),
                 "checkpoints": strategy.get_checkpoints(),
                 "state_history": strategy.get_state_history()
@@ -389,8 +504,8 @@ class StrategyBacktestEngine:
         for symbol in symbols:
             logger.info(f"Loading historical data for {symbol}")
             
-            data = self.data_provider.get_historical_data(
-                symbol, start_date, end_date, "1min"
+            data = await self.data_provider.get_historical_data(
+                symbol, start_date, end_date, self.timeframe
             )
             
             if not data.empty:
@@ -412,8 +527,29 @@ class StrategyBacktestEngine:
         
         # Get all timestamps from market data
         all_timestamps = set()
-        for symbol_data in self.market_data_cache.values():
-            all_timestamps.update(symbol_data['timestamp'])
+        for symbol, symbol_data in self.market_data_cache.items():
+            logger.info(f"Processing timestamps for {symbol}: DataFrame shape {symbol_data.shape}")
+            
+            # Handle both pandas Series and regular lists
+            if hasattr(symbol_data, 'iterrows'):
+                # DataFrame - iterate through rows
+                timestamp_count = 0
+                for _, row in symbol_data.iterrows():
+                    timestamp = row['timestamp']
+                    # Convert pandas timestamp to python datetime for consistency
+                    if hasattr(timestamp, 'to_pydatetime'):
+                        timestamp = timestamp.to_pydatetime()
+                    all_timestamps.add(timestamp)
+                    timestamp_count += 1
+                    
+                    # Debug: Log first few timestamps
+                    if timestamp_count <= 5:
+                        logger.info(f"Timestamp {timestamp_count}: {timestamp} (type: {type(timestamp)})")
+                
+                logger.info(f"Added {timestamp_count} timestamps from {symbol}")
+            else:
+                # Regular data structure
+                all_timestamps.update(symbol_data['timestamp'])
         
         timestamps = sorted(all_timestamps)
         
@@ -421,6 +557,9 @@ class StrategyBacktestEngine:
             logger.warning("No market data timestamps found")
             return
         
+        logger.info(f"Total unique timestamps collected: {len(timestamps)}")
+        logger.info(f"First timestamp: {timestamps[0]}")
+        logger.info(f"Last timestamp: {timestamps[-1]}")
         logger.info(f"Simulating {len(timestamps)} time periods")
         
         # Simulate each time period
@@ -457,11 +596,17 @@ class StrategyBacktestEngine:
     def _update_current_prices(self, timestamp: datetime):
         """Update current prices for all symbols"""
         for symbol, data in self.market_data_cache.items():
-            # Find the closest price data for this timestamp
-            symbol_data = data[data['timestamp'] <= timestamp]
-            if not symbol_data.empty:
-                latest_data = symbol_data.iloc[-1]
-                self.current_prices[symbol] = latest_data['close']
+            # Find the exact price data for this timestamp or the closest one
+            exact_match = data[data['timestamp'] == timestamp]
+            if not exact_match.empty:
+                # Use exact timestamp match
+                self.current_prices[symbol] = exact_match.iloc[0]['close']
+            else:
+                # Find the closest price data before or at this timestamp
+                symbol_data = data[data['timestamp'] <= timestamp]
+                if not symbol_data.empty:
+                    latest_data = symbol_data.iloc[-1]
+                    self.current_prices[symbol] = latest_data['close']
     
     def _update_positions(self):
         """Update position values with current prices"""
@@ -485,7 +630,12 @@ class StrategyBacktestEngine:
     
     def get_current_price(self, symbol: str) -> Optional[float]:
         """Get current price for a symbol"""
-        return self.current_prices.get(symbol)
+        price = self.current_prices.get(symbol)
+        if price is not None:
+            logger.info(f"BacktestEngine: Returning current price for {symbol}: ${price:.2f} at {self.current_time}")
+        else:
+            logger.warning(f"BacktestEngine: No current price available for {symbol} at {self.current_time}")
+        return price
     
     def get_market_data(self, symbol: str) -> Dict[str, Any]:
         """Get current market data for a symbol"""

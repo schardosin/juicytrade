@@ -338,7 +338,16 @@ class SmartStrategyDataStore {
     try {
       this.loading.add(`backtest_${strategyId}`)
       
-      const response = await axios.post(`${API_BASE_URL}/api/strategies/${strategyId}/backtest`, config)
+      // NEW TEMPLATE-BASED APPROACH: Include parameters directly in the backtest request
+      const backtestRequest = {
+        parameters: config.parameters || {}, // Strategy parameters
+        start_date: config.start_date,
+        end_date: config.end_date,
+        initial_capital: config.initial_capital,
+        speed_multiplier: config.speed_multiplier
+      }
+      
+      const response = await axios.post(`${API_BASE_URL}/api/strategies/${strategyId}/backtest`, backtestRequest)
       
       if (response.data.success) {
         // Cache the result

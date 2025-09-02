@@ -1010,6 +1010,21 @@ class TastyTradeProvider(BaseProvider):
                 start_dt_utc = start_dt.replace(tzinfo=timezone.utc)
                 
                 logger.info(f"TastyTrade: Start date {start_date} -> UTC: {start_dt_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+                
+                # For daily timeframes, use the exact date without buffer to respect user selection
+                # For intraday timeframes, apply a small buffer to ensure we get complete candles
+                if timeframe == 'D':
+                    # Daily: Use exact date - no buffer needed for daily data
+                    from_time_ms = int(start_dt_utc.timestamp() * 1000)
+                    logger.info(f"TastyTrade: Using fromTime {from_time_ms} ({start_dt_utc.strftime('%Y-%m-%d %H:%M:%S %Z')}) with no buffer for daily timeframe")
+                else:
+                    # Intraday: Apply small buffer to avoid edge cases with incomplete first candles
+                    buffer_hours = 1  # 1 hour buffer for intraday
+                    start_dt_utc_buffered = start_dt_utc - timedelta(hours=buffer_hours)
+                    from_time_ms = int(start_dt_utc_buffered.timestamp() * 1000)
+                    logger.info(f"TastyTrade: Using fromTime {from_time_ms} ({start_dt_utc_buffered.strftime('%Y-%m-%d %H:%M:%S %Z')}) with {buffer_hours}h buffer for intraday")
+                
+                return from_time_ms
             else:
                 # Calculate default lookback based on timeframe (same logic as Tradier/Alpaca)
                 now = datetime.now()
@@ -1035,14 +1050,13 @@ class TastyTradeProvider(BaseProvider):
                 # Convert to UTC for consistency
                 from datetime import timezone
                 start_dt_utc = start_dt.replace(tzinfo=timezone.utc)
-            
-            # Convert to Unix timestamp (milliseconds since epoch for DXLink)
-            # Subtract a small buffer to avoid edge cases with incomplete first candles
-            buffer_hours = 24 if timeframe == 'D' else 1  # 1 day buffer for daily, 1 hour for others
-            start_dt_utc_buffered = start_dt_utc - timedelta(hours=buffer_hours)
-            from_time_ms = int(start_dt_utc_buffered.timestamp() * 1000)
-            logger.info(f"TastyTrade: Using fromTime {from_time_ms} ({start_dt_utc_buffered.strftime('%Y-%m-%d %H:%M:%S %Z')}) with {buffer_hours}h buffer")
-            return from_time_ms
+                
+                # Apply buffer for default lookbacks
+                buffer_hours = 24 if timeframe == 'D' else 1  # 1 day buffer for daily, 1 hour for others
+                start_dt_utc_buffered = start_dt_utc - timedelta(hours=buffer_hours)
+                from_time_ms = int(start_dt_utc_buffered.timestamp() * 1000)
+                logger.info(f"TastyTrade: Using fromTime {from_time_ms} ({start_dt_utc_buffered.strftime('%Y-%m-%d %H:%M:%S %Z')}) with {buffer_hours}h buffer for default lookback")
+                return from_time_ms
             
         except Exception as e:
             logger.error(f"Error calculating fromTime: {e}")

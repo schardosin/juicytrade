@@ -254,10 +254,12 @@ class MonitorAction(Action):
                 )
             
             else:
-                # Condition not met, keep waiting
+                # Condition not met, but this is normal for continuous monitoring
+                # Return success=True to indicate the monitoring is working correctly
                 return ActionResult(
-                    success=False,
-                    details=f"Condition not met (check #{self.check_count})"
+                    success=True,
+                    data={"condition_met": False, "check_count": self.check_count, "monitoring": True},
+                    details=f"Condition not met, continuing to monitor (check #{self.check_count})"
                 )
                 
         except Exception as e:
@@ -318,7 +320,7 @@ class TradeAction(Action):
             # For now, simulate trade execution
             return ActionResult(
                 success=True,
-                data={**trade_details, "order_id": f"ORDER_{datetime.now().timestamp()}"},
+                data={**trade_details, "order_id": f"ORDER_{datetime.now().timestamp()}", "executed_at": datetime.now().isoformat()},
                 details=f"Trade executed: {self.trade_type} {self.quantity} {self.symbol}"
             )
 
@@ -503,22 +505,31 @@ class ActionExecutor:
                 self.execution_stats["total_executed"] += 1
                 
                 if result.success:
-                    action.status = ActionStatus.COMPLETED
-                    action.completed_at = datetime.now()
-                    action.result = result
-                    self.execution_stats["successful"] += 1
-                    
-                    # Execute success callback
-                    if action.on_success:
-                        try:
-                            if asyncio.iscoroutinefunction(action.on_success):
-                                await action.on_success(result)
-                            else:
-                                action.on_success(result)
-                        except Exception as e:
-                            action.log(f"Success callback failed: {e}", "error")
-                    
-                    return result
+                    # For continuous monitoring actions, don't mark as completed
+                    # unless they explicitly indicate completion
+                    if isinstance(action, MonitorAction) and action.continuous and not result.data.get("condition_met", False):
+                        # Keep monitoring action active for continuous monitoring
+                        action.status = ActionStatus.EXECUTING
+                        self.execution_stats["successful"] += 1
+                        return result
+                    else:
+                        # Normal completion for non-continuous actions or when condition is met
+                        action.status = ActionStatus.COMPLETED
+                        action.completed_at = datetime.now()
+                        action.result = result
+                        self.execution_stats["successful"] += 1
+                        
+                        # Execute success callback
+                        if action.on_success:
+                            try:
+                                if asyncio.iscoroutinefunction(action.on_success):
+                                    await action.on_success(result)
+                                else:
+                                    action.on_success(result)
+                            except Exception as e:
+                                action.log(f"Success callback failed: {e}", "error")
+                        
+                        return result
                 else:
                     # Action returned failure, but no exception
                     if attempt < action.retry_count:

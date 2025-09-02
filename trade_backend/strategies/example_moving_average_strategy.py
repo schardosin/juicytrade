@@ -87,6 +87,10 @@ class MovingAverageStrategy(BaseStrategy):
         self.set_state("entry_price", None)
         self.set_state("last_crossover", None)
         
+        # DEBUG: Initialize data capture for analysis
+        self.set_state("debug_data_capture", [])
+        self.set_state("debug_capture_enabled", True)
+        
         # Action 1: Wait for market open to start monitoring
         self.add_time_action(
             trigger_time="09:30",  # Market open
@@ -96,6 +100,7 @@ class MovingAverageStrategy(BaseStrategy):
         
         self.log_info(f"Moving Average Strategy initialized for {self.symbol}")
         self.log_info(f"Parameters: Fast={self.fast_period}, Slow={self.slow_period}")
+        self.log_info("🔍 DEBUG: Data capture enabled - will write raw data to JSON file")
         
         self.add_checkpoint("strategy_initialized", {
             "symbol": self.symbol,
@@ -110,7 +115,7 @@ class MovingAverageStrategy(BaseStrategy):
         # Action 2: Monitor for price updates and calculate MAs
         self.add_monitor_action(
             name="price_monitor",
-            condition=lambda ctx: self.update_indicators(ctx),
+            condition=self.update_indicators,
             callback=self.check_crossover_signals,
             continuous=True
         )
@@ -118,31 +123,49 @@ class MovingAverageStrategy(BaseStrategy):
         # Action 3: Monitor existing positions for risk management
         self.add_monitor_action(
             name="risk_monitor",
-            condition=lambda ctx: self.check_risk_management(ctx),
+            condition=self.check_risk_management,
             callback=self.handle_risk_exit,
             continuous=True
         )
         
         self.add_checkpoint("monitoring_started")
     
+    def safe_update_indicators(self, context: ActionContext) -> bool:
+        """Safe wrapper for update_indicators with exception handling"""
+        try:
+            result = self.update_indicators(context)
+            return result
+        except Exception as e:
+            self.log_error(f"Error in update_indicators: {e}")
+            return False
+    
     def update_indicators(self, context: ActionContext) -> bool:
         """Update price history and calculate moving averages"""
         try:
-            # Get current price (mock implementation)
-            current_price = self.get_mock_price(context)
+            # Get current price from data provider
+            current_price = self.get_current_price_from_provider()
             if current_price is None:
                 return False
             
-            # Update price history
+            # Update price history - but only if this is a new timestamp
             price_history = self.get_state("price_history", [])
-            price_history.append(current_price)
+            last_timestamp = self.get_state("last_price_timestamp", None)
+            current_timestamp = context.current_time
             
-            # Keep only what we need
-            max_history = max(self.fast_period, self.slow_period) + 10
-            if len(price_history) > max_history:
-                price_history = price_history[-max_history:]
-            
-            self.set_state("price_history", price_history)
+            # Only add price if this is a new timestamp (avoid duplicates from multiple actions)
+            if last_timestamp != current_timestamp:
+                price_history.append(current_price)
+                self.set_state("last_price_timestamp", current_timestamp)
+                
+                # Keep only what we need
+                max_history = max(self.fast_period, self.slow_period) + 10
+                if len(price_history) > max_history:
+                    price_history = price_history[-max_history:]
+                
+                self.set_state("price_history", price_history)
+            else:
+                # Price already added for this timestamp, just return success
+                pass
             
             # Calculate moving averages if we have enough data
             if len(price_history) >= self.slow_period:
@@ -194,9 +217,24 @@ class MovingAverageStrategy(BaseStrategy):
             
             current_position = self.get_state("current_position", 0)
             
+            # CLEAN DEBUG: Show crossover analysis every 1000 cycles
+            cycle_count = len(fast_ma_history)
+            if cycle_count % 1000 == 0:
+                price_history = self.get_state("price_history", [])
+                current_price = price_history[-1] if price_history else 0
+                self.log_info(f"🔍 CROSSOVER DEBUG [Cycle {cycle_count}]:")
+                self.log_info(f"   Current Price: ${current_price:.2f}")
+                self.log_info(f"   Fast MA: {prev_fast_ma:.3f} → {fast_ma:.3f} (Δ{fast_ma-prev_fast_ma:.3f})")
+                self.log_info(f"   Slow MA: {prev_slow_ma:.3f} → {slow_ma:.3f} (Δ{slow_ma-prev_slow_ma:.3f})")
+                self.log_info(f"   Difference: {fast_ma-slow_ma:.3f} (Fast {'above' if fast_ma > slow_ma else 'below'} Slow)")
+                
+                # Check if we're close to a crossover
+                if abs(fast_ma - slow_ma) < 0.1:
+                    self.log_info(f"   ⚠️  CLOSE TO CROSSOVER! Difference: {fast_ma-slow_ma:.3f}")
+            
             # Check for bullish crossover (buy signal)
             if (prev_fast_ma <= prev_slow_ma and fast_ma > slow_ma and current_position <= 0):
-                self.log_info(f"BULLISH CROSSOVER: Fast MA ({fast_ma:.2f}) crossed above Slow MA ({slow_ma:.2f})")
+                self.log_info(f"🚀 BULLISH CROSSOVER: Fast MA ({fast_ma:.2f}) crossed above Slow MA ({slow_ma:.2f})")
                 
                 # Close short position if we have one
                 if current_position < 0:
@@ -214,7 +252,7 @@ class MovingAverageStrategy(BaseStrategy):
             
             # Check for bearish crossover (sell signal)
             elif (prev_fast_ma >= prev_slow_ma and fast_ma < slow_ma and current_position >= 0):
-                self.log_info(f"BEARISH CROSSOVER: Fast MA ({fast_ma:.2f}) crossed below Slow MA ({slow_ma:.2f})")
+                self.log_info(f"🔻 BEARISH CROSSOVER: Fast MA ({fast_ma:.2f}) crossed below Slow MA ({slow_ma:.2f})")
                 
                 # Close long position if we have one
                 if current_position > 0:
@@ -425,8 +463,188 @@ class MovingAverageStrategy(BaseStrategy):
         
         return sum(price_history[-period:]) / period
     
-    def get_mock_price(self, context: ActionContext) -> Optional[float]:
-        """Get mock price data for testing (replace with real data provider)"""
+    def get_current_price_from_provider(self) -> Optional[float]:
+        """Get current price from the data provider (backtest engine)"""
+        try:
+            # Use the data provider interface (backtest engine provides this)
+            if hasattr(self.data_provider, 'get_current_price'):
+                price = self.data_provider.get_current_price(self.symbol)
+                if price is not None:
+                    # DEBUG: Capture raw data for analysis
+                    self.capture_debug_data(price)
+                    return price
+            
+            # Fallback to mock price if data provider doesn't have current price
+            return self.get_mock_price_fallback()
+            
+        except Exception as e:
+            self.log_error(f"Error getting current price: {e}")
+            return None
+    
+    def capture_debug_data(self, current_price: float):
+        """Capture raw data from backtest engine for debugging"""
+        try:
+            if not self.get_state("debug_capture_enabled", False):
+                return
+            
+            debug_data_capture = self.get_state("debug_data_capture", [])
+            
+            # Get current timestamp from backtest engine
+            current_time = None
+            if hasattr(self.data_provider, 'current_time'):
+                current_time = self.data_provider.current_time
+            
+            # Capture comprehensive data
+            data_point = {
+                "timestamp": current_time.isoformat() if current_time else None,
+                "timestamp_raw": str(current_time) if current_time else None,
+                "price": current_price,
+                "symbol": self.symbol,
+                "data_provider_type": type(self.data_provider).__name__,
+                "capture_time": datetime.now().isoformat()
+            }
+            
+            # Try to get additional data from backtest engine
+            if hasattr(self.data_provider, 'market_data_cache'):
+                try:
+                    cache_data = getattr(self.data_provider, 'market_data_cache', {})
+                    if self.symbol in cache_data:
+                        symbol_data = cache_data[self.symbol]
+                        data_point["cache_data_shape"] = getattr(symbol_data, 'shape', None) if hasattr(symbol_data, 'shape') else len(symbol_data) if hasattr(symbol_data, '__len__') else None
+                        data_point["cache_data_type"] = type(symbol_data).__name__
+                        
+                        # Get first few and last few data points if it's a DataFrame or list
+                        if hasattr(symbol_data, 'head') and hasattr(symbol_data, 'tail'):
+                            # DataFrame
+                            data_point["cache_first_5"] = symbol_data.head(5).to_dict('records') if not symbol_data.empty else []
+                            data_point["cache_last_5"] = symbol_data.tail(5).to_dict('records') if not symbol_data.empty else []
+                        elif hasattr(symbol_data, '__getitem__') and hasattr(symbol_data, '__len__'):
+                            # List or similar
+                            data_point["cache_first_5"] = symbol_data[:5] if len(symbol_data) > 0 else []
+                            data_point["cache_last_5"] = symbol_data[-5:] if len(symbol_data) > 0 else []
+                except Exception as cache_error:
+                    data_point["cache_error"] = str(cache_error)
+            
+            # Try to get current prices dict
+            if hasattr(self.data_provider, 'current_prices'):
+                try:
+                    current_prices = getattr(self.data_provider, 'current_prices', {})
+                    data_point["current_prices"] = dict(current_prices) if current_prices else {}
+                except Exception as prices_error:
+                    data_point["current_prices_error"] = str(prices_error)
+            
+            # Try to get equity curve data (convert datetime objects to strings)
+            if hasattr(self.data_provider, 'equity_curve'):
+                try:
+                    equity_curve = getattr(self.data_provider, 'equity_curve', [])
+                    data_point["equity_curve_length"] = len(equity_curve) if equity_curve else 0
+                    
+                    # Convert equity curve tuples to JSON-safe format
+                    if equity_curve:
+                        last_5_safe = []
+                        for item in equity_curve[-5:]:
+                            if isinstance(item, tuple) and len(item) == 2:
+                                timestamp, equity = item
+                                last_5_safe.append({
+                                    "timestamp": timestamp.isoformat() if hasattr(timestamp, 'isoformat') else str(timestamp),
+                                    "equity": equity
+                                })
+                            else:
+                                last_5_safe.append(str(item))
+                        data_point["equity_curve_last_5"] = last_5_safe
+                    else:
+                        data_point["equity_curve_last_5"] = []
+                except Exception as equity_error:
+                    data_point["equity_curve_error"] = str(equity_error)
+            
+            debug_data_capture.append(data_point)
+            
+            # Keep only last 1000 data points to avoid memory issues
+            if len(debug_data_capture) > 1000:
+                debug_data_capture = debug_data_capture[-1000:]
+            
+            self.set_state("debug_data_capture", debug_data_capture)
+            
+            # Write to file every 10 data points for immediate debugging
+            if len(debug_data_capture) % 10 == 0:
+                self.write_debug_data_to_file()
+                
+        except Exception as e:
+            self.log_error(f"Error capturing debug data: {e}")
+    
+    def write_debug_data_to_file(self):
+        """Write captured debug data to JSON file"""
+        try:
+            import json
+            import os
+            
+            debug_data_capture = self.get_state("debug_data_capture", [])
+            if not debug_data_capture:
+                return
+            
+            # Create debug directory
+            debug_dir = "/Users/I851355/Projects/juicytrade/debug"
+            os.makedirs(debug_dir, exist_ok=True)
+            
+            # Prepare comprehensive debug data
+            debug_output = {
+                "strategy_info": {
+                    "strategy_id": self.strategy_id,
+                    "symbol": self.symbol,
+                    "fast_period": self.fast_period,
+                    "slow_period": self.slow_period,
+                    "config": self.config
+                },
+                "backtest_info": {
+                    "data_provider_type": type(self.data_provider).__name__,
+                    "order_executor_type": type(self.order_executor).__name__,
+                    "dry_run": self.dry_run,
+                    "debug": self.debug
+                },
+                "captured_data": debug_data_capture,
+                "data_count": len(debug_data_capture),
+                "first_timestamp": debug_data_capture[0].get("timestamp") if debug_data_capture else None,
+                "last_timestamp": debug_data_capture[-1].get("timestamp") if debug_data_capture else None,
+                "price_range": {
+                    "min": min(d.get("price", 0) for d in debug_data_capture if d.get("price")),
+                    "max": max(d.get("price", 0) for d in debug_data_capture if d.get("price"))
+                } if debug_data_capture else None,
+                "export_timestamp": datetime.now().isoformat()
+            }
+            
+            # Write to file with timestamp
+            filename = f"strategy_debug_data_{self.symbol}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+            filepath = os.path.join(debug_dir, filename)
+            
+            with open(filepath, 'w') as f:
+                json.dump(debug_output, f, indent=2, default=str)
+            
+            self.log_info(f"🔍 DEBUG: Raw data written to {filepath}")
+            self.log_info(f"🔍 DEBUG: Captured {len(debug_data_capture)} data points")
+            
+            if debug_data_capture:
+                first_ts = debug_data_capture[0].get("timestamp")
+                last_ts = debug_data_capture[-1].get("timestamp")
+                self.log_info(f"🔍 DEBUG: Time range: {first_ts} to {last_ts}")
+            
+        except Exception as e:
+            self.log_error(f"Error writing debug data to file: {e}")
+    
+    async def cleanup_strategy(self):
+        """Cleanup method called when strategy stops - write final debug data"""
+        try:
+            # Write final debug data
+            self.write_debug_data_to_file()
+            self.log_info("🔍 DEBUG: Final debug data written during cleanup")
+            
+            # Call parent cleanup
+            await super().cleanup_strategy()
+            
+        except Exception as e:
+            self.log_error(f"Error during strategy cleanup: {e}")
+    
+    def get_mock_price_fallback(self) -> Optional[float]:
+        """Fallback mock price generation for testing"""
         try:
             # Mock price generation for testing
             import random
