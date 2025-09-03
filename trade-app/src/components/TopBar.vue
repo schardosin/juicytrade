@@ -800,7 +800,6 @@ export default {
         connectionState.value = 'connected';
         isRecovering.value = false;
         lastDataReceived.value = Date.now();
-        console.log('📡 TopBar mounted - WebSocket already connected');
       } else {
         // If not connected, try to connect
         connectionState.value = 'connecting';
@@ -827,11 +826,9 @@ export default {
           connectionState.value = 'connected';
           isRecovering.value = false;
           lastDataReceived.value = Date.now();
-          console.log('📡 TopBar synced to connected state via watcher');
         } else if (!newStatus && connectionState.value === 'connected') {
           connectionState.value = 'disconnected';
           isRecovering.value = false;
-          console.log('📡 TopBar synced to disconnected state via watcher');
         }
       },
       { immediate: true }

@@ -579,10 +579,9 @@ class StrategyBacktestEngine:
             # CRITICAL FIX: Process any trade actions that were queued by the strategy
             await self._process_strategy_trade_actions(strategy)
             
-            # Record equity curve (every 100 periods to avoid too much data)
-            if i % 100 == 0:
-                current_equity = self._calculate_current_equity()
-                self.equity_curve.append((timestamp, current_equity))
+            # Record equity curve at every data point for proper drawdown calculation
+            current_equity = self._calculate_current_equity()
+            self.equity_curve.append((timestamp, current_equity))
             
             # Add small delay for very fast backtests to prevent overwhelming
             if speed_multiplier < 1000:
@@ -762,47 +761,103 @@ class StrategyBacktestEngine:
         """Calculate comprehensive backtest metrics"""
         
         # Basic metrics
-        duration_days = (end_date - start_date).days
-        total_trades = len(self.trades)
+        duration_days = max((end_date - start_date).days, 1)  # Ensure at least 1 day
+        
+        # FIXED: Count round-trip trades, not individual orders
+        # Only trades with P&L represent completed round-trip trades (buy + sell)
+        completed_trades = [t for t in self.trades if t.pnl != 0]
+        total_trades = len(completed_trades)  # This is the correct count for round-trip trades
         
         # P&L metrics
         total_pnl = sum(trade.pnl for trade in self.trades)
         final_equity = self._calculate_current_equity()
-        total_return = (final_equity - self.initial_capital) / self.initial_capital
+        total_return = (final_equity - self.initial_capital) / self.initial_capital if self.initial_capital > 0 else 0
         
-        # Trade analysis
-        winning_trades = len([t for t in self.trades if t.pnl > 0])
-        losing_trades = len([t for t in self.trades if t.pnl < 0])
+        # Trade analysis - use completed trades for all trade-based metrics
+        winning_trades = len([t for t in completed_trades if t.pnl > 0])
+        losing_trades = len([t for t in completed_trades if t.pnl < 0])
         win_rate = winning_trades / total_trades if total_trades > 0 else 0
         
-        trade_pnls = [t.pnl for t in self.trades if t.pnl != 0]
-        max_profit = max(trade_pnls) if trade_pnls else 0
-        max_loss = min(trade_pnls) if trade_pnls else 0
-        largest_win = max([t.pnl for t in self.trades]) if self.trades else 0
-        largest_loss = min([t.pnl for t in self.trades]) if self.trades else 0
+        # P&L analysis - calculate from equity curve for portfolio-level metrics
+        equity_values = [equity for _, equity in self.equity_curve]
+        if len(equity_values) > 0:
+            # Portfolio-level max profit/loss (from initial capital)
+            max_equity = max(equity_values)
+            min_equity = min(equity_values)
+            max_profit = max_equity - self.initial_capital  # Max gain from initial capital
+            max_loss = min_equity - self.initial_capital    # Max loss from initial capital (will be negative)
+        else:
+            max_profit = 0
+            max_loss = 0
+        
+        # Individual trade analysis for largest win/loss
+        trade_pnls = [t.pnl for t in completed_trades]
+        if trade_pnls:
+            largest_win = max(trade_pnls)
+            largest_loss = min(trade_pnls)  # This will be negative for losses
+        else:
+            largest_win = 0
+            largest_loss = 0
         
         # Risk metrics
         equity_values = [equity for _, equity in self.equity_curve]
         max_drawdown = self._calculate_max_drawdown(equity_values)
         
-        # Calculate ratios (simplified)
-        returns = np.diff(equity_values) / equity_values[:-1] if len(equity_values) > 1 else [0]
-        sharpe_ratio = np.mean(returns) / np.std(returns) * np.sqrt(252) if np.std(returns) > 0 else 0
+        # Calculate ratios with better error handling
+        sharpe_ratio = 0
+        sortino_ratio = 0
+        calmar_ratio = 0
         
-        # Sortino ratio (downside deviation)
-        negative_returns = [r for r in returns if r < 0]
-        downside_std = np.std(negative_returns) if negative_returns else 0.001
-        sortino_ratio = np.mean(returns) / downside_std * np.sqrt(252) if downside_std > 0 else 0
-        
-        # Calmar ratio
-        calmar_ratio = total_return / abs(max_drawdown) if max_drawdown != 0 else 0
+        if len(equity_values) > 1:
+            # Calculate returns
+            returns = []
+            for i in range(1, len(equity_values)):
+                if equity_values[i-1] > 0:
+                    ret = (equity_values[i] - equity_values[i-1]) / equity_values[i-1]
+                    returns.append(ret)
+            
+            if returns:
+                mean_return = np.mean(returns)
+                std_return = np.std(returns)
+                
+                # Sharpe ratio (annualized)
+                if std_return > 0:
+                    sharpe_ratio = mean_return / std_return * np.sqrt(252)
+                
+                # Sortino ratio (downside deviation)
+                negative_returns = [r for r in returns if r < 0]
+                if negative_returns:
+                    downside_std = np.std(negative_returns)
+                    if downside_std > 0:
+                        sortino_ratio = mean_return / downside_std * np.sqrt(252)
+                
+                # Calmar ratio
+                if max_drawdown > 0:
+                    annualized_return = mean_return * 252
+                    calmar_ratio = annualized_return / max_drawdown
         
         # Position metrics
-        max_positions = max([len(self.positions)] + [0])
+        max_positions = len(self.positions) if self.positions else 0
         avg_position_size = np.mean([abs(t.quantity * t.price) for t in self.trades]) if self.trades else 0
         
-        # Action metrics
-        action_stats = strategy.action_executor.get_execution_stats()
+        # Action metrics - safely get stats
+        try:
+            if hasattr(strategy, 'action_executor') and hasattr(strategy.action_executor, 'get_execution_stats'):
+                action_stats = strategy.action_executor.get_execution_stats()
+            else:
+                action_stats = {}
+        except Exception as e:
+            logger.warning(f"Could not get action stats: {e}")
+            action_stats = {}
+        
+        total_actions = action_stats.get("total_executed", 0)
+        successful_actions = action_stats.get("successful", 0)
+        failed_actions = action_stats.get("failed", 0)
+        action_success_rate = successful_actions / max(total_actions, 1) if total_actions > 0 else 0
+        
+        # Log metrics for debugging
+        logger.info(f"Calculated metrics: trades={total_trades}, pnl=${total_pnl:.2f}, return={total_return:.2%}, win_rate={win_rate:.2%}")
+        logger.info(f"Max profit=${max_profit:.2f}, Max loss=${max_loss:.2f}, Drawdown={max_drawdown:.2%}, Sharpe={sharpe_ratio:.2f}")
         
         return BacktestMetrics(
             start_date=start_date,
@@ -826,26 +881,29 @@ class StrategyBacktestEngine:
             max_positions=max_positions,
             avg_position_size=avg_position_size,
             avg_holding_period=0,  # Simplified
-            total_actions=action_stats.get("total_executed", 0),
-            successful_actions=action_stats.get("successful", 0),
-            failed_actions=action_stats.get("failed", 0),
-            action_success_rate=action_stats.get("successful", 0) / max(action_stats.get("total_executed", 1), 1)
+            total_actions=total_actions,
+            successful_actions=successful_actions,
+            failed_actions=failed_actions,
+            action_success_rate=action_success_rate
         )
     
     def _calculate_max_drawdown(self, equity_values: List[float]) -> float:
-        """Calculate maximum drawdown"""
+        """Calculate maximum drawdown from peak to trough"""
         if len(equity_values) < 2:
             return 0.0
         
-        peak = equity_values[0]
         max_dd = 0.0
+        peak = equity_values[0]
         
-        for value in equity_values[1:]:
+        for value in equity_values:
+            # Update peak if current value is higher
             if value > peak:
                 peak = value
             
-            drawdown = (peak - value) / peak
-            max_dd = max(max_dd, drawdown)
+            # Calculate drawdown from current peak
+            if peak > 0:
+                drawdown = (peak - value) / peak
+                max_dd = max(max_dd, drawdown)
         
         return max_dd
     
@@ -1021,5 +1079,5 @@ class StrategyBacktestEngine:
 # Global Backtest Engine Instance
 # ============================================================================
 
-# Default backtest engine
-backtest_engine = StrategyBacktestEngine()
+# Note: No global instance - each backtest should create its own engine
+# to ensure proper initialization and avoid state conflicts

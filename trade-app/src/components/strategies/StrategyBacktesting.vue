@@ -269,8 +269,8 @@
             </div>
             <div class="metric-item">
               <span class="metric-label">Avg Trade</span>
-              <span class="metric-value" :class="getPnLClass(result.avg_trade_return)">
-                {{ formatPercentage(result.avg_trade_return) }}
+              <span class="metric-value" :class="getPnLClass(result.avg_trade_pnl)">
+                {{ formatCurrency(result.avg_trade_pnl) }}
               </span>
             </div>
             <div class="metric-item">
@@ -279,7 +279,7 @@
             </div>
             <div class="metric-item">
               <span class="metric-label">Duration</span>
-              <span class="metric-value">{{ formatDuration(result.created_at, result.completed_at) }}</span>
+              <span class="metric-value">{{ formatBacktestDuration(result.start_date, result.end_date) }}</span>
             </div>
           </div>
         </div>
@@ -392,7 +392,94 @@ export default {
       try {
         loading.value = true
         const response = await api.get('/api/strategies/backtest/runs')
-        backtestResults.value = response.data || []
+        const rawResults = response.data || []
+        
+        // Process each result to extract metrics from nested structure
+        backtestResults.value = rawResults.map(result => {
+          // Parse results JSON if it's a string
+          let parsedResults = result.results
+          if (typeof parsedResults === 'string') {
+            try {
+              parsedResults = JSON.parse(parsedResults)
+            } catch (e) {
+              console.error('Error parsing results JSON:', e)
+              parsedResults = null
+            }
+          }
+          
+          // Extract metrics from nested structure (same as StrategyBacktest.vue)
+          const extractedMetrics = {}
+          if (parsedResults && parsedResults.metrics) {
+            const metrics = parsedResults.metrics
+            
+            // Extract P&L metrics
+            if (metrics.pnl) {
+              extractedMetrics.total_pnl = metrics.pnl.total_pnl || 0
+              extractedMetrics.total_return = metrics.pnl.total_return || 0
+              extractedMetrics.max_profit = metrics.pnl.max_profit || 0
+              extractedMetrics.max_loss = metrics.pnl.max_loss || 0
+              extractedMetrics.largest_win = metrics.pnl.largest_win || 0
+              extractedMetrics.largest_loss = metrics.pnl.largest_loss || 0
+            }
+            
+            // Extract trading metrics
+            if (metrics.trading) {
+              extractedMetrics.total_trades = metrics.trading.total_trades || 0
+              extractedMetrics.winning_trades = metrics.trading.winning_trades || 0
+              extractedMetrics.losing_trades = metrics.trading.losing_trades || 0
+              extractedMetrics.win_rate = metrics.trading.win_rate || 0
+            }
+            
+            // Extract risk metrics
+            if (metrics.risk) {
+              extractedMetrics.max_drawdown = metrics.risk.max_drawdown || 0
+              extractedMetrics.sharpe_ratio = metrics.risk.sharpe_ratio || 0
+              extractedMetrics.sortino_ratio = metrics.risk.sortino_ratio || 0
+              extractedMetrics.calmar_ratio = metrics.risk.calmar_ratio || 0
+            }
+            
+            // Calculate derived metrics
+            if (extractedMetrics.total_trades > 0) {
+              // Avg trade P&L in dollars (not percentage)
+              extractedMetrics.avg_trade_pnl = extractedMetrics.total_pnl / extractedMetrics.total_trades
+              // Avg trade return as percentage per trade
+              extractedMetrics.avg_trade_return = (extractedMetrics.total_pnl / result.initial_capital) / extractedMetrics.total_trades
+            } else {
+              extractedMetrics.avg_trade_pnl = 0
+              extractedMetrics.avg_trade_return = 0
+            }
+            
+            // Calculate volatility from equity curve if available
+            if (parsedResults && parsedResults.equity_curve && parsedResults.equity_curve.length > 1) {
+              const equityValues = parsedResults.equity_curve.map(point => point.equity)
+              const returns = []
+              for (let i = 1; i < equityValues.length; i++) {
+                if (equityValues[i-1] > 0) {
+                  returns.push((equityValues[i] - equityValues[i-1]) / equityValues[i-1])
+                }
+              }
+              if (returns.length > 0) {
+                const meanReturn = returns.reduce((sum, ret) => sum + ret, 0) / returns.length
+                const variance = returns.reduce((sum, ret) => sum + Math.pow(ret - meanReturn, 2), 0) / returns.length
+                extractedMetrics.volatility = Math.sqrt(variance) * Math.sqrt(252) // Annualized volatility
+              } else {
+                extractedMetrics.volatility = 0
+              }
+            } else {
+              // Fallback: estimate from drawdown (simplified)
+              extractedMetrics.volatility = extractedMetrics.max_drawdown * 1.5
+            }
+          }
+          
+          // Return result with extracted metrics merged at top level
+          return {
+            ...result,
+            ...extractedMetrics,
+            // Keep original nested structure for compatibility
+            results: parsedResults
+          }
+        })
+        
       } catch (err) {
         console.error('Error loading backtest results:', err)
         error.value = 'Failed to load backtest results'
@@ -488,17 +575,53 @@ export default {
     }
 
     const formatDuration = (startTime, endTime) => {
+      // Handle case where endTime might be null/undefined (use current time)
       const start = new Date(startTime)
-      const end = new Date(endTime)
+      const end = endTime ? new Date(endTime) : new Date()
       const diffMs = end - start
-      const diffMins = Math.floor(diffMs / 60000)
       
-      if (diffMins < 60) {
+      // If negative duration, it means the backtest is still running or dates are wrong
+      if (diffMs < 0) {
+        return 'Running...'
+      }
+      
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+      const diffHours = Math.floor((diffMs % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60))
+      const diffMins = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60))
+      
+      // For backtests, show the time period covered, not execution time
+      if (diffDays > 0) {
+        return `${diffDays}d`
+      } else if (diffHours > 0) {
+        return `${diffHours}h`
+      } else if (diffMins > 0) {
         return `${diffMins}m`
       } else {
-        const hours = Math.floor(diffMins / 60)
-        const mins = diffMins % 60
-        return `${hours}h ${mins}m`
+        return '<1m'
+      }
+    }
+
+    const formatCurrency = (value) => {
+      if (value === null || value === undefined) return '$0.00'
+      return `$${value.toFixed(2)}`
+    }
+
+    const formatBacktestDuration = (startDate, endDate) => {
+      if (!startDate || !endDate) return 'N/A'
+      
+      const start = new Date(startDate)
+      const end = new Date(endDate)
+      const diffMs = end - start
+      
+      if (diffMs < 0) return 'Invalid'
+      
+      const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24))
+      
+      if (diffDays > 0) {
+        return `${diffDays}d`
+      } else {
+        const diffHours = Math.floor(diffMs / (1000 * 60 * 60))
+        return diffHours > 0 ? `${diffHours}h` : '<1h'
       }
     }
 
@@ -588,6 +711,8 @@ export default {
       formatPercentage,
       formatNumber,
       formatDuration,
+      formatCurrency,
+      formatBacktestDuration,
       getPnLClass,
       formatParameterName,
       

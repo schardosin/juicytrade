@@ -134,8 +134,6 @@ router.beforeEach(async (to, from, next) => {
     // Check if mandatory routes are configured
     const setupStatus = await api.checkSetupStatus();
     
-    console.log('Setup status check:', setupStatus);
-    
     if (!setupStatus.is_setup_complete) {
       // Redirect to setup if mandatory routes are not configured
       console.log('Setup incomplete, redirecting to setup wizard. Missing services:', setupStatus.missing_mandatory_services);
@@ -144,7 +142,6 @@ router.beforeEach(async (to, from, next) => {
     }
     
     // Setup is complete, proceeding to the requested route
-    console.log('Setup is complete, proceeding to route:', to.name);
     next();
   } catch (error) {
     console.error('Error checking setup status:', error);

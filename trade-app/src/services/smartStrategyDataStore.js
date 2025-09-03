@@ -473,7 +473,6 @@ class SmartStrategyDataStore {
   initializeWebSocketIntegration() {
     // TODO: Integrate with existing WebSocket worker
     // This would extend your existing streaming-worker.js with strategy message types
-    console.log('Strategy WebSocket integration initialized')
   }
 
   // ============================================================================

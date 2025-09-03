@@ -17,14 +17,7 @@ except ImportError:
     import sys
     from pathlib import Path
     sys.path.append(str(Path(__file__).parent.parent))
-    try:
-        from path_manager import path_manager
-    except ImportError:
-        # Create a minimal path manager fallback
-        class MockPathManager:
-            def get_strategies_db_path(self):
-                return "strategies.db"
-        path_manager = MockPathManager()
+    from path_manager import path_manager
 from .models import Base
 
 logger = logging.getLogger(__name__)

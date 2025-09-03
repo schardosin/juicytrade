@@ -158,6 +158,24 @@ class Action(ABC):
                 errors.append(f"Missing prerequisite: {prereq}")
         return errors
     
+    def is_completed(self) -> bool:
+        """Check if action is completed"""
+        return self.status in [ActionStatus.COMPLETED, ActionStatus.FAILED, ActionStatus.ABORTED]
+    
+    def mark_completed(self):
+        """Mark action as completed"""
+        self.status = ActionStatus.COMPLETED
+        self.completed_at = datetime.now()
+    
+    def mark_failed(self, error: str):
+        """Mark action as failed with error message"""
+        self.status = ActionStatus.FAILED
+        self.completed_at = datetime.now()
+        if self.result:
+            self.result.error = error
+        else:
+            self.result = ActionResult(success=False, error=error)
+    
     def __str__(self):
         return f"{self.__class__.__name__}('{self.name}', status={self.status.value})"
 

@@ -237,8 +237,40 @@ class MovingAverageStrategy(BaseStrategy):
                 "check_number": decision_count
             })
 
-            # For sync version, we can't await, so we'll just record the decision
-            # The actual trading logic would need to be handled differently
+            # CRITICAL FIX: Execute trades in sync version using direct calls
+            if is_entry_signal:
+                try:
+                    # Execute entry trade synchronously
+                    current_position = self.get_state("current_position", 0)
+                    if current_position == 0:  # Double-check position state
+                        position_size = self.calculate_position_size()
+                        if position_size > 0:
+                            # Direct trade execution through backtest engine
+                            if hasattr(self.order_executor, 'place_market_order'):
+                                trade_id = self.order_executor.place_market_order(
+                                    symbol=self.symbol,
+                                    quantity=position_size,
+                                    side="BUY",
+                                    reason="Entry signal detected - Fast MA above Slow MA"
+                                )
+                                self.log_info(f"✅ TRADE EXECUTED: BUY {position_size} {self.symbol} - Trade ID: {trade_id}")
+                                
+                                # Update strategy state if trade was executed
+                                if trade_id:
+                                    current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
+                                    self.set_state("current_position", position_size)
+                                    self.set_state("entry_price", current_price)
+                                    self.set_state("position_type", "long")
+                                    self.log_info(f"✅ POSITION STATE UPDATED: current_position={position_size}, entry_price=${current_price:.2f}")
+                                else:
+                                    self.log_error("Trade execution failed - position state not updated")
+                            else:
+                                self.log_error("Order executor does not support place_market_order")
+                    else:
+                        self.log_error(f"🚨 POSITION VIOLATION: Attempting to open position when current_position={current_position}")
+                except Exception as e:
+                    self.log_error(f"Failed to execute entry trade: {e}")
+            
             if not is_entry_signal:
                 # Check exit conditions directly
                 is_exit_signal = (
@@ -618,6 +650,14 @@ class MovingAverageStrategy(BaseStrategy):
     async def open_long_position(self, context: ActionContext, reason: str):
         """Open a long position"""
         try:
+            # CRITICAL FIX: Check current position state BEFORE opening new position
+            current_position = self.get_state("current_position", 0)
+            if current_position != 0:
+                self.log_error(f"🚨 POSITION VIOLATION: Attempting to open long position when current_position={current_position}. This should never happen!")
+                self.log_error(f"🚨 POSITION VIOLATION: Reason: {reason}")
+                self.log_error(f"🚨 POSITION VIOLATION: Timestamp: {context.current_time}")
+                return  # ABORT - do not open multiple positions
+            
             # Calculate position size
             position_size = self.calculate_position_size()
             
@@ -634,15 +674,21 @@ class MovingAverageStrategy(BaseStrategy):
                     reason=reason
                 )
                 self.log_info(f"✅ TRADE EXECUTED: BUY {position_size} {self.symbol} - Trade ID: {trade_id}")
+                
+                # CRITICAL FIX: Only update strategy state if trade was actually executed
+                if trade_id:  # Trade ID returned means trade was executed
+                    current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
+                    self.set_state("current_position", position_size)
+                    self.set_state("entry_price", current_price)
+                    self.set_state("position_type", "long")
+                    
+                    self.log_info(f"✅ POSITION STATE UPDATED: current_position={position_size}, entry_price=${current_price:.2f}")
+                else:
+                    self.log_error("Trade execution failed - position state not updated")
+                    return
             else:
                 self.log_error("Order executor does not support place_market_order")
                 return
-            
-            # Update strategy state (backtest engine handles position tracking separately)
-            current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
-            self.set_state("current_position", position_size)
-            self.set_state("entry_price", current_price)
-            self.set_state("position_type", "long")
             
             self.log_info(f"Opening LONG position: {position_size} shares at ${current_price:.2f}")
             
@@ -679,7 +725,7 @@ class MovingAverageStrategy(BaseStrategy):
             self.log_error(f"Error opening short position: {e}")
     
     async def close_position(self, context: ActionContext, reason: str):
-        """Close current position"""
+        """Close current position - FIXED: Use direct execution like open_long_position"""
         try:
             current_position = self.get_state("current_position", 0)
             if current_position == 0:
@@ -688,44 +734,53 @@ class MovingAverageStrategy(BaseStrategy):
             # Determine trade action
             if current_position > 0:
                 # Close long position
-                trade_type = "SELL"
+                side = "SELL"
                 quantity = current_position
             else:
                 # Close short position
-                trade_type = "BUY_TO_COVER"
+                side = "BUY_TO_COVER"
                 quantity = abs(current_position)
             
-            # Add trade action
-            self.add_trade_action(
-                name="close_position",
-                trade_type=trade_type,
-                symbol=self.symbol,
-                quantity=quantity
-            )
-            
-            # Calculate P&L
-            entry_price = self.get_state("entry_price", 0)
-            current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
-            
-            if entry_price and current_price:
-                if current_position > 0:  # Long position
-                    pnl = (current_price - entry_price) * current_position
-                else:  # Short position
-                    pnl = (entry_price - current_price) * abs(current_position)
+            # CRITICAL FIX: Use direct execution through backtest engine (same as open_long_position)
+            if hasattr(self.order_executor, 'place_market_order'):
+                trade_id = self.order_executor.place_market_order(
+                    symbol=self.symbol,
+                    quantity=quantity,
+                    side=side,
+                    reason=reason
+                )
+                self.log_info(f"✅ TRADE EXECUTED: {side} {quantity} {self.symbol} - Trade ID: {trade_id}")
                 
-                self.update_pnl(pnl)
-                self.log_info(f"Closing position: {reason}, P&L: ${pnl:.2f}")
-            
-            # Reset position state
-            self.set_state("current_position", 0)
-            self.set_state("entry_price", None)
-            self.set_state("position_type", None)
-            
-            self.add_checkpoint("position_closed", {
-                "reason": reason,
-                "pnl": pnl if 'pnl' in locals() else 0,
-                "timestamp": context.current_time.isoformat()
-            })
+                # Calculate P&L
+                entry_price = self.get_state("entry_price", 0)
+                current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
+                
+                if entry_price and current_price:
+                    if current_position > 0:  # Long position
+                        pnl = (current_price - entry_price) * current_position
+                    else:  # Short position
+                        pnl = (entry_price - current_price) * abs(current_position)
+                    
+                    self.update_pnl(pnl)
+                    self.log_info(f"Closing position: {reason}, P&L: ${pnl:.2f}")
+                
+                # CRITICAL FIX: Only reset position state if trade was actually executed
+                if trade_id:  # Trade ID returned means trade was executed
+                    self.set_state("current_position", 0)
+                    self.set_state("entry_price", None)
+                    self.set_state("position_type", None)
+                    
+                    self.log_info(f"✅ POSITION STATE RESET: current_position=0, position closed")
+                    
+                    self.add_checkpoint("position_closed", {
+                        "reason": reason,
+                        "pnl": pnl if 'pnl' in locals() else 0,
+                        "timestamp": context.current_time.isoformat()
+                    })
+                else:
+                    self.log_error("Exit trade execution failed - position state not updated")
+            else:
+                self.log_error("Order executor does not support place_market_order for exit trades")
             
         except Exception as e:
             self.log_error(f"Error closing position: {e}")
@@ -775,30 +830,43 @@ class MovingAverageStrategy(BaseStrategy):
         await self.close_position(context, exit_reason)
     
     def calculate_position_size(self) -> int:
-        """Calculate position size based on risk management"""
+        """Calculate position size based on available capital"""
         try:
-            # Simple position sizing - could be enhanced
-            account_balance = self.get_config_value("account_balance", 10000)
-            risk_per_trade = self.get_config_value("risk_per_trade_pct", 1.0) / 100
+            # Get available capital from backtest engine if possible
+            available_capital = 10000  # Default fallback
+            
+            # Try to get actual available capital from backtest engine
+            if hasattr(self.order_executor, 'current_capital'):
+                available_capital = self.order_executor.current_capital
+            else:
+                # Fallback to config value
+                available_capital = self.get_config_value("account_balance", 10000)
             
             price_history = self.get_state("price_history", [])
             if not price_history:
                 return 0
             
             current_price = price_history[-1]
-            risk_amount = account_balance * risk_per_trade
-            stop_distance = current_price * (self.stop_loss_pct / 100)
-            
-            if stop_distance <= 0:
+            if current_price <= 0:
                 return 0
             
-            position_size = int(risk_amount / stop_distance)
+            # FIXED: Simple position sizing - use percentage of available capital
+            # Use 95% of available capital to leave room for commissions and slippage
+            position_value = available_capital * 0.95
+            position_size = int(position_value / current_price)
             
-            # Apply limits
-            min_size = self.get_config_value("min_position_size", 10)
+            # Apply reasonable limits
+            min_size = self.get_config_value("min_position_size", 1)
             max_size = self.get_config_value("max_position_size", 1000)
             
-            return max(min_size, min(position_size, max_size))
+            # Ensure we don't exceed available capital
+            max_affordable = int(available_capital / current_price)
+            
+            final_size = max(min_size, min(position_size, max_size, max_affordable))
+            
+            self.log_info(f"Position sizing: Available=${available_capital:.2f}, Price=${current_price:.2f}, Size={final_size} shares, Value=${final_size * current_price:.2f}")
+            
+            return final_size
             
         except Exception as e:
             self.log_error(f"Error calculating position size: {e}")
@@ -1065,8 +1133,7 @@ class MovingAverageStrategy(BaseStrategy):
         """
         Record decision for this execution cycle - called automatically by framework.
         
-        This method implements the framework's decision recording hook to capture
-        decisions at every single data point during backtesting AND execute trades.
+        REVERTED: This method now executes trades again so we can debug the multiple position issue.
         """
         try:
             # First, update indicators with current price data
@@ -1150,12 +1217,13 @@ class MovingAverageStrategy(BaseStrategy):
                     self.calculate_position_size() > 0  # Sufficient capital
                 )
                 
-                # CRITICAL FIX: Actually execute the trade if signal is TRUE
+                # REVERTED: Actually execute the trade if signal is TRUE (for debugging)
                 trade_executed = False
                 action_taken = "none"
                 
                 if is_entry_signal:
                     try:
+                        # DEBUG: Log detailed state before trade execution
                         await self.open_long_position(context, "Entry signal detected - Fast MA above Slow MA")
                         trade_executed = True
                         action_taken = "open_long"
@@ -1226,14 +1294,18 @@ class MovingAverageStrategy(BaseStrategy):
 
                 # If no entry signal, check for exit signal
                 if not is_entry_signal:
-                    # Check exit conditions directly
+                    # Check exit conditions directly - FIXED: Correct risk management logic
+                    # Exit if: bearish crossover AND in position AND (risk management triggered OR normal bearish crossover)
+                    risk_management_triggered = self.check_risk_management(context)
+                    bearish_crossover = current_fast_ma < current_slow_ma
+                    
                     is_exit_signal = (
-                        current_fast_ma < current_slow_ma and  # Bearish crossover condition
-                        current_position > 0 and  # In long position
-                        not self.check_risk_management(context)  # Risk management check
+                        bearish_crossover and  # Bearish crossover condition
+                        current_position > 0  # In long position
+                        # FIXED: Exit on bearish crossover OR risk management (removed the inverted logic)
                     )
                     
-                    # CRITICAL FIX: Actually execute the exit trade if signal is TRUE
+                    # Execute the exit trade if signal is TRUE
                     if is_exit_signal:
                         try:
                             await self.close_position(context, "Exit signal detected - Fast MA below Slow MA")

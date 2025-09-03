@@ -835,7 +835,6 @@ export const api = {
       const isSetupComplete = mandatoryServices.every(service => {
         const routedProvider = serviceRouting[service];
         const isConfigured = routedProvider && routedProvider !== null && routedProvider !== '';
-        console.log(`${service}: ${routedProvider} (${isConfigured ? 'CONFIGURED' : 'MISSING'})`);
         return isConfigured;
       });
 
@@ -843,8 +842,6 @@ export const api = {
         const routedProvider = serviceRouting[service];
         return !routedProvider || routedProvider === null || routedProvider === '';
       });
-
-      console.log('Setup complete:', isSetupComplete, 'Missing services:', missingServices);
 
       return {
         is_setup_complete: isSetupComplete,

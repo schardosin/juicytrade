@@ -589,7 +589,6 @@ export default {
       // NEW: Method to handle datapoint selection
       const handleDatapointSelected = (dataPoint) => {
         selectedDecisionPoint.value = dataPoint
-        console.log('Datapoint selected:', dataPoint)
       }
     const isRunningBacktest = computed(() => isLoading(`backtest_${strategyId.value}`).value)
 
@@ -622,9 +621,7 @@ export default {
           Object.entries(response.data.parameters).forEach(([paramName, param]) => {
             config[paramName] = param.default
           })
-          strategyConfig.value = config
-          
-          console.log('Strategy parameters loaded:', response.data)
+          strategyConfig.value = config          
         }
       } catch (error) {
         console.error('Failed to load strategy parameters:', error)
@@ -638,38 +635,50 @@ export default {
     // Load specific backtest result
     const loadBacktestResult = async (runId) => {
       try {
-        console.log('Loading backtest result for run ID:', runId)
-        
         // Use the proper API method from useStrategyData composable
         const response = await getBacktestRun(runId)
         
         if (response.success && response.data) {
           const result = response.data
           
+          // Extract metrics from the nested structure
+          const pnlMetrics = result.results?.metrics?.pnl
+          const tradingMetrics = result.results?.metrics?.trading
+          const riskMetrics = result.results?.metrics?.risk
+          
           // Transform the result to match our UI expectations
+          // Data comes from nested metrics structure: result.results.metrics.{pnl|trading|risk|actions}
           const transformedResults = {
-            // Extract metrics from the result structure
-            total_pnl: result.results.metrics?.pnl?.total_pnl || result.total_pnl || 0,
-            total_return: result.results.metrics?.pnl?.total_return || result.total_return || 0,
-            total_trades: result.results.metrics?.trading?.total_trades || result.total_trades || 0,
-            win_rate: result.results.metrics?.trading?.win_rate || result.win_rate || 0,
-            max_profit: result.results.metrics?.pnl?.max_profit || result.max_profit || 0,
-            max_loss: result.results.metrics?.pnl?.max_loss || result.max_loss || 0,
-            sharpe_ratio: result.results.metrics?.risk?.sharpe_ratio || result.sharpe_ratio || 0,
-            max_drawdown: result.results.metrics?.risk?.max_drawdown || result.max_drawdown || 0,
+            // Extract P&L metrics from result.results.metrics.pnl
+            total_pnl: pnlMetrics?.total_pnl,
+            total_return: pnlMetrics?.total_return,
+            max_profit: pnlMetrics?.max_profit,
+            max_loss: pnlMetrics?.max_loss,
+            
+            // Extract trading metrics from result.results.metrics.trading
+            total_trades: tradingMetrics?.total_trades,
+            win_rate: tradingMetrics?.win_rate,
+            
+            // Extract risk metrics from result.results.metrics.risk
+            sharpe_ratio: riskMetrics?.sharpe_ratio,
+            max_drawdown: riskMetrics?.max_drawdown,
             
             // Use the trades array directly
-            trades: result.results.trades || [],
+            trades: result.results?.trades,
             
             // Add additional data from new system
-            action_metrics: result.results.metrics?.actions || result.action_metrics,
-            equity_curve: result.results.equity_curve || [],
-            checkpoints: result.results.checkpoints || [],
-            action_log: result.results.action_log || [],
-            decision_timeline: result.results.decision_timeline || [],
+            action_metrics: result.results?.metrics?.actions,
+            equity_curve: result.results?.equity_curve,
+            checkpoints: result.results?.checkpoints,
+            action_log: result.results?.action_log,
+            decision_timeline: result.results?.decision_timeline,
             
-            // Keep original structure for backward compatibility
-            ...result
+            // Keep essential original data without overwriting our extracted metrics
+            run_id: result.run_id,
+            strategy_id: result.strategy_id,
+            status: result.status,
+            created_at: result.created_at,
+            results: result.results
           }
           
           backtestResults.value = transformedResults
@@ -736,26 +745,32 @@ export default {
         const result = await getStrategyBacktest(strategyId.value, config)
         
         if (result.success) {
-          // Transform the new comprehensive results to match UI expectations
+          // Transform the comprehensive results to match UI expectations
+          // Data comes from nested metrics structure: result.data.metrics.{pnl|trading|risk|actions}
           const transformedResults = {
-            // Extract metrics from the new nested structure
+            // Extract P&L metrics from result.data.metrics.pnl
             total_pnl: result.data.metrics.pnl.total_pnl,
             total_return: result.data.metrics.pnl.total_return,
-            total_trades: result.data.metrics.trading.total_trades,
-            win_rate: result.data.metrics.trading.win_rate,
             max_profit: result.data.metrics.pnl.max_profit,
             max_loss: result.data.metrics.pnl.max_loss,
+            
+            // Extract trading metrics from result.data.metrics.trading
+            total_trades: result.data.metrics.trading.total_trades,
+            win_rate: result.data.metrics.trading.win_rate,
+            
+            // Extract risk metrics from result.data.metrics.risk
             sharpe_ratio: result.data.metrics.risk.sharpe_ratio,
             max_drawdown: result.data.metrics.risk.max_drawdown,
             
             // Use the trades array directly
-            trades: result.data.trades || [],
+            trades: result.data.trades,
             
             // Add additional data from new system
             action_metrics: result.data.metrics.actions,
             equity_curve: result.data.equity_curve,
             checkpoints: result.data.checkpoints,
             action_log: result.data.action_log,
+            decision_timeline: result.data.decision_timeline,
             
             // Keep original structure for backward compatibility
             ...result.data
