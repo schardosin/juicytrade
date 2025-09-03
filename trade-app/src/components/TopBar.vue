@@ -209,7 +209,7 @@
 
 <script>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRouter, useRoute } from "vue-router";
 import webSocketClient from "../services/webSocketClient";
 import { useMarketData } from "../composables/useMarketData.js";
 import SettingsDialog from "./SettingsDialog.vue";
@@ -221,6 +221,7 @@ export default {
   },
   setup() {
     const router = useRouter();
+    const route = useRoute();
     
     // Use unified market data composable
     const { 
@@ -429,6 +430,22 @@ export default {
       { key: "greeks", label: "Greeks" },
       { key: "streaming_greeks", label: "Streaming Greeks" },
     ];
+
+    // Helper function to determine active link from route
+    const getActiveLinkFromRoute = (currentRoute) => {
+      const path = currentRoute.path;
+      
+      if (path === '/' || path === '/trade') {
+        return 'Trading';
+      } else if (path.startsWith('/strategies')) {
+        return 'Strategies';
+      } else if (path.startsWith('/dashboard')) {
+        return 'Dashboard';
+      }
+      
+      // Default fallback
+      return 'Trading';
+    };
 
     // Methods
     const setActiveLink = (link) => {
@@ -760,6 +777,9 @@ export default {
 
     // Lifecycle hooks
     onMounted(() => {
+      // Initialize activeLink based on current route
+      activeLink.value = getActiveLinkFromRoute(route);
+      
       // Initial account display update
       updateAccountDisplay();
       
@@ -812,6 +832,18 @@ export default {
           connectionState.value = 'disconnected';
           isRecovering.value = false;
           console.log('📡 TopBar synced to disconnected state via watcher');
+        }
+      },
+      { immediate: true }
+    );
+
+    // Watch for route changes and update activeLink accordingly
+    watch(
+      () => route.path,
+      (newPath) => {
+        const newActiveLink = getActiveLinkFromRoute(route);
+        if (activeLink.value !== newActiveLink) {
+          activeLink.value = newActiveLink;
         }
       },
       { immediate: true }
