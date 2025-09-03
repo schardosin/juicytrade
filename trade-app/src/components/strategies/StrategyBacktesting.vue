@@ -391,8 +391,8 @@ export default {
     const loadBacktestResults = async () => {
       try {
         loading.value = true
-        const response = await api.getBacktestRuns()
-        backtestResults.value = response || []
+        const response = await api.get('/api/strategies/backtest/runs')
+        backtestResults.value = response.data || []
       } catch (err) {
         console.error('Error loading backtest results:', err)
         error.value = 'Failed to load backtest results'
@@ -510,8 +510,12 @@ export default {
 
     // Actions
     const viewDetails = (result) => {
-      // Navigate to detailed backtest view
-      router.push(`/strategies/backtest/${result.run_id}`)
+      // Navigate to detailed backtest view with strategy ID and run ID
+      // Pass the run_id as a query parameter so we can load specific backtest results
+      router.push({
+        path: `/strategies/backtest/${result.strategy_id || result.run_id}`,
+        query: { run_id: result.run_id }
+      })
     }
 
     const deleteResult = async (result) => {

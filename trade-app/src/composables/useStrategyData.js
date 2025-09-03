@@ -55,6 +55,10 @@ export function useStrategyData() {
     return await smartStrategyDataStore.getStrategyBacktest(strategyId, config)
   }
 
+  const getBacktestRun = async (runId) => {
+    return await smartStrategyDataStore.getBacktestRun(runId)
+  }
+
   const validateStrategy = async (strategyId) => {
     return await smartStrategyDataStore.validateStrategy(strategyId)
   }
@@ -93,6 +97,7 @@ export function useStrategyData() {
 
     // Historical & Analysis
     getStrategyBacktest,
+    getBacktestRun,
     validateStrategy,
 
     // State Management

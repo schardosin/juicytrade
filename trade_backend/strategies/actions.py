@@ -44,6 +44,10 @@ class ActionResult:
     retry_count: int = 0
     execution_time: Optional[float] = None
     details: Optional[str] = None
+    # Enhanced decision tracking
+    decision_data: Optional[Dict[str, Any]] = None
+    rule_evaluations: Optional[List[Dict[str, Any]]] = None
+    context_snapshot: Optional[Dict[str, Any]] = None
 
 @dataclass
 class ActionContext:
@@ -54,6 +58,49 @@ class ActionContext:
     positions: Dict[str, Any]
     account_info: Dict[str, Any]
     debug_mode: bool = False
+
+    def get_snapshot(self) -> Dict[str, Any]:
+        """Returns a serializable snapshot of the context."""
+        return {
+            "strategy_state": self.strategy_state,
+            "market_data": self.market_data,
+            "current_time": self.current_time.isoformat(),
+            "positions": self.positions,
+            "account_info": self.account_info,
+        }
+
+    def get_snapshot(self) -> Dict[str, Any]:
+        """Returns a serializable snapshot of the context."""
+        return {
+            "strategy_state": self.strategy_state,
+            "market_data": self.market_data,
+            "current_time": self.current_time.isoformat(),
+            "positions": self.positions,
+            "account_info": self.account_info,
+        }
+
+class Rule:
+    def __init__(self, name: str, condition: Callable[[ActionContext], bool]):
+        self.name = name
+        self.condition = condition
+
+    def evaluate(self, context: ActionContext) -> "Decision":
+        from .models import Decision
+        try:
+            result = self.condition(context)
+            return Decision(
+                rule_name=self.name,
+                result=bool(result),
+                context_snapshot=context.get_snapshot() if hasattr(context, 'get_snapshot') else {}
+            )
+        except Exception as e:
+            logger.error(f"Error evaluating rule '{self.name}': {e}")
+            return Decision(
+                rule_name=self.name,
+                result=False,
+                context_snapshot=context.get_snapshot() if hasattr(context, 'get_snapshot') else {},
+                reason=str(e)
+            )
 
 class Action(ABC):
     """Base class for all strategy actions"""
@@ -195,6 +242,8 @@ class MonitorAction(Action):
         on_condition_met: Optional[Callable] = None,
         continuous: bool = False,
         check_interval: float = 1.0,
+        rule_description: str = "",
+        condition_parameters: Optional[Dict[str, Any]] = None,
         **kwargs
     ):
         super().__init__(name, **kwargs)
@@ -204,18 +253,116 @@ class MonitorAction(Action):
         self.check_interval = check_interval
         self.condition_met = False
         self.check_count = 0
+        # Enhanced debugging info
+        self.rule_description = rule_description or f"Monitor condition for {name}"
+        self.condition_parameters = condition_parameters or {}
+    
+    def _capture_context_snapshot(self, context: ActionContext) -> Dict[str, Any]:
+        """Capture relevant context data for debugging"""
+        snapshot = {
+            "timestamp": context.current_time.isoformat(),
+            "market_data": {},
+            "strategy_state": {},
+            "positions": context.positions.copy() if context.positions else {},
+            "account_info": context.account_info.copy() if context.account_info else {}
+        }
+        
+        # Safely capture market data
+        if context.market_data:
+            for key, value in context.market_data.items():
+                try:
+                    # Only capture serializable data
+                    if isinstance(value, (str, int, float, bool, type(None))):
+                        snapshot["market_data"][key] = value
+                    elif isinstance(value, dict):
+                        snapshot["market_data"][key] = {k: v for k, v in value.items() 
+                                                      if isinstance(v, (str, int, float, bool, type(None)))}
+                except Exception:
+                    snapshot["market_data"][key] = str(value)
+        
+        # Safely capture strategy state
+        if context.strategy_state:
+            for key, value in context.strategy_state.items():
+                try:
+                    if isinstance(value, (str, int, float, bool, type(None))):
+                        snapshot["strategy_state"][key] = value
+                    else:
+                        snapshot["strategy_state"][key] = str(value)
+                except Exception:
+                    snapshot["strategy_state"][key] = str(value)
+        
+        return snapshot
+    
+    def _evaluate_condition_with_details(self, context: ActionContext) -> Dict[str, Any]:
+        """Evaluate condition and capture detailed information"""
+        evaluation_data = {
+            "rule_name": self.name,
+            "rule_description": self.rule_description,
+            "parameters": self.condition_parameters.copy(),
+            "timestamp": context.current_time.isoformat(),
+            "check_number": self.check_count,
+            "result": False,
+            "error": None,
+            "context_values": {},
+            "evaluation_details": {}
+        }
+        
+        try:
+            # Capture key context values that might be relevant
+            if context.market_data:
+                price = context.market_data.get('price') or context.market_data.get('close')
+                if price:
+                    evaluation_data["context_values"]["current_price"] = price
+                
+                # Capture other common market data
+                for key in ['open', 'high', 'low', 'close', 'volume', 'symbol']:
+                    if key in context.market_data:
+                        evaluation_data["context_values"][key] = context.market_data[key]
+            
+            # Capture relevant strategy state
+            if context.strategy_state:
+                for key in ['target_premium', 'entry_premium', 'max_positions', 'current_vertical']:
+                    if key in context.strategy_state:
+                        evaluation_data["context_values"][key] = context.strategy_state[key]
+            
+            # Evaluate the actual condition
+            condition_result = self.condition(context)
+            evaluation_data["result"] = bool(condition_result)
+            
+            # Add evaluation details based on common patterns
+            if hasattr(self.condition, '__name__'):
+                evaluation_data["evaluation_details"]["function_name"] = self.condition.__name__
+            
+            # Try to capture more details if it's a lambda or has specific attributes
+            if hasattr(self.condition, '__code__'):
+                evaluation_data["evaluation_details"]["code_info"] = {
+                    "filename": self.condition.__code__.co_filename,
+                    "line_number": self.condition.__code__.co_firstlineno,
+                    "variable_names": list(self.condition.__code__.co_varnames)
+                }
+            
+        except Exception as e:
+            evaluation_data["result"] = False
+            evaluation_data["error"] = str(e)
+            evaluation_data["evaluation_details"]["exception"] = str(e)
+        
+        return evaluation_data
     
     async def execute(self, context: ActionContext) -> ActionResult:
         """Check condition and execute callback if met"""
         self.check_count += 1
         
+        # Capture detailed evaluation data
+        evaluation_data = self._evaluate_condition_with_details(context)
+        condition_result = evaluation_data["result"]
+        
+        # Capture context snapshot for debugging
+        context_snapshot = self._capture_context_snapshot(context)
+        
+        if context.debug_mode:
+            self.log(f"Condition check #{self.check_count}: {condition_result}", "debug")
+        
         try:
-            # Evaluate condition
-            condition_result = self.condition(context)
-            
-            if context.debug_mode:
-                self.log(f"Condition check #{self.check_count}: {condition_result}", "debug")
-            
             if condition_result and not self.condition_met:
                 self.condition_met = True
                 self.log(f"Condition met after {self.check_count} checks")
@@ -230,19 +377,28 @@ class MonitorAction(Action):
                         return ActionResult(
                             success=True,
                             data={"condition_met": True, "check_count": self.check_count, "callback_result": result},
-                            details=f"Condition met and callback executed"
+                            details=f"Condition met and callback executed",
+                            decision_data=evaluation_data,
+                            rule_evaluations=[evaluation_data],
+                            context_snapshot=context_snapshot
                         )
                     except Exception as e:
                         return ActionResult(
                             success=False,
                             error=str(e),
-                            details=f"Condition callback failed: {e}"
+                            details=f"Condition callback failed: {e}",
+                            decision_data=evaluation_data,
+                            rule_evaluations=[evaluation_data],
+                            context_snapshot=context_snapshot
                         )
                 else:
                     return ActionResult(
                         success=True,
                         data={"condition_met": True, "check_count": self.check_count},
-                        details=f"Condition met (no callback)"
+                        details=f"Condition met (no callback)",
+                        decision_data=evaluation_data,
+                        rule_evaluations=[evaluation_data],
+                        context_snapshot=context_snapshot
                     )
             
             elif condition_result and self.continuous:
@@ -250,7 +406,10 @@ class MonitorAction(Action):
                 return ActionResult(
                     success=True,
                     data={"condition_met": True, "continuous": True},
-                    details=f"Condition continues to be met"
+                    details=f"Condition continues to be met",
+                    decision_data=evaluation_data,
+                    rule_evaluations=[evaluation_data],
+                    context_snapshot=context_snapshot
                 )
             
             else:
@@ -259,14 +418,20 @@ class MonitorAction(Action):
                 return ActionResult(
                     success=True,
                     data={"condition_met": False, "check_count": self.check_count, "monitoring": True},
-                    details=f"Condition not met, continuing to monitor (check #{self.check_count})"
+                    details=f"Condition not met, continuing to monitor (check #{self.check_count})",
+                    decision_data=evaluation_data,
+                    rule_evaluations=[evaluation_data],
+                    context_snapshot=context_snapshot
                 )
                 
         except Exception as e:
             return ActionResult(
                 success=False,
                 error=str(e),
-                details=f"Condition evaluation failed: {e}"
+                details=f"Condition evaluation failed: {e}",
+                decision_data=evaluation_data,
+                rule_evaluations=[evaluation_data],
+                context_snapshot=context_snapshot
             )
 
 class TradeAction(Action):
@@ -276,12 +441,13 @@ class TradeAction(Action):
         self,
         name: str,
         trade_type: str,  # "BUY", "SELL", "BUY_TO_OPEN", etc.
-        symbol: str,
-        quantity: int,
+        symbol: Optional[str] = None,
+        quantity: Optional[int] = None,
         order_type: str = "MARKET",
         price: Optional[float] = None,
         stop_loss: Optional[float] = None,
         take_profit: Optional[float] = None,
+        legs: Optional[List[Dict[str, Any]]] = None,
         **kwargs
     ):
         super().__init__(name, **kwargs)
@@ -292,18 +458,29 @@ class TradeAction(Action):
         self.price = price
         self.stop_loss = stop_loss
         self.take_profit = take_profit
-    
+        self.legs = legs
+
     async def execute(self, context: ActionContext) -> ActionResult:
         """Execute the trade"""
-        trade_details = {
-            "type": self.trade_type,
-            "symbol": self.symbol,
-            "quantity": self.quantity,
-            "order_type": self.order_type,
-            "price": self.price,
-            "stop_loss": self.stop_loss,
-            "take_profit": self.take_profit
-        }
+        if self.legs:
+            trade_details = {
+                "type": self.trade_type,
+                "order_type": self.order_type,
+                "price": self.price,
+                "legs": self.legs
+            }
+            trade_description = f"{self.trade_type} {len(self.legs)}-leg option"
+        else:
+            trade_details = {
+                "type": self.trade_type,
+                "symbol": self.symbol,
+                "quantity": self.quantity,
+                "order_type": self.order_type,
+                "price": self.price,
+                "stop_loss": self.stop_loss,
+                "take_profit": self.take_profit
+            }
+            trade_description = f"{self.trade_type} {self.quantity} {self.symbol}"
         
         if self.dry_run:
             self.log(f"DRY RUN: Would execute trade {trade_details}")

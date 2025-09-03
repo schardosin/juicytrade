@@ -435,7 +435,7 @@ class StrategyBacktestEngine:
             # Calculate metrics
             metrics = self._calculate_metrics(start_date, end_date, strategy)
             
-            # Generate results
+            # Generate results with proper JSON serialization
             results = {
                 "success": True,
                 "strategy_id": strategy.strategy_id,
@@ -452,9 +452,10 @@ class StrategyBacktestEngine:
                 "trades": [trade.to_dict() for trade in self.trades],
                 "final_positions": {symbol: pos.to_dict() for symbol, pos in self.positions.items()},
                 "equity_curve": [{"timestamp": ts.isoformat() if ts and hasattr(ts, 'isoformat') else str(ts) if ts else None, "equity": equity} for ts, equity in self.equity_curve],
-                "action_log": strategy.get_action_log(),
-                "checkpoints": strategy.get_checkpoints(),
-                "state_history": strategy.get_state_history()
+                "action_log": self._serialize_json_safe(strategy.get_action_log()),
+                "checkpoints": self._serialize_json_safe(strategy.get_checkpoints()),
+                "state_history": self._serialize_json_safe(strategy.get_state_history()),
+                "decision_timeline": self._serialize_json_safe(strategy.get_decision_timeline())  # Add decision timeline
             }
             
             logger.info(f"Backtest completed: {metrics.total_trades} trades, ${metrics.total_pnl:,.2f} P&L")
@@ -575,6 +576,9 @@ class StrategyBacktestEngine:
             # Execute strategy cycle
             await strategy.execute_cycle()
             
+            # CRITICAL FIX: Process any trade actions that were queued by the strategy
+            await self._process_strategy_trade_actions(strategy)
+            
             # Record equity curve (every 100 periods to avoid too much data)
             if i % 100 == 0:
                 current_equity = self._calculate_current_equity()
@@ -586,6 +590,9 @@ class StrategyBacktestEngine:
         
         # Stop the strategy
         await strategy.stop()
+        
+        # CRITICAL FIX: Close all open positions at end of backtest
+        await self._close_all_positions_at_end(end_date)
         
         # Final equity calculation
         final_equity = self._calculate_current_equity()
@@ -841,6 +848,174 @@ class StrategyBacktestEngine:
             max_dd = max(max_dd, drawdown)
         
         return max_dd
+    
+    async def _process_strategy_trade_actions(self, strategy: BaseStrategy):
+        """
+        Process trade actions that were queued by the strategy.
+        
+        This is the critical bridge between the strategy's action-based framework
+        and the backtest engine's trade execution system.
+        """
+        try:
+            # Get all trade actions from the strategy's action queue
+            trade_actions = []
+            for action in strategy.action_queue.get_active_actions():
+                if isinstance(action, TradeAction) and not action.is_completed():
+                    trade_actions.append(action)
+            
+            # Process each trade action
+            for trade_action in trade_actions:
+                try:
+                    # Map trade action to backtest engine execution
+                    symbol = trade_action.symbol
+                    quantity = trade_action.quantity
+                    trade_type = trade_action.trade_type.upper()
+                    reason = trade_action.name
+                    
+                    # Map trade types to standard order sides
+                    side_mapping = {
+                        "BUY": "BUY",
+                        "BUY_TO_OPEN": "BUY",
+                        "SELL": "SELL",
+                        "SELL_TO_CLOSE": "SELL",
+                        "SELL_SHORT": "SELL",
+                        "SELL_TO_OPEN": "SELL",
+                        "BUY_TO_COVER": "BUY"
+                    }
+                    
+                    side = side_mapping.get(trade_type, "BUY")
+                    
+                    # Execute the trade through the backtest engine
+                    trade_id = self.place_market_order(
+                        symbol=symbol,
+                        quantity=quantity,
+                        side=side,
+                        reason=f"Strategy Action: {reason}"
+                    )
+                    
+                    # Mark the action as completed
+                    trade_action.mark_completed()
+                    
+                    logger.info(f"✅ FRAMEWORK: Processed trade action {reason} -> Trade ID: {trade_id}")
+                    
+                except Exception as e:
+                    logger.error(f"Error processing trade action {trade_action.name}: {e}")
+                    trade_action.mark_failed(str(e))
+                    
+        except Exception as e:
+            logger.error(f"Error processing strategy trade actions: {e}")
+
+    async def _close_all_positions_at_end(self, end_date: datetime):
+        """
+        Close all open positions at the end of the backtest period.
+        This ensures that unrealized P&L is captured in the final results.
+        """
+        logger.info("Closing all open positions at end of backtest")
+        
+        positions_to_close = [(symbol, pos) for symbol, pos in self.positions.items() if pos.quantity != 0]
+        
+        if not positions_to_close:
+            logger.info("No open positions to close")
+            return
+        
+        for symbol, position in positions_to_close:
+            if symbol not in self.current_prices:
+                logger.warning(f"No current price for {symbol}, cannot close position")
+                continue
+            
+            # Determine the closing action
+            if position.quantity > 0:
+                # Close long position
+                side = "SELL"
+                quantity = position.quantity
+            else:
+                # Close short position
+                side = "BUY_TO_COVER"
+                quantity = abs(position.quantity)
+            
+            # Execute closing trade at current market price
+            closing_price = self.current_prices[symbol]
+            
+            # Create closing trade
+            trade_id = f"CLOSE_EOB_{symbol}_{end_date.timestamp()}"
+            
+            trade = BacktestTrade(
+                timestamp=end_date,
+                symbol=symbol,
+                action=side,
+                quantity=quantity,
+                price=closing_price,
+                order_type="MARKET",
+                trade_id=trade_id,
+                strategy_action="End of backtest position closure",
+                commission=self.commission_per_trade
+            )
+            
+            # Calculate realized P&L for the closing trade
+            if position.quantity > 0:
+                # Closing long position
+                realized_pnl = (closing_price - position.avg_price) * quantity
+            else:
+                # Closing short position
+                realized_pnl = (position.avg_price - closing_price) * quantity
+            
+            trade.pnl = realized_pnl
+            
+            # Execute the trade
+            self._execute_trade(trade)
+            
+            logger.info(f"Closed position: {side} {quantity} {symbol} @ ${closing_price:.2f}, P&L: ${realized_pnl:.2f}")
+        
+        logger.info(f"Closed {len(positions_to_close)} positions at end of backtest")
+
+    def _serialize_json_safe(self, data: Any) -> Any:
+        """Convert data to JSON-safe format by handling datetime objects and all boolean types"""
+        if data is None:
+            return None
+        elif isinstance(data, dict):
+            return {key: self._serialize_json_safe(value) for key, value in data.items()}
+        elif isinstance(data, list):
+            return [self._serialize_json_safe(item) for item in data]
+        elif isinstance(data, tuple):
+            return [self._serialize_json_safe(item) for item in data]
+        elif hasattr(data, 'isoformat'):
+            # Handle datetime objects (including pandas Timestamp)
+            return data.isoformat()
+        elif hasattr(data, 'to_pydatetime'):
+            # Handle pandas Timestamp specifically
+            return data.to_pydatetime().isoformat()
+        elif isinstance(data, (pd.Timestamp, pd.DatetimeIndex)):
+            # Handle pandas datetime types
+            return str(data)
+        elif hasattr(data, 'dtype') and 'bool' in str(data.dtype):
+            # Handle numpy boolean types
+            return bool(data)
+        elif str(type(data)).startswith('<class \'numpy.bool'):
+            # Handle numpy boolean types (alternative check)
+            return bool(data)
+        elif hasattr(data, 'item') and callable(data.item):
+            # Handle numpy scalars
+            try:
+                return data.item()
+            except (ValueError, TypeError):
+                return str(data)
+        elif isinstance(data, (bool, int, float, str)):
+            # Handle basic Python types
+            return data
+        else:
+            # Convert anything else to string as fallback
+            try:
+                # Try to convert to basic Python type first
+                if hasattr(data, '__bool__'):
+                    return bool(data)
+                elif hasattr(data, '__int__'):
+                    return int(data)
+                elif hasattr(data, '__float__'):
+                    return float(data)
+                else:
+                    return str(data)
+            except (ValueError, TypeError):
+                return str(data)
 
 # ============================================================================
 # Global Backtest Engine Instance

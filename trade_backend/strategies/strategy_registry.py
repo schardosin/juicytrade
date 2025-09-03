@@ -185,6 +185,9 @@ class StrategyRegistry:
             # Create a safe execution environment with all necessary imports
             from .actions import ActionContext
             from . import actions
+            from .decision_chain import DecisionChain
+            from .stateful_rule import StatefulRule
+            from .leg_selection import SelectLegsAction
             
             exec_globals = {
                 '__builtins__': __builtins__,
@@ -193,6 +196,9 @@ class StrategyRegistry:
                 'BaseStrategy': BaseStrategy,
                 'ActionContext': ActionContext,
                 'actions': actions,
+                'DecisionChain': DecisionChain,
+                'StatefulRule': StatefulRule,
+                'SelectLegsAction': SelectLegsAction,
                 'datetime': datetime,
                 'logging': logging,
                 # Add common imports that strategies might need
@@ -210,6 +216,15 @@ class StrategyRegistry:
             ).replace(
                 'from .actions import ActionContext',
                 '# ActionContext already available in globals'
+            ).replace(
+                'from .decision_chain import DecisionChain',
+                '# DecisionChain already available in globals'
+            ).replace(
+                'from .stateful_rule import StatefulRule',
+                '# StatefulRule already available in globals'
+            ).replace(
+                'from .leg_selection import SelectLegsAction',
+                '# SelectLegsAction already available in globals'
             )
             
             # Execute the processed strategy code

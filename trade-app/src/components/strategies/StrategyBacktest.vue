@@ -28,7 +28,7 @@
     </div>
 
     <!-- Backtest Configuration -->
-    <div class="backtest-config">
+    <div v-if="!backtestResults && !route.query.run_id" class="backtest-config">
       <div class="config-card">
         <h2 class="config-title">
           <i class="pi pi-cog"></i>
@@ -195,7 +195,7 @@
       </div>
     </div>
 
-    <!-- Backtest Results -->
+    <!-- Backtest Results with Tabbed Interface -->
     <div v-if="backtestResults" class="backtest-results">
       <div class="results-header">
         <h2 class="results-title">
@@ -212,160 +212,300 @@
         </div>
       </div>
 
-      <!-- Performance Metrics -->
-      <div class="metrics-grid">
-        <div class="metric-card">
-          <div class="metric-icon success">
-            <i class="pi pi-dollar"></i>
-          </div>
-          <div class="metric-content">
-            <div class="metric-value" :class="getPnLClass(backtestResults.total_pnl)">
-              {{ formatCurrency(backtestResults.total_pnl || 0) }}
-            </div>
-            <div class="metric-label">Total P&L</div>
-          </div>
-        </div>
-
-        <div class="metric-card">
-          <div class="metric-icon info">
-            <i class="pi pi-percentage"></i>
-          </div>
-          <div class="metric-content">
-            <div class="metric-value" :class="getPnLClass(backtestResults.total_return)">
-              {{ formatPercentage(backtestResults.total_return || 0) }}
-            </div>
-            <div class="metric-label">Total Return</div>
-          </div>
-        </div>
-
-        <div class="metric-card">
-          <div class="metric-icon warning">
+      <!-- Custom Tabbed Interface -->
+      <div class="custom-tabs">
+        <!-- Tab Headers -->
+        <div class="tab-headers">
+          <button 
+            class="tab-header"
+            :class="{ active: activeTabIndex === 0 }"
+            @click="activeTabIndex = 0"
+          >
             <i class="pi pi-chart-bar"></i>
-          </div>
-          <div class="metric-content">
-            <div class="metric-value">{{ backtestResults.total_trades || 0 }}</div>
-            <div class="metric-label">Total Trades</div>
-          </div>
-        </div>
-
-        <div class="metric-card">
-          <div class="metric-icon success">
-            <i class="pi pi-check"></i>
-          </div>
-          <div class="metric-content">
-            <div class="metric-value">{{ formatPercentage(backtestResults.win_rate || 0) }}</div>
-            <div class="metric-label">Win Rate</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Action Execution Metrics (New) -->
-      <div v-if="backtestResults.action_metrics" class="action-metrics">
-        <h3 class="metrics-title">
-          <i class="pi pi-cog"></i>
-          Action Execution Analysis
-        </h3>
-        <div class="action-metrics-grid">
-          <div class="metric-card">
-            <div class="metric-icon info">
-              <i class="pi pi-play"></i>
-            </div>
-            <div class="metric-content">
-              <div class="metric-value">{{ backtestResults.action_metrics.total_actions || 0 }}</div>
-              <div class="metric-label">Total Actions</div>
-            </div>
-          </div>
-
-          <div class="metric-card">
-            <div class="metric-icon success">
-              <i class="pi pi-check-circle"></i>
-            </div>
-            <div class="metric-content">
-              <div class="metric-value">{{ backtestResults.action_metrics.successful_actions || 0 }}</div>
-              <div class="metric-label">Successful Actions</div>
-            </div>
-          </div>
-
-          <div class="metric-card">
-            <div class="metric-icon danger">
-              <i class="pi pi-times-circle"></i>
-            </div>
-            <div class="metric-content">
-              <div class="metric-value">{{ backtestResults.action_metrics.failed_actions || 0 }}</div>
-              <div class="metric-label">Failed Actions</div>
-            </div>
-          </div>
-
-          <div class="metric-card">
-            <div class="metric-icon warning">
-              <i class="pi pi-percentage"></i>
-            </div>
-            <div class="metric-content">
-              <div class="metric-value">{{ formatPercentage(backtestResults.action_metrics.action_success_rate || 0) }}</div>
-              <div class="metric-label">Success Rate</div>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Strategy Checkpoints (New) -->
-      <div v-if="backtestResults.checkpoints && backtestResults.checkpoints.length" class="checkpoints-section">
-        <h3 class="checkpoints-title">
-          <i class="pi pi-map-marker"></i>
-          Strategy Checkpoints
-        </h3>
-        <div class="checkpoints-list">
-          <div
-            v-for="checkpoint in backtestResults.checkpoints.slice(0, 10)"
-            :key="checkpoint.name"
-            class="checkpoint-item"
+            <span>Trade Results</span>
+          </button>
+          <button 
+            v-if="backtestResults.decision_timeline && backtestResults.decision_timeline.length"
+            class="tab-header"
+            :class="{ active: activeTabIndex === 1 }"
+            @click="activeTabIndex = 1"
           >
-            <div class="checkpoint-icon">
-              <i class="pi pi-circle-fill"></i>
-            </div>
-            <div class="checkpoint-content">
-              <div class="checkpoint-name">{{ checkpoint.name }}</div>
-              <div class="checkpoint-time">{{ formatDate(checkpoint.timestamp) }}</div>
-            </div>
-          </div>
+            <i class="pi pi-search"></i>
+            <span>Decision Analysis</span>
+            <Badge 
+              :value="backtestResults.decision_timeline.length" 
+              class="ml-2"
+              severity="info"
+            />
+          </button>
         </div>
-      </div>
 
-      <!-- Trade History -->
-      <div class="trade-history">
-        <h3 class="history-title">Trade History</h3>
-        <div class="history-table">
-          <div class="table-header">
-            <div class="col-date">Date</div>
-            <div class="col-symbol">Symbol</div>
-            <div class="col-action">Action</div>
-            <div class="col-quantity">Quantity</div>
-            <div class="col-price">Price</div>
-            <div class="col-pnl">P&L</div>
+        <!-- Tab Content -->
+        <div class="tab-content">
+          <!-- Tab 1: Trade Results (Traditional View) -->
+          <div v-show="activeTabIndex === 0" class="tab-panel">
+            <!-- Performance Metrics -->
+          <div class="metrics-grid">
+            <div class="metric-card">
+              <div class="metric-icon success">
+                <i class="pi pi-dollar"></i>
+              </div>
+              <div class="metric-content">
+                <div class="metric-value" :class="getPnLClass(backtestResults.total_pnl)">
+                  {{ formatCurrency(backtestResults.total_pnl || 0) }}
+                </div>
+                <div class="metric-label">Total P&L</div>
+              </div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-icon info">
+                <i class="pi pi-percentage"></i>
+              </div>
+              <div class="metric-content">
+                <div class="metric-value" :class="getPnLClass(backtestResults.total_return)">
+                  {{ formatPercentage(backtestResults.total_return || 0) }}
+                </div>
+                <div class="metric-label">Total Return</div>
+              </div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-icon warning">
+                <i class="pi pi-chart-bar"></i>
+              </div>
+              <div class="metric-content">
+                <div class="metric-value">{{ backtestResults.total_trades || 0 }}</div>
+                <div class="metric-label">Total Trades</div>
+              </div>
+            </div>
+
+            <div class="metric-card">
+              <div class="metric-icon success">
+                <i class="pi pi-check"></i>
+              </div>
+              <div class="metric-content">
+                <div class="metric-value">{{ formatPercentage(backtestResults.win_rate || 0) }}</div>
+                <div class="metric-label">Win Rate</div>
+              </div>
+            </div>
           </div>
-          <div
-            v-for="trade in backtestResults.trades"
-            :key="trade.id"
-            class="table-row"
-          >
-            <div class="col-date">{{ formatDate(trade.timestamp) }}</div>
-            <div class="col-symbol">{{ trade.symbol }}</div>
-            <div class="col-action">
-              <span class="action-badge" :class="trade.action.toLowerCase()">
-                {{ trade.action }}
-              </span>
+
+          <!-- Additional Performance Metrics -->
+          <div class="additional-metrics">
+            <div class="metrics-row">
+              <div class="metric-item">
+                <span class="metric-label">Sharpe Ratio</span>
+                <span class="metric-value">{{ formatNumber(backtestResults.sharpe_ratio || 0) }}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Max Drawdown</span>
+                <span class="metric-value negative">{{ formatPercentage(backtestResults.max_drawdown || 0) }}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Max Profit</span>
+                <span class="metric-value positive">{{ formatCurrency(backtestResults.max_profit || 0) }}</span>
+              </div>
+              <div class="metric-item">
+                <span class="metric-label">Max Loss</span>
+                <span class="metric-value negative">{{ formatCurrency(backtestResults.max_loss || 0) }}</span>
+              </div>
             </div>
-            <div class="col-quantity">{{ trade.quantity }}</div>
-            <div class="col-price">{{ formatCurrency(trade.price) }}</div>
-            <div class="col-pnl" :class="getPnLClass(trade.pnl)">
-              {{ formatCurrency(trade.pnl) }}
+          </div>
+
+          <!-- Trade History -->
+          <div class="trade-history">
+            <h3 class="history-title">Trade History</h3>
+            <div class="history-table">
+              <div class="table-header">
+                <div class="col-date">Date</div>
+                <div class="col-symbol">Symbol</div>
+                <div class="col-action">Action</div>
+                <div class="col-quantity">Quantity</div>
+                <div class="col-price">Price</div>
+                <div class="col-pnl">P&L</div>
+              </div>
+              <div
+                v-for="trade in backtestResults.trades"
+                :key="trade.id"
+                class="table-row"
+              >
+                <div class="col-date">{{ formatDate(trade.timestamp) }}</div>
+                <div class="col-symbol">{{ trade.symbol }}</div>
+                <div class="col-action">
+                  <span class="action-badge" :class="trade.action.toLowerCase()">
+                    {{ trade.action }}
+                  </span>
+                </div>
+                <div class="col-quantity">{{ trade.quantity }}</div>
+                <div class="col-price">{{ formatCurrency(trade.price) }}</div>
+                <div class="col-pnl" :class="getPnLClass(trade.pnl)">
+                  {{ formatCurrency(trade.pnl) }}
+                </div>
+              </div>
             </div>
+          </div>
+          </div>
+
+          <!-- Tab 2: Decision Analysis (NEW) -->
+          <div v-show="activeTabIndex === 1" class="tab-panel">
+            <!-- Decision Analysis Overview -->
+          <div class="decision-overview">
+            <div class="overview-card">
+              <div class="overview-content">
+                <div class="overview-icon">
+                  <i class="pi pi-search"></i>
+                </div>
+                <div class="overview-text">
+                  <h4>Strategy Decision Analysis</h4>
+                  <p>Analyze why your strategy made or didn't make trades at each data point. This detailed view shows the decision-making process behind every action.</p>
+                </div>
+              </div>
+              
+              <!-- Decision Statistics -->
+              <div class="decision-stats">
+                <div class="stat-item success">
+                  <div class="stat-value">{{ backtestResults.decision_timeline.filter(d => d.result).length }}</div>
+                  <div class="stat-label">Successful Decisions</div>
+                </div>
+                <div class="stat-item failed">
+                  <div class="stat-value">{{ backtestResults.decision_timeline.filter(d => !d.result && d.error).length }}</div>
+                  <div class="stat-label">Failed Decisions</div>
+                </div>
+                <div class="stat-item total">
+                  <div class="stat-value">{{ backtestResults.decision_timeline.length }}</div>
+                  <div class="stat-label">Total Decisions</div>
+                </div>
+                <div class="stat-item rate">
+                  <div class="stat-value">{{ formatPercentage(getDecisionSuccessRate()) }}</div>
+                  <div class="stat-label">Success Rate</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Action Execution Metrics -->
+          <div v-if="backtestResults.action_metrics" class="action-metrics">
+            <h3 class="metrics-title">
+              <i class="pi pi-cog"></i>
+              Action Execution Analysis
+            </h3>
+            <div class="action-metrics-grid">
+              <div class="metric-card">
+                <div class="metric-icon info">
+                  <i class="pi pi-play"></i>
+                </div>
+                <div class="metric-content">
+                  <div class="metric-value">{{ backtestResults.action_metrics.total_actions || 0 }}</div>
+                  <div class="metric-label">Total Actions</div>
+                </div>
+              </div>
+
+              <div class="metric-card">
+                <div class="metric-icon success">
+                  <i class="pi pi-check-circle"></i>
+                </div>
+                <div class="metric-content">
+                  <div class="metric-value">{{ backtestResults.action_metrics.successful_actions || 0 }}</div>
+                  <div class="metric-label">Successful Actions</div>
+                </div>
+              </div>
+
+              <div class="metric-card">
+                <div class="metric-icon danger">
+                  <i class="pi pi-times-circle"></i>
+                </div>
+                <div class="metric-content">
+                  <div class="metric-value">{{ backtestResults.action_metrics.failed_actions || 0 }}</div>
+                  <div class="metric-label">Failed Actions</div>
+                </div>
+              </div>
+
+              <div class="metric-card">
+                <div class="metric-icon warning">
+                  <i class="pi pi-percentage"></i>
+                </div>
+                <div class="metric-content">
+                  <div class="metric-value">{{ formatPercentage(backtestResults.action_metrics.action_success_rate || 0) }}</div>
+                  <div class="metric-label">Success Rate</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Enhanced Granular Decision Analysis -->
+          <div class="enhanced-decision-analysis">
+            <div class="analysis-header">
+              <h3 class="analysis-title">
+                <i class="pi pi-microscope"></i>
+                Granular Decision Analysis
+              </h3>
+              <p class="analysis-description">
+                Navigate through every decision point to understand exactly why your strategy made or didn't make trades.
+              </p>
+            </div>
+
+            <!-- Decision Point Navigator -->
+            <DataPointTimelineNavigator 
+              :decision-timeline="backtestResults.decision_timeline"
+              @datapoint-selected="handleDatapointSelected"
+            />
+
+            <!-- Decision Breakdown Panel -->
+            <GranularDecisionBreakdownPanel 
+              :selected-data-point="selectedDecisionPoint"
+            />
+          </div>
+
+          <!-- Strategy Checkpoints -->
+          <div v-if="backtestResults.checkpoints && backtestResults.checkpoints.length" class="checkpoints-section">
+            <h3 class="checkpoints-title">
+              <i class="pi pi-map-marker"></i>
+              Strategy Checkpoints
+            </h3>
+            <div class="checkpoints-list">
+              <div
+                v-for="checkpoint in backtestResults.checkpoints.slice(0, 10)"
+                :key="checkpoint.name"
+                class="checkpoint-item"
+              >
+                <div class="checkpoint-icon">
+                  <i class="pi pi-circle-fill"></i>
+                </div>
+                <div class="checkpoint-content">
+                  <div class="checkpoint-name">{{ checkpoint.name }}</div>
+                  <div class="checkpoint-time">{{ formatDate(checkpoint.timestamp) }}</div>
+                </div>
+              </div>
+            </div>
+          </div>
           </div>
         </div>
       </div>
     </div>
 
-    <!-- Error State -->
+    <!-- Error State for API failures when trying to load specific backtest -->
+    <div v-if="route.query.run_id && !backtestResults && !backtestError" class="error-state">
+      <i class="pi pi-exclamation-triangle"></i>
+      <h3>Backtest Result Not Found</h3>
+      <p>The requested backtest result could not be loaded. It may have been deleted or the ID is invalid.</p>
+      <div class="error-actions">
+        <Button
+          icon="pi pi-arrow-left"
+          label="Back to Backtesting"
+          class="p-button-primary"
+          @click="$router.push('/strategies/backtesting')"
+        />
+        <Button
+          icon="pi pi-refresh"
+          label="Run New Backtest"
+          class="p-button-outlined"
+          @click="$router.push(`/strategies/backtest/${strategyId}`)"
+        />
+      </div>
+    </div>
+
+    <!-- Error State for backtest execution failures -->
     <div v-if="backtestError" class="error-state">
       <i class="pi pi-exclamation-triangle"></i>
       <h3>Backtest Failed</h3>
@@ -384,15 +524,20 @@ import { ref, computed, onMounted } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useStrategyData } from '../../composables/useStrategyData.js'
 import { useNotifications } from '../../composables/useNotifications.js'
-import api from '../../services/api.js'
+import DataPointTimelineNavigator from './DataPointTimelineNavigator.vue'
+import GranularDecisionBreakdownPanel from './GranularDecisionBreakdownPanel.vue'
 
 export default {
   name: 'StrategyBacktest',
+  components: {
+    DataPointTimelineNavigator,
+    GranularDecisionBreakdownPanel
+  },
   setup() {
     const route = useRoute()
     const router = useRouter()
     const { showSuccess, showError } = useNotifications()
-    const { getMyStrategies, getStrategyBacktest, isLoading } = useStrategyData()
+    const { getMyStrategies, getStrategyBacktest, getBacktestRun, isLoading } = useStrategyData()
 
     const strategies = getMyStrategies()
     const strategyId = computed(() => route.params.id)
@@ -437,6 +582,15 @@ export default {
     // State
     const backtestResults = ref(null)
     const backtestError = ref(null)
+    const showDecisionInspector = ref(false)
+    const activeTabIndex = ref(0) // NEW: Tab control
+      const selectedDecisionPoint = ref(null) // NEW: Selected decision point for granular analysis
+      
+      // NEW: Method to handle datapoint selection
+      const handleDatapointSelected = (dataPoint) => {
+        selectedDecisionPoint.value = dataPoint
+        console.log('Datapoint selected:', dataPoint)
+      }
     const isRunningBacktest = computed(() => isLoading(`backtest_${strategyId.value}`).value)
 
     // Computed properties
@@ -456,7 +610,10 @@ export default {
     // Load strategy parameters
     const loadStrategyParameters = async () => {
       try {
-        const response = await api.get(`/api/strategies/${strategyId.value}/parameters`)
+        // For now, we'll use a direct import since this functionality 
+        // isn't yet implemented in the smart data system
+        const api = await import('../../services/api.js')
+        const response = await api.default.get(`/api/strategies/${strategyId.value}/parameters`)
         if (response.data.success) {
           strategyParameters.value = response.data
           
@@ -478,10 +635,76 @@ export default {
       }
     }
 
+    // Load specific backtest result
+    const loadBacktestResult = async (runId) => {
+      try {
+        console.log('Loading backtest result for run ID:', runId)
+        
+        // Use the proper API method from useStrategyData composable
+        const response = await getBacktestRun(runId)
+        
+        if (response.success && response.data) {
+          const result = response.data
+          
+          // Transform the result to match our UI expectations
+          const transformedResults = {
+            // Extract metrics from the result structure
+            total_pnl: result.results.metrics?.pnl?.total_pnl || result.total_pnl || 0,
+            total_return: result.results.metrics?.pnl?.total_return || result.total_return || 0,
+            total_trades: result.results.metrics?.trading?.total_trades || result.total_trades || 0,
+            win_rate: result.results.metrics?.trading?.win_rate || result.win_rate || 0,
+            max_profit: result.results.metrics?.pnl?.max_profit || result.max_profit || 0,
+            max_loss: result.results.metrics?.pnl?.max_loss || result.max_loss || 0,
+            sharpe_ratio: result.results.metrics?.risk?.sharpe_ratio || result.sharpe_ratio || 0,
+            max_drawdown: result.results.metrics?.risk?.max_drawdown || result.max_drawdown || 0,
+            
+            // Use the trades array directly
+            trades: result.results.trades || [],
+            
+            // Add additional data from new system
+            action_metrics: result.results.metrics?.actions || result.action_metrics,
+            equity_curve: result.results.equity_curve || [],
+            checkpoints: result.results.checkpoints || [],
+            action_log: result.results.action_log || [],
+            decision_timeline: result.results.decision_timeline || [],
+            
+            // Keep original structure for backward compatibility
+            ...result
+          }
+          
+          backtestResults.value = transformedResults
+          
+          // Auto-show the decision inspector if we have decision data
+          if (transformedResults.decision_timeline && transformedResults.decision_timeline.length > 0) {
+            showDecisionInspector.value = true
+          }
+          
+          showSuccess(
+            'Backtest results loaded successfully',
+            'Results Loaded'
+          )
+        } else {
+          throw new Error('Backtest result not found')
+        }
+      } catch (error) {
+        console.error('Failed to load backtest result:', error)
+        showError(
+          `Failed to load backtest result: ${error.message}`,
+          'Load Error'
+        )
+      }
+    }
+
     // Initialize on mount
-    onMounted(() => {
+    onMounted(async () => {
       if (strategyId.value) {
-        loadStrategyParameters()
+        await loadStrategyParameters()
+        
+        // Check if we have a run_id query parameter (coming from backtest results)
+        const runId = route.query.run_id
+        if (runId) {
+          await loadBacktestResult(runId)
+        }
       }
     })
 
@@ -636,7 +859,34 @@ export default {
         .replace(/\b\w/g, l => l.toUpperCase())
     }
 
+    // NEW: Additional utility methods for Decision Analysis tab
+    const formatNumber = (value) => {
+      if (value === null || value === undefined) return '0.00'
+      return Number(value).toFixed(2)
+    }
+
+    const getDecisionSuccessRate = () => {
+      if (!backtestResults.value?.decision_timeline?.length) return 0
+      const successful = backtestResults.value.decision_timeline.filter(d => d.result).length
+      return successful / backtestResults.value.decision_timeline.length
+    }
+
+    const refreshDecisionData = () => {
+      // Placeholder for refresh functionality
+      console.log('Refreshing decision data...')
+    }
+
+    // Auto-switch to Decision Analysis tab if decision data exists
+    const switchToDecisionTab = () => {
+      if (backtestResults.value?.decision_timeline?.length > 0) {
+        activeTabIndex.value = 1 // Switch to Decision Analysis tab
+      }
+    }
+
     return {
+      // Router
+      route,
+      
       // Data
       strategyId,
       strategyName,
@@ -647,6 +897,8 @@ export default {
       timeframeOptions,  // Add timeframe options
       backtestResults,
       backtestError,
+      showDecisionInspector,
+      activeTabIndex, // NEW: Tab control
 
       // Computed
       maxStartDate,
@@ -658,13 +910,19 @@ export default {
       resetConfig,
       exportResults,
       loadStrategyParameters,
+      refreshDecisionData, // NEW: Decision data refresh
+      switchToDecisionTab, // NEW: Tab switching
 
       // Utility methods
       getPnLClass,
       formatCurrency,
       formatPercentage,
       formatDate,
-      formatParameterName
+      formatParameterName,
+      formatNumber, // NEW: Number formatting
+      getDecisionSuccessRate, // NEW: Decision success rate calculation
+      handleDatapointSelected, // NEW: Event handler for datapoint selection
+      selectedDecisionPoint // NEW: Selected decision point reactive ref
     }
   }
 }
@@ -970,6 +1228,239 @@ export default {
   gap: var(--spacing-sm);
 }
 
+/* Custom Tabbed Interface Styles */
+.custom-tabs {
+  margin-top: var(--spacing-lg);
+}
+
+.tab-headers {
+  display: flex;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+  overflow: hidden;
+}
+
+.tab-header {
+  background: transparent;
+  border: none;
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+  padding: var(--spacing-md) var(--spacing-lg);
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  cursor: pointer;
+  transition: var(--transition-normal);
+  font-size: var(--font-size-md);
+  border-bottom: 3px solid transparent;
+  position: relative;
+}
+
+.tab-header:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.tab-header.active {
+  background: var(--color-brand);
+  color: white;
+  font-weight: var(--font-weight-semibold);
+  border-bottom-color: var(--color-brand);
+}
+
+.tab-header i {
+  font-size: var(--font-size-sm);
+}
+
+.tab-content {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-top: none;
+  border-radius: 0 0 var(--radius-lg) var(--radius-lg);
+  padding: var(--spacing-lg);
+  min-height: 400px;
+}
+
+.tab-panel {
+  width: 100%;
+}
+
+/* Decision Analysis Tab Styles */
+.decision-analysis-tab {
+  min-height: 600px;
+}
+
+.decision-overview {
+  margin-bottom: var(--spacing-xl);
+}
+
+.overview-card {
+  background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-xl);
+  box-shadow: var(--shadow-sm);
+}
+
+.overview-content {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
+}
+
+.overview-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  background: var(--color-brand);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-xl);
+  color: white;
+  flex-shrink: 0;
+}
+
+.overview-text {
+  flex: 1;
+}
+
+.overview-text h4 {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+  margin: 0 0 var(--spacing-sm) 0;
+}
+
+.overview-text p {
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
+}
+
+.decision-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: var(--spacing-md);
+}
+
+.stat-item {
+  text-align: center;
+  padding: var(--spacing-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  transition: var(--transition-normal);
+}
+
+.stat-item:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-sm);
+}
+
+.stat-item.success {
+  border-color: var(--color-success);
+  background: rgba(34, 197, 94, 0.05);
+}
+
+.stat-item.failed {
+  border-color: var(--color-danger);
+  background: rgba(239, 68, 68, 0.05);
+}
+
+.stat-item.total {
+  border-color: var(--color-info);
+  background: rgba(59, 130, 246, 0.05);
+}
+
+.stat-item.rate {
+  border-color: var(--color-warning);
+  background: rgba(245, 158, 11, 0.05);
+}
+
+.stat-value {
+  font-size: var(--font-size-xl);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.stat-item.success .stat-value {
+  color: var(--color-success);
+}
+
+.stat-item.failed .stat-value {
+  color: var(--color-danger);
+}
+
+.stat-item.total .stat-value {
+  color: var(--color-info);
+}
+
+.stat-item.rate .stat-value {
+  color: var(--color-warning);
+}
+
+.stat-label {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+/* Additional Metrics Styles */
+.additional-metrics {
+  margin-bottom: var(--spacing-xl);
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+}
+
+.metrics-row {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: var(--spacing-lg);
+}
+
+.metric-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-md);
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+}
+
+.metric-item .metric-label {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  font-weight: var(--font-weight-medium);
+}
+
+.metric-item .metric-value {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.metric-item .metric-value.positive {
+  color: var(--color-success);
+}
+
+.metric-item .metric-value.negative {
+  color: var(--color-danger);
+}
+
+/* Inspector Controls */
+.inspector-controls {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
 /* Performance Metrics */
 .metrics-grid {
   display: grid;
@@ -1072,6 +1563,185 @@ export default {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
   gap: var(--spacing-md);
+}
+
+/* Decision Inspector Section */
+.decision-inspector-section {
+  margin-bottom: var(--spacing-xl);
+}
+
+.inspector-section-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  margin: 0 0 var(--spacing-lg) 0;
+}
+
+.inspector-section-title i {
+  color: var(--color-brand);
+}
+
+.inspector-container {
+  height: 600px;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  background: var(--bg-secondary);
+}
+
+.inspector-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-md);
+}
+
+/* Decision Navigation Section */
+.decision-navigation {
+  margin-bottom: var(--spacing-xl);
+}
+
+.navigation-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--spacing-xl);
+  background: linear-gradient(135deg, var(--color-brand) 0%, rgba(var(--color-brand-rgb), 0.8) 100%);
+  border-radius: var(--radius-lg);
+  color: white;
+  box-shadow: var(--shadow-md);
+  transition: var(--transition-normal);
+}
+
+.navigation-card:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+.navigation-content {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+  flex: 1;
+}
+
+.navigation-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius-lg);
+  font-size: var(--font-size-xl);
+  color: white;
+  backdrop-filter: blur(10px);
+}
+
+.navigation-text h4 {
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: white;
+  margin: 0 0 var(--spacing-xs) 0;
+}
+
+.navigation-text p {
+  font-size: var(--font-size-md);
+  color: rgba(255, 255, 255, 0.9);
+  margin: 0 0 var(--spacing-md) 0;
+  line-height: 1.4;
+}
+
+.navigation-stats {
+  display: flex;
+  gap: var(--spacing-md);
+  flex-wrap: wrap;
+}
+
+.stat-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  background: rgba(255, 255, 255, 0.2);
+  border-radius: var(--radius-md);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: white;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.stat-badge.success {
+  background: rgba(34, 197, 94, 0.3);
+  border-color: rgba(34, 197, 94, 0.5);
+}
+
+.stat-badge.failed {
+  background: rgba(239, 68, 68, 0.3);
+  border-color: rgba(239, 68, 68, 0.5);
+}
+
+.stat-badge.total {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.3);
+}
+
+.navigation-actions {
+  display: flex;
+  gap: var(--spacing-sm);
+}
+
+.navigation-actions .p-button {
+  background: white;
+  color: var(--color-brand);
+  border: none;
+  font-weight: var(--font-weight-semibold);
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-radius: var(--radius-md);
+  transition: var(--transition-normal);
+}
+
+.navigation-actions .p-button:hover {
+  background: rgba(255, 255, 255, 0.9);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+}
+
+/* Enhanced Decision Analysis Section */
+.enhanced-decision-analysis {
+  margin-bottom: var(--spacing-xl);
+}
+
+.analysis-header {
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-lg);
+  background: linear-gradient(135deg, var(--bg-secondary) 0%, var(--bg-tertiary) 100%);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+}
+
+.analysis-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-bold);
+  color: var(--text-primary);
+  margin: 0 0 var(--spacing-sm) 0;
+}
+
+.analysis-title i {
+  color: var(--color-brand);
+}
+
+.analysis-description {
+  font-size: var(--font-size-md);
+  color: var(--text-secondary);
+  line-height: 1.6;
+  margin: 0;
 }
 
 /* Checkpoints Section */

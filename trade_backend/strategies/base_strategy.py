@@ -373,14 +373,30 @@ class BaseStrategy(ABC):
         
         try:
             # Create action context
+            # CRITICAL FIX: Use backtest engine's current_time if available (for proper timestamps)
+            current_time = None
+            if hasattr(self.data_provider, 'current_time') and self.data_provider.current_time:
+                # Use backtest engine's current time for proper historical timestamps
+                current_time = self.data_provider.current_time
+            else:
+                # Fallback to time scheduler for live trading
+                current_time = self.time_scheduler.get_current_time()
+            
             context = ActionContext(
                 strategy_state=self.state._data,
                 market_data=await self.get_market_data(),
-                current_time=self.time_scheduler.get_current_time(),
+                current_time=current_time,
                 positions=await self.get_positions(),
                 account_info=await self.get_account_info(),
                 debug_mode=self.debug
             )
+            
+            # **FRAMEWORK ENHANCEMENT**: Record decision for this data point
+            # This allows any strategy to capture decisions at every execution cycle
+            try:
+                await self.record_cycle_decision(context)
+            except Exception as e:
+                self.logger.error(f"Error recording cycle decision: {e}")
             
             # Check scheduled time events
             ready_events = self.time_scheduler.check_scheduled_events()
@@ -432,6 +448,43 @@ class BaseStrategy(ABC):
         except Exception as e:
             self.logger.error(f"Error in execution cycle: {e}")
             self.execution_stats["error_count"] += 1
+    
+    async def record_cycle_decision(self, context: ActionContext):
+        """
+        Record a decision for this execution cycle.
+        
+        This method is called automatically during each execute_cycle() to allow
+        strategies to record decisions at every data point for debugging and analysis.
+        
+        Override this method in your strategy to implement custom decision recording.
+        The default implementation does nothing, making it optional for strategies.
+        
+        Args:
+            context: ActionContext containing current market data, time, positions, etc.
+        
+        Example:
+            async def record_cycle_decision(self, context: ActionContext):
+                # Get current market context
+                current_price = self.get_current_price()
+                indicators_ready = self.check_indicators_ready()
+                
+                # Record decision
+                self.add_decision_timeline({
+                    "timestamp": context.current_time.isoformat(),
+                    "rule_description": "Market Analysis - Data Point Evaluation",
+                    "result": indicators_ready,
+                    "context_values": {
+                        "current_price": current_price,
+                        "indicators_ready": indicators_ready
+                    },
+                    "parameters": self.config,
+                    "evaluation_details": {
+                        "data_status": "sufficient" if indicators_ready else "insufficient"
+                    }
+                })
+        """
+        # Default implementation does nothing - strategies can override
+        pass
     
     async def cleanup(self):
         """Cleanup resources when strategy stops"""
@@ -580,6 +633,12 @@ class BaseStrategy(ABC):
                 "execution_log": action.execution_log.copy()
             }
             
+            # Add enhanced debugging info for MonitorAction
+            if hasattr(action, 'rule_description'):
+                entry["rule_description"] = action.rule_description
+            if hasattr(action, 'condition_parameters'):
+                entry["condition_parameters"] = action.condition_parameters
+            
             if action.result:
                 result_data = {
                     "success": action.result.success,
@@ -598,11 +657,90 @@ class BaseStrategy(ABC):
                             serialized_data[key] = value
                     result_data["data"] = serialized_data
                 
+                # Add enhanced decision tracking data
+                if action.result.decision_data:
+                    result_data["decision_data"] = action.result.decision_data
+                if action.result.rule_evaluations:
+                    result_data["rule_evaluations"] = action.result.rule_evaluations
+                if action.result.context_snapshot:
+                    result_data["context_snapshot"] = action.result.context_snapshot
+                
                 entry["result"] = result_data
             
             log_entries.append(entry)
         
         return log_entries
+    
+    def add_decision_timeline(self, decision_data: Dict[str, Any]):
+        """
+        Add decision data to the strategy's decision timeline for debugging.
+        
+        This method allows strategies to record detailed decision-making data
+        that can be used for backtesting analysis and debugging.
+        
+        Args:
+            decision_data: Dictionary containing decision information:
+                - timestamp: When the decision was made
+                - rule_description: Human-readable description of the rule
+                - result: Boolean result of the rule evaluation
+                - context_values: Market data and indicator values at decision time
+                - parameters: Rule parameters used in evaluation
+                - evaluation_details: Additional details about the evaluation
+                - check_number: Sequential number for this decision point
+        """
+        # Ensure we have a decision timeline list in state
+        if not hasattr(self, '_decision_timeline'):
+            self._decision_timeline = []
+        
+        # Add timestamp if not provided
+        if 'timestamp' not in decision_data:
+            decision_data['timestamp'] = datetime.now().isoformat()
+        
+        # Add strategy context
+        decision_data['strategy_id'] = self.strategy_id
+        decision_data['strategy_name'] = self.__class__.__name__
+        
+        # Store the decision data
+        self._decision_timeline.append(decision_data)
+        
+        # Keep only the last 10000 entries to prevent memory issues
+        if len(self._decision_timeline) > 10000:
+            self._decision_timeline = self._decision_timeline[-10000:]
+        
+        # Log for debugging if enabled
+        if self.debug:
+            self.logger.debug(f"Decision recorded: {decision_data.get('rule_description', 'Unknown rule')} -> {decision_data.get('result', 'No result')}")
+
+    def get_decision_timeline(self) -> List[Dict[str, Any]]:
+        """Get timeline of all strategy decisions for debugging"""
+        timeline = []
+        
+        # Get decisions from the new decision timeline
+        if hasattr(self, '_decision_timeline'):
+            timeline.extend(self._decision_timeline)
+        
+        # Also get decisions from action results (backward compatibility)
+        for action in self.action_queue.actions:
+            if action.result and action.result.decision_data:
+                timeline_entry = {
+                    "timestamp": action.result.decision_data.get("timestamp"),
+                    "action_name": action.name,
+                    "action_type": action.__class__.__name__,
+                    "rule_description": action.result.decision_data.get("rule_description", ""),
+                    "result": action.result.decision_data.get("result", False),
+                    "context_values": action.result.decision_data.get("context_values", {}),
+                    "parameters": action.result.decision_data.get("parameters", {}),
+                    "error": action.result.decision_data.get("error"),
+                    "check_number": action.result.decision_data.get("check_number", 0),
+                    "evaluation_details": action.result.decision_data.get("evaluation_details", {}),
+                    "strategy_id": self.strategy_id,
+                    "strategy_name": self.__class__.__name__
+                }
+                timeline.append(timeline_entry)
+        
+        # Sort by timestamp
+        timeline.sort(key=lambda x: x.get("timestamp", ""))
+        return timeline
     
     def get_checkpoints(self) -> List[Dict[str, Any]]:
         """Get strategy checkpoints"""

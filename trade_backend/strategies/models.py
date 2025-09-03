@@ -9,8 +9,15 @@ from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from datetime import datetime
 from typing import Dict, Any, Optional
+from pydantic import BaseModel, Field
 
 Base = declarative_base()
+
+class Decision(BaseModel):
+    rule_name: str
+    result: bool
+    context_snapshot: dict = Field(default_factory=dict)
+    reason: Optional[str] = None
 
 class Strategy(Base):
     """

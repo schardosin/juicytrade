@@ -23,6 +23,9 @@ import Menubar from "primevue/menubar";
 import Tag from "primevue/tag";
 import Menu from "primevue/menu";
 import Checkbox from "primevue/checkbox";
+import TabView from "primevue/tabview";
+import TabPanel from "primevue/tabpanel";
+import Badge from "primevue/badge";
 
 // PrimeVue styles
 import "primevue/resources/themes/aura-dark-noir/theme.css";
@@ -107,5 +110,8 @@ app.component("Menubar", Menubar);
 app.component("Tag", Tag);
 app.component("Menu", Menu);
 app.component("Checkbox", Checkbox);
+app.component("TabView", TabView);
+app.component("TabPanel", TabPanel);
+app.component("Badge", Badge);
 
 app.mount("#app");

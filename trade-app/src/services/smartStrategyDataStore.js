@@ -382,6 +382,31 @@ class SmartStrategyDataStore {
     }
   }
 
+  async getBacktestRun(runId) {
+    try {
+      this.loading.add(`backtest_run_${runId}`)
+      this.errors.delete(`backtest_run_${runId}`)
+      
+      const response = await axios.get(`${API_BASE_URL}/api/strategies/backtest/runs/${runId}`)
+      
+      // The backend returns the backtest run data directly, not wrapped in a success object
+      if (response.data) {
+        return {
+          success: true,
+          data: response.data
+        }
+      } else {
+        throw new Error('No backtest data received')
+      }
+    } catch (error) {
+      console.error(`Failed to load backtest run ${runId}:`, error)
+      this.errors.set(`backtest_run_${runId}`, error.message)
+      throw error
+    } finally {
+      this.loading.delete(`backtest_run_${runId}`)
+    }
+  }
+
   // ============================================================================
   // Component Registration System (Same as existing)
   // ============================================================================

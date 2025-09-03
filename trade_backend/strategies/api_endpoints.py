@@ -14,6 +14,7 @@ import asyncio
 import logging
 from typing import List, Dict, Any, Optional
 from fastapi import APIRouter, HTTPException, Form, File, UploadFile, Request
+from datetime import datetime
 from pydantic import BaseModel, Field
 
 # No authentication needed for now - single user system
@@ -289,31 +290,52 @@ async def get_strategy_parameters(strategy_id: str):
     Returns strategy parameter schema for dynamic form generation.
     """
     try:
+        logger.info(f"Getting parameters for strategy: {strategy_id}")
+        
         # Get strategy class to access metadata
         strategy_class = await get_strategy_registry().get_strategy(strategy_id)
         
         if not strategy_class:
-            raise HTTPException(status_code=404, detail="Strategy not found")
+            logger.error(f"Strategy class not found for ID: {strategy_id}")
+            raise HTTPException(status_code=404, detail=f"Strategy not found: {strategy_id}")
+
+        logger.info(f"Found strategy class: {strategy_class.__name__}")
 
         # Create a temporary instance to get metadata
         # We need to provide minimal dependencies for metadata extraction
         from .mock_providers import MockDataProvider, MockOrderExecutor
         
-        temp_instance = strategy_class(
-            strategy_id=strategy_id,
-            data_provider=MockDataProvider(),
-            order_executor=MockOrderExecutor(),
-            config={}
-        )
+        try:
+            temp_instance = strategy_class(
+                strategy_id=strategy_id,
+                data_provider=MockDataProvider(),
+                order_executor=MockOrderExecutor(),
+                config={}
+            )
+            logger.info(f"Created temporary strategy instance")
+        except Exception as instance_error:
+            logger.error(f"Failed to create strategy instance: {str(instance_error)}")
+            raise HTTPException(status_code=500, detail=f"Failed to create strategy instance: {str(instance_error)}")
         
         # Initialize the strategy so all attributes are set up
-        await temp_instance.initialize_strategy()
+        try:
+            await temp_instance.initialize_strategy()
+            logger.info(f"Initialized strategy instance")
+        except Exception as init_error:
+            logger.error(f"Failed to initialize strategy: {str(init_error)}")
+            raise HTTPException(status_code=500, detail=f"Failed to initialize strategy: {str(init_error)}")
         
         # Get strategy metadata which includes parameters
-        metadata = temp_instance.get_strategy_metadata()
+        try:
+            metadata = temp_instance.get_strategy_metadata()
+            logger.info(f"Retrieved strategy metadata: {list(metadata.keys())}")
+        except Exception as metadata_error:
+            logger.error(f"Failed to get strategy metadata: {str(metadata_error)}")
+            raise HTTPException(status_code=500, detail=f"Failed to get strategy metadata: {str(metadata_error)}")
         
         # Extract parameters with enhanced information
         parameters = metadata.get("parameters", {})
+        logger.info(f"Strategy parameters: {list(parameters.keys())}")
         
         # Add framework-level parameters that are always available
         framework_parameters = {
@@ -351,6 +373,8 @@ async def get_strategy_parameters(strategy_id: str):
             if "category" not in param_config:
                 param_config["category"] = "strategy"
         
+        logger.info(f"Returning parameters for strategy {strategy_id}: {list(all_parameters.keys())}")
+        
         return {
             "success": True,
             "strategy_id": strategy_id,
@@ -369,7 +393,7 @@ async def get_strategy_parameters(strategy_id: str):
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error getting strategy parameters: {str(e)}")
+        logger.error(f"Error getting strategy parameters for {strategy_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to get parameters: {str(e)}")
 
 
@@ -836,6 +860,61 @@ async def get_backtest_run(run_id: str):
     except Exception as e:
         logger.error(f"Error getting backtest run: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Failed to get backtest run: {str(e)}")
+
+@router.post("/backtest/{strategy_id}", response_model=Dict[str, Any])
+async def run_backtest(strategy_id: str, backtest_request: Dict[str, Any]):
+    """
+    Run a backtest for a given strategy.
+
+    - **strategy_id**: Strategy to backtest
+    - **backtest_request**: Backtest configuration
+
+    Returns backtest results.
+    """
+    try:
+        from .backtest_engine import StrategyBacktestEngine
+        from .mock_providers import MockDataProvider, MockOrderExecutor
+        
+        # Get strategy class
+        strategy_class = await get_strategy_registry().get_strategy(strategy_id)
+        if not strategy_class:
+            raise HTTPException(status_code=404, detail="Strategy not found")
+        
+        # Create strategy instance
+        strategy_instance = strategy_class(
+            strategy_id=strategy_id,
+            data_provider=MockDataProvider(),
+            order_executor=MockOrderExecutor(),
+            config=backtest_request.get("parameters", {})
+        )
+        
+        # Initialize the strategy
+        await strategy_instance.initialize_strategy()
+        
+        # Create backtest engine
+        backtest_engine = StrategyBacktestEngine(
+            initial_capital=backtest_request.get("initial_capital", 100000.0),
+            commission_per_trade=backtest_request.get("parameters", {}).get("commission_per_trade", 1.0),
+            slippage_bps=2.0
+        )
+        
+        # Run the backtest
+        symbols = [backtest_request.get("parameters", {}).get("symbol", "SPY")]
+        start_date = datetime.fromisoformat(backtest_request.get("start_date"))
+        end_date = datetime.fromisoformat(backtest_request.get("end_date"))
+        
+        backtest_results = await backtest_engine.run_backtest(
+            strategy=strategy_instance,
+            start_date=start_date,
+            end_date=end_date,
+            symbols=symbols
+        )
+        
+        return backtest_results
+        
+    except Exception as e:
+        logger.error(f"Error running backtest: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to run backtest: {str(e)}")
 
 
 @router.delete("/backtest/runs/{run_id}", response_model=Dict[str, Any])

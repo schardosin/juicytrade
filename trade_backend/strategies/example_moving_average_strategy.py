@@ -26,7 +26,9 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
 
 from .base_strategy import BaseStrategy
-from .actions import ActionContext
+from .actions import ActionContext, Rule
+from .decision_chain import DecisionChain
+from .stateful_rule import StatefulRule
 
 logger = logging.getLogger(__name__)
 
@@ -34,49 +36,24 @@ logger = logging.getLogger(__name__)
 class MovingAverageStrategy(BaseStrategy):
     """
     Moving Average Crossover Strategy using Action-Based Framework
-    
-    This strategy demonstrates how to implement traditional technical analysis
-    strategies using the new action-based system:
-    
-    1. Wait for market open (TimeAction)
-    2. Monitor for MA crossover conditions (MonitorAction)
-    3. Execute trades when conditions are met (TradeAction)
-    4. Manage risk with stop-loss and take-profit (MonitorAction)
-    5. Handle position management and state tracking
     """
     
     def __init__(self, strategy_id: str, data_provider, order_executor, config: Dict[str, Any]):
-        """
-        Initialize the Moving Average Strategy.
-        
-        Args:
-            strategy_id: Unique identifier for this strategy instance
-            data_provider: Data provider for market data
-            order_executor: Order executor for trade execution
-            config: Strategy configuration parameters
-        """
         super().__init__(strategy_id, data_provider, order_executor, config)
-        
-        # Initialize strategy-specific attributes
         self.symbol = None
         self.fast_period = None
         self.slow_period = None
         self.stop_loss_pct = None
         self.take_profit_pct = None
-        
         self.log_info(f"MovingAverageStrategy instance created with ID: {strategy_id}")
     
     async def initialize_strategy(self):
-        """Initialize the moving average strategy with actions"""
-        
-        # Get strategy parameters from config
         self.symbol = self.get_config_value("symbol", "SPY")
         self.fast_period = self.get_config_value("fast_period", 10)
         self.slow_period = self.get_config_value("slow_period", 30)
         self.stop_loss_pct = self.get_config_value("stop_loss_pct", 2.0)
         self.take_profit_pct = self.get_config_value("take_profit_pct", 5.0)
         
-        # Initialize strategy state
         self.set_state("symbol", self.symbol)
         self.set_state("fast_period", self.fast_period)
         self.set_state("slow_period", self.slow_period)
@@ -86,22 +63,16 @@ class MovingAverageStrategy(BaseStrategy):
         self.set_state("current_position", 0)
         self.set_state("entry_price", None)
         self.set_state("last_crossover", None)
-        
-        # DEBUG: Initialize data capture for analysis
         self.set_state("debug_data_capture", [])
         self.set_state("debug_capture_enabled", True)
         
-        # Action 1: Wait for market open to start monitoring
         self.add_time_action(
-            trigger_time="09:30",  # Market open
+            trigger_time="09:30",
             callback=self.start_monitoring,
             name="wait_for_market_open"
         )
         
         self.log_info(f"Moving Average Strategy initialized for {self.symbol}")
-        self.log_info(f"Parameters: Fast={self.fast_period}, Slow={self.slow_period}")
-        self.log_info("🔍 DEBUG: Data capture enabled - will write raw data to JSON file")
-        
         self.add_checkpoint("strategy_initialized", {
             "symbol": self.symbol,
             "fast_period": self.fast_period,
@@ -109,27 +80,399 @@ class MovingAverageStrategy(BaseStrategy):
         })
     
     async def start_monitoring(self, context: ActionContext):
-        """Start monitoring for moving average crossovers"""
         self.log_info("Market opened - starting MA crossover monitoring")
-        
-        # Action 2: Monitor for price updates and calculate MAs
         self.add_monitor_action(
             name="price_monitor",
-            condition=self.update_indicators,
-            callback=self.check_crossover_signals,
+            condition=self.safe_update_indicators,
+            callback=self.sync_run_decision_chain,
             continuous=True
         )
-        
-        # Action 3: Monitor existing positions for risk management
-        self.add_monitor_action(
-            name="risk_monitor",
-            condition=self.check_risk_management,
-            callback=self.handle_risk_exit,
-            continuous=True
-        )
-        
         self.add_checkpoint("monitoring_started")
-    
+
+    def sync_run_decision_chain(self, context: ActionContext):
+        """Synchronous wrapper for run_decision_chain to work with monitor action callbacks"""
+        try:
+            self.log_info(f"🔍 DECISION: sync_run_decision_chain called at {context.current_time}")
+            # Always use sync logic for monitor callbacks to avoid async issues
+            self._sync_decision_logic(context)
+        except Exception as e:
+            self.log_error(f"Error in sync_run_decision_chain: {e}")
+            import traceback
+            self.log_error(f"Traceback: {traceback.format_exc()}")
+
+    def _sync_decision_logic(self, context: ActionContext):
+        """Synchronous version of decision logic for callback compatibility"""
+        try:
+            # Get current market context for decision tracking
+            current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
+            current_fast_ma = self.get_state("current_fast_ma", 0)
+            current_slow_ma = self.get_state("current_slow_ma", 0)
+            current_position = self.get_state("current_position", 0)
+            price_history = self.get_state("price_history", [])
+            
+            # Increment decision point counter
+            decision_count = self.get_state("decision_count", 0) + 1
+            self.set_state("decision_count", decision_count)
+            
+            # Check if we have enough data for full analysis
+            has_enough_data = len(price_history) >= self.slow_period
+            
+            if not has_enough_data:
+                # Record decision for insufficient data case
+                self.add_decision_timeline({
+                    "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                    "rule_description": "Market Data Analysis - Insufficient Data for Trading",
+                    "result": False,
+                    "context_values": {
+                        "current_price": current_price,
+                        "fast_ma": None,
+                        "slow_ma": None,
+                        "ma_difference": None,
+                        "current_position": current_position,
+                        "price_history_length": len(price_history),
+                        "unrealized_pnl": 0
+                    },
+                    "parameters": {
+                        "fast_period": self.fast_period,
+                        "slow_period": self.slow_period,
+                        "symbol": self.symbol,
+                        "stop_loss_pct": self.stop_loss_pct,
+                        "take_profit_pct": self.take_profit_pct
+                    },
+                    "evaluation_details": {
+                        "data_status": "insufficient",
+                        "price_points": len(price_history),
+                        "required_points": self.slow_period,
+                        "indicators_ready": False,
+                        "can_trade": False
+                    },
+                    "check_number": decision_count
+                })
+                return  # Exit early if not enough data
+            
+            # We have enough data, proceed with simplified decision evaluation
+            # Instead of using decision chains (which require Rule imports), 
+            # do direct evaluation for the sync version
+            
+            # Check entry conditions directly - FIXED: Proper crossover detection
+            # Get previous MA values for crossover detection
+            fast_ma_history = self.get_state("fast_ma_history", [])
+            slow_ma_history = self.get_state("slow_ma_history", [])
+            
+            # We need at least 2 MA values to detect a crossover
+            has_crossover_data = len(fast_ma_history) >= 2 and len(slow_ma_history) >= 2
+            
+            bullish_crossover = False
+            if has_crossover_data:
+                prev_fast_ma = fast_ma_history[-2]  # Previous fast MA
+                prev_slow_ma = slow_ma_history[-2]  # Previous slow MA
+                
+                # True bullish crossover: was below, now above
+                bullish_crossover = (
+                    prev_fast_ma <= prev_slow_ma and  # Was below or equal
+                    current_fast_ma > current_slow_ma  # Now above
+                )
+            
+            is_entry_signal = (
+                bullish_crossover and  # TRUE crossover (not just above)
+                current_position == 0 and  # Not in position
+                self.calculate_position_size() > 0  # Sufficient capital
+            )
+            
+            # Add detailed decision timeline entry for entry evaluation
+            # Include crossover analysis details
+            crossover_analysis = {}
+            if has_crossover_data:
+                prev_fast_ma = fast_ma_history[-2]
+                prev_slow_ma = slow_ma_history[-2]
+                crossover_analysis = {
+                    "has_crossover_data": True,
+                    "previous_fast_ma": prev_fast_ma,
+                    "previous_slow_ma": prev_slow_ma,
+                    "current_fast_ma": current_fast_ma,
+                    "current_slow_ma": current_slow_ma,
+                    "was_fast_below_slow": prev_fast_ma <= prev_slow_ma,
+                    "is_fast_above_slow": current_fast_ma > current_slow_ma,
+                    "true_bullish_crossover": bullish_crossover,
+                    "crossover_description": f"Fast MA: {prev_fast_ma:.3f} → {current_fast_ma:.3f}, Slow MA: {prev_slow_ma:.3f} → {current_slow_ma:.3f}"
+                }
+            else:
+                crossover_analysis = {
+                    "has_crossover_data": False,
+                    "reason": "Need at least 2 MA values for crossover detection",
+                    "ma_history_length": len(fast_ma_history),
+                    "true_bullish_crossover": False
+                }
+            
+            self.add_decision_timeline({
+                "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                "rule_description": "Entry Decision Chain Evaluation - Crossover Analysis",
+                "result": is_entry_signal,
+                "context_values": {
+                    "current_price": current_price,
+                    "fast_ma": current_fast_ma,
+                    "slow_ma": current_slow_ma,
+                    "ma_difference": current_fast_ma - current_slow_ma,
+                    "current_position": current_position,
+                    "position_size_calculation": self.calculate_position_size(),
+                    "crossover_analysis": crossover_analysis
+                },
+                "parameters": {
+                    "fast_period": self.fast_period,
+                    "slow_period": self.slow_period,
+                    "symbol": self.symbol,
+                    "stop_loss_pct": self.stop_loss_pct,
+                    "take_profit_pct": self.take_profit_pct
+                },
+                "evaluation_details": {
+                    "chain_type": "entry",
+                    "rules_evaluated": 3,  # bullish_crossover, not_in_position, sufficient_capital
+                    "decision_state": {
+                        "bullish_crossover": bullish_crossover,  # TRUE crossover, not just above
+                        "not_in_position": bool(current_position == 0),
+                        "sufficient_capital": bool(self.calculate_position_size() > 0)
+                    },
+                    "crossover_detection": crossover_analysis
+                },
+                "check_number": decision_count
+            })
+
+            # For sync version, we can't await, so we'll just record the decision
+            # The actual trading logic would need to be handled differently
+            if not is_entry_signal:
+                # Check exit conditions directly
+                is_exit_signal = (
+                    current_fast_ma < current_slow_ma and  # Bearish crossover condition
+                    current_position > 0 and  # In long position
+                    not self.check_risk_management(context)  # Risk management check
+                )
+                
+                # Add detailed decision timeline entry for exit evaluation
+                self.add_decision_timeline({
+                    "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                    "rule_description": "Exit Decision Chain Evaluation",
+                    "result": is_exit_signal,
+                    "context_values": {
+                        "current_price": current_price,
+                        "fast_ma": current_fast_ma,
+                        "slow_ma": current_slow_ma,
+                        "ma_difference": current_fast_ma - current_slow_ma,
+                        "current_position": current_position,
+                        "entry_price": self.get_state("entry_price"),
+                        "unrealized_pnl": self._calculate_unrealized_pnl(current_price) if current_position != 0 else 0
+                    },
+                    "parameters": {
+                        "fast_period": self.fast_period,
+                        "slow_period": self.slow_period,
+                        "symbol": self.symbol,
+                        "stop_loss_pct": self.stop_loss_pct,
+                        "take_profit_pct": self.take_profit_pct
+                    },
+                    "evaluation_details": {
+                        "chain_type": "exit",
+                        "rules_evaluated": 3,  # bearish_crossover, in_long_position, risk_management_check
+                        "decision_state": {
+                            "bearish_crossover": bool(current_fast_ma < current_slow_ma),
+                            "in_long_position": bool(current_position > 0),
+                            "risk_management_check": bool(not self.check_risk_management(context))
+                        },
+                        "risk_management_triggered": bool(self.check_risk_management(context))
+                    },
+                    "check_number": decision_count
+                })
+                
+        except Exception as e:
+            self.log_error(f"Error in sync decision logic: {e}")
+            import traceback
+            self.log_error(f"Traceback: {traceback.format_exc()}")
+
+    async def run_decision_chain(self, context: ActionContext):
+        """
+        This method is now the central logic for the strategy, using the DecisionChain.
+        Enhanced with detailed decision timeline tracking for granular debugging.
+        """
+        # Get current market context for decision tracking
+        current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
+        current_fast_ma = self.get_state("current_fast_ma", 0)
+        current_slow_ma = self.get_state("current_slow_ma", 0)
+        current_position = self.get_state("current_position", 0)
+        price_history = self.get_state("price_history", [])
+        
+        # Increment decision point counter
+        decision_count = self.get_state("decision_count", 0) + 1
+        self.set_state("decision_count", decision_count)
+        
+        # Check if we have enough data for full analysis
+        has_enough_data = len(price_history) >= self.slow_period
+        
+        if not has_enough_data:
+            # Record decision for insufficient data case
+            self.add_decision_timeline({
+                "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                "rule_description": "Market Data Analysis - Insufficient Data for Trading",
+                "result": False,
+                "context_values": {
+                    "current_price": current_price,
+                    "fast_ma": None,
+                    "slow_ma": None,
+                    "ma_difference": None,
+                    "current_position": current_position,
+                    "price_history_length": len(price_history),
+                    "unrealized_pnl": 0
+                },
+                "parameters": {
+                    "fast_period": self.fast_period,
+                    "slow_period": self.slow_period,
+                    "symbol": self.symbol,
+                    "stop_loss_pct": self.stop_loss_pct,
+                    "take_profit_pct": self.take_profit_pct
+                },
+                "evaluation_details": {
+                    "data_status": "insufficient",
+                    "price_points": len(price_history),
+                    "required_points": self.slow_period,
+                    "indicators_ready": False,
+                    "can_trade": False
+                },
+                "check_number": decision_count
+            })
+            return  # Exit early if not enough data
+        
+        # We have enough data, proceed with full decision chain evaluation
+        # Create a new decision chain for each evaluation
+        decision_chain = self.build_entry_decision_chain()
+
+        # Evaluate the chain with detailed tracking
+        is_entry_signal, entry_state = decision_chain.evaluate(context)
+        
+        # Add detailed decision timeline entry for entry evaluation
+        self.add_decision_timeline({
+            "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+            "rule_description": "Entry Decision Chain Evaluation",
+            "result": is_entry_signal,
+            "context_values": {
+                "current_price": current_price,
+                "fast_ma": current_fast_ma,
+                "slow_ma": current_slow_ma,
+                "ma_difference": current_fast_ma - current_slow_ma,
+                "current_position": current_position,
+                "position_size_calculation": self.calculate_position_size()
+            },
+            "parameters": {
+                "fast_period": self.fast_period,
+                "slow_period": self.slow_period,
+                "symbol": self.symbol,
+                "stop_loss_pct": self.stop_loss_pct,
+                "take_profit_pct": self.take_profit_pct
+            },
+            "evaluation_details": {
+                "chain_type": "entry",
+                "rules_evaluated": len(decision_chain.rules) if hasattr(decision_chain, 'rules') else 0,
+                "decision_state": entry_state
+            },
+            "check_number": decision_count
+        })
+
+        if is_entry_signal:
+            await self.open_long_position(context, "Decision chain conditions met.")
+        else:
+            # If no entry signal, check for an exit signal
+            exit_chain = self.build_exit_decision_chain()
+            is_exit_signal, exit_state = exit_chain.evaluate(context)
+            
+            # Add detailed decision timeline entry for exit evaluation
+            self.add_decision_timeline({
+                "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                "rule_description": "Exit Decision Chain Evaluation",
+                "result": is_exit_signal,
+                "context_values": {
+                    "current_price": current_price,
+                    "fast_ma": current_fast_ma,
+                    "slow_ma": current_slow_ma,
+                    "ma_difference": current_fast_ma - current_slow_ma,
+                    "current_position": current_position,
+                    "entry_price": self.get_state("entry_price"),
+                    "unrealized_pnl": self._calculate_unrealized_pnl(current_price) if current_position != 0 else 0
+                },
+                "parameters": {
+                    "fast_period": self.fast_period,
+                    "slow_period": self.slow_period,
+                    "symbol": self.symbol,
+                    "stop_loss_pct": self.stop_loss_pct,
+                    "take_profit_pct": self.take_profit_pct
+                },
+                "evaluation_details": {
+                    "chain_type": "exit",
+                    "rules_evaluated": len(exit_chain.rules) if hasattr(exit_chain, 'rules') else 0,
+                    "decision_state": exit_state,
+                    "risk_management_triggered": self.check_risk_management(context)
+                },
+                "check_number": decision_count
+            })
+            
+            if is_exit_signal:
+                await self.close_position(context, "Exit condition met.")
+
+    def build_entry_decision_chain(self) -> DecisionChain:
+        """Builds the decision chain for entering a long position."""
+        decision_chain = DecisionChain()
+
+        # Step 1: Check for a bullish crossover
+        decision_chain.add_step(
+            StatefulRule(
+                "bullish_crossover",
+                lambda ctx: self.get_state("current_fast_ma") > self.get_state("current_slow_ma")
+            )
+        )
+
+        # Step 2: Ensure we are not already in a position
+        decision_chain.add_step(
+            Rule(
+                "not_in_position",
+                lambda ctx: self.get_state("current_position", 0) == 0
+            )
+        )
+
+        # Step 3: Check sufficient capital for trade
+        decision_chain.add_step(
+            Rule(
+                "sufficient_capital",
+                lambda ctx: self.calculate_position_size() > 0
+            )
+        )
+
+        return decision_chain
+
+    def build_exit_decision_chain(self) -> DecisionChain:
+        """Builds the decision chain for exiting a position."""
+        decision_chain = DecisionChain()
+
+        # Step 1: Check for a bearish crossover
+        decision_chain.add_step(
+            StatefulRule(
+                "bearish_crossover",
+                lambda ctx: self.get_state("current_fast_ma") < self.get_state("current_slow_ma")
+            )
+        )
+
+        # Step 2: Ensure we are currently in a long position
+        decision_chain.add_step(
+            Rule(
+                "in_long_position",
+                lambda ctx: self.get_state("current_position", 0) > 0
+            )
+        )
+        
+        # Step 3: Check risk management rules
+        decision_chain.add_step(
+            Rule(
+                "risk_management_check",
+                self.check_risk_management
+            )
+        )
+
+        return decision_chain
+
     def safe_update_indicators(self, context: ActionContext) -> bool:
         """Safe wrapper for update_indicators with exception handling"""
         try:
@@ -272,7 +615,7 @@ class MovingAverageStrategy(BaseStrategy):
         except Exception as e:
             self.log_error(f"Error checking crossover signals: {e}")
     
-    async def open_long_position(self, context: ActionContext, fast_ma: float, slow_ma: float):
+    async def open_long_position(self, context: ActionContext, reason: str):
         """Open a long position"""
         try:
             # Calculate position size
@@ -282,15 +625,20 @@ class MovingAverageStrategy(BaseStrategy):
                 self.log_warning("Cannot open position - insufficient capital or invalid size")
                 return
             
-            # Add trade action to buy
-            self.add_trade_action(
-                name="buy_long_position",
-                trade_type="BUY",
-                symbol=self.symbol,
-                quantity=position_size
-            )
+            # CRITICAL FIX: Directly execute trade through backtest engine
+            if hasattr(self.order_executor, 'place_market_order'):
+                trade_id = self.order_executor.place_market_order(
+                    symbol=self.symbol,
+                    quantity=position_size,
+                    side="BUY",
+                    reason=reason
+                )
+                self.log_info(f"✅ TRADE EXECUTED: BUY {position_size} {self.symbol} - Trade ID: {trade_id}")
+            else:
+                self.log_error("Order executor does not support place_market_order")
+                return
             
-            # Update state
+            # Update strategy state (backtest engine handles position tracking separately)
             current_price = self.get_state("price_history", [])[-1] if self.get_state("price_history") else 0
             self.set_state("current_position", position_size)
             self.set_state("entry_price", current_price)
@@ -463,6 +811,89 @@ class MovingAverageStrategy(BaseStrategy):
         
         return sum(price_history[-period:]) / period
     
+    def _calculate_unrealized_pnl(self, current_price: float) -> float:
+        """Calculate unrealized P&L for current position"""
+        try:
+            current_position = self.get_state("current_position", 0)
+            entry_price = self.get_state("entry_price")
+            
+            if current_position == 0 or not entry_price:
+                return 0.0
+            
+            if current_position > 0:  # Long position
+                return (current_price - entry_price) * current_position
+            else:  # Short position
+                return (entry_price - current_price) * abs(current_position)
+                
+        except Exception as e:
+            self.log_error(f"Error calculating unrealized P&L: {e}")
+            return 0.0
+    
+    def _record_data_point_decision(self, context: ActionContext, current_price: float, price_history: List[float]):
+        """Record a decision at every data point, even when we don't have enough data for full analysis"""
+        try:
+            # Increment decision point counter
+            decision_count = self.get_state("decision_count", 0) + 1
+            self.set_state("decision_count", decision_count)
+            
+            # Get current state
+            current_position = self.get_state("current_position", 0)
+            current_fast_ma = self.get_state("current_fast_ma", 0)
+            current_slow_ma = self.get_state("current_slow_ma", 0)
+            
+            # Determine if we have enough data for full analysis
+            has_enough_data = len(price_history) >= self.slow_period
+            
+            if has_enough_data:
+                # Full analysis available
+                rule_description = "Market Data Analysis - Full Indicators Available"
+                result = True  # We can make informed decisions
+                evaluation_details = {
+                    "data_status": "sufficient",
+                    "price_points": len(price_history),
+                    "indicators_ready": True,
+                    "can_trade": True
+                }
+            else:
+                # Insufficient data for full analysis
+                rule_description = "Market Data Analysis - Insufficient Data for Trading"
+                result = False  # Cannot make trading decisions yet
+                evaluation_details = {
+                    "data_status": "insufficient",
+                    "price_points": len(price_history),
+                    "required_points": self.slow_period,
+                    "indicators_ready": False,
+                    "can_trade": False
+                }
+            
+            # Record the decision
+            self.add_decision_timeline({
+                "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                "rule_description": rule_description,
+                "result": result,
+                "context_values": {
+                    "current_price": current_price,
+                    "fast_ma": current_fast_ma if has_enough_data else None,
+                    "slow_ma": current_slow_ma if has_enough_data else None,
+                    "ma_difference": (current_fast_ma - current_slow_ma) if has_enough_data else None,
+                    "current_position": current_position,
+                    "price_history_length": len(price_history),
+                    "unrealized_pnl": self._calculate_unrealized_pnl(current_price) if current_position != 0 else 0
+                },
+                "parameters": {
+                    "fast_period": self.fast_period,
+                    "slow_period": self.slow_period,
+                    "symbol": self.symbol,
+                    "stop_loss_pct": self.stop_loss_pct,
+                    "take_profit_pct": self.take_profit_pct
+                },
+                "evaluation_details": evaluation_details,
+                "check_number": decision_count
+            })
+            
+        except Exception as e:
+            self.log_error(f"Error recording data point decision: {e}")
+    
     def get_current_price_from_provider(self) -> Optional[float]:
         """Get current price from the data provider (backtest engine)"""
         try:
@@ -630,6 +1061,229 @@ class MovingAverageStrategy(BaseStrategy):
         except Exception as e:
             self.log_error(f"Error writing debug data to file: {e}")
     
+    async def record_cycle_decision(self, context: ActionContext):
+        """
+        Record decision for this execution cycle - called automatically by framework.
+        
+        This method implements the framework's decision recording hook to capture
+        decisions at every single data point during backtesting AND execute trades.
+        """
+        try:
+            # First, update indicators with current price data
+            # This ensures we have fresh MA calculations for each data point
+            self.update_indicators(context)
+            
+            # Get current market context for decision tracking
+            current_price = self.get_current_price_from_provider()
+            if current_price is None:
+                return  # Skip if no price data available
+            
+            current_fast_ma = self.get_state("current_fast_ma", 0)
+            current_slow_ma = self.get_state("current_slow_ma", 0)
+            current_position = self.get_state("current_position", 0)
+            price_history = self.get_state("price_history", [])
+            
+            # Increment decision point counter
+            decision_count = self.get_state("decision_count", 0) + 1
+            self.set_state("decision_count", decision_count)
+            
+            # Check if we have enough data for full analysis
+            has_enough_data = len(price_history) >= self.slow_period
+            
+            if not has_enough_data:
+                # Record decision for insufficient data case
+                self.add_decision_timeline({
+                    "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                    "rule_description": "Market Data Analysis - Insufficient Data for Trading",
+                    "result": False,
+                    "context_values": {
+                        "current_price": current_price,
+                        "fast_ma": None,
+                        "slow_ma": None,
+                        "ma_difference": None,
+                        "current_position": current_position,
+                        "price_history_length": len(price_history),
+                        "unrealized_pnl": 0,
+                        "trade_executed": False
+                    },
+                    "parameters": {
+                        "fast_period": self.fast_period,
+                        "slow_period": self.slow_period,
+                        "symbol": self.symbol,
+                        "stop_loss_pct": self.stop_loss_pct,
+                        "take_profit_pct": self.take_profit_pct
+                    },
+                    "evaluation_details": {
+                        "data_status": "insufficient",
+                        "price_points": len(price_history),
+                        "required_points": self.slow_period,
+                        "indicators_ready": False,
+                        "can_trade": False,
+                        "action_taken": "none"
+                    },
+                    "check_number": decision_count
+                })
+            else:
+                # We have enough data, proceed with decision evaluation AND execution
+                # Check entry conditions directly - FIXED: Proper crossover detection
+                # Get previous MA values for crossover detection
+                fast_ma_history = self.get_state("fast_ma_history", [])
+                slow_ma_history = self.get_state("slow_ma_history", [])
+                
+                # We need at least 2 MA values to detect a crossover
+                has_crossover_data = len(fast_ma_history) >= 2 and len(slow_ma_history) >= 2
+                
+                bullish_crossover = False
+                if has_crossover_data:
+                    prev_fast_ma = fast_ma_history[-2]  # Previous fast MA
+                    prev_slow_ma = slow_ma_history[-2]  # Previous slow MA
+                    
+                    # True bullish crossover: was below, now above
+                    bullish_crossover = (
+                        prev_fast_ma <= prev_slow_ma and  # Was below or equal
+                        current_fast_ma > current_slow_ma  # Now above
+                    )
+                
+                is_entry_signal = (
+                    bullish_crossover and  # TRUE crossover (not just above)
+                    current_position == 0 and  # Not in position
+                    self.calculate_position_size() > 0  # Sufficient capital
+                )
+                
+                # CRITICAL FIX: Actually execute the trade if signal is TRUE
+                trade_executed = False
+                action_taken = "none"
+                
+                if is_entry_signal:
+                    try:
+                        await self.open_long_position(context, "Entry signal detected - Fast MA above Slow MA")
+                        trade_executed = True
+                        action_taken = "open_long"
+                        self.log_info(f"🚀 TRADE EXECUTED: Entry signal at ${current_price:.2f}")
+                    except Exception as e:
+                        self.log_error(f"Failed to execute entry trade: {e}")
+                
+                # Add detailed decision timeline entry for entry evaluation
+                # Include crossover analysis details
+                crossover_analysis = {}
+                if has_crossover_data:
+                    prev_fast_ma = fast_ma_history[-2]
+                    prev_slow_ma = slow_ma_history[-2]
+                    crossover_analysis = {
+                        "has_crossover_data": True,
+                        "previous_fast_ma": prev_fast_ma,
+                        "previous_slow_ma": prev_slow_ma,
+                        "current_fast_ma": current_fast_ma,
+                        "current_slow_ma": current_slow_ma,
+                        "was_fast_below_slow": prev_fast_ma <= prev_slow_ma,
+                        "is_fast_above_slow": current_fast_ma > current_slow_ma,
+                        "true_bullish_crossover": bullish_crossover,
+                        "crossover_description": f"Fast MA: {prev_fast_ma:.3f} → {current_fast_ma:.3f}, Slow MA: {prev_slow_ma:.3f} → {current_slow_ma:.3f}"
+                    }
+                else:
+                    crossover_analysis = {
+                        "has_crossover_data": False,
+                        "reason": "Need at least 2 MA values for crossover detection",
+                        "ma_history_length": len(fast_ma_history),
+                        "true_bullish_crossover": False
+                    }
+                
+                self.add_decision_timeline({
+                    "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                    "rule_description": "Entry Decision Chain Evaluation - Crossover Analysis",
+                    "result": is_entry_signal,
+                    "context_values": {
+                        "current_price": current_price,
+                        "fast_ma": current_fast_ma,
+                        "slow_ma": current_slow_ma,
+                        "ma_difference": current_fast_ma - current_slow_ma,
+                        "current_position": current_position,
+                        "position_size_calculation": self.calculate_position_size(),
+                        "trade_executed": trade_executed,
+                        "unrealized_pnl": self._calculate_unrealized_pnl(current_price) if current_position != 0 else 0,
+                        "crossover_analysis": crossover_analysis
+                    },
+                    "parameters": {
+                        "fast_period": self.fast_period,
+                        "slow_period": self.slow_period,
+                        "symbol": self.symbol,
+                        "stop_loss_pct": self.stop_loss_pct,
+                        "take_profit_pct": self.take_profit_pct
+                    },
+                    "evaluation_details": {
+                        "chain_type": "entry",
+                        "rules_evaluated": 3,  # bullish_crossover, not_in_position, sufficient_capital
+                        "decision_state": {
+                            "bullish_crossover": bullish_crossover,  # TRUE crossover, not just above
+                            "not_in_position": bool(current_position == 0),
+                            "sufficient_capital": bool(self.calculate_position_size() > 0)
+                        },
+                        "action_taken": action_taken,
+                        "crossover_detection": crossover_analysis
+                    },
+                    "check_number": decision_count
+                })
+
+                # If no entry signal, check for exit signal
+                if not is_entry_signal:
+                    # Check exit conditions directly
+                    is_exit_signal = (
+                        current_fast_ma < current_slow_ma and  # Bearish crossover condition
+                        current_position > 0 and  # In long position
+                        not self.check_risk_management(context)  # Risk management check
+                    )
+                    
+                    # CRITICAL FIX: Actually execute the exit trade if signal is TRUE
+                    if is_exit_signal:
+                        try:
+                            await self.close_position(context, "Exit signal detected - Fast MA below Slow MA")
+                            trade_executed = True
+                            action_taken = "close_long"
+                            self.log_info(f"🛑 TRADE EXECUTED: Exit signal at ${current_price:.2f}")
+                        except Exception as e:
+                            self.log_error(f"Failed to execute exit trade: {e}")
+                    
+                    # Add detailed decision timeline entry for exit evaluation
+                    self.add_decision_timeline({
+                        "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                        "rule_description": "Exit Decision Chain Evaluation",
+                        "result": is_exit_signal,
+                        "context_values": {
+                            "current_price": current_price,
+                            "fast_ma": current_fast_ma,
+                            "slow_ma": current_slow_ma,
+                            "ma_difference": current_fast_ma - current_slow_ma,
+                            "current_position": current_position,
+                            "entry_price": self.get_state("entry_price"),
+                            "unrealized_pnl": self._calculate_unrealized_pnl(current_price) if current_position != 0 else 0,
+                            "trade_executed": trade_executed
+                        },
+                        "parameters": {
+                            "fast_period": self.fast_period,
+                            "slow_period": self.slow_period,
+                            "symbol": self.symbol,
+                            "stop_loss_pct": self.stop_loss_pct,
+                            "take_profit_pct": self.take_profit_pct
+                        },
+                        "evaluation_details": {
+                            "chain_type": "exit",
+                            "rules_evaluated": 3,  # bearish_crossover, in_long_position, risk_management_check
+                            "decision_state": {
+                                "bearish_crossover": bool(current_fast_ma < current_slow_ma),
+                                "in_long_position": bool(current_position > 0),
+                                "risk_management_check": bool(not self.check_risk_management(context))
+                            },
+                            "risk_management_triggered": bool(self.check_risk_management(context)),
+                            "action_taken": action_taken
+                        },
+                        "check_number": decision_count
+                    })
+                    
+        except Exception as e:
+            self.log_error(f"Error recording cycle decision: {e}")
+            import traceback
+            self.log_error(f"Traceback: {traceback.format_exc()}")
+
     async def cleanup_strategy(self):
         """Cleanup method called when strategy stops - write final debug data"""
         try:
