@@ -7,6 +7,25 @@
         <p class="library-subtitle">Manage your trading strategies and configurations</p>
       </div>
       <div class="header-actions">
+        <!-- View Toggle -->
+        <div class="view-toggle">
+          <button 
+            class="toggle-btn"
+            :class="{ active: viewMode === 'cards' }"
+            @click="viewMode = 'cards'"
+            title="Card View"
+          >
+            <span class="icon">⊞</span>
+          </button>
+          <button 
+            class="toggle-btn"
+            :class="{ active: viewMode === 'list' }"
+            @click="viewMode = 'list'"
+            title="List View"
+          >
+            <span class="icon">☰</span>
+          </button>
+        </div>
         <button 
           class="btn btn-primary"
           @click="showUploadDialog = true"
@@ -17,8 +36,8 @@
       </div>
     </div>
 
-    <!-- Strategy Cards -->
-    <div class="strategies-grid" v-if="strategies.length > 0">
+    <!-- Strategy Cards View -->
+    <div v-if="strategies.length > 0 && viewMode === 'cards'" class="strategies-grid">
       <div 
         v-for="strategy in strategies" 
         :key="strategy.strategy_id"
@@ -93,6 +112,76 @@
             <span class="icon">⚡</span>
             Deploy Live
           </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Strategy List View -->
+    <div v-if="strategies.length > 0 && viewMode === 'list'" class="strategies-list">
+      <div class="list-header">
+        <div class="list-col col-name">Strategy</div>
+        <div class="list-col col-risk">Risk</div>
+        <div class="list-col col-author">Author</div>
+        <div class="list-col col-version">Version</div>
+        <div class="list-col col-backtests">Backtests</div>
+        <div class="list-col col-live">Live</div>
+        <div class="list-col col-pnl">P&L</div>
+        <div class="list-col col-actions">Actions</div>
+      </div>
+      
+      <div 
+        v-for="strategy in strategies" 
+        :key="strategy.strategy_id"
+        class="strategy-row"
+      >
+        <div class="list-col col-name">
+          <div class="strategy-name-info">
+            <h4 class="strategy-name">{{ strategy.name }}</h4>
+            <p class="strategy-description">{{ strategy.description || 'No description provided' }}</p>
+          </div>
+        </div>
+        <div class="list-col col-risk">
+          <span class="risk-badge" :class="`risk-${strategy.risk_level}`">
+            {{ strategy.risk_level }}
+          </span>
+        </div>
+        <div class="list-col col-author">{{ strategy.author }}</div>
+        <div class="list-col col-version">{{ strategy.version }}</div>
+        <div class="list-col col-backtests">
+          <span class="stat-number">{{ getBacktestCount(strategy.strategy_id) }}</span>
+        </div>
+        <div class="list-col col-live">
+          <span class="stat-number">{{ getLiveCount(strategy.strategy_id) }}</span>
+        </div>
+        <div class="list-col col-pnl">
+          <span class="stat-number" :class="{ 'positive': getTotalPnL(strategy.strategy_id).startsWith('+') }">
+            {{ getTotalPnL(strategy.strategy_id) }}
+          </span>
+        </div>
+        <div class="list-col col-actions">
+          <div class="list-actions">
+            <button 
+              class="btn btn-sm btn-outline"
+              @click="createBacktest(strategy)"
+              title="Create Backtest"
+            >
+              🚀
+            </button>
+            <button 
+              class="btn btn-sm btn-success"
+              @click="deployLive(strategy)"
+              title="Deploy Live"
+            >
+              ⚡
+            </button>
+            <button 
+              class="btn btn-sm btn-danger"
+              @click="deleteStrategy(strategy)"
+              title="Delete Strategy"
+            >
+              🗑️
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -181,6 +270,9 @@ export default {
     
     // Backtest dialog states
     const selectedStrategyForBacktest = ref(null)
+    
+    // View mode state
+    const viewMode = ref('cards') // 'cards' or 'list'
 
     // Load data
     const loadStrategies = async () => {
@@ -375,6 +467,7 @@ export default {
       backtestRuns,
       loading,
       error,
+      viewMode,
       
       // Dialog states
       showUploadDialog,
@@ -449,6 +542,42 @@ export default {
 .header-actions {
   display: flex;
   gap: var(--spacing-md);
+  align-items: center;
+}
+
+/* View Toggle Styles */
+.view-toggle {
+  display: flex;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  border: 1px solid var(--border-primary);
+}
+
+.toggle-btn {
+  background: none;
+  border: none;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-fast);
+  color: var(--text-secondary);
+  font-size: var(--font-size-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+}
+
+.toggle-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-quaternary);
+}
+
+.toggle-btn.active {
+  background: var(--color-brand);
+  color: var(--text-primary);
+  box-shadow: 0 2px 4px rgba(255, 107, 53, 0.2);
 }
 
 .strategies-grid {
@@ -915,6 +1044,117 @@ export default {
   user-select: none;
 }
 
+/* List View Styles */
+.strategies-list {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border-primary);
+}
+
+.list-header {
+  display: grid;
+  grid-template-columns: 2fr 0.8fr 1fr 0.8fr 0.8fr 0.8fr 1fr 1.2fr;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  background: var(--bg-quaternary);
+  border-bottom: 1px solid var(--border-primary);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  text-transform: uppercase;
+}
+
+.strategy-row {
+  display: grid;
+  grid-template-columns: 2fr 0.8fr 1fr 0.8fr 0.8fr 0.8fr 1fr 1.2fr;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  border-bottom: 1px solid var(--border-primary);
+  transition: var(--transition-fast);
+  align-items: center;
+}
+
+.strategy-row:hover {
+  background: var(--bg-primary);
+}
+
+.strategy-row:last-child {
+  border-bottom: none;
+}
+
+.list-col {
+  display: flex;
+  align-items: center;
+}
+
+.col-name {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.strategy-name-info .strategy-name {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  margin: 0 0 var(--spacing-xs) 0;
+  color: var(--text-primary);
+}
+
+.strategy-name-info .strategy-description {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  margin: 0;
+  line-height: 1.3;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.col-risk,
+.col-author,
+.col-version,
+.col-backtests,
+.col-live,
+.col-pnl {
+  justify-content: center;
+  text-align: center;
+}
+
+.col-actions {
+  justify-content: center;
+}
+
+.list-actions {
+  display: flex;
+  gap: var(--spacing-xs);
+}
+
+.btn-sm {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  min-width: 32px;
+  height: 32px;
+}
+
+.stat-number.positive {
+  color: var(--color-success);
+}
+
+/* Responsive List View */
+@media (max-width: 1200px) {
+  .list-header,
+  .strategy-row {
+    grid-template-columns: 2fr 0.8fr 1fr 0.8fr 1.2fr;
+  }
+  
+  .col-author,
+  .col-version,
+  .col-live {
+    display: none;
+  }
+}
+
 @media (max-width: 768px) {
   .form-row {
     grid-template-columns: 1fr;
@@ -927,6 +1167,29 @@ export default {
   .dialog-content {
     width: 95vw;
     margin: var(--spacing-md);
+  }
+  
+  .list-header,
+  .strategy-row {
+    grid-template-columns: 2fr 1fr 1.2fr;
+    gap: var(--spacing-sm);
+  }
+  
+  .col-risk,
+  .col-author,
+  .col-version,
+  .col-backtests,
+  .col-live {
+    display: none;
+  }
+  
+  .header-actions {
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+  
+  .view-toggle {
+    order: 2;
   }
 }
 </style>

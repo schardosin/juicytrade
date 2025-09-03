@@ -7,6 +7,25 @@
         <p class="page-subtitle">Test your strategies with historical data</p>
       </div>
       <div class="header-actions">
+        <!-- View Toggle -->
+        <div class="view-toggle">
+          <button 
+            class="toggle-btn"
+            :class="{ active: viewMode === 'cards' }"
+            @click="viewMode = 'cards'"
+            title="Card View"
+          >
+            <span class="icon">⊞</span>
+          </button>
+          <button 
+            class="toggle-btn"
+            :class="{ active: viewMode === 'list' }"
+            @click="viewMode = 'list'"
+            title="List View"
+          >
+            <span class="icon">☰</span>
+          </button>
+        </div>
         <button 
           class="btn btn-primary"
           @click="showRunDialog = true"
@@ -26,8 +45,8 @@
       @backtest-started="handleBacktestStarted"
     />
 
-    <!-- Backtest Results Grid -->
-    <div class="backtest-results-grid" v-if="backtestResults.length > 0">
+    <!-- Backtest Results Card View -->
+    <div v-if="backtestResults.length > 0 && viewMode === 'cards'" class="backtest-results-grid">
       <div 
         v-for="result in backtestResults" 
         :key="result.run_id"
@@ -36,8 +55,7 @@
         <!-- Result Header -->
         <div class="result-header">
           <div class="result-info">
-            <h3 class="strategy-name">{{ result.strategy_name }}</h3>
-            <p class="configuration-name">{{ result.configuration_name }}</p>
+            <h3 class="strategy-name">{{ result.strategy_name || 'Example Moving Average Strategy' }}</h3>
             <div class="result-meta">
               <span class="meta-item">
                 <span class="meta-label">Period:</span>
@@ -145,6 +163,91 @@
       </div>
     </div>
 
+    <!-- Backtest Results List View -->
+    <div v-if="backtestResults.length > 0 && viewMode === 'list'" class="backtest-results-list">
+      <div class="list-header">
+        <div class="list-col col-strategy">Strategy</div>
+        <div class="list-col col-period">Period</div>
+        <div class="list-col col-return">Return</div>
+        <div class="list-col col-trades">Trades</div>
+        <div class="list-col col-winrate">Win Rate</div>
+        <div class="list-col col-sharpe">Sharpe</div>
+        <div class="list-col col-drawdown">Drawdown</div>
+        <div class="list-col col-status">Status</div>
+        <div class="list-col col-actions">Actions</div>
+      </div>
+      
+      <div 
+        v-for="result in backtestResults" 
+        :key="result.run_id"
+        class="backtest-row"
+      >
+        <div class="list-col col-strategy">
+          <div class="strategy-info">
+            <h4 class="strategy-name">{{ result.strategy_name || 'Example Moving Average Strategy' }}</h4>
+          </div>
+        </div>
+        <div class="list-col col-period">
+          <span class="period-text">{{ formatDateRange(result.start_date, result.end_date) }}</span>
+        </div>
+        <div class="list-col col-return">
+          <span class="return-value" :class="getPnLClass(result.total_return)">
+            {{ formatPercentage(result.total_return) }}
+          </span>
+        </div>
+        <div class="list-col col-trades">
+          <span class="trades-count">{{ result.total_trades }}</span>
+        </div>
+        <div class="list-col col-winrate">
+          <span class="winrate-value">{{ formatPercentage(result.win_rate) }}</span>
+        </div>
+        <div class="list-col col-sharpe">
+          <span class="sharpe-value">{{ formatNumber(result.sharpe_ratio) }}</span>
+        </div>
+        <div class="list-col col-drawdown">
+          <span class="drawdown-value negative">{{ formatPercentage(result.max_drawdown) }}</span>
+        </div>
+        <div class="list-col col-status">
+          <span class="status-badge" :class="`status-${result.status}`">
+            {{ result.status }}
+          </span>
+        </div>
+        <div class="list-col col-actions">
+          <div class="list-actions">
+            <button 
+              class="btn btn-sm btn-outline"
+              @click="viewDetails(result)"
+              title="View Details"
+            >
+              📊
+            </button>
+            <button 
+              class="btn btn-sm btn-secondary"
+              @click="runSimilar(result)"
+              title="Run Similar"
+            >
+              🔄
+            </button>
+            <button 
+              class="btn btn-sm btn-success"
+              @click="deployLive(result)"
+              :disabled="result.status !== 'completed' || result.total_return <= 0"
+              title="Deploy Live"
+            >
+              ⚡
+            </button>
+            <button 
+              class="btn btn-sm btn-danger"
+              @click="deleteResult(result)"
+              title="Delete"
+            >
+              🗑️
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Empty State -->
     <div v-else class="empty-state">
       <div class="empty-icon">📈</div>
@@ -213,6 +316,9 @@ export default {
     const selectedStrategy = ref(null)
     const strategyParameters = ref(null)
     const isRunningBacktest = ref(false)
+    
+    // View mode state
+    const viewMode = ref('cards') // 'cards' or 'list'
     
     // Configuration state
     const backtestConfig = ref({
@@ -550,6 +656,7 @@ export default {
       availableStrategies,
       loading,
       error,
+      viewMode,
       
       // Dialog states
       showRunDialog,
@@ -625,6 +732,42 @@ export default {
 .header-actions {
   display: flex;
   gap: var(--spacing-md);
+  align-items: center;
+}
+
+/* View Toggle Styles */
+.view-toggle {
+  display: flex;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  border: 1px solid var(--border-primary);
+}
+
+.toggle-btn {
+  background: none;
+  border: none;
+  padding: var(--spacing-sm) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-fast);
+  color: var(--text-secondary);
+  font-size: var(--font-size-lg);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 40px;
+}
+
+.toggle-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-quaternary);
+}
+
+.toggle-btn.active {
+  background: var(--color-brand);
+  color: var(--text-primary);
+  box-shadow: 0 2px 4px rgba(255, 107, 53, 0.2);
 }
 
 .backtest-results-grid {
@@ -1157,6 +1300,159 @@ export default {
   user-select: none;
 }
 
+/* List View Styles */
+.backtest-results-list {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border-primary);
+}
+
+.list-header {
+  display: grid;
+  grid-template-columns: 2fr 1.5fr 1fr 0.8fr 1fr 0.8fr 1fr 0.8fr 1.2fr;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  background: var(--bg-quaternary);
+  border-bottom: 1px solid var(--border-primary);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  text-transform: uppercase;
+}
+
+.backtest-row {
+  display: grid;
+  grid-template-columns: 2fr 1.5fr 1fr 0.8fr 1fr 0.8fr 1fr 0.8fr 1.2fr;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  border-bottom: 1px solid var(--border-primary);
+  transition: var(--transition-fast);
+  align-items: center;
+}
+
+.backtest-row:hover {
+  background: var(--bg-primary);
+}
+
+.backtest-row:last-child {
+  border-bottom: none;
+}
+
+.list-col {
+  display: flex;
+  align-items: center;
+}
+
+.col-strategy {
+  flex-direction: column;
+  align-items: flex-start;
+}
+
+.strategy-info .strategy-name {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  margin: 0 0 var(--spacing-xs) 0;
+  color: var(--text-primary);
+}
+
+.strategy-info .configuration-name {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  margin: 0;
+  font-style: italic;
+}
+
+.col-period,
+.col-return,
+.col-trades,
+.col-winrate,
+.col-sharpe,
+.col-drawdown,
+.col-status {
+  justify-content: center;
+  text-align: center;
+}
+
+.col-actions {
+  justify-content: center;
+}
+
+.period-text {
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+
+.return-value,
+.winrate-value,
+.sharpe-value,
+.drawdown-value {
+  font-weight: var(--font-weight-medium);
+}
+
+.return-value.positive { color: var(--color-success); }
+.return-value.negative { color: var(--color-danger); }
+.return-value.neutral { color: var(--text-secondary); }
+
+.trades-count {
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+}
+
+.drawdown-value.negative {
+  color: var(--color-danger);
+}
+
+.list-actions {
+  display: flex;
+  gap: var(--spacing-xs);
+}
+
+.btn-sm {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  min-width: 32px;
+  height: 32px;
+}
+
+.btn-danger {
+  background: var(--color-danger);
+  color: var(--text-primary);
+}
+
+.btn-danger:hover {
+  background: var(--color-danger-hover);
+}
+
+/* Responsive List View */
+@media (max-width: 1400px) {
+  .list-header,
+  .backtest-row {
+    grid-template-columns: 2fr 1.2fr 1fr 0.8fr 1fr 1.2fr;
+  }
+  
+  .col-period,
+  .col-sharpe,
+  .col-drawdown {
+    display: none;
+  }
+}
+
+@media (max-width: 1000px) {
+  .list-header,
+  .backtest-row {
+    grid-template-columns: 2fr 1fr 0.8fr 1.2fr;
+  }
+  
+  .col-period,
+  .col-trades,
+  .col-winrate,
+  .col-sharpe,
+  .col-drawdown {
+    display: none;
+  }
+}
+
 @media (max-width: 768px) {
   .form-row {
     grid-template-columns: 1fr;
@@ -1169,6 +1465,30 @@ export default {
   .dialog-content {
     width: 95vw;
     margin: var(--spacing-md);
+  }
+  
+  .list-header,
+  .backtest-row {
+    grid-template-columns: 2fr 1fr 1.2fr;
+    gap: var(--spacing-sm);
+  }
+  
+  .col-period,
+  .col-trades,
+  .col-winrate,
+  .col-sharpe,
+  .col-drawdown,
+  .col-status {
+    display: none;
+  }
+  
+  .header-actions {
+    flex-direction: column;
+    gap: var(--spacing-sm);
+  }
+  
+  .view-toggle {
+    order: 2;
   }
 }
 </style>
