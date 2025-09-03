@@ -708,7 +708,6 @@ export default {
       }
       
       const { status } = event.detail;
-      console.log('📡 TopBar received status update:', status);
       
       // Map worker status to our connection state
       switch (status) {

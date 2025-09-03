@@ -19,179 +19,12 @@
     </div>
 
     <!-- Run Backtest Dialog -->
-    <div v-if="showRunDialog" class="dialog-overlay" @click="closeDialog">
-      <div class="dialog-content" @click.stop>
-        <div class="dialog-header">
-          <h2>Run New Backtest</h2>
-          <button class="btn-close" @click="closeDialog">×</button>
-        </div>
-        
-        <div class="dialog-body">
-          <!-- Strategy Selection -->
-          <div class="form-section">
-            <h3>Select Strategy</h3>
-            <div class="strategy-selector">
-              <div 
-                v-for="strategy in availableStrategies" 
-                :key="strategy.strategy_id"
-                class="strategy-option"
-                :class="{ active: selectedStrategy?.strategy_id === strategy.strategy_id }"
-                @click="selectStrategy(strategy)"
-              >
-                <div class="strategy-info">
-                  <h4>{{ strategy.name }}</h4>
-                  <p>{{ strategy.description || 'No description' }}</p>
-                </div>
-                <div class="strategy-meta">
-                  <span class="meta-badge">{{ strategy.risk_level || 'Medium' }}</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          <!-- Parameters Configuration -->
-          <div v-if="selectedStrategy && strategyParameters" class="form-section">
-            <h3>Configure Parameters</h3>
-            
-            <!-- Framework Parameters -->
-            <div class="parameter-group">
-              <h4>Framework Settings</h4>
-              <div class="form-row">
-                <div class="form-group">
-                  <label>Start Date</label>
-                  <input 
-                    type="date" 
-                    v-model="backtestConfig.start_date"
-                    class="form-input"
-                  />
-                </div>
-                <div class="form-group">
-                  <label>End Date</label>
-                  <input 
-                    type="date" 
-                    v-model="backtestConfig.end_date"
-                    class="form-input"
-                  />
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label>Data Timeframe</label>
-                  <select v-model="backtestConfig.timeframe" class="form-input">
-                    <option value="1m">1 Minute</option>
-                    <option value="5m">5 Minutes</option>
-                    <option value="15m">15 Minutes</option>
-                    <option value="30m">30 Minutes</option>
-                    <option value="1h">1 Hour</option>
-                    <option value="4h">4 Hours</option>
-                    <option value="D">Daily</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <label>Initial Capital ($)</label>
-                  <input 
-                    type="number" 
-                    v-model="backtestConfig.initial_capital"
-                    min="1000"
-                    step="1000"
-                    class="form-input"
-                  />
-                </div>
-              </div>
-              <div class="form-row">
-                <div class="form-group">
-                  <label>Speed Multiplier</label>
-                  <select v-model="backtestConfig.speed_multiplier" class="form-input">
-                    <option value="1">1x (Real-time)</option>
-                    <option value="10">10x (Fast)</option>
-                    <option value="100">100x (Very Fast)</option>
-                    <option value="1000">1000x (Maximum)</option>
-                  </select>
-                </div>
-                <div class="form-group">
-                  <!-- Empty space for layout balance -->
-                </div>
-              </div>
-            </div>
-
-            <!-- Strategy Parameters -->
-            <div class="parameter-group">
-              <h4>Strategy Parameters</h4>
-              <div class="parameters-grid">
-                <div
-                  v-for="(param, paramName) in strategyParameters.parameters"
-                  :key="paramName"
-                  class="form-group"
-                >
-                  <label>
-                    {{ formatParameterName(paramName) }}
-                    <span v-if="param.description" class="param-description">
-                      {{ param.description }}
-                    </span>
-                  </label>
-
-                  <!-- String Input -->
-                  <input
-                    v-if="param.type === 'string'"
-                    type="text"
-                    v-model="strategyConfig[paramName]"
-                    :placeholder="param.default || 'Enter value'"
-                    class="form-input"
-                  />
-
-                  <!-- Integer Input -->
-                  <input
-                    v-else-if="param.type === 'integer'"
-                    type="number"
-                    v-model="strategyConfig[paramName]"
-                    :min="param.min"
-                    :max="param.max"
-                    step="1"
-                    :placeholder="param.default?.toString() || '0'"
-                    class="form-input"
-                  />
-
-                  <!-- Float Input -->
-                  <input
-                    v-else-if="param.type === 'float'"
-                    type="number"
-                    v-model="strategyConfig[paramName]"
-                    :min="param.min"
-                    :max="param.max"
-                    step="0.1"
-                    :placeholder="param.default?.toString() || '0.0'"
-                    class="form-input"
-                  />
-
-                  <!-- Boolean Input -->
-                  <div v-else-if="param.type === 'boolean'" class="checkbox-group">
-                    <input
-                      type="checkbox"
-                      :id="paramName"
-                      v-model="strategyConfig[paramName]"
-                    />
-                    <label :for="paramName">{{ param.default ? 'Enabled' : 'Disabled' }}</label>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <div class="dialog-footer">
-          <button class="btn btn-outline" @click="closeDialog">Cancel</button>
-          <button 
-            class="btn btn-primary" 
-            @click="runBacktest"
-            :disabled="!selectedStrategy || isRunningBacktest"
-            :class="{ loading: isRunningBacktest }"
-          >
-            <span v-if="isRunningBacktest">Running...</span>
-            <span v-else>Run Backtest</span>
-          </button>
-        </div>
-      </div>
-    </div>
+    <BacktestConfigDialog
+      :visible="showRunDialog"
+      :strategy="selectedStrategy"
+      @close="closeDialog"
+      @backtest-started="handleBacktestStarted"
+    />
 
     <!-- Backtest Results Grid -->
     <div class="backtest-results-grid" v-if="backtestResults.length > 0">
@@ -356,13 +189,18 @@
 
 <script>
 import { ref, onMounted } from 'vue'
-import { useRouter } from 'vue-router'
+import { useRouter, useRoute } from 'vue-router'
 import { api } from '../../services/api.js'
+import BacktestConfigDialog from './BacktestConfigDialog.vue'
 
 export default {
   name: 'StrategyBacktesting',
+  components: {
+    BacktestConfigDialog
+  },
   setup() {
     const router = useRouter()
+    const route = useRoute()
     
     // Reactive state
     const backtestResults = ref([])
@@ -680,10 +518,30 @@ export default {
         .replace(/\b\w/g, l => l.toUpperCase())
     }
 
+    // Auto-open logic for query parameters
+    const handleAutoOpen = async () => {
+      const { strategy_id, auto_open } = route.query
+      
+      if (auto_open === 'true' && strategy_id) {
+        // Wait for strategies to load first
+        await loadAvailableStrategies()
+        
+        // Find the strategy by ID
+        const strategy = availableStrategies.value.find(s => s.strategy_id === strategy_id)
+        if (strategy) {
+          selectedStrategy.value = strategy
+          showRunDialog.value = true
+        }
+      }
+    }
+
     // Lifecycle
     onMounted(async () => {
       await loadBacktestResults()
       await loadAvailableStrategies()
+      
+      // Handle auto-open after data is loaded
+      await handleAutoOpen()
     })
 
     return {

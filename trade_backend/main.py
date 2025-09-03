@@ -160,6 +160,81 @@ async def health_check():
         message="Health check completed"
     )
 
+# === Setup Configuration Endpoints ===
+
+@app.get("/setup/status", response_model=ApiResponse)
+async def get_setup_status():
+    """Check if mandatory routes are configured for the trading platform."""
+    try:
+        # Get current provider configuration
+        config = provider_config_manager.get_config()
+        
+        # Define mandatory services that must be configured
+        mandatory_services = [
+            'trade_account',
+            'options_chain',
+            'historical_data',
+            'symbol_lookup',
+            'streaming_quotes'
+        ]
+        
+        # The config might be directly the service routing object, or nested under service_routing
+        service_routing = config.get('service_routing', config) if isinstance(config, dict) else {}
+        
+        # Check if we have service routing configuration
+        if not service_routing or not isinstance(service_routing, dict):
+            return ApiResponse(
+                success=True,
+                data={
+                    "is_setup_complete": False,
+                    "missing_mandatory_services": mandatory_services,
+                    "configured_services": {},
+                    "has_providers": False
+                },
+                message="No service routing configuration found"
+            )
+        
+        # Check each mandatory service
+        missing_services = []
+        for service in mandatory_services:
+            routed_provider = service_routing.get(service)
+            if not routed_provider or routed_provider == "":
+                missing_services.append(service)
+        
+        is_setup_complete = len(missing_services) == 0
+        has_providers = bool(config.get('provider_instances', []))
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "is_setup_complete": is_setup_complete,
+                "missing_mandatory_services": missing_services,
+                "configured_services": service_routing,
+                "has_providers": has_providers
+            },
+            message="Setup status checked successfully"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error checking setup status: {e}")
+        # If there's an error (like provider config not available), assume setup is incomplete
+        return ApiResponse(
+            success=True,
+            data={
+                "is_setup_complete": False,
+                "missing_mandatory_services": [
+                    'trade_account',
+                    'options_chain', 
+                    'historical_data',
+                    'symbol_lookup',
+                    'streaming_quotes'
+                ],
+                "configured_services": {},
+                "has_providers": False
+            },
+            message=f"Error checking setup status: {str(e)}"
+        )
+
 # === Provider Configuration Endpoints ===
 
 @app.get("/providers/config", response_model=ApiResponse)

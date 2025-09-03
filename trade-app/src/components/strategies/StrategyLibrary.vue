@@ -47,8 +47,14 @@
             </div>
           </div>
           <div class="strategy-status">
-            <div class="validation-status" :class="`status-${strategy.validation_status}`">
-              {{ strategy.validation_status }}
+            <div class="strategy-actions-header">
+              <button 
+                class="btn-icon"
+                @click="deleteStrategy(strategy)"
+                title="Delete Strategy"
+              >
+                🗑️
+              </button>
             </div>
           </div>
         </div>
@@ -75,10 +81,10 @@
         <div class="strategy-actions">
           <button 
             class="btn btn-outline"
-            @click="viewBacktests(strategy)"
+            @click="createBacktest(strategy)"
           >
-            <span class="icon">📈</span>
-            View Results
+            <span class="icon">🚀</span>
+            Create Backtest
           </button>
           <button 
             class="btn btn-success"
@@ -86,14 +92,6 @@
           >
             <span class="icon">⚡</span>
             Deploy Live
-          </button>
-          <button 
-            class="btn btn-danger"
-            @click="deleteStrategy(strategy)"
-            title="Delete Strategy"
-          >
-            <span class="icon">🗑️</span>
-            Delete
           </button>
         </div>
       </div>
@@ -127,6 +125,7 @@
       @uploaded="handleStrategyUploaded"
     />
 
+
     <!-- Configuration Dialog - TODO: Implement -->
     <!-- <StrategyConfigurationDialog
       v-if="showConfigDialog"
@@ -151,11 +150,13 @@ import { useRouter } from 'vue-router'
 import { useNotifications } from '../../composables/useNotifications.js'
 import { api } from '../../services/api.js'
 import StrategyUploadDialog from './StrategyUploadDialog.vue'
+import BacktestConfigDialog from './BacktestConfigDialog.vue'
 
 export default {
   name: 'StrategyLibrary',
   components: {
     StrategyUploadDialog,
+    BacktestConfigDialog,
     // These will be created next
     // StrategyConfigurationDialog,
     // BacktestResultsDialog
@@ -177,6 +178,9 @@ export default {
     const showBacktestDialog = ref(false)
     const selectedStrategy = ref(null)
     const selectedConfiguration = ref(null)
+    
+    // Backtest dialog states
+    const selectedStrategyForBacktest = ref(null)
 
     // Load data
     const loadStrategies = async () => {
@@ -285,15 +289,30 @@ export default {
       }
     }
 
-    const runBacktest = (config) => {
-      // Navigate to backtest configuration with pre-selected config
+    // Modal dialog functions
+    const closeBacktestDialog = () => {
+      showBacktestDialog.value = false
+      selectedStrategyForBacktest.value = null
+    }
+
+    const createBacktest = (strategy) => {
+      // Navigate to backtesting page and trigger modal there
       router.push({
         path: '/strategies/backtest',
         query: { 
-          strategy_id: config.strategy_id,
-          config_id: config.config_id 
+          strategy_id: strategy.strategy_id,
+          auto_open: 'true'
         }
       })
+    }
+
+    const handleBacktestStarted = (result) => {
+      if (result.success) {
+        showSuccess(result.message, 'Backtest Started')
+        loadBacktestRuns() // Refresh backtest runs
+      } else {
+        showError(result.message, 'Backtest Error')
+      }
     }
 
     const viewBacktests = (strategy) => {
@@ -364,6 +383,9 @@ export default {
       selectedStrategy,
       selectedConfiguration,
       
+      // Backtest dialog states
+      selectedStrategyForBacktest,
+      
       // Helper functions
       getBacktestCount,
       getLiveCount,
@@ -373,14 +395,18 @@ export default {
       // Actions
       configureStrategy,
       createNewConfiguration,
-      runBacktest,
+      createBacktest,
       viewBacktests,
       deployLive,
       deleteStrategy,
       
+      // Modal dialog functions
+      closeBacktestDialog,
+      
       // Event handlers
       handleStrategyUploaded,
-      handleConfigurationSaved
+      handleConfigurationSaved,
+      handleBacktestStarted
     }
   }
 }
@@ -509,6 +535,18 @@ export default {
 .status-passed { background: var(--color-success); color: var(--text-primary); opacity: 0.8; }
 .status-failed { background: var(--color-danger); color: var(--text-primary); opacity: 0.8; }
 .status-pending { background: var(--color-warning); color: var(--text-primary); opacity: 0.8; }
+
+.strategy-status {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: var(--spacing-sm);
+}
+
+.strategy-actions-header {
+  display: flex;
+  gap: var(--spacing-xs);
+}
 
 .instance-summary {
   margin-bottom: var(--spacing-lg);
@@ -720,5 +758,175 @@ export default {
 
 .icon {
   font-size: var(--font-size-md);
+}
+
+/* Dialog Styles */
+.dialog-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.dialog-content {
+  background: var(--bg-secondary);
+  border-radius: var(--radius-lg);
+  max-width: 800px;
+  width: 90vw;
+  max-height: 90vh;
+  overflow-y: auto;
+  box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+}
+
+.dialog-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-lg);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.dialog-header h2 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--font-size-xl);
+}
+
+.btn-close {
+  background: none;
+  border: none;
+  font-size: var(--font-size-xl);
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: var(--spacing-xs);
+  border-radius: var(--radius-sm);
+  transition: var(--transition-fast);
+}
+
+.btn-close:hover {
+  background: var(--bg-quaternary);
+  color: var(--text-primary);
+}
+
+.dialog-body {
+  padding: var(--spacing-lg);
+}
+
+.dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  border-top: 1px solid var(--border-primary);
+}
+
+.form-section {
+  margin-bottom: var(--spacing-xl);
+}
+
+.form-section h3 {
+  margin: 0 0 var(--spacing-lg) 0;
+  color: var(--text-primary);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+}
+
+.parameter-group {
+  margin-bottom: var(--spacing-lg);
+  padding: var(--spacing-lg);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+}
+
+.parameter-group h4 {
+  margin: 0 0 var(--spacing-lg) 0;
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.form-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-lg);
+  margin-bottom: var(--spacing-lg);
+}
+
+.form-group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.form-group label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+
+.param-description {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-weight: var(--font-weight-normal);
+  font-style: italic;
+  margin-top: 2px;
+}
+
+.form-input {
+  padding: var(--spacing-sm);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-sm);
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+}
+
+.form-input:focus {
+  outline: none;
+  border-color: var(--color-brand);
+  box-shadow: 0 0 0 2px rgba(255, 107, 53, 0.1);
+}
+
+.parameters-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+  gap: var(--spacing-lg);
+}
+
+.checkbox-group {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.checkbox-group input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+}
+
+.checkbox-group label {
+  cursor: pointer;
+  user-select: none;
+}
+
+@media (max-width: 768px) {
+  .form-row {
+    grid-template-columns: 1fr;
+  }
+  
+  .parameters-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .dialog-content {
+    width: 95vw;
+    margin: var(--spacing-md);
+  }
 }
 </style>

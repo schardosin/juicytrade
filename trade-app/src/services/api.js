@@ -984,7 +984,7 @@ export const api = {
   // Get all configurations for a strategy
   async getStrategyConfigurations(strategyId) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/strategies/${strategyId}/configs`);
+      const response = await axios.get(`${API_BASE_URL}/api/strategies/${strategyId}/configs`);
       return response.data;
     } catch (error) {
       console.error("Error fetching strategy configurations:", error);
