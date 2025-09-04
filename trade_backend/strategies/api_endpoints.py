@@ -808,23 +808,33 @@ async def get_backtest_runs(strategy_id: Optional[str] = None):
 
     - **strategy_id**: Optional strategy filter
 
-    Returns list of backtest runs.
+    Returns list of backtest runs with strategy names.
     """
     try:
         from .database import strategy_db_manager
-        from .models import BacktestRun
+        from .models import BacktestRun, Strategy
         
         with strategy_db_manager.get_session() as session:
-            query = session.query(BacktestRun).filter(
+            # Join BacktestRun with Strategy to get strategy names
+            query = session.query(BacktestRun, Strategy.name.label('strategy_name')).join(
+                Strategy, BacktestRun.strategy_id == Strategy.strategy_id
+            ).filter(
                 BacktestRun.user_id == "default_user"
             )
             
             if strategy_id:
                 query = query.filter(BacktestRun.strategy_id == strategy_id)
             
-            runs = query.order_by(BacktestRun.created_at.desc()).all()
+            results = query.order_by(BacktestRun.created_at.desc()).all()
             
-            return [run.to_dict() for run in runs]
+            # Convert to dict and include strategy_name
+            runs_with_names = []
+            for run, strategy_name in results:
+                run_dict = run.to_dict()
+                run_dict['strategy_name'] = strategy_name
+                runs_with_names.append(run_dict)
+            
+            return runs_with_names
     
     except Exception as e:
         logger.error(f"Error getting backtest runs: {str(e)}")
@@ -838,22 +848,29 @@ async def get_backtest_run(run_id: str):
 
     - **run_id**: Backtest run ID
 
-    Returns backtest run details and results.
+    Returns backtest run details and results with strategy name.
     """
     try:
         from .database import strategy_db_manager
-        from .models import BacktestRun
+        from .models import BacktestRun, Strategy
         
         with strategy_db_manager.get_session() as session:
-            run = session.query(BacktestRun).filter(
+            # Join with Strategy to get strategy name
+            result = session.query(BacktestRun, Strategy.name.label('strategy_name')).join(
+                Strategy, BacktestRun.strategy_id == Strategy.strategy_id
+            ).filter(
                 BacktestRun.run_id == run_id,
                 BacktestRun.user_id == "default_user"
             ).first()
             
-            if not run:
+            if not result:
                 raise HTTPException(status_code=404, detail="Backtest run not found")
             
-            return run.to_dict()
+            run, strategy_name = result
+            run_dict = run.to_dict()
+            run_dict['strategy_name'] = strategy_name
+            
+            return run_dict
     
     except HTTPException:
         raise

@@ -55,36 +55,32 @@
         <!-- Result Header -->
         <div class="result-header">
           <div class="result-info">
-            <h3 class="strategy-name">{{ result.strategy_name || 'Example Moving Average Strategy' }}</h3>
-            <div class="result-meta">
-              <span class="meta-item">
-                <span class="meta-label">Period:</span>
-                {{ formatDateRange(result.start_date, result.end_date) }}
-              </span>
-              <span class="meta-item">
-                <span class="meta-label">Status:</span>
-                <span class="status-badge" :class="`status-${result.status}`">
-                  {{ result.status }}
-                </span>
-              </span>
-            </div>
+            <h3 class="strategy-name">{{ result.strategy_name }}</h3>
+        <div class="result-meta">
+          <div class="meta-left">
+            <span class="meta-item">
+              <span class="meta-label">Period:</span>
+              {{ formatDateRange(result.start_date, result.end_date) }}
+            </span>
+            <span class="meta-item">
+              <span class="meta-label">Executed:</span>
+              {{ formatExecutionDate(result.created_at) }}
+            </span>
           </div>
-          <div class="result-actions">
-            <button 
-              class="btn-icon"
-              @click="viewDetails(result)"
-              title="View Details"
-            >
-              📊
-            </button>
-            <button 
-              class="btn-icon"
-              @click="deleteResult(result)"
-              title="Delete Result"
-            >
-              🗑️
-            </button>
-          </div>
+        </div>
+      </div>
+      <div class="result-actions">
+        <button 
+          class="btn-icon"
+          @click="deleteResult(result)"
+          title="Delete Result"
+        >
+          🗑️
+        </button>
+        <span class="status-badge" :class="`status-${result.status}`">
+          {{ result.status }}
+        </span>
+      </div>
         </div>
 
         <!-- Performance Summary -->
@@ -168,6 +164,7 @@
       <div class="list-header">
         <div class="list-col col-strategy">Strategy</div>
         <div class="list-col col-period">Period</div>
+        <div class="list-col col-executed">Executed</div>
         <div class="list-col col-return">Return</div>
         <div class="list-col col-trades">Trades</div>
         <div class="list-col col-winrate">Win Rate</div>
@@ -184,11 +181,14 @@
       >
         <div class="list-col col-strategy">
           <div class="strategy-info">
-            <h4 class="strategy-name">{{ result.strategy_name || 'Example Moving Average Strategy' }}</h4>
+            <h4 class="strategy-name">{{ result.strategy_name }}</h4>
           </div>
         </div>
         <div class="list-col col-period">
           <span class="period-text">{{ formatDateRange(result.start_date, result.end_date) }}</span>
+        </div>
+        <div class="list-col col-executed">
+          <span class="executed-text">{{ formatExecutionDate(result.created_at) }}</span>
         </div>
         <div class="list-col col-return">
           <span class="return-value" :class="getPnLClass(result.total_return)">
@@ -569,6 +569,21 @@ export default {
       }
     }
 
+    const formatExecutionDate = (dateString) => {
+      if (!dateString) return 'N/A'
+      
+      const date = new Date(dateString)
+      
+      // Always show date and time
+      return date.toLocaleString([], { 
+        month: 'short', 
+        day: 'numeric', 
+        year: 'numeric',
+        hour: '2-digit', 
+        minute: '2-digit'
+      })
+    }
+
     const getPnLClass = (value) => {
       if (value > 0) return 'positive'
       if (value < 0) return 'negative'
@@ -678,6 +693,7 @@ export default {
       formatDuration,
       formatCurrency,
       formatBacktestDuration,
+      formatExecutionDate,
       getPnLClass,
       formatParameterName,
       
@@ -801,9 +817,9 @@ export default {
 }
 
 .strategy-name {
-  font-size: var(--font-size-xl);
+  font-size: var(--font-size-lg);
   font-weight: var(--font-weight-semibold);
-  margin: 0 0 var(--spacing-xs) 0;
+  margin: 0 0 var(--spacing-sm) 0;
   color: var(--text-primary);
 }
 
@@ -816,15 +832,29 @@ export default {
 
 .result-meta {
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--spacing-lg);
+  justify-content: space-between;
+  align-items: center;
   font-size: var(--font-size-sm);
+}
+
+.meta-left {
+  display: flex;
+  flex-wrap: nowrap;
+  gap: var(--spacing-md);
+  align-items: center;
+}
+
+.meta-right {
+  display: flex;
+  align-items: center;
 }
 
 .meta-item {
   display: flex;
   align-items: center;
   gap: var(--spacing-xs);
+  white-space: nowrap;
+  flex-shrink: 0;
 }
 
 .meta-label {
@@ -845,6 +875,8 @@ export default {
 
 .result-actions {
   display: flex;
+  flex-direction: column;
+  align-items: flex-end;
   gap: var(--spacing-xs);
 }
 
@@ -1310,7 +1342,7 @@ export default {
 
 .list-header {
   display: grid;
-  grid-template-columns: 2fr 1.5fr 1fr 0.8fr 1fr 0.8fr 1fr 0.8fr 1.2fr;
+  grid-template-columns: 2fr 1.5fr 1fr 1fr 0.8fr 1fr 0.8fr 1fr 0.8fr 1.2fr;
   gap: var(--spacing-md);
   padding: var(--spacing-lg);
   background: var(--bg-quaternary);
@@ -1323,7 +1355,7 @@ export default {
 
 .backtest-row {
   display: grid;
-  grid-template-columns: 2fr 1.5fr 1fr 0.8fr 1fr 0.8fr 1fr 0.8fr 1.2fr;
+  grid-template-columns: 2fr 1.5fr 1fr 1fr 0.8fr 1fr 0.8fr 1fr 0.8fr 1.2fr;
   gap: var(--spacing-md);
   padding: var(--spacing-lg);
   border-bottom: 1px solid var(--border-primary);
@@ -1378,7 +1410,8 @@ export default {
   justify-content: center;
 }
 
-.period-text {
+.period-text,
+.executed-text {
   font-size: var(--font-size-sm);
   color: var(--text-primary);
 }
@@ -1428,7 +1461,7 @@ export default {
 @media (max-width: 1400px) {
   .list-header,
   .backtest-row {
-    grid-template-columns: 2fr 1.2fr 1fr 0.8fr 1fr 1.2fr;
+    grid-template-columns: 2fr 1.2fr 1fr 1fr 0.8fr 1.2fr;
   }
   
   .col-period,
@@ -1441,7 +1474,7 @@ export default {
 @media (max-width: 1000px) {
   .list-header,
   .backtest-row {
-    grid-template-columns: 2fr 1fr 0.8fr 1.2fr;
+    grid-template-columns: 2fr 1fr 1fr 1.2fr;
   }
   
   .col-period,
@@ -1489,6 +1522,12 @@ export default {
   
   .view-toggle {
     order: 2;
+  }
+  
+  /* Allow wrapping on very small screens */
+  .result-meta {
+    flex-wrap: wrap;
+    gap: var(--spacing-sm);
   }
 }
 </style>
