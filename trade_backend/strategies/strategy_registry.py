@@ -188,6 +188,8 @@ class StrategyRegistry:
             from .decision_chain import DecisionChain
             from .stateful_rule import StatefulRule
             from .leg_selection import SelectLegsAction
+            from .flow_engine import FlowEngine, RuleCondition
+            from .rules import Rules
             
             exec_globals = {
                 '__builtins__': __builtins__,
@@ -199,6 +201,9 @@ class StrategyRegistry:
                 'DecisionChain': DecisionChain,
                 'StatefulRule': StatefulRule,
                 'SelectLegsAction': SelectLegsAction,
+                'FlowEngine': FlowEngine,
+                'RuleCondition': RuleCondition,
+                'Rules': Rules,
                 'datetime': datetime,
                 'logging': logging,
                 # Add common imports that strategies might need
@@ -225,6 +230,15 @@ class StrategyRegistry:
             ).replace(
                 'from .leg_selection import SelectLegsAction',
                 '# SelectLegsAction already available in globals'
+            ).replace(
+                'from .flow_engine import FlowEngine, RuleCondition',
+                '# FlowEngine and RuleCondition already available in globals'
+            ).replace(
+                'from .flow_engine import RuleCondition',
+                '# RuleCondition already available in globals'
+            ).replace(
+                'from .rules import Rules',
+                '# Rules already available in globals'
             )
             
             # Execute the processed strategy code

@@ -26,6 +26,7 @@ from .actions import (
 )
 from .strategy_state import StrategyState, StateValidationLevel
 from .time_manager import TimeScheduler, MarketType, TradingSession
+from .flow_engine import FlowEngine
 
 logger = logging.getLogger(__name__)
 
@@ -90,6 +91,9 @@ class BaseStrategy(ABC):
         
         # Time management
         self.time_scheduler = TimeScheduler(market_type)
+        
+        # Declarative Flow Engine
+        self.flow = FlowEngine(self)
         
         # Execution state
         self.is_running = False
