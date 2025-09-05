@@ -408,10 +408,12 @@ class FlowEngine:
         try:
             context_values = {}
             
-            # Try to get common strategy state values
+            # Try to get current price
+            current_price = None
             if hasattr(self.strategy, 'get_current_price_from_provider'):
                 try:
-                    context_values["current_price"] = self.strategy.get_current_price_from_provider()
+                    current_price = self.strategy.get_current_price_from_provider()
+                    context_values["current_price"] = current_price
                 except:
                     pass
             
@@ -419,7 +421,7 @@ class FlowEngine:
                 # Try to get common state values
                 common_states = [
                     "current_fast_ma", "current_slow_ma", "current_position", 
-                    "entry_price", "unrealized_pnl", "symbol"
+                    "entry_price", "symbol"
                 ]
                 for state_key in common_states:
                     try:
@@ -428,6 +430,14 @@ class FlowEngine:
                             context_values[state_key] = value
                     except:
                         pass
+            
+            # **FRAMEWORK ENHANCEMENT**: Automatically calculate unrealized P&L
+            try:
+                unrealized_pnl = self._calculate_unrealized_pnl(current_price, context_values)
+                if unrealized_pnl is not None:
+                    context_values["unrealized_pnl"] = unrealized_pnl
+            except Exception as e:
+                self.logger.debug(f"Could not calculate unrealized P&L: {e}")
             
             # Try to get account balance from order executor
             if hasattr(self.strategy, 'order_executor') and hasattr(self.strategy.order_executor, 'current_capital'):
@@ -485,6 +495,41 @@ class FlowEngine:
         except Exception as e:
             self.logger.error(f"Error capturing evaluation details: {e}")
             return {"error": str(e)}
+    
+    def _calculate_unrealized_pnl(self, current_price: Optional[float], context_values: Dict[str, Any]) -> Optional[float]:
+        """
+        Automatically calculate unrealized P&L for any strategy.
+        
+        This is a framework-level enhancement that provides P&L calculation
+        without requiring each strategy to implement it.
+        
+        Args:
+            current_price: Current market price
+            context_values: Context values containing position and entry price info
+            
+        Returns:
+            Unrealized P&L as float, or None if calculation not possible
+        """
+        try:
+            # Get position information
+            current_position = context_values.get("current_position", 0)
+            entry_price = context_values.get("entry_price")
+            
+            # Need all three values to calculate P&L
+            if current_position == 0 or not entry_price or not current_price:
+                return None
+            
+            # Calculate P&L based on position type
+            if current_position > 0:  # Long position
+                pnl = (current_price - entry_price) * current_position
+            else:  # Short position
+                pnl = (entry_price - current_price) * abs(current_position)
+            
+            return round(pnl, 2)
+            
+        except Exception as e:
+            self.logger.debug(f"Error calculating unrealized P&L: {e}")
+            return None
     
     def _determine_signal_type(self, node_name: str, result: bool, next_node: Optional[Node]) -> str:
         """Determine the signal type for UI filtering"""
