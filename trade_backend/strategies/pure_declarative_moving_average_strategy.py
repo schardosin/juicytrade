@@ -95,16 +95,25 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
         sell_action = self.flow.add_action("Execute Sell Order", self.close_position)
         
         # Create decision nodes from innermost to outermost
+        # Entry decision: Check ALL the same criteria as the original strategy
         entry_decision = self.flow.add_decision(
             name="Entry Signal Check",
-            condition=Rules.AllOf(self.is_bullish_crossover),
+            condition=Rules.AllOf(
+                self.is_bullish_crossover,  # bullish_crossover
+                self.is_not_in_position,    # not_in_position  
+                self.has_sufficient_capital # sufficient_capital
+            ),
             if_true=buy_action,
             if_false=None
         )
         
+        # Exit decision: Check the same criteria as the original strategy
         exit_decision = self.flow.add_decision(
             name="Exit Signal Check", 
-            condition=Rules.AllOf(self.is_bearish_crossover),
+            condition=Rules.AllOf(
+                self.is_bearish_crossover,  # bearish_crossover
+                self.is_in_position         # in_position (must be in position to exit)
+            ),
             if_true=sell_action,
             if_false=None
         )
@@ -176,20 +185,22 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
         now_above = curr_fast_ma > curr_slow_ma
         bullish_crossover = was_below and now_above
         
-        # Also check if we have sufficient capital (same as original)
-        has_capital = self.calculate_position_size() > 0
-        
-        return bullish_crossover and has_capital
+        return bullish_crossover
+    
+    def is_not_in_position(self, context: ActionContext) -> bool:
+        """Rule: Check if NOT currently in a position"""
+        current_position = self.get_state("current_position", 0)
+        return current_position == 0
+    
+    def has_sufficient_capital(self, context: ActionContext) -> bool:
+        """Rule: Check if we have sufficient capital to open a position"""
+        position_size = self.calculate_position_size()
+        return position_size > 0
     
     def is_bearish_crossover(self, context: ActionContext) -> bool:
         """Rule: Detect bearish crossover (exact same logic as original)"""
         current_fast_ma = self.get_state("current_fast_ma", 0)
         current_slow_ma = self.get_state("current_slow_ma", 0)
-        current_position = self.get_state("current_position", 0)
-        
-        # Only check for bearish crossover if we're in a long position
-        if current_position <= 0:
-            return False
         
         # Simple bearish condition: fast MA below slow MA (same as original)
         return current_fast_ma < current_slow_ma

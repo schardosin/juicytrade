@@ -443,7 +443,8 @@ class FlowEngine:
             details = {
                 "condition_type": condition.__class__.__name__,
                 "rule_names": condition.get_rule_names(),
-                "individual_results": {}
+                "individual_results": {},
+                "decision_state": {}  # Add decision_state for UI compatibility
             }
             
             # For AllOf/AnyOf conditions, capture each sub-rule result
@@ -462,8 +463,14 @@ class FlowEngine:
                                 rule_result = rule_callable(context)
                         
                         details["individual_results"][rule_name] = rule_result
+                        
+                        # Add to decision_state using the rule function name directly
+                        # The strategy can override this mapping if needed
+                        details["decision_state"][rule_name] = bool(rule_result)
+                        
                     except Exception as e:
                         details["individual_results"][rule_name] = f"Error: {e}"
+                        details["decision_state"][rule_name] = False
             
             return details
             
