@@ -79,8 +79,10 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
         # This is the ONLY place where strategy logic is defined!
         self._define_strategy_flow()
 
-        # Register the indicator update method
-        self.register_data_processor(self.update_indicators)
+        # Register data processors in order of execution
+        self.register_data_processor(self.update_price_history)
+        self.register_data_processor(self.calculate_moving_averages)
+        self.register_data_processor(self.update_current_indicators)
         
         self.log_info(f"Pure Declarative Moving Average Strategy initialized for {self.symbol}")
         self.add_checkpoint("strategy_initialized", {
@@ -346,8 +348,12 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
     # Helper Methods (same as original strategy)
     # ========================================================================
     
-    def update_indicators(self, context: ActionContext) -> bool:
-        """Update price history and calculate moving averages (same as original)"""
+    # ========================================================================
+    # Data Processor Methods - Registered in order of execution
+    # ========================================================================
+    
+    def update_price_history(self, context: ActionContext) -> bool:
+        """Data Processor 1: Update price history with new data points"""
         try:
             # Get current price from data provider
             current_price = self.get_current_price_from_provider()
@@ -370,35 +376,81 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
                     price_history = price_history[-max_history:]
                 
                 self.set_state("price_history", price_history)
-
-                # Calculate moving averages if we have enough data
-                if len(price_history) >= self.slow_period:
-                    fast_ma = self.calculate_ma(price_history, self.fast_period)
-                    slow_ma = self.calculate_ma(price_history, self.slow_period)
-                    
-                    # Update MA history
-                    fast_ma_history = self.get_state("fast_ma_history", [])
-                    slow_ma_history = self.get_state("slow_ma_history", [])
-                    
-                    fast_ma_history.append(fast_ma)
-                    slow_ma_history.append(slow_ma)
-                    
-                    # Keep reasonable history
-                    if len(fast_ma_history) > 100:
-                        fast_ma_history = fast_ma_history[-100:]
-                        slow_ma_history = slow_ma_history[-100:]
-                    
-                    self.set_state("fast_ma_history", fast_ma_history)
-                    self.set_state("slow_ma_history", slow_ma_history)
-                    self.set_state("current_fast_ma", fast_ma)
-                    self.set_state("current_slow_ma", slow_ma)
-                    
-                    return True  # Indicators updated successfully
+                self.set_state("new_price_added", True)  # Flag for next processors
+                return True
             
+            self.set_state("new_price_added", False)  # No new price added
             return False
             
         except Exception as e:
-            self.log_error(f"Error updating indicators: {e}")
+            self.log_error(f"Error updating price history: {e}")
+            return False
+    
+    def calculate_moving_averages(self, context: ActionContext) -> bool:
+        """Data Processor 2: Calculate moving averages when we have enough data"""
+        try:
+            # Only calculate if we added a new price
+            if not self.get_state("new_price_added", False):
+                return False
+            
+            price_history = self.get_state("price_history", [])
+            
+            # Calculate moving averages if we have enough data
+            if len(price_history) >= self.slow_period:
+                fast_ma = self.calculate_ma(price_history, self.fast_period)
+                slow_ma = self.calculate_ma(price_history, self.slow_period)
+                
+                # Store calculated values for next processor
+                self.set_state("calculated_fast_ma", fast_ma)
+                self.set_state("calculated_slow_ma", slow_ma)
+                self.set_state("ma_calculated", True)
+                return True
+            
+            self.set_state("ma_calculated", False)
+            return False
+            
+        except Exception as e:
+            self.log_error(f"Error calculating moving averages: {e}")
+            return False
+    
+    def update_current_indicators(self, context: ActionContext) -> bool:
+        """Data Processor 3: Update current indicators and MA history"""
+        try:
+            # Only update if we calculated new MAs
+            if not self.get_state("ma_calculated", False):
+                return False
+            
+            fast_ma = self.get_state("calculated_fast_ma")
+            slow_ma = self.get_state("calculated_slow_ma")
+            
+            # Update MA history
+            fast_ma_history = self.get_state("fast_ma_history", [])
+            slow_ma_history = self.get_state("slow_ma_history", [])
+            
+            fast_ma_history.append(fast_ma)
+            slow_ma_history.append(slow_ma)
+            
+            # Keep reasonable history
+            if len(fast_ma_history) > 100:
+                fast_ma_history = fast_ma_history[-100:]
+                slow_ma_history = slow_ma_history[-100:]
+            
+            # Update all state values
+            self.set_state("fast_ma_history", fast_ma_history)
+            self.set_state("slow_ma_history", slow_ma_history)
+            self.set_state("current_fast_ma", fast_ma)
+            self.set_state("current_slow_ma", slow_ma)
+            
+            # Clean up temporary flags
+            self.set_state("new_price_added", False)
+            self.set_state("ma_calculated", False)
+            self.set_state("calculated_fast_ma", None)
+            self.set_state("calculated_slow_ma", None)
+            
+            return True
+            
+        except Exception as e:
+            self.log_error(f"Error updating current indicators: {e}")
             return False
     
     def calculate_position_size(self) -> int:
