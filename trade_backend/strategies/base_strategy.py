@@ -460,35 +460,64 @@ class BaseStrategy(ABC):
         This method is called automatically during each execute_cycle() to allow
         strategies to record decisions at every data point for debugging and analysis.
         
-        Override this method in your strategy to implement custom decision recording.
-        The default implementation does nothing, making it optional for strategies.
+        For pure declarative strategies, this method automatically executes the flow engine.
+        For traditional strategies, override this method to implement custom decision recording.
         
         Args:
             context: ActionContext containing current market data, time, positions, etc.
-        
-        Example:
-            async def record_cycle_decision(self, context: ActionContext):
-                # Get current market context
-                current_price = self.get_current_price()
-                indicators_ready = self.check_indicators_ready()
-                
-                # Record decision
-                self.add_decision_timeline({
-                    "timestamp": context.current_time.isoformat(),
-                    "rule_description": "Market Analysis - Data Point Evaluation",
-                    "result": indicators_ready,
-                    "context_values": {
-                        "current_price": current_price,
-                        "indicators_ready": indicators_ready
-                    },
-                    "parameters": self.config,
-                    "evaluation_details": {
-                        "data_status": "sufficient" if indicators_ready else "insufficient"
-                    }
-                })
         """
-        # Default implementation does nothing - strategies can override
-        pass
+        # Check if this is a pure declarative strategy (has flow nodes but no custom record_cycle_decision)
+        if (hasattr(self, 'flow') and 
+            self.flow.get_node_count() > 0 and 
+            not self._has_custom_record_cycle_decision()):
+            
+            # Pure declarative strategy - execute the flow engine
+            await self.execute_declarative_flow(context)
+        else:
+            # Traditional strategy - default implementation does nothing
+            # Strategies can override this method for custom decision recording
+            pass
+    
+    def _has_custom_record_cycle_decision(self) -> bool:
+        """Check if the strategy has overridden record_cycle_decision"""
+        # Get the method from the strategy class
+        strategy_method = getattr(self.__class__, 'record_cycle_decision', None)
+        base_method = getattr(BaseStrategy, 'record_cycle_decision', None)
+        
+        # If the method is different from the base class method, it's been overridden
+        return strategy_method is not base_method
+    
+    async def execute_declarative_flow(self, context: ActionContext):
+        """
+        Execute the declarative flow for pure declarative strategies.
+        
+        This method handles:
+        1. Updating indicators (if the strategy has an update_indicators method)
+        2. Executing the flow engine with automatic decision recording
+        3. Error handling and logging
+        """
+        try:
+            # Update indicators if the strategy has this method
+            if hasattr(self, 'update_indicators'):
+                self.update_indicators(context)
+            
+            # Execute the flow engine (which will automatically record decisions)
+            await self.flow.execute(context)
+            
+        except Exception as e:
+            self.logger.error(f"Error executing declarative flow: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+            
+            # Record the error in decision timeline
+            self.add_decision_timeline({
+                "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                "rule_description": "Flow Execution Error",
+                "result": False,
+                "context_values": {"error": str(e)},
+                "evaluation_details": {"error_type": "flow_execution_error"},
+                "next_action": "Error - Flow Stopped"
+            })
     
     async def cleanup(self):
         """Cleanup resources when strategy stops"""

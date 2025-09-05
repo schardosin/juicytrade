@@ -196,8 +196,7 @@ class FlowEngine:
     
     async def execute(self, context: ActionContext):
         """
-        Execute the defined strategy graph from its root node.
-        This will be called inside record_cycle_decision.
+        Execute the defined strategy graph from its root node with automatic decision recording.
         """
         if not self.root_node:
             self.logger.warning("No root node defined - flow execution skipped")
@@ -211,9 +210,25 @@ class FlowEngine:
                 execution_path.append(current_node.name)
                 self.logger.debug(f"Executing node: {current_node.name}")
                 
-                # Execute current node and get next node
-                next_node = await current_node.execute(context)
-                current_node = next_node
+                if isinstance(current_node, DecisionNode):
+                    # Evaluate decision and record details automatically
+                    decision_info = await self._evaluate_and_record_decision(current_node, context)
+                    
+                    # Add to strategy's decision timeline
+                    self.strategy.add_decision_timeline(decision_info)
+                    
+                    # Continue execution based on result
+                    current_node = decision_info["next_node"]
+                    
+                elif isinstance(current_node, ActionNode):
+                    # Execute action and record details
+                    action_info = await self._execute_and_record_action(current_node, context)
+                    
+                    # Add to strategy's decision timeline
+                    self.strategy.add_decision_timeline(action_info)
+                    
+                    # Actions are terminal
+                    current_node = None
                 
                 # Safety check to prevent infinite loops
                 if len(execution_path) > 100:
@@ -295,6 +310,166 @@ class FlowEngine:
     def get_node_count(self) -> int:
         """Get total number of nodes in the flow"""
         return len(self.nodes)
+    
+    async def _evaluate_and_record_decision(self, node: DecisionNode, context: ActionContext) -> Dict[str, Any]:
+        """Evaluate decision and capture all details for UI"""
+        try:
+            # Evaluate the condition
+            result = await node.condition.evaluate(context)
+            
+            # Capture context values (current prices, indicators, etc.)
+            context_values = self._capture_context_values(context)
+            
+            # Capture evaluation details (which rules were evaluated, their results)
+            evaluation_details = await self._capture_evaluation_details(node.condition, context)
+            
+            # Determine next node
+            next_node = node.if_true if result else node.if_false
+            
+            return {
+                "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                "rule_description": node.name,
+                "condition_description": node.condition.get_description(),
+                "result": result,
+                "context_values": context_values,
+                "evaluation_details": evaluation_details,
+                "next_action": next_node.name if next_node else "End Flow",
+                "node_type": "Decision",
+                "node_id": node.node_id,
+                "next_node": next_node  # Internal use for flow control
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error evaluating decision node {node.name}: {e}")
+            return {
+                "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                "rule_description": node.name,
+                "condition_description": f"Error: {e}",
+                "result": False,
+                "context_values": {},
+                "evaluation_details": {"error": str(e)},
+                "next_action": "Error - End Flow",
+                "node_type": "Decision",
+                "node_id": node.node_id,
+                "next_node": None
+            }
+    
+    async def _execute_and_record_action(self, node: ActionNode, context: ActionContext) -> Dict[str, Any]:
+        """Execute action and capture details for UI"""
+        try:
+            # Execute the action
+            if asyncio.iscoroutinefunction(node.action_callable):
+                await node.action_callable(context)
+            else:
+                node.action_callable(context)
+            
+            # Capture context values after action
+            context_values = self._capture_context_values(context)
+            
+            return {
+                "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                "rule_description": node.name,
+                "condition_description": f"Action: {node.action_callable.__name__}",
+                "result": True,
+                "context_values": context_values,
+                "evaluation_details": {
+                    "action_function": node.action_callable.__name__,
+                    "action_type": "async" if asyncio.iscoroutinefunction(node.action_callable) else "sync"
+                },
+                "next_action": "Action Completed",
+                "node_type": "Action",
+                "node_id": node.node_id
+            }
+            
+        except Exception as e:
+            self.logger.error(f"Error executing action node {node.name}: {e}")
+            return {
+                "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
+                "rule_description": node.name,
+                "condition_description": f"Action Error: {e}",
+                "result": False,
+                "context_values": {},
+                "evaluation_details": {"error": str(e)},
+                "next_action": "Action Failed",
+                "node_type": "Action",
+                "node_id": node.node_id
+            }
+    
+    def _capture_context_values(self, context: ActionContext) -> Dict[str, Any]:
+        """Capture current market context for UI display"""
+        try:
+            context_values = {}
+            
+            # Try to get common strategy state values
+            if hasattr(self.strategy, 'get_current_price_from_provider'):
+                try:
+                    context_values["current_price"] = self.strategy.get_current_price_from_provider()
+                except:
+                    pass
+            
+            if hasattr(self.strategy, 'get_state'):
+                # Try to get common state values
+                common_states = [
+                    "current_fast_ma", "current_slow_ma", "current_position", 
+                    "entry_price", "unrealized_pnl", "symbol"
+                ]
+                for state_key in common_states:
+                    try:
+                        value = self.strategy.get_state(state_key)
+                        if value is not None:
+                            context_values[state_key] = value
+                    except:
+                        pass
+            
+            # Try to get account balance from order executor
+            if hasattr(self.strategy, 'order_executor') and hasattr(self.strategy.order_executor, 'current_capital'):
+                try:
+                    context_values["account_balance"] = self.strategy.order_executor.current_capital
+                except:
+                    pass
+            
+            # Add timestamp
+            context_values["timestamp"] = context.current_time.isoformat() if context.current_time else datetime.now().isoformat()
+            
+            return context_values
+            
+        except Exception as e:
+            self.logger.error(f"Error capturing context values: {e}")
+            return {"error": str(e)}
+    
+    async def _capture_evaluation_details(self, condition: RuleCondition, context: ActionContext) -> Dict[str, Any]:
+        """Capture detailed rule evaluation for debugging"""
+        try:
+            details = {
+                "condition_type": condition.__class__.__name__,
+                "rule_names": condition.get_rule_names(),
+                "individual_results": {}
+            }
+            
+            # For AllOf/AnyOf conditions, capture each sub-rule result
+            if hasattr(condition, 'rule_callables'):
+                for rule_callable in condition.rule_callables:
+                    rule_name = getattr(rule_callable, '__name__', str(rule_callable))
+                    try:
+                        if isinstance(rule_callable, RuleCondition):
+                            # Nested rule condition
+                            rule_result = await rule_callable.evaluate(context)
+                        else:
+                            # Direct callable rule
+                            if asyncio.iscoroutinefunction(rule_callable):
+                                rule_result = await rule_callable(context)
+                            else:
+                                rule_result = rule_callable(context)
+                        
+                        details["individual_results"][rule_name] = rule_result
+                    except Exception as e:
+                        details["individual_results"][rule_name] = f"Error: {e}"
+            
+            return details
+            
+        except Exception as e:
+            self.logger.error(f"Error capturing evaluation details: {e}")
+            return {"error": str(e)}
     
     def clear(self):
         """Clear all nodes and reset the flow"""
