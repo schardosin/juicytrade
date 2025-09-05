@@ -113,6 +113,14 @@ const routes = [
           title: "Live Trading - Trading Platform",
         },
       },
+      {
+        path: "data",
+        name: "StrategyData",
+        component: () => import("../components/strategies/StrategyData.vue"),
+        meta: {
+          title: "Data Management - Trading Platform",
+        },
+      },
     ],
   },
 ];

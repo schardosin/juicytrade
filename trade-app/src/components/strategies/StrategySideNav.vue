@@ -65,6 +65,12 @@ export default {
         icon: "pi pi-chart-bar",
         route: "/strategies/backtest",
       },
+      {
+        id: "data",
+        label: "Data",
+        icon: "pi pi-database",
+        route: "/strategies/data",
+      },
     ];
 
     // Methods
@@ -88,6 +94,8 @@ export default {
         activeItem.value = "live";
       } else if (currentPath.startsWith("/strategies/backtest")) {
         activeItem.value = "backtest";
+      } else if (currentPath.startsWith("/strategies/data")) {
+        activeItem.value = "data";
       } else {
         // Find exact match
         const currentItem = navItems.find((item) => item.route === currentPath);
