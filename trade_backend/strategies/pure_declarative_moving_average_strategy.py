@@ -78,6 +78,9 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
         # --- PURE DECLARATIVE FLOW DEFINITION ---
         # This is the ONLY place where strategy logic is defined!
         self._define_strategy_flow()
+
+        # Register the indicator update method
+        self.register_data_processor(self.update_indicators)
         
         self.log_info(f"Pure Declarative Moving Average Strategy initialized for {self.symbol}")
         self.add_checkpoint("strategy_initialized", {
@@ -170,7 +173,7 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
         # Current values
         curr_fast_ma = fast_ma_history[-1]
         curr_slow_ma = slow_ma_history[-1]
-        
+
         # True bullish crossover: was below or equal, now above
         was_below = prev_fast_ma <= prev_slow_ma
         now_above = curr_fast_ma > curr_slow_ma
@@ -367,32 +370,32 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
                     price_history = price_history[-max_history:]
                 
                 self.set_state("price_history", price_history)
+
+                # Calculate moving averages if we have enough data
+                if len(price_history) >= self.slow_period:
+                    fast_ma = self.calculate_ma(price_history, self.fast_period)
+                    slow_ma = self.calculate_ma(price_history, self.slow_period)
+                    
+                    # Update MA history
+                    fast_ma_history = self.get_state("fast_ma_history", [])
+                    slow_ma_history = self.get_state("slow_ma_history", [])
+                    
+                    fast_ma_history.append(fast_ma)
+                    slow_ma_history.append(slow_ma)
+                    
+                    # Keep reasonable history
+                    if len(fast_ma_history) > 100:
+                        fast_ma_history = fast_ma_history[-100:]
+                        slow_ma_history = slow_ma_history[-100:]
+                    
+                    self.set_state("fast_ma_history", fast_ma_history)
+                    self.set_state("slow_ma_history", slow_ma_history)
+                    self.set_state("current_fast_ma", fast_ma)
+                    self.set_state("current_slow_ma", slow_ma)
+                    
+                    return True  # Indicators updated successfully
             
-            # Calculate moving averages if we have enough data
-            if len(price_history) >= self.slow_period:
-                fast_ma = self.calculate_ma(price_history, self.fast_period)
-                slow_ma = self.calculate_ma(price_history, self.slow_period)
-                
-                # Update MA history
-                fast_ma_history = self.get_state("fast_ma_history", [])
-                slow_ma_history = self.get_state("slow_ma_history", [])
-                
-                fast_ma_history.append(fast_ma)
-                slow_ma_history.append(slow_ma)
-                
-                # Keep reasonable history
-                if len(fast_ma_history) > 100:
-                    fast_ma_history = fast_ma_history[-100:]
-                    slow_ma_history = slow_ma_history[-100:]
-                
-                self.set_state("fast_ma_history", fast_ma_history)
-                self.set_state("slow_ma_history", slow_ma_history)
-                self.set_state("current_fast_ma", fast_ma)
-                self.set_state("current_slow_ma", slow_ma)
-                
-                return True  # Indicators updated successfully
-            
-            return False  # Not enough data yet
+            return False
             
         except Exception as e:
             self.log_error(f"Error updating indicators: {e}")

@@ -94,6 +94,7 @@ class BaseStrategy(ABC):
         
         # Declarative Flow Engine
         self.flow = FlowEngine(self)
+        self.data_update_processors = []
         
         # Execution state
         self.is_running = False
@@ -497,10 +498,13 @@ class BaseStrategy(ABC):
         3. Error handling and logging
         """
         try:
-            # Update indicators if the strategy has this method
-            if hasattr(self, 'update_indicators'):
-                self.update_indicators(context)
-            
+            # Execute all registered data processors
+            for processor in self.data_update_processors:
+                try:
+                    processor(context)
+                except Exception as e:
+                    self.logger.error(f"Error executing data processor '{processor.__name__}': {e}")
+
             # Execute the flow engine (which will automatically record decisions)
             await self.flow.execute(context)
             
@@ -518,7 +522,19 @@ class BaseStrategy(ABC):
                 "evaluation_details": {"error_type": "flow_execution_error"},
                 "next_action": "Error - Flow Stopped"
             })
-    
+
+    def register_data_processor(self, processor: Callable):
+        """
+        Register a data processor to be called on each execution cycle.
+        
+        Args:
+            processor: A callable that accepts an ActionContext and returns a boolean.
+        """
+        if not callable(processor):
+            raise TypeError("Processor must be a callable function or method.")
+        self.data_update_processors.append(processor)
+        self.logger.info(f"Data processor '{processor.__name__}' registered.")
+            
     async def cleanup(self):
         """Cleanup resources when strategy stops"""
         # Override in subclasses for custom cleanup
