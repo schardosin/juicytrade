@@ -113,7 +113,7 @@
     </div>
 
     <div class="timeline-filters" v-if="decisionTimeline.length > 0">
-      <h4>Filters</h4>
+      <h4>Show Only</h4>
       <div class="filter-options">
         <label class="filter-checkbox">
           <input type="checkbox" v-model="filters.showEntrySignals" @change="applyFilters">
@@ -124,13 +124,12 @@
           Exit Signals ({{ exitSignalCount }})
         </label>
         <label class="filter-checkbox">
-          <input type="checkbox" v-model="filters.showTrueResults" @change="applyFilters">
-          True Results Only ({{ trueResultCount }})
+          <input type="checkbox" v-model="filters.showEvaluations" @change="applyFilters">
+          Decision Evaluations ({{ evaluationCount }})
         </label>
-        <label class="filter-checkbox">
-          <input type="checkbox" v-model="filters.showFalseResults" @change="applyFilters">
-          False Results Only ({{ falseResultCount }})
-        </label>
+      </div>
+      <div class="filter-note">
+        <small>💡 Tip: Uncheck all to see everything, or select specific types to focus on</small>
       </div>
     </div>
   </div>
@@ -150,10 +149,9 @@ export default {
       currentIndex: 0,
       filteredTimeline: [],
       filters: {
-        showEntrySignals: true,
-        showExitSignals: true,
-        showTrueResults: true,
-        showFalseResults: true
+        showEntrySignals: false,
+        showExitSignals: false,
+        showEvaluations: false
       }
     }
   },
@@ -166,19 +164,18 @@ export default {
     },
     entrySignalCount() {
       return this.decisionTimeline.filter(point => 
-        point.rule_description?.includes('Entry')
+        point.signal_type === 'entry_signal'
       ).length
     },
     exitSignalCount() {
       return this.decisionTimeline.filter(point => 
-        point.rule_description?.includes('Exit')
+        point.signal_type === 'exit_signal'
       ).length
     },
-    trueResultCount() {
-      return this.decisionTimeline.filter(point => point.result === true).length
-    },
-    falseResultCount() {
-      return this.decisionTimeline.filter(point => point.result === false).length
+    evaluationCount() {
+      return this.decisionTimeline.filter(point => 
+        point.signal_type === 'evaluation' || !point.signal_type
+      ).length
     }
   },
   watch: {
@@ -247,25 +244,34 @@ export default {
       }
     },
     applyFilters() {
-      let filtered = [...this.decisionTimeline]
+      // If no filters are selected, show everything
+      const hasAnyFilter = this.filters.showEntrySignals || 
+                          this.filters.showExitSignals || 
+                          this.filters.showEvaluations
 
-      // Apply result filters
-      if (!this.filters.showTrueResults) {
-        filtered = filtered.filter(point => point.result !== true)
+      if (!hasAnyFilter) {
+        this.filteredTimeline = [...this.decisionTimeline]
+      } else {
+        // Show only the selected types
+        this.filteredTimeline = this.decisionTimeline.filter(point => {
+          // Entry signals
+          if (this.filters.showEntrySignals && point.signal_type === 'entry_signal') {
+            return true
+          }
+          
+          // Exit signals
+          if (this.filters.showExitSignals && point.signal_type === 'exit_signal') {
+            return true
+          }
+          
+          // Decision evaluations (regular evaluations that don't result in trades)
+          if (this.filters.showEvaluations && (point.signal_type === 'evaluation' || !point.signal_type)) {
+            return true
+          }
+          
+          return false
+        })
       }
-      if (!this.filters.showFalseResults) {
-        filtered = filtered.filter(point => point.result !== false)
-      }
-
-      // Apply signal type filters
-      if (!this.filters.showEntrySignals) {
-        filtered = filtered.filter(point => !point.rule_description?.includes('Entry'))
-      }
-      if (!this.filters.showExitSignals) {
-        filtered = filtered.filter(point => !point.rule_description?.includes('Exit'))
-      }
-
-      this.filteredTimeline = filtered
 
       // Adjust current index if it's out of bounds
       if (this.currentIndex >= this.filteredTimeline.length) {
@@ -786,6 +792,19 @@ export default {
 .filter-checkbox input[type="checkbox"] {
   margin: 0;
   accent-color: var(--color-brand);
+}
+
+.filter-note {
+  margin-top: var(--spacing-md);
+  padding: var(--spacing-sm);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  border-left: 3px solid var(--color-brand);
+}
+
+.filter-note small {
+  color: var(--text-secondary);
+  font-style: italic;
 }
 
 /* Responsive design */

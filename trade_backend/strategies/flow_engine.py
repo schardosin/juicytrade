@@ -326,6 +326,12 @@ class FlowEngine:
             # Determine next node
             next_node = node.if_true if result else node.if_false
             
+            # Determine signal type for UI filtering
+            signal_type = self._determine_signal_type(node.name, result, next_node)
+            
+            # Add signal classification to evaluation details
+            evaluation_details["signal_type"] = signal_type
+            
             return {
                 "timestamp": context.current_time.isoformat() if context.current_time else datetime.now().isoformat(),
                 "rule_description": node.name,
@@ -336,6 +342,7 @@ class FlowEngine:
                 "next_action": next_node.name if next_node else "End Flow",
                 "node_type": "Decision",
                 "node_id": node.node_id,
+                "signal_type": signal_type,  # Add signal type at top level for UI filtering
                 "next_node": next_node  # Internal use for flow control
             }
             
@@ -347,10 +354,11 @@ class FlowEngine:
                 "condition_description": f"Error: {e}",
                 "result": False,
                 "context_values": {},
-                "evaluation_details": {"error": str(e)},
+                "evaluation_details": {"error": str(e), "signal_type": "evaluation"},
                 "next_action": "Error - End Flow",
                 "node_type": "Decision",
                 "node_id": node.node_id,
+                "signal_type": "evaluation",
                 "next_node": None
             }
     
@@ -477,6 +485,27 @@ class FlowEngine:
         except Exception as e:
             self.logger.error(f"Error capturing evaluation details: {e}")
             return {"error": str(e)}
+    
+    def _determine_signal_type(self, node_name: str, result: bool, next_node: Optional[Node]) -> str:
+        """Determine the signal type for UI filtering"""
+        # If the decision result is False, it's just an evaluation
+        if not result:
+            return "evaluation"
+        
+        # If the decision result is True but doesn't lead to an action, it's still just an evaluation
+        if not next_node or not isinstance(next_node, ActionNode):
+            return "evaluation"
+        
+        # If the decision result is True and leads to an action, classify by action type
+        if isinstance(next_node, ActionNode):
+            action_name = next_node.name.lower()
+            if "buy" in action_name or "open" in action_name or "enter" in action_name:
+                return "entry_signal"
+            elif "sell" in action_name or "close" in action_name or "exit" in action_name:
+                return "exit_signal"
+        
+        # Default to evaluation for any other case
+        return "evaluation"
     
     def clear(self):
         """Clear all nodes and reset the flow"""
