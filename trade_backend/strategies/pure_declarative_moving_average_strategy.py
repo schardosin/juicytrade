@@ -87,56 +87,47 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
         })
     
     def _define_strategy_flow(self):
-        """Define the complete strategy as a pure declarative flow"""
-        # Build the flow structure from inside-out to ensure proper root node setting
-        
+        """Define the complete strategy with Market Data Ready dependency and conditional flows"""
         # Create action nodes first
         buy_action = self.flow.add_action("Execute Buy Order", self.open_long_position)
         sell_action = self.flow.add_action("Execute Sell Order", self.close_position)
         
-        # Create decision nodes from innermost to outermost
-        # Entry decision: Check ALL the same criteria as the original strategy
-        entry_decision = self.flow.add_decision(
+        # Market Data Ready Flow: Runs until satisfied, then skips
+        market_data_flow = self.flow.add_decision(
+            name="Market Data Ready?",
+            condition=Rules.AllOf(self.has_enough_data),
+            if_true=None,  # No action when ready, just continue
+            if_false=None, # No action when not ready, just end
+            skip_when_satisfied=True  # Skip this check once we have enough data
+        )
+        
+        # Entry Flow: Only runs when position = 0 AND market data is ready
+        entry_flow = self.flow.add_decision(
             name="Entry Signal Check",
             condition=Rules.AllOf(
                 self.is_bullish_crossover,  # bullish_crossover
-                self.is_not_in_position,    # not_in_position  
                 self.has_sufficient_capital # sufficient_capital
             ),
             if_true=buy_action,
-            if_false=None
+            if_false=None,
+            execution_condition=self._can_run_entry_flow  # Custom condition: not in position AND market data ready
         )
         
-        # Exit decision: Check the same criteria as the original strategy
-        exit_decision = self.flow.add_decision(
+        # Exit Flow: Only runs when position > 0 AND market data is ready
+        exit_flow = self.flow.add_decision(
             name="Exit Signal Check", 
             condition=Rules.AllOf(
-                self.is_bearish_crossover,  # bearish_crossover
-                self.is_in_position         # in_position (must be in position to exit)
+                self.is_bearish_crossover   # bearish_crossover
             ),
             if_true=sell_action,
-            if_false=None
+            if_false=None,
+            execution_condition=self._can_run_exit_flow  # Custom condition: in position AND market data ready
         )
         
-        position_analysis = self.flow.add_decision(
-            name="Position Analysis",
-            condition=Rules.AllOf(self.is_in_position),
-            if_true=exit_decision,   # If in position, check for exit
-            if_false=entry_decision  # If not in position, check for entry
-        )
+        # Set up parallel flows - all three run independently based on their conditions
+        self.flow.set_parallel_flows([market_data_flow, entry_flow, exit_flow])
         
-        # Root decision: Check if market data is ready
-        root_decision = self.flow.add_decision(
-            name="Market Data Ready?",
-            condition=Rules.AllOf(self.has_enough_data),
-            if_true=position_analysis,  # If enough data, proceed to position analysis
-            if_false=None               # If not enough data, end flow
-        )
-        
-        # Explicitly set the root node to ensure correct execution order
-        self.flow.set_root_node(root_decision)
-        
-        self.log_info(f"Pure declarative flow defined with {self.flow.get_node_count()} nodes")
+        self.log_info(f"Pure declarative flows with Market Data Ready dependency defined with {self.flow.get_node_count()} nodes")
     
     async def start_monitoring(self, context: ActionContext):
         """Start monitoring - called at market open"""
@@ -204,6 +195,52 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
         
         # Simple bearish condition: fast MA below slow MA (same as original)
         return current_fast_ma < current_slow_ma
+    
+    # ========================================================================
+    # Execution Condition Methods - Control when flows should run
+    # ========================================================================
+    
+    def _can_run_entry_flow(self, context: ActionContext) -> bool:
+        """Execution condition: Entry flow only runs when not in position AND market data is ready"""
+        # Check if not in position
+        if not self.is_not_in_position(context):
+            return False
+        
+        # Check if market data is ready (or if the market data flow is satisfied)
+        market_data_flow = None
+        for flow in self.flow.parallel_flows:
+            if hasattr(flow, 'name') and flow.name == "Market Data Ready?":
+                market_data_flow = flow
+                break
+        
+        # If market data flow is satisfied (skip_when_satisfied=True and satisfied=True), 
+        # then market data is ready
+        if market_data_flow and hasattr(market_data_flow, 'satisfied') and market_data_flow.satisfied:
+            return True
+        
+        # If market data flow is not satisfied yet, check if data is ready now
+        return self.has_enough_data(context)
+    
+    def _can_run_exit_flow(self, context: ActionContext) -> bool:
+        """Execution condition: Exit flow only runs when in position AND market data is ready"""
+        # Check if in position
+        if not self.is_in_position(context):
+            return False
+        
+        # Check if market data is ready (or if the market data flow is satisfied)
+        market_data_flow = None
+        for flow in self.flow.parallel_flows:
+            if hasattr(flow, 'name') and flow.name == "Market Data Ready?":
+                market_data_flow = flow
+                break
+        
+        # If market data flow is satisfied (skip_when_satisfied=True and satisfied=True), 
+        # then market data is ready
+        if market_data_flow and hasattr(market_data_flow, 'satisfied') and market_data_flow.satisfied:
+            return True
+        
+        # If market data flow is not satisfied yet, check if data is ready now
+        return self.has_enough_data(context)
     
     # ========================================================================
     # Action Methods - Functions executed by action nodes

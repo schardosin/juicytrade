@@ -46,11 +46,15 @@ class DecisionNode(Node):
     """Decision node that evaluates a condition and branches to different paths"""
     
     def __init__(self, node_id: str, name: str, condition: RuleCondition, 
-                 if_true: Optional[Node] = None, if_false: Optional[Node] = None):
+                 if_true: Optional[Node] = None, if_false: Optional[Node] = None,
+                 skip_when_satisfied: bool = False, execution_condition: Optional[Callable] = None):
         super().__init__(node_id, name)
         self.condition = condition
         self.if_true = if_true
         self.if_false = if_false
+        self.skip_when_satisfied = skip_when_satisfied  # Skip this node once it becomes true
+        self.satisfied = False  # Track if this node has been satisfied
+        self.execution_condition = execution_condition  # Condition to check before executing this node
     
     async def execute(self, context: ActionContext) -> Optional[Node]:
         """Evaluate condition and return appropriate next node"""
@@ -134,6 +138,7 @@ class FlowEngine:
         self.strategy = strategy_instance
         self.nodes: Dict[str, Node] = {}
         self.root_node: Optional[Node] = None
+        self.parallel_flows: List[Node] = []  # Support for parallel independent flows
         self.node_counter = 0
         self.logger = logging.getLogger(f"FlowEngine.{strategy_instance.strategy_id}")
     
@@ -147,7 +152,9 @@ class FlowEngine:
         name: str,
         condition: RuleCondition,
         if_true: Optional[Node] = None,
-        if_false: Optional[Node] = None
+        if_false: Optional[Node] = None,
+        skip_when_satisfied: bool = False,
+        execution_condition: Optional[Callable] = None
     ) -> Node:
         """
         Add a branching node to the flow.
@@ -157,19 +164,20 @@ class FlowEngine:
             condition: A condition object created by the Rules helper
             if_true: The node to execute if the condition is true
             if_false: The node to execute if the condition is false
+            skip_when_satisfied: If True, skip this node once it becomes true
         
         Returns:
             The created DecisionNode
         """
         node_id = self._generate_node_id()
-        decision_node = DecisionNode(node_id, name, condition, if_true, if_false)
+        decision_node = DecisionNode(node_id, name, condition, if_true, if_false, skip_when_satisfied, execution_condition)
         self.nodes[node_id] = decision_node
         
         # Set as root node if this is the first node
         if self.root_node is None:
             self.root_node = decision_node
         
-        self.logger.debug(f"Added decision node: {name} (ID: {node_id})")
+        self.logger.debug(f"Added decision node: {name} (ID: {node_id}, skip_when_satisfied: {skip_when_satisfied})")
         return decision_node
     
     def add_action(self, name: str, action_callable: Callable) -> Node:
@@ -196,23 +204,79 @@ class FlowEngine:
     
     async def execute(self, context: ActionContext):
         """
-        Execute the defined strategy graph from its root node with automatic decision recording.
-        """
-        if not self.root_node:
-            self.logger.warning("No root node defined - flow execution skipped")
-            return
+        Execute the defined strategy flows with support for parallel execution.
         
-        current_node = self.root_node
+        If parallel_flows are defined, execute them in parallel.
+        Otherwise, execute the single root_node flow.
+        """
+        if self.parallel_flows:
+            # Execute multiple flows in parallel
+            await self._execute_parallel_flows(context)
+        elif self.root_node:
+            # Execute single root node flow
+            await self._execute_single_flow(self.root_node, context)
+        else:
+            self.logger.warning("No flows defined - execution skipped")
+    
+    async def _execute_parallel_flows(self, context: ActionContext):
+        """Execute multiple independent flows in parallel"""
+        try:
+            self.logger.debug(f"Executing {len(self.parallel_flows)} parallel flows")
+            
+            # Execute all flows concurrently
+            tasks = []
+            for flow_root in self.parallel_flows:
+                task = asyncio.create_task(self._execute_single_flow(flow_root, context))
+                tasks.append(task)
+            
+            # Wait for all flows to complete
+            await asyncio.gather(*tasks, return_exceptions=True)
+            
+            self.logger.debug("All parallel flows completed")
+            
+        except Exception as e:
+            self.logger.error(f"Error during parallel flow execution: {e}")
+            import traceback
+            self.logger.error(f"Traceback: {traceback.format_exc()}")
+    
+    async def _execute_single_flow(self, root_node: Node, context: ActionContext):
+        """Execute a single flow starting from the given root node"""
+        current_node = root_node
         execution_path = []
         
         try:
+            # Check execution condition for the root node before starting
+            if isinstance(current_node, DecisionNode) and current_node.execution_condition:
+                try:
+                    if asyncio.iscoroutinefunction(current_node.execution_condition):
+                        should_execute = await current_node.execution_condition(context)
+                    else:
+                        should_execute = current_node.execution_condition(context)
+                    
+                    if not should_execute:
+                        self.logger.debug(f"Skipping flow '{current_node.name}' - execution condition not met")
+                        return  # Skip this entire flow without recording anything
+                except Exception as e:
+                    self.logger.error(f"Error checking execution condition for {current_node.name}: {e}")
+                    return  # Skip on error
+            
             while current_node:
                 execution_path.append(current_node.name)
                 self.logger.debug(f"Executing node: {current_node.name}")
                 
                 if isinstance(current_node, DecisionNode):
+                    # Check if this node should be skipped
+                    if await self._should_skip_node(current_node, context):
+                        # Don't record skipped decisions - just return execution info for flow control
+                        current_node = current_node.if_true  # Continue with the true path (skip satisfied nodes)
+                        continue
+                    
                     # Evaluate decision and record details automatically
                     decision_info = await self._evaluate_and_record_decision(current_node, context)
+                    
+                    # Mark node as satisfied if result is True and skip_when_satisfied is enabled
+                    if decision_info["result"] and current_node.skip_when_satisfied:
+                        current_node.satisfied = True
                     
                     # Add to strategy's decision timeline
                     self.strategy.add_decision_timeline(decision_info)
@@ -238,7 +302,7 @@ class FlowEngine:
             self.logger.debug(f"Flow execution completed. Path: {' -> '.join(execution_path)}")
             
         except Exception as e:
-            self.logger.error(f"Error during flow execution: {e}")
+            self.logger.error(f"Error during single flow execution: {e}")
             import traceback
             self.logger.error(f"Traceback: {traceback.format_exc()}")
     
@@ -552,9 +616,28 @@ class FlowEngine:
         # Default to evaluation for any other case
         return "evaluation"
     
+    async def _should_skip_node(self, node: DecisionNode, context: ActionContext) -> bool:
+        """Determine if a node should be skipped based on its configuration and state"""
+        # Check skip_when_satisfied condition
+        if node.skip_when_satisfied and node.satisfied:
+            return True
+        
+        return False  # Don't skip by default
+    
+    def add_parallel_flow(self, root_node: Node):
+        """Add a parallel flow that will be executed independently"""
+        self.parallel_flows.append(root_node)
+        self.logger.debug(f"Added parallel flow: {root_node.name}")
+    
+    def set_parallel_flows(self, flows: List[Node]):
+        """Set multiple parallel flows to be executed independently"""
+        self.parallel_flows = flows
+        self.logger.debug(f"Set {len(flows)} parallel flows")
+    
     def clear(self):
         """Clear all nodes and reset the flow"""
         self.nodes.clear()
         self.root_node = None
+        self.parallel_flows.clear()
         self.node_counter = 0
         self.logger.debug("Flow cleared")
