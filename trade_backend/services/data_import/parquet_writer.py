@@ -48,40 +48,38 @@ class ParquetWriter:
     def convert_dbn_to_parquet(self, 
                               records_iterator: Iterator[Any],
                               metadata: Dict[str, Any],
-                              filters: Optional[ImportFilters] = None,
-                              progress_callback: Optional[callable] = None,
-                              symbol_mapping: Optional[Dict[int, str]] = None) -> List[str]:
+                              progress_callback: Optional[callable] = None) -> List[str]:
         """
-        Convert DBN records to partitioned Parquet files.
+        Convert ALL DBN records to partitioned Parquet files without any filtering.
         
         Args:
-            records_iterator: Iterator of DBN records
+            records_iterator: Iterator of DBN records (all records, no filtering)
             metadata: Metadata about the source file
-            filters: Optional filters to apply
             progress_callback: Optional progress callback
-            symbol_mapping: Optional mapping from instrument_id to readable symbol
             
         Returns:
             List of output file paths created
         """
-        logger.info("Starting DBN to Parquet conversion")
+        logger.info("Starting complete DBN to Parquet conversion (no filtering)")
         
         output_paths = []
-        records_by_date = {}  # Changed: Group by date only, not symbol+date
-        total_records = 0
         processed_records = 0
+        batch_size = 10000  # Process in chunks
         
         # Determine asset type from metadata
         file_asset_type = self._determine_asset_type_from_metadata(metadata)
         
         try:
-            # Group records by underlying symbol and date for optimal partitioning
-            records_by_symbol_date = {}
+            # Use chunked processing for memory efficiency
+            current_batch = {}  # Group by (underlying_symbol, date, asset_type)
             
             for record in records_iterator:
                 try:
-                    # Extract record information with symbol mapping
-                    record_info = self._extract_record_info(record, file_asset_type, symbol_mapping)
+                    # Extract record information (records already have symbols from DBN reader)
+                    record_info = self._extract_record_info_with_context(
+                        record, file_asset_type
+                    )
+                    
                     if not record_info:
                         continue
                     
@@ -90,58 +88,74 @@ class ParquetWriter:
                     record_date = record_info['date']
                     asset_type = record_info['asset_type']
                     
-                    # Apply filters
-                    if filters and not self._record_matches_filters(record_info, filters):
-                        continue
-                    
-                    # Group by underlying symbol and date for better management
+                    # Group by underlying symbol and date (no filtering)
                     key = (underlying_symbol, record_date, asset_type)
-                    if key not in records_by_symbol_date:
-                        records_by_symbol_date[key] = []
+                    if key not in current_batch:
+                        current_batch[key] = []
                     
-                    records_by_symbol_date[key].append(record_info)
-                    total_records += 1
+                    current_batch[key].append(record_info)
+                    processed_records += 1
                     
-                    # Progress update
-                    if progress_callback and total_records % 10000 == 0:
-                        progress_callback(total_records, None, f"Grouping records: {underlying_symbol}")
+                    # Process batch when it gets large enough
+                    if processed_records % batch_size == 0:
+                        batch_output_paths = self._process_batch(current_batch, metadata)
+                        output_paths.extend(batch_output_paths)
+                        current_batch.clear()  # Free memory
+                        
+                        # Progress update
+                        if progress_callback:
+                            progress_callback(
+                                processed_records, 
+                                None,  # Total unknown for streaming
+                                f"Processed {processed_records:,} records"
+                            )
                 
                 except Exception as e:
                     logger.warning(f"Error processing record: {e}")
                     continue
             
-            logger.info(f"Grouped {total_records} records into {len(records_by_symbol_date)} symbol-date partitions")
+            # Process final batch
+            if current_batch:
+                batch_output_paths = self._process_batch(current_batch, metadata)
+                output_paths.extend(batch_output_paths)
             
-            # Convert each group to Parquet
-            for i, ((underlying_symbol, record_date, asset_type), records) in enumerate(records_by_symbol_date.items()):
-                try:
-                    output_path = self._write_symbol_date_partition_to_parquet(
-                        underlying_symbol, record_date, asset_type, records, metadata
-                    )
-                    
-                    if output_path:
-                        output_paths.append(output_path)
-                        processed_records += len(records)
-                    
-                    # Progress update
-                    if progress_callback:
-                        progress_callback(
-                            processed_records, 
-                            total_records, 
-                            f"Writing partition: {underlying_symbol} {record_date} ({len(records)} records)"
-                        )
-                
-                except Exception as e:
-                    logger.error(f"Error writing partition for {underlying_symbol} {record_date}: {e}")
-                    continue
+            logger.info(f"Successfully converted {processed_records:,} records to {len(output_paths)} Parquet files")
             
-            logger.info(f"Successfully converted {processed_records} records to {len(output_paths)} Parquet files")
             return output_paths
             
         except Exception as e:
-            logger.error(f"Error in DBN to Parquet conversion: {e}")
+            logger.error(f"Error in complete DBN to Parquet conversion: {e}")
             raise
     
+
+    def _process_batch(self, batch: Dict[tuple, List[Dict[str, Any]]], metadata: Dict[str, Any]) -> List[str]:
+        """
+        Process a batch of records and write to Parquet files.
+        
+        Args:
+            batch: Dictionary mapping (underlying_symbol, date, asset_type) to records
+            metadata: Source metadata
+            
+        Returns:
+            List of output file paths created
+        """
+        output_paths = []
+        
+        for (underlying_symbol, record_date, asset_type), records in batch.items():
+            try:
+                output_path = self._write_symbol_date_partition_to_parquet(
+                    underlying_symbol, record_date, asset_type, records, metadata
+                )
+                
+                if output_path:
+                    output_paths.append(output_path)
+                    
+            except Exception as e:
+                logger.error(f"Error writing batch partition for {underlying_symbol} {record_date}: {e}")
+                continue
+        
+        return output_paths
+
     def _extract_record_info(self, record: Any, file_asset_type: Optional[AssetType] = None, symbol_mapping: Optional[Dict[int, str]] = None) -> Optional[Dict[str, Any]]:
         """
         Extract relevant information from a DBN record.
@@ -158,14 +172,15 @@ class ParquetWriter:
             # Extract basic fields - this will need to be adapted based on actual DBN record structure
             record_info = {}
             
-            # Symbol - use mapping if available, skip unmapped records
+            # Symbol - use mapping if available, with fallback for unmapped records
             symbol = None
             if hasattr(record, 'instrument_id') and symbol_mapping:
                 instrument_id = record.instrument_id
                 symbol = symbol_mapping.get(instrument_id)
                 if not symbol:
-                    # Skip records without proper symbol mapping
-                    return None
+                    # Fallback: use instrument_id as symbol instead of skipping
+                    symbol = f"UNKNOWN_{instrument_id}"
+                    logger.debug(f"Using fallback symbol for unmapped instrument_id: {instrument_id}")
             else:
                 # Fallback to existing logic
                 symbol = getattr(record, 'symbol', None) or str(getattr(record, 'instrument_id', ''))
@@ -322,32 +337,6 @@ class ParquetWriter:
         else:
             return AssetType.EQUITIES
     
-    def _record_matches_filters(self, record_info: Dict[str, Any], filters: ImportFilters) -> bool:
-        """
-        Check if record matches import filters.
-        
-        Args:
-            record_info: Extracted record information
-            filters: Import filters
-            
-        Returns:
-            True if record matches filters
-        """
-        # Symbol filter
-        if filters.symbols and record_info['symbol'] not in filters.symbols:
-            return False
-        
-        # Date filter
-        if filters.date_range:
-            record_date = record_info['date']
-            if not (filters.date_range.start_date <= record_date <= filters.date_range.end_date):
-                return False
-        
-        # Asset type filter
-        if filters.asset_types and record_info['asset_type'] not in filters.asset_types:
-            return False
-        
-        return True
     
     def _write_partition_to_parquet(self, 
                                    symbol: str, 
@@ -801,3 +790,127 @@ class ParquetWriter:
         )
         
         return partition_path
+    
+    def _build_date_aware_mapping(self, metadata: Dict[str, Any]) -> Dict[int, List[tuple]]:
+        """
+        Build date-aware symbol mapping from metadata.
+        
+        Args:
+            metadata: File metadata containing native mappings
+            
+        Returns:
+            Dictionary mapping instrument_id to list of (start_date, end_date, symbol) tuples
+        """
+        date_aware_mapping = {}
+        
+        try:
+            # Extract native mappings from metadata
+            native_mappings = metadata.get('native_mappings')
+            if not native_mappings:
+                logger.warning("No native mappings found in metadata")
+                return date_aware_mapping
+            
+            # Process each symbol's date ranges
+            for readable_symbol, date_ranges in native_mappings.items():
+                if isinstance(date_ranges, list):
+                    for date_range_info in date_ranges:
+                        if isinstance(date_range_info, dict) and 'symbol' in date_range_info:
+                            instrument_id = int(date_range_info['symbol'])
+                            start_date = date_range_info.get('start_date')
+                            end_date = date_range_info.get('end_date')
+                            
+                            if instrument_id not in date_aware_mapping:
+                                date_aware_mapping[instrument_id] = []
+                            
+                            date_aware_mapping[instrument_id].append((start_date, end_date, readable_symbol))
+            
+            logger.info(f"Built date-aware mapping for {len(date_aware_mapping)} instrument IDs")
+            
+        except Exception as e:
+            logger.error(f"Error building date-aware mapping: {e}")
+        
+        return date_aware_mapping
+    
+    def _extract_record_info_with_context(self, 
+                                         record: Any, 
+                                         file_asset_type: Optional[AssetType] = None) -> Optional[Dict[str, Any]]:
+        """
+        Extract record information from DBN record with native symbol mapping.
+        Records come with symbols already populated by the native DBN library.
+        
+        Args:
+            record: DBN record (with symbols already mapped by native DBN library)
+            file_asset_type: Asset type determined from file metadata
+            
+        Returns:
+            Dictionary with extracted information or None if extraction fails
+        """
+        try:
+            # Extract basic fields
+            record_info = {}
+            
+            # Use symbol from native DBN mapping (already populated by DBN reader)
+            symbol = getattr(record, 'symbol', None)
+            if not symbol:
+                # This should not happen with native mapping, but provide fallback
+                instrument_id = getattr(record, 'instrument_id', None)
+                if instrument_id:
+                    symbol = f"UNMAPPED_{instrument_id}"
+                    logger.warning(f"No native symbol found for instrument_id {instrument_id}")
+                else:
+                    logger.warning("Record has no symbol or instrument_id")
+                    return None
+            
+            record_info['symbol'] = symbol
+            
+            # Get timestamp
+            timestamp = getattr(record, 'ts_event', None) or getattr(record, 'timestamp', None)
+            if timestamp:
+                dt = datetime.fromtimestamp(timestamp / 1e9)
+                record_info['timestamp'] = dt
+                record_info['date'] = dt.date()
+            else:
+                # Fallback to current date
+                record_info['date'] = date.today()
+                record_info['timestamp'] = datetime.now()
+            
+            # Extract underlying symbol for partitioning
+            underlying_symbol = self._extract_underlying_symbol(symbol)
+            record_info['underlying_symbol'] = underlying_symbol
+            
+            # Asset type determination - use file metadata if available
+            record_info['asset_type'] = file_asset_type or self._determine_asset_type(symbol)
+            
+            # Price data (adapt based on actual record structure)
+            if hasattr(record, 'open'):
+                record_info['open'] = float(getattr(record, 'open', 0))
+            if hasattr(record, 'high'):
+                record_info['high'] = float(getattr(record, 'high', 0))
+            if hasattr(record, 'low'):
+                record_info['low'] = float(getattr(record, 'low', 0))
+            if hasattr(record, 'close'):
+                record_info['close'] = float(getattr(record, 'close', 0))
+            if hasattr(record, 'volume'):
+                record_info['volume'] = int(getattr(record, 'volume', 0))
+            
+            # Trade data
+            if hasattr(record, 'price'):
+                record_info['price'] = float(getattr(record, 'price', 0))
+            if hasattr(record, 'size'):
+                record_info['size'] = int(getattr(record, 'size', 0))
+            
+            # Quote data
+            if hasattr(record, 'bid_px'):
+                record_info['bid'] = float(getattr(record, 'bid_px', 0))
+            if hasattr(record, 'ask_px'):
+                record_info['ask'] = float(getattr(record, 'ask_px', 0))
+            if hasattr(record, 'bid_sz'):
+                record_info['bid_size'] = int(getattr(record, 'bid_sz', 0))
+            if hasattr(record, 'ask_sz'):
+                record_info['ask_size'] = int(getattr(record, 'ask_sz', 0))
+            
+            return record_info
+            
+        except Exception as e:
+            logger.warning(f"Error extracting record info with native mapping: {e}")
+            return None

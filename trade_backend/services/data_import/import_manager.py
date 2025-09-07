@@ -76,6 +76,43 @@ class ImportManager:
         logger.info(f"Found {len(files_info)} DBN files")
         return files_info
     
+    async def list_dbn_files_only(self) -> List[Dict[str, Any]]:
+        """
+        List only .dbn files without any metadata processing for fast loading.
+        
+        Returns:
+            List of basic file information dictionaries
+        """
+        logger.info(f"Listing .dbn files only in {self.dbn_files_dir}")
+        
+        # Ensure directory exists
+        self.dbn_files_dir.mkdir(exist_ok=True)
+        
+        files_info = []
+        
+        # Scan for .dbn files only
+        for dbn_file in self.dbn_files_dir.glob("*.dbn"):
+            try:
+                stat = dbn_file.stat()
+                file_info = {
+                    'filename': dbn_file.name,
+                    'file_path': str(dbn_file),
+                    'file_size': stat.st_size,
+                    'modified_at': datetime.fromtimestamp(stat.st_mtime),
+                    'size_mb': round(stat.st_size / (1024 * 1024), 2),
+                    'size_gb': round(stat.st_size / (1024 * 1024 * 1024), 2)
+                }
+                files_info.append(file_info)
+            except Exception as e:
+                logger.warning(f"Error getting info for {dbn_file}: {e}")
+                continue
+        
+        # Sort by modification time (newest first)
+        files_info.sort(key=lambda x: x['modified_at'], reverse=True)
+        
+        logger.info(f"Found {len(files_info)} .dbn files")
+        return files_info
+    
     async def get_file_metadata(self, filename: str, force_refresh: bool = False) -> DBNMetadata:
         """
         Get detailed metadata for a specific file.
@@ -262,114 +299,65 @@ class ImportManager:
     def _execute_import_job(self, job_id: str):
         """
         Execute an import job (runs in thread pool).
-        
-        Args:
-            job_id: Job ID to execute
+        This is the rewritten, simplified, and corrected implementation based on the working test.
         """
+        job_info = self._active_jobs.get(job_id)
+        if not job_info:
+            logger.error(f"Job {job_id} not found for execution.")
+            return
+
         try:
-            with self._job_lock:
-                job_info = self._active_jobs.get(job_id)
-            
-            if not job_info:
-                logger.error(f"Job {job_id} not found in active jobs")
-                return
-            
-            # Check if job was cancelled
-            if job_info.status == ImportJobStatus.CANCELLED:
-                logger.info(f"Job {job_id} was cancelled before execution")
-                return
-            
-            # Update job status
             job_info.status = ImportJobStatus.RUNNING
-            job_info.started_at = datetime.utcnow()
+            job_info.started_at = datetime.now(timezone.utc)
             self._save_job(job_info)
-            
-            logger.info(f"Starting execution of import job {job_id}")
-            
-            # Get file path
+            logger.info(f"Executing job {job_id} for {job_info.filename}")
+
             file_path = self.dbn_files_dir / job_info.filename
             
-            # Get metadata
-            metadata = metadata_extractor.get_file_metadata(file_path)
-            
-            # Estimate total records for progress tracking
-            total_records = metadata.total_records or 0
-            job_info.progress.total_records = total_records
-            
-            # Create progress callback
-            def progress_callback(processed: int, total: Optional[int], current_item: str):
-                if job_info.status == ImportJobStatus.CANCELLED:
-                    raise InterruptedError("Job was cancelled")
-                
-                job_info.progress.processed_records = processed
-                if total:
-                    job_info.progress.total_records = total
-                job_info.progress.current_symbol = current_item
-                self._save_job(job_info)
-            
-            # Check for existing data if not overwriting
-            if not job_info.overwrite_existing:
-                self._check_existing_data(job_info, metadata)
-            
-            # Get symbol mapping for proper symbol names
-            symbol_mapping = self.dbn_reader.get_symbol_mapping(file_path)
-            logger.info(f"Extracted symbol mapping with {len(symbol_mapping)} entries")
-            
-            # Stream records from DBN file
-            records_iterator = self.dbn_reader.stream_records(file_path, job_info.filters)
-            
-            # Convert to Parquet with symbol mapping
-            output_paths = self.parquet_writer.convert_dbn_to_parquet(
-                records_iterator=records_iterator,
-                metadata=metadata.model_dump(),
-                filters=job_info.filters,
-                progress_callback=progress_callback,
-                symbol_mapping=symbol_mapping
-            )
-            
-            # Update job with results
+            from collections import defaultdict
+            batches = defaultdict(list)
+            processed_records = 0
+            output_paths = []
+
+            # Manually iterate and batch records
+            for record in self.dbn_reader.stream_records(file_path):
+                processed_records += 1
+                record_info = self.parquet_writer._extract_record_info_with_context(record)
+                if record_info:
+                    key = (
+                        record_info['underlying_symbol'],
+                        record_info['date'],
+                        record_info['asset_type']
+                    )
+                    batches[key].append(record_info)
+
+                if processed_records % 100000 == 0:
+                    logger.info(f"Job {job_id}: Processed {processed_records} records...")
+                    job_info.progress.processed_records = processed_records
+                    self._save_job(job_info)
+
+            # Write batches to Parquet
+            for (underlying_symbol, record_date, asset_type), records in batches.items():
+                output_path = self.parquet_writer._write_symbol_date_partition_to_parquet(
+                    underlying_symbol, record_date, asset_type, records,
+                    {'dataset': 'OPRA', 'filename': job_info.filename}
+                )
+                if output_path:
+                    output_paths.append(output_path)
+
             job_info.output_paths = output_paths
-            job_info.symbols_processed = list(set(
-                symbol.symbol for symbol in metadata.symbols
-                if not job_info.filters or not job_info.filters.symbols or symbol.symbol in job_info.filters.symbols
-            ))
-            
-            # Calculate total output size
-            total_size = 0
-            for path in output_paths:
-                try:
-                    total_size += Path(path).stat().st_size
-                except Exception:
-                    pass
-            job_info.total_output_size = total_size
-            
-            # Mark as completed
             job_info.status = ImportJobStatus.COMPLETED
-            job_info.completed_at = datetime.utcnow()
-            
-            logger.info(f"Import job {job_id} completed successfully. "
-                       f"Created {len(output_paths)} Parquet files, "
-                       f"processed {len(job_info.symbols_processed)} symbols")
-            
-        except InterruptedError:
-            job_info.status = ImportJobStatus.CANCELLED
-            job_info.completed_at = datetime.utcnow()
-            logger.info(f"Import job {job_id} was cancelled")
-            
+            logger.info(f"Job {job_id} completed. Created {len(output_paths)} files.")
+
         except Exception as e:
+            logger.exception(f"Job {job_id} failed: {e}")
             job_info.status = ImportJobStatus.FAILED
-            job_info.completed_at = datetime.utcnow()
             job_info.error_message = str(e)
-            logger.error(f"Import job {job_id} failed: {e}")
-            
         finally:
-            # Save final job state
+            job_info.completed_at = datetime.now(timezone.utc)
             self._save_job(job_info)
-            
-            # Remove from active jobs if completed
-            if job_info.is_finished:
-                with self._job_lock:
-                    self._active_jobs.pop(job_id, None)
+            with self._job_lock:
+                self._active_jobs.pop(job_id, None)
     
     def _check_existing_data(self, job_info: ImportJobInfo, metadata: DBNMetadata):
         """

@@ -1363,20 +1363,14 @@ async def get_all_watchlist_symbols():
 
 @app.get("/api/data-import/files", response_model=ApiResponse)
 async def list_dbn_files():
-    """List available DBN files with metadata information."""
+    """List available DBN files without metadata processing for fast loading."""
     try:
-        files_info = await import_manager.list_available_files()
-        
-        # Convert to dict format for JSON serialization
-        files_data = []
-        for file_info in files_info:
-            file_dict = file_info.dict()
-            files_data.append(file_dict)
+        files_info = await import_manager.list_dbn_files_only()
         
         return ApiResponse(
             success=True,
-            data=files_data,
-            message=f"Found {len(files_data)} DBN files"
+            data=files_info,
+            message=f"Found {len(files_info)} DBN files"
         )
     except Exception as e:
         logger.error(f"Error listing DBN files: {e}")

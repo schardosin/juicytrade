@@ -67,8 +67,8 @@
 
         <!-- Step 2: Metadata Preview -->
         <div v-if="currentStep === 1" class="step-content">
-          <h3>Preview & Configure</h3>
-          <p class="step-description">Review the data and configure your import settings.</p>
+          <h3>File Preview</h3>
+          <p class="step-description">Review the file information before importing all data.</p>
           
           <div v-if="loadingMetadata" class="loading-metadata">
             <div class="spinner-small"></div>
@@ -80,6 +80,10 @@
             <div class="metadata-section">
               <h4>Dataset Information</h4>
               <div class="metadata-grid">
+                <div class="metadata-item">
+                  <span class="metadata-label">File:</span>
+                  <span class="metadata-value">{{ selectedFile?.filename }}</span>
+                </div>
                 <div class="metadata-item">
                   <span class="metadata-label">Dataset:</span>
                   <span class="metadata-value">{{ metadata.dataset }}</span>
@@ -102,73 +106,22 @@
                   <span class="metadata-value">{{ formatDateRange(metadata?.overall_date_range?.start_date || metadata?.start_date, metadata?.overall_date_range?.end_date || metadata?.end_date) }}</span>
                 </div>
                 <div class="metadata-item">
-                  <span class="metadata-label">Option Contracts:</span>
-                  <span class="metadata-value">{{ formatNumber(metadata?.symbols?.length) }} contracts</span>
+                  <span class="metadata-label">Total Records:</span>
+                  <span class="metadata-value">{{ formatNumber(metadata?.total_records) }}</span>
+                </div>
+                <div class="metadata-item">
+                  <span class="metadata-label">Unique Symbols:</span>
+                  <span class="metadata-value">{{ formatNumber(metadata?.symbols?.length) }}</span>
                 </div>
               </div>
             </div>
 
-            <!-- Date Range Selector -->
-            <div class="metadata-section">
-              <h4>Import Date Range</h4>
-              <div class="date-range-selector">
-                <div class="form-group">
-                  <label>Start Date:</label>
-                  <input 
-                    type="date" 
-                    v-model="importConfig.start_date"
-                    :min="metadata?.start_date"
-                    :max="metadata?.end_date"
-                    class="form-input"
-                  />
-                </div>
-                <div class="form-group">
-                  <label>End Date:</label>
-                  <input 
-                    type="date" 
-                    v-model="importConfig.end_date"
-                    :min="importConfig.start_date || metadata?.start_date"
-                    :max="metadata?.end_date"
-                    class="form-input"
-                  />
-                </div>
-              </div>
-            </div>
-
-            <!-- Symbol Selection (Optional) -->
-            <div class="metadata-section">
-              <h4>Symbol Selection</h4>
-              <div class="symbol-selection">
-                <div class="selection-mode">
-                  <label class="radio-group">
-                    <input 
-                      type="radio" 
-                      v-model="importConfig.symbol_mode" 
-                      value="all"
-                    />
-                    <span>Import all symbols ({{ formatNumber(metadata?.symbol_count || metadata?.symbols?.length) }})</span>
-                  </label>
-                  <label class="radio-group">
-                    <input 
-                      type="radio" 
-                      v-model="importConfig.symbol_mode" 
-                      value="subset"
-                    />
-                    <span>Import specific symbols</span>
-                  </label>
-                </div>
-                
-                <div v-if="importConfig.symbol_mode === 'subset'" class="symbol-subset">
-                  <div class="symbol-input">
-                    <label>Symbol List (comma-separated):</label>
-                    <textarea 
-                      v-model="importConfig.symbol_list"
-                      placeholder="Enter symbols separated by commas (e.g., AAPL, MSFT, GOOGL)"
-                      class="form-textarea"
-                      rows="3"
-                    ></textarea>
-                  </div>
-                </div>
+            <!-- Import Notice -->
+            <div class="import-notice">
+              <div class="notice-icon">ℹ️</div>
+              <div class="notice-content">
+                <h4>Complete File Import</h4>
+                <p>This will import <strong>ALL data</strong> from the selected file without any filtering. All symbols and dates will be processed to ensure complete data coverage.</p>
               </div>
             </div>
           </div>
@@ -215,13 +168,11 @@
                 </div>
                 <div class="summary-item">
                   <span class="summary-label">Date Range:</span>
-                  <span class="summary-value">{{ formatDateRange(importConfig.start_date, importConfig.end_date) }}</span>
+                  <span class="summary-value">{{ formatDateRange(metadata?.overall_date_range?.start_date || metadata?.start_date, metadata?.overall_date_range?.end_date || metadata?.end_date) }}</span>
                 </div>
                 <div class="summary-item">
-                  <span class="summary-label">Symbols:</span>
-                  <span class="summary-value">
-                    {{ importConfig.symbol_mode === 'all' ? 'All symbols' : 'Selected symbols' }}
-                  </span>
+                  <span class="summary-label">Import Mode:</span>
+                  <span class="summary-value">Complete File (No Filtering)</span>
                 </div>
                 <div class="summary-item">
                   <span class="summary-label">Job Name:</span>
@@ -372,7 +323,6 @@ export default {
     const steps = [
       { label: 'Select File' },
       { label: 'Configure' },
-      { label: 'Settings' },
       { label: 'Import' }
     ]
     
@@ -417,7 +367,7 @@ export default {
         case 0:
           return selectedFile.value !== null
         case 1:
-          return metadata.value && importConfig.value.start_date && importConfig.value.end_date
+          return metadata.value !== null
         case 2:
           return true
         default:
@@ -509,18 +459,9 @@ export default {
           error: null
         }
         
-        // Prepare import request
+        // Prepare import request (no filtering - import all data)
         const importRequest = {
           filename: selectedFile.value.filename,
-          filters: {
-            date_range: {
-              start_date: importConfig.value.start_date,
-              end_date: importConfig.value.end_date
-            },
-            symbols: importConfig.value.symbol_mode === 'subset' 
-              ? importConfig.value.symbol_list.split(',').map(s => s.trim()).filter(s => s)
-              : null
-          },
           job_name: importConfig.value.job_name,
           overwrite_existing: importConfig.value.overwrite_existing
         }
@@ -1100,6 +1041,41 @@ export default {
 .asset-stocks { background: var(--color-info); color: var(--text-primary); opacity: 0.8; }
 .asset-futures { background: var(--color-warning); color: var(--text-primary); opacity: 0.8; }
 .asset-forex { background: var(--color-success); color: var(--text-primary); opacity: 0.8; }
+
+/* Import Notice */
+.import-notice {
+  display: flex;
+  gap: var(--spacing-md);
+  padding: var(--spacing-lg);
+  background: rgba(59, 130, 246, 0.1);
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  border-radius: var(--radius-md);
+  align-items: flex-start;
+}
+
+.notice-icon {
+  font-size: var(--font-size-xl);
+  flex-shrink: 0;
+  margin-top: 2px;
+}
+
+.notice-content {
+  flex: 1;
+}
+
+.notice-content h4 {
+  margin: 0 0 var(--spacing-xs) 0;
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.notice-content p {
+  margin: 0;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+}
 
 /* Date Range Selector */
 .date-range-selector {
