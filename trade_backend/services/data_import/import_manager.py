@@ -299,7 +299,8 @@ class ImportManager:
     def _execute_import_job(self, job_id: str):
         """
         Execute an import job (runs in thread pool).
-        This is the rewritten, simplified, and corrected implementation based on the working test.
+        This implementation uses streaming batch processing for memory efficiency
+        with append mode to prevent data loss.
         """
         job_info = self._active_jobs.get(job_id)
         if not job_info:
@@ -313,13 +314,32 @@ class ImportManager:
             logger.info(f"Executing job {job_id} for {job_info.filename}")
 
             file_path = self.dbn_files_dir / job_info.filename
-            
+
             from collections import defaultdict
             batches = defaultdict(list)
             processed_records = 0
+            total_records_written = 0
             output_paths = []
+            batch_size_threshold = 500000  # Process in chunks for memory efficiency
 
-            # Manually iterate and batch records
+            def _write_and_clear_batches():
+                nonlocal total_records_written
+                logger.info(f"Job {job_id}: Writing {len(batches)} batches to Parquet...")
+                batch_output_paths = []
+                for (underlying_symbol, record_date, asset_type), records in list(batches.items()):
+                    output_path = self.parquet_writer._write_symbol_date_partition_to_parquet(
+                        underlying_symbol, record_date, asset_type, records,
+                        {'dataset': 'OPRA', 'filename': job_info.filename}
+                    )
+                    if output_path:
+                        batch_output_paths.append(output_path)
+                        total_records_written += len(records)
+                    del batches[(underlying_symbol, record_date, asset_type)]
+
+                output_paths.extend(batch_output_paths)
+                logger.info(f"Job {job_id}: Wrote {len(batch_output_paths)} files, {total_records_written:,} total records")
+
+            # Stream records and process in batches
             for record in self.dbn_reader.stream_records(file_path):
                 processed_records += 1
                 record_info = self.parquet_writer._extract_record_info_with_context(record)
@@ -331,23 +351,25 @@ class ImportManager:
                     )
                     batches[key].append(record_info)
 
-                if processed_records % 100000 == 0:
-                    logger.info(f"Job {job_id}: Processed {processed_records} records...")
+                # Process batch when it reaches threshold
+                if processed_records % batch_size_threshold == 0:
+                    logger.info(f"Job {job_id}: Processed {processed_records:,} records, memory threshold reached. Writing batches...")
+                    _write_and_clear_batches()
                     job_info.progress.processed_records = processed_records
                     self._save_job(job_info)
 
-            # Write batches to Parquet
-            for (underlying_symbol, record_date, asset_type), records in batches.items():
-                output_path = self.parquet_writer._write_symbol_date_partition_to_parquet(
-                    underlying_symbol, record_date, asset_type, records,
-                    {'dataset': 'OPRA', 'filename': job_info.filename}
-                )
-                if output_path:
-                    output_paths.append(output_path)
+            # Write any remaining records in final batches
+            if batches:
+                logger.info(f"Job {job_id}: Writing final batches...")
+                _write_and_clear_batches()
 
-            job_info.output_paths = output_paths
+            job_info.output_paths = list(set(output_paths))  # Remove duplicates
             job_info.status = ImportJobStatus.COMPLETED
-            logger.info(f"Job {job_id} completed. Created {len(output_paths)} files.")
+            job_info.progress.processed_records = processed_records
+            job_info.progress.total_records = processed_records
+            job_info.total_output_size = total_records_written
+
+            logger.info(f"Job {job_id} completed. Processed {processed_records:,} records, wrote {total_records_written:,} records to {len(job_info.output_paths)} unique files.")
 
         except Exception as e:
             logger.exception(f"Job {job_id} failed: {e}")
@@ -491,6 +513,144 @@ class ImportManager:
                 'jobs_dir': str(self.jobs_dir)
             }
         }
+    
+    def get_symbol_level_data(self) -> List[Dict[str, Any]]:
+        """
+        Get symbol-level data by scanning the Parquet directory structure.
+        
+        Returns:
+            List of dictionaries with symbol-level information
+        """
+        symbol_data = []
+        
+        try:
+            # Scan each asset type directory
+            asset_type_dirs = {
+                'options': self.parquet_writer.options_dir,
+                'equities': self.parquet_writer.equities_dir,
+                'futures': self.parquet_writer.futures_dir,
+                'forex': self.parquet_writer.forex_dir
+            }
+            
+            for asset_type, base_dir in asset_type_dirs.items():
+                if not base_dir.exists():
+                    continue
+                
+                # Look for underlying=SYMBOL directories
+                for underlying_dir in base_dir.glob("underlying=*"):
+                    try:
+                        # Extract symbol name from directory
+                        symbol = underlying_dir.name.split('=')[1]
+                        
+                        # Scan date structure to find date ranges and count records
+                        date_info = self._analyze_symbol_date_structure(underlying_dir)
+                        
+                        if date_info['partition_count'] > 0:
+                            symbol_entry = {
+                                'id': f"symbol_{symbol}_{asset_type}",
+                                'symbol': symbol,
+                                'asset_type': asset_type.upper(),
+                                'start_date': date_info['start_date'],
+                                'end_date': date_info['end_date'],
+                                'record_count': date_info['record_count'],
+                                'file_size': date_info['file_size'],
+                                'partition_count': date_info['partition_count'],
+                                'imported_at': datetime.now().isoformat()
+                            }
+                            symbol_data.append(symbol_entry)
+                            
+                    except Exception as e:
+                        logger.warning(f"Error processing symbol directory {underlying_dir}: {e}")
+                        continue
+            
+            # Sort by symbol name
+            symbol_data.sort(key=lambda x: x['symbol'])
+            
+            logger.info(f"Found {len(symbol_data)} symbols with imported data")
+            return symbol_data
+            
+        except Exception as e:
+            logger.error(f"Error getting symbol-level data: {e}")
+            return []
+    
+    def _analyze_symbol_date_structure(self, symbol_dir: Path) -> Dict[str, Any]:
+        """
+        Analyze the date structure for a symbol to extract date ranges and statistics.
+        
+        Args:
+            symbol_dir: Path to the underlying=SYMBOL directory
+            
+        Returns:
+            Dictionary with date range and statistics information
+        """
+        date_info = {
+            'start_date': None,
+            'end_date': None,
+            'record_count': 0,
+            'file_size': 0,
+            'partition_count': 0
+        }
+        
+        try:
+            dates = []
+            
+            # Scan year directories
+            for year_dir in symbol_dir.glob("year=*"):
+                try:
+                    year = int(year_dir.name.split('=')[1])
+                    
+                    # Scan month directories
+                    for month_dir in year_dir.glob("month=*"):
+                        try:
+                            month = int(month_dir.name.split('=')[1])
+                            
+                            # Scan day directories
+                            for day_dir in month_dir.glob("day=*"):
+                                try:
+                                    day = int(day_dir.name.split('=')[1])
+                                    
+                                    # Check if data.parquet exists
+                                    parquet_file = day_dir / "data.parquet"
+                                    if parquet_file.exists():
+                                        dates.append(date(year, month, day))
+                                        date_info['partition_count'] += 1
+                                        
+                                        # Get file size
+                                        try:
+                                            file_size = parquet_file.stat().st_size
+                                            date_info['file_size'] += file_size
+                                            
+                                            # Get record count from Parquet metadata
+                                            import pyarrow.parquet as pq
+                                            parquet_file_obj = pq.ParquetFile(parquet_file)
+                                            date_info['record_count'] += parquet_file_obj.metadata.num_rows
+                                            
+                                        except Exception as e:
+                                            logger.debug(f"Error reading Parquet metadata for {parquet_file}: {e}")
+                                            
+                                except (ValueError, Exception) as e:
+                                    logger.debug(f"Error processing day directory {day_dir}: {e}")
+                                    continue
+                                    
+                        except (ValueError, Exception) as e:
+                            logger.debug(f"Error processing month directory {month_dir}: {e}")
+                            continue
+                            
+                except (ValueError, Exception) as e:
+                    logger.debug(f"Error processing year directory {year_dir}: {e}")
+                    continue
+            
+            # Determine date range
+            if dates:
+                dates.sort()
+                date_info['start_date'] = dates[0].isoformat()
+                date_info['end_date'] = dates[-1].isoformat()
+            
+            return date_info
+            
+        except Exception as e:
+            logger.error(f"Error analyzing symbol date structure for {symbol_dir}: {e}")
+            return date_info
 
 
 # Global instance

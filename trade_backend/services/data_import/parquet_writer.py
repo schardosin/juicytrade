@@ -469,54 +469,87 @@ class ParquetWriter:
         
         return partition_path
     
-    def _write_symbol_date_partition_to_parquet(self, 
+    def _write_symbol_date_partition_to_parquet(self,
                                                underlying_symbol: str,
-                                               record_date: date, 
+                                               record_date: date,
                                                asset_type: AssetType,
                                                records: List[Dict[str, Any]],
                                                metadata: Dict[str, Any]) -> Optional[str]:
         """
-        Write a symbol-date partition of records to Parquet file.
-        
+        Write or append a symbol-date partition of records to Parquet file.
+        If the file already exists, appends new records to existing data.
+
         Args:
             underlying_symbol: Underlying symbol for this partition (e.g., "SPXW")
             record_date: Date for this partition
             asset_type: Asset type
             records: List of record dictionaries
             metadata: Source metadata
-            
+
         Returns:
             Output file path or None if failed
         """
         try:
             if not records:
                 return None
-            
-            # Convert records to DataFrame
-            df = pd.DataFrame(records)
-            
-            # Ensure consistent data types
-            df = self._normalize_dataframe(df)
-            
+
+            # Convert new records to DataFrame
+            new_df = pd.DataFrame(records)
+            new_df = self._normalize_dataframe(new_df)
+
             # Determine output path for symbol-date partitioning
             output_path = self._get_symbol_date_partition_path(underlying_symbol, record_date, asset_type, metadata)
             output_path.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Write to Parquet with compression
-            table = pa.Table.from_pandas(df)
-            pq.write_table(
-                table, 
-                output_path,
-                compression='snappy',
-                use_dictionary=True,
-                write_statistics=True
-            )
-            
-            logger.info(f"Wrote {len(records)} records to {output_path}")
+
+            if output_path.exists():
+                # File exists - read existing data and append
+                try:
+                    existing_table = pq.read_table(output_path)
+                    existing_df = existing_table.to_pandas()
+
+                    # Combine existing and new data
+                    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+
+                    # Write combined data
+                    table = pa.Table.from_pandas(combined_df)
+                    pq.write_table(
+                        table,
+                        output_path,
+                        compression='snappy',
+                        use_dictionary=True,
+                        write_statistics=True
+                    )
+
+                    logger.info(f"Appended {len(records)} records to {output_path} (total: {len(combined_df)} records)")
+
+                except Exception as e:
+                    logger.warning(f"Error reading existing file {output_path}, overwriting: {e}")
+                    # Fall back to overwriting if read fails
+                    table = pa.Table.from_pandas(new_df)
+                    pq.write_table(
+                        table,
+                        output_path,
+                        compression='snappy',
+                        use_dictionary=True,
+                        write_statistics=True
+                    )
+                    logger.info(f"Wrote {len(records)} records to {output_path} (fallback overwrite)")
+            else:
+                # File doesn't exist - write new file
+                table = pa.Table.from_pandas(new_df)
+                pq.write_table(
+                    table,
+                    output_path,
+                    compression='snappy',
+                    use_dictionary=True,
+                    write_statistics=True
+                )
+                logger.info(f"Wrote {len(records)} records to {output_path} (new file)")
+
             return str(output_path)
-            
+
         except Exception as e:
-            logger.error(f"Error writing symbol-date partition to Parquet: {e}")
+            logger.error(f"Error writing/appending symbol-date partition to Parquet: {e}")
             return None
     
     def _get_symbol_date_partition_path(self, 

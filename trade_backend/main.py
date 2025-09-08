@@ -1378,34 +1378,15 @@ async def list_dbn_files():
 
 @app.get("/api/data-import/imported-data", response_model=ApiResponse)
 async def get_imported_data():
-    """Get list of imported datasets."""
+    """Get list of imported datasets by symbol."""
     try:
-        # Get storage stats which includes imported data information
-        stats = import_manager.get_storage_stats()
-        
-        # Extract imported datasets from storage stats
-        imported_datasets = []
-        
-        # Check each asset type directory for imported data
-        for asset_type in ['options', 'equities', 'futures', 'forex']:
-            asset_stats = stats.get('asset_types', {}).get(asset_type, {})
-            if asset_stats.get('total_files', 0) > 0:
-                imported_datasets.append({
-                    'asset_type': asset_type,
-                    'total_files': asset_stats.get('total_files', 0),
-                    'total_size_bytes': asset_stats.get('total_size_bytes', 0),
-                    'date_ranges': asset_stats.get('date_ranges', []),
-                    'symbols_count': asset_stats.get('symbols_count', 0)
-                })
+        # Get symbol-level data instead of asset-type aggregates
+        symbol_datasets = import_manager.get_symbol_level_data()
         
         return ApiResponse(
             success=True,
-            data={
-                'datasets': imported_datasets,
-                'total_datasets': len(imported_datasets),
-                'storage_stats': stats
-            },
-            message=f"Retrieved {len(imported_datasets)} imported datasets"
+            data=symbol_datasets,
+            message=f"Retrieved {len(symbol_datasets)} imported symbol datasets"
         )
     except Exception as e:
         logger.error(f"Error getting imported data: {e}")

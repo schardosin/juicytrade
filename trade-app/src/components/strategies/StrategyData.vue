@@ -46,8 +46,8 @@
         <!-- Dataset Header -->
         <div class="dataset-header">
           <div class="dataset-info">
-            <h3 class="dataset-name">{{ dataset.dataset_name }}</h3>
-            <p class="dataset-description">{{ dataset.description || 'Historical market data' }}</p>
+            <h3 class="dataset-name">{{ dataset.symbol }}</h3>
+            <p class="dataset-description">{{ dataset.asset_type }} options data for {{ dataset.symbol }}</p>
             <div class="dataset-meta">
               <span class="meta-item">
                 <span class="meta-label">Asset Type:</span>
@@ -80,8 +80,8 @@
         <div class="dataset-summary">
           <div class="summary-stats">
             <div class="stat-item">
-              <span class="stat-number">{{ formatNumber(dataset.symbol_count) }}</span>
-              <span class="stat-label">Symbols</span>
+              <span class="stat-number">{{ formatNumber(dataset.partition_count) }}</span>
+              <span class="stat-label">Partitions</span>
             </div>
             <div class="stat-item">
               <span class="stat-number">{{ formatNumber(dataset.record_count) }}</span>
@@ -138,8 +138,8 @@
       >
         <div class="list-col col-dataset">
           <div class="dataset-name-info">
-            <h4 class="dataset-name">{{ dataset.dataset_name }}</h4>
-            <p class="dataset-description">{{ dataset.description || 'Historical market data' }}</p>
+            <h4 class="dataset-name">{{ dataset.symbol }}</h4>
+            <p class="dataset-description">{{ dataset.asset_type }} options data for {{ dataset.symbol }}</p>
           </div>
         </div>
         <div class="list-col col-asset">
@@ -229,7 +229,7 @@
           <button class="btn-close" @click="closeDeleteDialog">×</button>
         </div>
         <div class="dialog-body">
-          <p>Are you sure you want to delete the dataset <strong>{{ selectedDataset?.dataset_name }}</strong>?</p>
+          <p>Are you sure you want to delete the dataset <strong>{{ selectedDataset?.symbol }}</strong>?</p>
           <p class="warning-text">This action cannot be undone and will permanently remove all imported data.</p>
         </div>
         <div class="dialog-footer">
@@ -279,7 +279,7 @@ export default {
       try {
         loading.value = true
         const response = await api.get('/api/data-import/imported-data')
-        importedData.value = response.data || []
+        importedData.value = response.data.data || []
       } catch (err) {
         console.error('Error loading imported data:', err)
         error.value = 'Failed to load imported data'
@@ -292,8 +292,9 @@ export default {
     // Helper functions
     const formatDateRange = (startDate, endDate) => {
       if (!startDate || !endDate) return 'N/A'
-      const start = new Date(startDate).toLocaleDateString()
-      const end = new Date(endDate).toLocaleDateString()
+      // Parse as local date to avoid timezone conversion issues
+      const start = new Date(startDate + 'T00:00:00').toLocaleDateString()
+      const end = new Date(endDate + 'T00:00:00').toLocaleDateString()
       return `${start} - ${end}`
     }
 
@@ -349,12 +350,12 @@ export default {
     // Actions
     const viewDetails = (dataset) => {
       // TODO: Implement dataset details view
-      showSuccess(`Viewing details for ${dataset.dataset_name}`, 'Feature Preview')
+      showSuccess(`Viewing details for ${dataset.symbol}`, 'Feature Preview')
     }
 
     const exportData = (dataset) => {
       // TODO: Implement data export functionality
-      showSuccess(`Exporting ${dataset.dataset_name}`, 'Feature Preview')
+      showSuccess(`Exporting ${dataset.symbol}`, 'Feature Preview')
     }
 
     const deleteDataset = (dataset) => {
