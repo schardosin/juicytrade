@@ -12,6 +12,25 @@ from pydantic import BaseModel, Field, validator
 from pathlib import Path
 
 
+class ImportFileType(str, Enum):
+    """Supported import file types"""
+    DBN = "dbn"
+    CSV = "csv"
+
+
+class CSVFormat(str, Enum):
+    """Supported CSV formats"""
+    TRADESTATION = "tradestation"
+    GENERIC = "generic"
+    AUTO_DETECT = "auto_detect"
+
+
+class TimestampConvention(str, Enum):
+    """Timestamp convention for CSV data"""
+    BEGIN_OF_MINUTE = "begin_of_minute"  # 9:30 represents 9:30-9:31 bar (standard)
+    END_OF_MINUTE = "end_of_minute"      # 9:31 represents 9:30-9:31 bar (TradeStation)
+
+
 class DataType(str, Enum):
     """Supported data types from DBN files"""
     OHLCV = "ohlcv"
@@ -98,15 +117,23 @@ class DBNMetadata(BaseModel):
         use_enum_values = True
 
 
-class DBNFileInfo(BaseModel):
-    """Basic information about a DBN file"""
+class ImportFileInfo(BaseModel):
+    """Basic information about an import file (DBN or CSV)"""
     filename: str
     file_path: str
     file_size: int
     modified_at: datetime
+    file_type: ImportFileType
     metadata: Optional[DBNMetadata] = None
     metadata_cached: bool = False
     metadata_cache_time: Optional[datetime] = None
+    
+    # CSV-specific fields
+    csv_format: Optional[CSVFormat] = None
+    csv_headers: Optional[List[str]] = None
+    csv_sample_data: Optional[List[List[str]]] = None
+    needs_symbol_input: bool = False
+    csv_structure_analysis: Optional[Dict[str, Any]] = None
     
     @property
     def size_mb(self) -> float:
@@ -117,6 +144,10 @@ class DBNFileInfo(BaseModel):
     def size_gb(self) -> float:
         """File size in GB"""
         return round(self.file_size / (1024 * 1024 * 1024), 2)
+
+
+# Backward compatibility alias
+DBNFileInfo = ImportFileInfo
 
 
 class ImportFilters(BaseModel):
@@ -138,11 +169,36 @@ class ImportRequest(BaseModel):
     overwrite_existing: bool = Field(default=False, description="Overwrite existing data")
     job_name: Optional[str] = None
     
+    # CSV-specific fields
+    file_type: Optional[ImportFileType] = None
+    csv_symbol: Optional[str] = None  # Required for CSV files
+    csv_format: Optional[CSVFormat] = None
+    timestamp_convention: Optional[TimestampConvention] = Field(
+        default=TimestampConvention.BEGIN_OF_MINUTE,
+        description="Timestamp convention for CSV data"
+    )
+    
     @validator('output_format')
     def validate_output_format(cls, v):
         if v.lower() != 'parquet':
             raise ValueError('Currently only parquet output format is supported')
         return v.lower()
+    
+    @validator('csv_symbol')
+    def validate_csv_symbol(cls, v, values):
+        file_type = values.get('file_type')
+        filename = values.get('filename', '')
+        
+        # Check if this is a CSV file (either by file_type or filename extension)
+        is_csv_file = (
+            file_type == ImportFileType.CSV or 
+            file_type == "csv" or 
+            filename.lower().endswith('.csv')
+        )
+        
+        if is_csv_file and not v:
+            raise ValueError('csv_symbol is required for CSV file imports')
+        return v
 
 
 class ImportProgress(BaseModel):
@@ -175,6 +231,12 @@ class ImportJobInfo(BaseModel):
     filters: Optional[ImportFilters] = None
     output_format: str = "parquet"
     overwrite_existing: bool = False
+    
+    # CSV-specific fields
+    file_type: Optional[ImportFileType] = None
+    csv_symbol: Optional[str] = None
+    csv_format: Optional[CSVFormat] = None
+    timestamp_convention: Optional[TimestampConvention] = None
     
     # Progress and results
     progress: ImportProgress = ImportProgress()

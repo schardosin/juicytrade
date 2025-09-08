@@ -88,14 +88,15 @@ class TimeFrameCalculator:
             )
             """
         
-        # Complete SQL query
+        # Complete SQL query - clean and simple, no price scaling
+        # Data should be imported in the correct format at the import phase
         sql = f"""
         SELECT 
             {time_bucket_sql} as time_bucket,
-            FIRST(open / 1e9 ORDER BY timestamp) as open,
-            MAX(high / 1e9) as high,
-            MIN(low / 1e9) as low,
-            LAST(close / 1e9 ORDER BY timestamp) as close,
+            FIRST(open ORDER BY timestamp) as open,
+            MAX(high) as high,
+            MIN(low) as low,
+            LAST(close ORDER BY timestamp) as close,
             SUM(volume) as volume,
             COUNT(*) as record_count
         FROM parquet_data

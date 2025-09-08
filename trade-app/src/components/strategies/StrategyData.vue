@@ -190,8 +190,14 @@
       </div>
     </div>
 
+    <!-- Loading State -->
+    <div v-if="loading" class="loading-state">
+      <div class="spinner"></div>
+      <p>Loading imported data...</p>
+    </div>
+
     <!-- Empty State -->
-    <div v-else class="empty-state">
+    <div v-else-if="!loading && importedData.length === 0" class="empty-state">
       <div class="empty-icon">💾</div>
       <h3 class="empty-title">No Data Imported Yet</h3>
       <p class="empty-description">
@@ -207,12 +213,6 @@
           Import Your First Dataset
         </button>
       </div>
-    </div>
-
-    <!-- Loading State -->
-    <div v-if="loading" class="loading-state">
-      <div class="spinner"></div>
-      <p>Loading imported data...</p>
     </div>
 
     <!-- Import Dialog -->
@@ -374,10 +374,10 @@ export default {
       
       try {
         deleting.value = true
-        const response = await api.delete(`/api/data-import/imported-data/${selectedDataset.value.id}`)
+        const response = await api.delete(`/api/data-import/imported-data/${selectedDataset.value.symbol}`)
         
         if (response.data.success) {
-          showSuccess(`Dataset "${selectedDataset.value.dataset_name}" deleted successfully!`, 'Dataset Deleted')
+          showSuccess(`Dataset "${selectedDataset.value.symbol}" deleted successfully!`, 'Dataset Deleted')
           await loadImportedData() // Reload data
           closeDeleteDialog()
         } else {

@@ -29,8 +29,8 @@
       <div class="dialog-body">
         <!-- Step 1: File Selection -->
         <div v-if="currentStep === 0" class="step-content">
-          <h3>Select DBN File</h3>
-          <p class="step-description">Choose a Databento file from your available files to import.</p>
+          <h3>Select Import File</h3>
+          <p class="step-description">Choose a file from your available files to import (DBN or CSV).</p>
           
           <div v-if="loadingFiles" class="loading-files">
             <div class="spinner-small"></div>
@@ -39,27 +39,29 @@
           
           <div v-else-if="availableFiles.length === 0" class="no-files">
             <div class="no-files-icon">📁</div>
-            <h4>No DBN Files Found</h4>
-            <p>No Databento files were found in the dbn_files directory. Please add DBN files to continue.</p>
+            <h4>No Import Files Found</h4>
+            <p>No import files were found in the dbn_files directory. Please add DBN or CSV files to continue.</p>
           </div>
           
           <div v-else-if="availableFiles && availableFiles.length > 0" class="file-selector">
-            <div 
-              v-for="file in availableFiles" 
-              :key="file?.filename || file?.file_path || Math.random()"
-              class="file-option"
-              :class="{ selected: selectedFile && selectedFile.filename === file?.filename }"
-              @click="selectFile(file)"
-            >
-              <div class="file-info">
-                <h4 class="file-name">{{ file?.filename || 'Unknown File' }}</h4>
-                <div class="file-details">
-                  <span class="file-size">{{ formatFileSize(file?.file_size) }}</span>
-                  <span class="file-date">{{ formatFileDate(file?.modified_at) }}</span>
+            <div class="file-list">
+              <div 
+                v-for="file in availableFiles" 
+                :key="file?.filename || file?.file_path || Math.random()"
+                class="file-option"
+                :class="{ selected: selectedFile && selectedFile.filename === file?.filename }"
+                @click="selectFile(file)"
+              >
+                <div class="file-info">
+                  <h4 class="file-name">{{ file?.filename || 'Unknown File' }}</h4>
+                  <div class="file-details">
+                    <span class="file-size">{{ formatFileSize(file?.file_size) }}</span>
+                    <span class="file-date">{{ formatFileDate(file?.modified_at) }}</span>
+                  </div>
                 </div>
-              </div>
-              <div class="file-status">
-                <div v-if="selectedFile && selectedFile.filename === file?.filename" class="selected-indicator">✓</div>
+                <div class="file-status">
+                  <div v-if="selectedFile && selectedFile.filename === file?.filename" class="selected-indicator">✓</div>
+                </div>
               </div>
             </div>
           </div>
@@ -69,6 +71,49 @@
         <div v-if="currentStep === 1" class="step-content">
           <h3>File Preview</h3>
           <p class="step-description">Review the file information before importing all data.</p>
+          
+          <!-- CSV Symbol Input -->
+          <div v-if="isCSVFile" class="csv-symbol-input">
+            <div class="form-group">
+              <label>Symbol (required for CSV files):</label>
+              <input 
+                type="text" 
+                v-model="csvSymbol"
+                placeholder="e.g., SPX"
+                class="form-input"
+                required
+              />
+              <p class="form-help">Enter the single symbol that this CSV file contains data for.</p>
+            </div>
+            
+            <div class="form-group">
+              <label>Timestamp Convention:</label>
+              <div class="timestamp-convention-selector">
+                <label class="radio-group">
+                  <input 
+                    type="radio" 
+                    name="timestampConvention"
+                    v-model="timestampConvention"
+                    value="begin_of_minute"
+                  />
+                  <span>Beginning of Minute (9:30)</span>
+                </label>
+                <label class="radio-group">
+                  <input 
+                    type="radio" 
+                    name="timestampConvention"
+                    v-model="timestampConvention"
+                    value="end_of_minute"
+                  />
+                  <span>End of Minute (9:31) - TradeStation</span>
+                </label>
+              </div>
+              <p class="form-help">
+                <strong>Beginning of Minute:</strong> 9:30 timestamp represents the 9:30-9:31 minute bar (standard)<br>
+                <strong>End of Minute:</strong> 9:31 timestamp represents the 9:30-9:31 minute bar (TradeStation format)
+              </p>
+            </div>
+          </div>
           
           <div v-if="loadingMetadata" class="loading-metadata">
             <div class="spinner-small"></div>
@@ -249,9 +294,11 @@
           v-if="currentStep < 2" 
           class="btn btn-primary" 
           @click="nextStep"
-          :disabled="!canProceed"
+          :disabled="!canProceed || loadingMetadata"
         >
-          Next
+          <div v-if="loadingMetadata" class="spinner-small"></div>
+          <span v-if="loadingMetadata">Loading...</span>
+          <span v-else>Next</span>
         </button>
         
         <button 
@@ -331,6 +378,10 @@ export default {
     const selectedFile = ref(null)
     const loadingFiles = ref(false)
     
+    // CSV-specific
+    const csvSymbol = ref('')
+    const timestampConvention = ref('begin_of_minute') // Default to standard convention
+    
     // Metadata
     const metadata = ref(null)
     const loadingMetadata = ref(false)
@@ -362,11 +413,20 @@ export default {
     let progressInterval = null
 
     // Computed properties
+    const isCSVFile = computed(() => {
+      return selectedFile.value?.filename?.toLowerCase().endsWith('.csv') || 
+             selectedFile.value?.file_type === 'csv'
+    })
+    
     const canProceed = computed(() => {
       switch (currentStep.value) {
         case 0:
           return selectedFile.value !== null
         case 1:
+          // For CSV files, require symbol input
+          if (isCSVFile.value) {
+            return metadata.value !== null && csvSymbol.value.trim().length > 0
+          }
           return metadata.value !== null
         case 2:
           return true
@@ -376,7 +436,12 @@ export default {
     })
     
     const canStartImport = computed(() => {
-      return importConfig.value.job_name.trim().length > 0
+      const hasJobName = importConfig.value.job_name.trim().length > 0
+      // For CSV files, also require symbol
+      if (isCSVFile.value) {
+        return hasJobName && csvSymbol.value.trim().length > 0
+      }
+      return hasJobName
     })
 
     // Methods
@@ -386,7 +451,6 @@ export default {
         const response = await api.get('/api/data-import/files')
         // The API returns { success: true, data: [...] }
         availableFiles.value = response.data?.data || []
-        console.log('Loaded files:', availableFiles.value)
       } catch (error) {
         console.error('Error loading files:', error)
         showError('Failed to load available files', 'File Error')
@@ -408,12 +472,10 @@ export default {
         // Use metadata from the selected file (already loaded from the files API)
         if (selectedFile.value.metadata) {
           metadata.value = selectedFile.value.metadata
-          console.log('Using embedded metadata:', metadata.value)
         } else {
           // Fallback: make separate API call for metadata
           const response = await api.get(`/api/data-import/metadata/${selectedFile.value.filename}`)
           metadata.value = response.data?.data || response.data
-          console.log('Loaded metadata from API:', metadata.value)
         }
         
         // Set default date range from metadata
@@ -436,9 +498,20 @@ export default {
 
     const nextStep = async () => {
       if (currentStep.value === 0 && selectedFile.value) {
-        await loadMetadata()
+        // Show loading state while processing metadata
+        loadingMetadata.value = true
+        try {
+          await loadMetadata()
+          currentStep.value++
+        } catch (error) {
+          // Error handling is already in loadMetadata, but ensure loading state is cleared
+          console.error('Error in nextStep:', error)
+        } finally {
+          loadingMetadata.value = false
+        }
+      } else {
+        currentStep.value++
       }
-      currentStep.value++
     }
 
     const previousStep = () => {
@@ -466,17 +539,19 @@ export default {
           overwrite_existing: importConfig.value.overwrite_existing
         }
         
-        console.log('Starting import with request:', importRequest)
+        // Add CSV-specific fields if it's a CSV file
+        if (isCSVFile.value) {
+          importRequest.file_type = 'csv'
+          importRequest.csv_symbol = csvSymbol.value.trim()
+          importRequest.csv_format = selectedFile.value.csv_format || 'tradestation'
+          importRequest.timestamp_convention = timestampConvention.value
+        }
         
         const response = await api.post('/api/data-import/jobs', importRequest)
-        
-        console.log('Import job response:', response.data)
         
         if (response.data.success) {
           // The job ID is in response.data.data, not response.data.job_id
           importJobId.value = response.data.data?.job_id || response.data.data
-          console.log('Import job ID set to:', importJobId.value)
-          console.log('Full response data:', response.data.data)
           currentStep.value = 3
           startProgressMonitoring()
         } else {
@@ -492,20 +567,14 @@ export default {
     }
 
     const startProgressMonitoring = () => {
-      console.log('Starting progress monitoring for job:', importJobId.value)
-      
       progressInterval = setInterval(async () => {
         if (!importJobId.value) {
-          console.warn('No import job ID, stopping monitoring')
           return
         }
         
         try {
-          console.log('Checking status for job:', importJobId.value)
           const response = await api.get(`/api/data-import/jobs/${importJobId.value}/status`)
           const status = response.data
-          
-          console.log('Received status:', status)
           
           // The status is nested in status.data, not directly in status
           const jobData = status.data || status
@@ -549,11 +618,9 @@ export default {
             error: jobData.error_message
           }
           
-          console.log('Updating import status:', newStatus)
           importStatus.value = newStatus
           
           if (jobData.status === 'completed' || jobData.status === 'failed') {
-            console.log('Import finished with status:', jobData.status)
             clearInterval(progressInterval)
             progressInterval = null
             importing.value = false
@@ -566,11 +633,9 @@ export default {
           }
         } catch (error) {
           console.error('Error checking import status:', error)
-          console.error('Error details:', error.response?.data || error.message)
           
           // If we get a 404, the job might not exist
           if (error.response?.status === 404) {
-            console.error('Import job not found, stopping monitoring')
             clearInterval(progressInterval)
             progressInterval = null
             importing.value = false
@@ -610,6 +675,8 @@ export default {
       // Reset state
       currentStep.value = 0
       selectedFile.value = null
+      csvSymbol.value = ''
+      timestampConvention.value = 'begin_of_minute' // Reset to default
       metadata.value = null
       importConfig.value = {
         start_date: '',
@@ -668,9 +735,32 @@ export default {
 
     const formatDateRange = (startDate, endDate) => {
       if (!startDate || !endDate) return 'N/A'
-      const start = new Date(startDate).toLocaleDateString()
-      const end = new Date(endDate).toLocaleDateString()
-      return `${start} - ${end}`
+      
+      try {
+        // Handle different date formats and avoid timezone conversion
+        const parseDate = (dateStr) => {
+          // If it's already a date string like "2013-04-01", parse it directly
+          if (typeof dateStr === 'string') {
+            const parts = dateStr.split('-')
+            if (parts.length === 3) {
+              // Create date directly from parts to avoid timezone issues
+              const year = parseInt(parts[0])
+              const month = parseInt(parts[1]) - 1 // Month is 0-indexed
+              const day = parseInt(parts[2])
+              return new Date(year, month, day)
+            }
+          }
+          // Fallback to UTC parsing
+          return new Date(dateStr + 'T00:00:00Z')
+        }
+        
+        const start = parseDate(startDate).toLocaleDateString()
+        const end = parseDate(endDate).toLocaleDateString()
+        return `${start} - ${end}`
+      } catch (error) {
+        console.error('Error formatting date range:', error, { startDate, endDate })
+        return `${startDate} - ${endDate}`
+      }
     }
 
     const formatNumber = (number) => {
@@ -707,6 +797,8 @@ export default {
       availableFiles,
       selectedFile,
       loadingFiles,
+      csvSymbol,
+      timestampConvention, // ← MISSING! This was the bug
       metadata,
       loadingMetadata,
       importConfig,
@@ -715,6 +807,7 @@ export default {
       importStatus,
       
       // Computed
+      isCSVFile,
       canProceed,
       canStartImport,
       
@@ -934,15 +1027,44 @@ export default {
   gap: var(--spacing-md);
 }
 
+.file-list {
+  max-height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  background: var(--bg-primary);
+}
+
+.file-list::-webkit-scrollbar {
+  width: 8px;
+}
+
+.file-list::-webkit-scrollbar-track {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+}
+
+.file-list::-webkit-scrollbar-thumb {
+  background: var(--border-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.file-list::-webkit-scrollbar-thumb:hover {
+  background: var(--text-tertiary);
+}
+
 .file-option {
   display: flex;
   justify-content: space-between;
   align-items: center;
   padding: var(--spacing-lg);
-  border: 1px solid var(--border-primary);
-  border-radius: var(--radius-md);
+  border-bottom: 1px solid var(--border-primary);
   cursor: pointer;
   transition: var(--transition-normal);
+}
+
+.file-option:last-child {
+  border-bottom: none;
 }
 
 .file-option:hover {
@@ -983,6 +1105,32 @@ export default {
   align-items: center;
   justify-content: center;
   font-weight: var(--font-weight-bold);
+}
+
+/* CSV Symbol Input */
+.csv-symbol-input {
+  margin-bottom: var(--spacing-xl);
+  padding: var(--spacing-lg);
+  background: rgba(255, 107, 53, 0.05);
+  border: 1px solid rgba(255, 107, 53, 0.2);
+  border-radius: var(--radius-md);
+}
+
+.timestamp-convention-selector {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  margin: var(--spacing-sm) 0;
+}
+
+.timestamp-convention-selector .radio-group {
+  padding: var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  transition: var(--transition-fast);
+}
+
+.timestamp-convention-selector .radio-group:hover {
+  background: rgba(255, 107, 53, 0.05);
 }
 
 /* Metadata Preview */

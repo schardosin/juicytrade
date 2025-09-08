@@ -34,7 +34,8 @@ from .strategies.api_endpoints import router as strategies_router
 from .strategies.execution_engine import StrategyExecutionEngine
 from .services.data_import.import_manager import import_manager
 from .services.data_import.import_models import (
-    ImportRequest, ImportJobStatus, ImportFilters, DateRange
+    ImportRequest, ImportJobStatus, ImportFilters, DateRange,
+    ImportFileType, CSVFormat
 )
 from .services.data_aggregation import (
     DataAggregationService, AggregationRequest, AggregatedData, TimeFrame,
@@ -1366,18 +1367,86 @@ async def get_all_watchlist_symbols():
 # === Data Import Endpoints ===
 
 @app.get("/api/data-import/files", response_model=ApiResponse)
-async def list_dbn_files():
-    """List available DBN files without metadata processing for fast loading."""
+async def list_import_files():
+    """List available import files (DBN and CSV) with basic information only - fast loading."""
     try:
-        files_info = await import_manager.list_dbn_files_only()
+        files_info = []
+        
+        # Ensure directory exists
+        import_manager.dbn_files_dir.mkdir(exist_ok=True)
+        
+        # Get DBN files - basic info only
+        for dbn_file in import_manager.dbn_files_dir.glob("*.dbn"):
+            try:
+                file_stat = dbn_file.stat()
+                file_info = {
+                    'filename': dbn_file.name,
+                    'file_path': str(dbn_file),
+                    'file_size': file_stat.st_size,
+                    'modified_at': datetime.fromtimestamp(file_stat.st_mtime),
+                    'file_type': 'dbn',
+                    'needs_symbol_input': False,
+                    'size_mb': round(file_stat.st_size / (1024 * 1024), 2),
+                    'size_gb': round(file_stat.st_size / (1024 * 1024 * 1024), 2)
+                }
+                files_info.append(file_info)
+            except Exception as e:
+                logger.warning(f"Error processing DBN file {dbn_file}: {e}")
+                continue
+        
+        # Get CSV files - basic info only
+        for csv_file in import_manager.dbn_files_dir.glob("*.csv"):
+            try:
+                file_stat = csv_file.stat()
+                file_info = {
+                    'filename': csv_file.name,
+                    'file_path': str(csv_file),
+                    'file_size': file_stat.st_size,
+                    'modified_at': datetime.fromtimestamp(file_stat.st_mtime),
+                    'file_type': 'csv',
+                    'needs_symbol_input': True,
+                    'size_mb': round(file_stat.st_size / (1024 * 1024), 2),
+                    'size_gb': round(file_stat.st_size / (1024 * 1024 * 1024), 2)
+                }
+                files_info.append(file_info)
+            except Exception as e:
+                logger.warning(f"Error processing CSV file {csv_file}: {e}")
+                continue
+        
+        # Sort by modification time (newest first)
+        files_info.sort(key=lambda x: x['modified_at'], reverse=True)
+        
+        dbn_count = sum(1 for f in files_info if f['file_type'] == 'dbn')
+        csv_count = sum(1 for f in files_info if f['file_type'] == 'csv')
         
         return ApiResponse(
             success=True,
             data=files_info,
-            message=f"Found {len(files_info)} DBN files"
+            message=f"Found {len(files_info)} import files ({dbn_count} DBN, {csv_count} CSV) - basic info only"
         )
     except Exception as e:
-        logger.error(f"Error listing DBN files: {e}")
+        logger.error(f"Error listing import files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-import/files/detailed", response_model=ApiResponse)
+async def list_import_files_detailed():
+    """List available import files (DBN and CSV) with full metadata information - slower but complete."""
+    try:
+        files_info = await import_manager.list_available_files()
+        
+        # Convert to dict format for JSON serialization
+        files_data = []
+        for file_info in files_info:
+            file_dict = file_info.dict()
+            files_data.append(file_dict)
+        
+        return ApiResponse(
+            success=True,
+            data=files_data,
+            message=f"Found {len(files_data)} import files ({sum(1 for f in files_data if f.get('file_type') == 'dbn')} DBN, {sum(1 for f in files_data if f.get('file_type') == 'csv')} CSV) - with metadata"
+        )
+    except Exception as e:
+        logger.error(f"Error listing import files with metadata: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/data-import/imported-data", response_model=ApiResponse)
@@ -1397,18 +1466,56 @@ async def get_imported_data():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/data-import/metadata/{filename}", response_model=ApiResponse)
-async def get_file_metadata_api(filename: str, force_refresh: bool = False):
-    """Get detailed metadata for a specific DBN file (API endpoint)."""
+async def get_file_metadata_api(filename: str, symbol: Optional[str] = None, force_refresh: bool = False):
+    """Get detailed metadata for a specific import file (API endpoint)."""
     try:
-        metadata = await import_manager.get_file_metadata(filename, force_refresh)
+        # Detect file type
+        file_type = import_manager._detect_file_type(filename)
         
-        return ApiResponse(
-            success=True,
-            data=metadata.dict(),
-            message=f"Retrieved metadata for {filename}"
-        )
+        if file_type == ImportFileType.CSV and not symbol:
+            # For CSV files without symbol, return basic structure info
+            file_path = import_manager.dbn_files_dir / filename
+            if not file_path.exists():
+                raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+            
+            # Get CSV structure analysis
+            from .services.data_import.csv_metadata_extractor import csv_metadata_extractor
+            csv_analysis = csv_metadata_extractor.analyze_csv_structure(file_path)
+            
+            # Create a basic metadata response for CSV files
+            basic_metadata = {
+                "filename": filename,
+                "file_path": str(file_path),
+                "file_size": file_path.stat().st_size,
+                "file_type": "csv",
+                "csv_format": csv_analysis.get('csv_format', 'generic'),
+                "csv_headers": csv_analysis.get('headers', []),
+                "csv_sample_data": csv_analysis.get('sample_data', []),
+                "record_count": csv_analysis.get('record_count', 0),
+                "start_date": csv_analysis.get('start_date'),
+                "end_date": csv_analysis.get('end_date'),
+                "needs_symbol_input": True,
+                "message": "CSV file detected. Symbol input will be required for import."
+            }
+            
+            return ApiResponse(
+                success=True,
+                data=basic_metadata,
+                message=f"Retrieved basic structure for CSV file {filename}"
+            )
+        else:
+            # For DBN files or CSV files with symbol, get full metadata
+            metadata = await import_manager.get_file_metadata(filename, symbol, force_refresh)
+            
+            return ApiResponse(
+                success=True,
+                data=metadata.dict(),
+                message=f"Retrieved metadata for {filename}"
+            )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Error getting file metadata for {filename}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -1682,6 +1789,28 @@ async def clear_api_metadata_cache():
         )
     except Exception as e:
         logger.error(f"Error clearing metadata cache: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/data-import/imported-data/{symbol}", response_model=ApiResponse)
+async def delete_imported_dataset(symbol: str):
+    """Delete all imported data for a specific symbol."""
+    try:
+        deleted = import_manager.delete_imported_data(symbol)
+        
+        if deleted:
+            return ApiResponse(
+                success=True,
+                data={"symbol": symbol, "deleted": True},
+                message=f"Successfully deleted all data for symbol '{symbol}'"
+            )
+        else:
+            return ApiResponse(
+                success=False,
+                data={"symbol": symbol, "deleted": False},
+                message=f"No data found for symbol '{symbol}' or deletion failed"
+            )
+    except Exception as e:
+        logger.error(f"Error deleting imported data for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # === Data Aggregation Endpoints ===

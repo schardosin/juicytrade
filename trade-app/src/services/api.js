@@ -902,6 +902,17 @@ export const api = {
     }
   },
 
+  // Generic DELETE method for API calls
+  async delete(url) {
+    try {
+      const response = await axios.delete(`${API_BASE_URL}${url}`);
+      return response;
+    } catch (error) {
+      console.error(`Error making DELETE request to ${url}:`, error);
+      throw error;
+    }
+  },
+
   // === Strategy Management APIs ===
 
   // Get all user strategies

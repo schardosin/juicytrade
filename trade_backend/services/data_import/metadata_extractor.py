@@ -85,6 +85,8 @@ class MetadataExtractor:
         Returns:
             DBNFileInfo object
         """
+        from .import_models import ImportFileType
+        
         # Get basic file info
         file_info_dict = self.dbn_reader.get_file_info(file_path)
         
@@ -92,7 +94,8 @@ class MetadataExtractor:
             filename=file_info_dict['filename'],
             file_path=file_info_dict['file_path'],
             file_size=file_info_dict['file_size'],
-            modified_at=file_info_dict['modified_at']
+            modified_at=file_info_dict['modified_at'],
+            file_type=ImportFileType.DBN
         )
         
         # Check if we have cached metadata
@@ -135,12 +138,14 @@ class MetadataExtractor:
                 logger.error(f"Error getting info for {file_path}: {e}")
                 # Create basic file info even if metadata extraction fails
                 try:
+                    from .import_models import ImportFileType
                     stat = file_path.stat()
                     file_info = DBNFileInfo(
                         filename=file_path.name,
                         file_path=str(file_path),
                         file_size=stat.st_size,
-                        modified_at=datetime.fromtimestamp(stat.st_mtime)
+                        modified_at=datetime.fromtimestamp(stat.st_mtime),
+                        file_type=ImportFileType.DBN
                     )
                     files_info.append(file_info)
                 except Exception as e2:

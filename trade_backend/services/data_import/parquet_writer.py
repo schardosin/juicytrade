@@ -21,6 +21,7 @@ from .import_models import (
     ImportFilters, DataType, AssetType, ImportProgress,
     SymbolInfo, DateRange
 )
+from .csv_reader import CSVRecord
 
 logger = logging.getLogger(__name__)
 
@@ -207,15 +208,20 @@ class ParquetWriter:
             # Asset type determination - use file metadata if available
             record_info['asset_type'] = file_asset_type or self._determine_asset_type(symbol)
             
-            # Price data (adapt based on actual record structure)
+            # Price data with proper DBN scaling (1e-9 according to Databento docs)
+            # Apply scaling during import so aggregation queries are clean
             if hasattr(record, 'open'):
-                record_info['open'] = float(getattr(record, 'open', 0))
+                raw_open = getattr(record, 'open', 0)
+                record_info['open'] = self._scale_dbn_price(raw_open)
             if hasattr(record, 'high'):
-                record_info['high'] = float(getattr(record, 'high', 0))
+                raw_high = getattr(record, 'high', 0)
+                record_info['high'] = self._scale_dbn_price(raw_high)
             if hasattr(record, 'low'):
-                record_info['low'] = float(getattr(record, 'low', 0))
+                raw_low = getattr(record, 'low', 0)
+                record_info['low'] = self._scale_dbn_price(raw_low)
             if hasattr(record, 'close'):
-                record_info['close'] = float(getattr(record, 'close', 0))
+                raw_close = getattr(record, 'close', 0)
+                record_info['close'] = self._scale_dbn_price(raw_close)
             if hasattr(record, 'volume'):
                 record_info['volume'] = int(getattr(record, 'volume', 0))
             
@@ -240,6 +246,38 @@ class ParquetWriter:
         except Exception as e:
             logger.warning(f"Error extracting record info: {e}")
             return None
+    
+    def _scale_dbn_price(self, raw_price: Any) -> float:
+        """
+        Scale DBN price according to Databento documentation.
+        
+        According to Databento docs: "every 1 unit corresponds to 1e-9, 
+        i.e. 1/1,000,000,000 or 0.000000001"
+        
+        Args:
+            raw_price: Raw price value from DBN (string or int)
+            
+        Returns:
+            Scaled price as float
+        """
+        try:
+            if raw_price is None or raw_price == 0:
+                return 0.0
+            
+            # Convert to int if it's a string
+            if isinstance(raw_price, str):
+                price_int = int(raw_price)
+            else:
+                price_int = int(raw_price)
+            
+            # Apply 1e-9 scaling as per Databento documentation
+            scaled_price = price_int / 1e9
+            
+            return float(scaled_price)
+            
+        except (ValueError, TypeError) as e:
+            logger.warning(f"Error scaling DBN price {raw_price}: {e}")
+            return 0.0
     
     def _determine_asset_type_from_metadata(self, metadata: Dict[str, Any]) -> Optional[AssetType]:
         """
@@ -879,7 +917,11 @@ class ParquetWriter:
             Dictionary with extracted information or None if extraction fails
         """
         try:
-            # Extract basic fields
+            # Handle CSV records differently
+            if isinstance(record, CSVRecord):
+                return self._extract_csv_record_info(record, file_asset_type)
+            
+            # Extract basic fields for DBN records
             record_info = {}
             
             # Use symbol from native DBN mapping (already populated by DBN reader)
@@ -914,15 +956,20 @@ class ParquetWriter:
             # Asset type determination - use file metadata if available
             record_info['asset_type'] = file_asset_type or self._determine_asset_type(symbol)
             
-            # Price data (adapt based on actual record structure)
+            # Price data with proper DBN scaling (1e-9 according to Databento docs)
+            # Apply scaling during import so aggregation queries are clean
             if hasattr(record, 'open'):
-                record_info['open'] = float(getattr(record, 'open', 0))
+                raw_open = getattr(record, 'open', 0)
+                record_info['open'] = self._scale_dbn_price(raw_open)
             if hasattr(record, 'high'):
-                record_info['high'] = float(getattr(record, 'high', 0))
+                raw_high = getattr(record, 'high', 0)
+                record_info['high'] = self._scale_dbn_price(raw_high)
             if hasattr(record, 'low'):
-                record_info['low'] = float(getattr(record, 'low', 0))
+                raw_low = getattr(record, 'low', 0)
+                record_info['low'] = self._scale_dbn_price(raw_low)
             if hasattr(record, 'close'):
-                record_info['close'] = float(getattr(record, 'close', 0))
+                raw_close = getattr(record, 'close', 0)
+                record_info['close'] = self._scale_dbn_price(raw_close)
             if hasattr(record, 'volume'):
                 record_info['volume'] = int(getattr(record, 'volume', 0))
             
@@ -946,4 +993,55 @@ class ParquetWriter:
             
         except Exception as e:
             logger.warning(f"Error extracting record info with native mapping: {e}")
+            return None
+    
+    def _extract_csv_record_info(self, record: CSVRecord, 
+                                file_asset_type: Optional[AssetType] = None) -> Optional[Dict[str, Any]]:
+        """
+        Extract record information from CSV record.
+        
+        Args:
+            record: CSVRecord object
+            file_asset_type: Asset type determined from file metadata
+            
+        Returns:
+            Dictionary with extracted information or None if extraction fails
+        """
+        try:
+            if not record or not record.symbol:
+                return None
+            
+            # Extract underlying symbol for partitioning
+            underlying_symbol = self._extract_underlying_symbol(record.symbol)
+            
+            # Asset type determination - use file metadata if available
+            asset_type = file_asset_type or self._determine_asset_type(record.symbol)
+            
+            record_info = {
+                'symbol': record.symbol,
+                'underlying_symbol': underlying_symbol,
+                'timestamp': record.timestamp,
+                'date': record.date,
+                'asset_type': asset_type
+            }
+            
+            # OHLCV data - use standard schema only
+            if record.open is not None:
+                record_info['open'] = float(record.open)
+            if record.high is not None:
+                record_info['high'] = float(record.high)
+            if record.low is not None:
+                record_info['low'] = float(record.low)
+            if record.close is not None:
+                record_info['close'] = float(record.close)
+            if record.volume is not None:
+                record_info['volume'] = int(record.volume)
+            
+            # Note: TradeStation up_volume and down_volume are already summed into volume
+            # We don't save them separately to maintain schema compatibility with DBN files
+            
+            return record_info
+            
+        except Exception as e:
+            logger.warning(f"Error extracting CSV record info: {e}")
             return None
