@@ -737,25 +737,19 @@ export default {
       if (!startDate || !endDate) return 'N/A'
       
       try {
-        // Handle different date formats and avoid timezone conversion
-        const parseDate = (dateStr) => {
-          // If it's already a date string like "2013-04-01", parse it directly
-          if (typeof dateStr === 'string') {
-            const parts = dateStr.split('-')
-            if (parts.length === 3) {
-              // Create date directly from parts to avoid timezone issues
-              const year = parseInt(parts[0])
-              const month = parseInt(parts[1]) - 1 // Month is 0-indexed
-              const day = parseInt(parts[2])
-              return new Date(year, month, day)
-            }
+        // Simple date formatting without timezone conversion
+        const formatDate = (dateStr) => {
+          if (typeof dateStr === 'string' && dateStr.match(/^\d{4}-\d{2}-\d{2}$/)) {
+            // For YYYY-MM-DD format, just reformat without parsing through Date object
+            const [year, month, day] = dateStr.split('-')
+            return new Date(parseInt(year), parseInt(month) - 1, parseInt(day)).toLocaleDateString()
           }
-          // Fallback to UTC parsing
-          return new Date(dateStr + 'T00:00:00Z')
+          // For other formats, try direct parsing
+          return new Date(dateStr).toLocaleDateString()
         }
         
-        const start = parseDate(startDate).toLocaleDateString()
-        const end = parseDate(endDate).toLocaleDateString()
+        const start = formatDate(startDate)
+        const end = formatDate(endDate)
         return `${start} - ${end}`
       } catch (error) {
         console.error('Error formatting date range:', error, { startDate, endDate })

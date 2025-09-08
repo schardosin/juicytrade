@@ -7,7 +7,7 @@ metadata including symbols, date ranges, and data types.
 """
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Iterator, Any
 import os
@@ -86,21 +86,32 @@ class DBNReader:
                 metadata.stype_in = str(getattr(store.metadata, 'stype_in', '')) if getattr(store.metadata, 'stype_in', None) else None
                 metadata.stype_out = str(getattr(store.metadata, 'stype_out', '')) if getattr(store.metadata, 'stype_out', None) else None
                 
-                # Extract time range from native metadata
+                # Extract time range from native metadata (authoritative source)
                 if hasattr(store.metadata, 'start') and store.metadata.start:
-                    metadata.start_timestamp = datetime.fromtimestamp(store.metadata.start / 1e9)
+                    # Convert nanoseconds since epoch to datetime using UTC (timestamps are UTC midnight)
+                    from datetime import timezone
+                    start_dt = datetime.fromtimestamp(store.metadata.start / 1e9, tz=timezone.utc)
+                    metadata.start_timestamp = start_dt
+                    
                     if not metadata.overall_date_range:
                         metadata.overall_date_range = DateRange(
-                            start_date=metadata.start_timestamp.date(),
-                            end_date=metadata.start_timestamp.date()
+                            start_date=start_dt.date(),
+                            end_date=start_dt.date()
                         )
                     else:
-                        metadata.overall_date_range.start_date = metadata.start_timestamp.date()
+                        metadata.overall_date_range.start_date = start_dt.date()
                         
                 if hasattr(store.metadata, 'end') and store.metadata.end:
-                    metadata.end_timestamp = datetime.fromtimestamp(store.metadata.end / 1e9)
+                    # Convert nanoseconds since epoch to datetime using UTC (timestamps are UTC midnight)
+                    from datetime import timezone
+                    end_dt = datetime.fromtimestamp(store.metadata.end / 1e9, tz=timezone.utc)
+                    metadata.end_timestamp = end_dt
+                    
                     if metadata.overall_date_range:
-                        metadata.overall_date_range.end_date = metadata.end_timestamp.date()
+                        # End timestamp represents the start of the day AFTER the last trading day
+                        # So subtract one day to get the actual last trading day
+                        actual_end_date = end_dt.date() - timedelta(days=1)
+                        metadata.overall_date_range.end_date = actual_end_date
                 
                 # For large files, skip expensive operations
                 if file_size_gb > 1.0:  # Files larger than 1GB
@@ -564,22 +575,10 @@ class DBNReader:
         Returns:
             DateRange for the symbol
         """
-        # For now, use overall store date range
-        # In a more sophisticated implementation, you'd calculate per-symbol ranges
+        # Use filename parsing instead of native metadata timestamps to avoid timezone issues
+        # This is more reliable and matches what we show in the UI
         
-        try:
-            if hasattr(store.metadata, 'start') and hasattr(store.metadata, 'end'):
-                start_dt = datetime.fromtimestamp(store.metadata.start / 1e9)
-                end_dt = datetime.fromtimestamp(store.metadata.end / 1e9)
-                
-                return DateRange(
-                    start_date=start_dt.date(),
-                    end_date=end_dt.date()
-                )
-        except Exception as e:
-            logger.warning(f"Error getting date range for {symbol}: {e}")
-        
-        # Fallback to today's date
+        # Fallback to today's date if no range available
         today = date.today()
         return DateRange(start_date=today, end_date=today)
     

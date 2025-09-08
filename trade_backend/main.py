@@ -1747,49 +1747,6 @@ async def get_storage_stats():
         logger.error(f"Error getting storage stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/data/cache/clear", response_model=ApiResponse)
-async def clear_metadata_cache(filename: Optional[str] = None):
-    """Clear metadata cache for all files or a specific file."""
-    try:
-        from .services.data_import.metadata_extractor import metadata_extractor
-        from pathlib import Path
-        
-        if filename:
-            file_path = import_manager.dbn_files_dir / filename
-            if not file_path.exists():
-                raise HTTPException(status_code=404, detail=f"File not found: {filename}")
-            metadata_extractor.clear_cache(file_path)
-            message = f"Cleared cache for {filename}"
-        else:
-            metadata_extractor.clear_cache()
-            message = "Cleared all metadata cache"
-        
-        return ApiResponse(
-            success=True,
-            data={"filename": filename, "cleared": True},
-            message=message
-        )
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error clearing metadata cache: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.delete("/api/data-import/cache", response_model=ApiResponse)
-async def clear_api_metadata_cache():
-    """Clear metadata cache through API endpoint."""
-    try:
-        from .services.data_import.metadata_extractor import metadata_extractor
-        metadata_extractor.clear_cache()
-        
-        return ApiResponse(
-            success=True,
-            data={"cleared": True},
-            message="Cleared all metadata cache"
-        )
-    except Exception as e:
-        logger.error(f"Error clearing metadata cache: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.delete("/api/data-import/imported-data/{symbol}", response_model=ApiResponse)
 async def delete_imported_dataset(symbol: str):

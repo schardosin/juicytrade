@@ -2,15 +2,13 @@
 CSV Metadata Extractor
 
 Extracts metadata from CSV files by analyzing their content structure,
-date ranges, and data quality. Does not rely on filename parsing.
+date ranges, and data quality.
 """
 
-import json
 import logging
 from datetime import datetime, date
 from pathlib import Path
-from typing import Dict, List, Optional, Any, Tuple
-import hashlib
+from typing import Dict, List, Optional, Any
 
 from .csv_reader import CSVReader, CSVFormat
 from .import_models import (
@@ -28,8 +26,6 @@ class CSVMetadataExtractor:
     def __init__(self):
         """Initialize CSV metadata extractor"""
         self.csv_reader = CSVReader()
-        self.cache_dir = Path("metadata_cache")
-        self.cache_dir.mkdir(exist_ok=True)
     
     def get_file_metadata(self, file_path: Path, symbol: str, 
                          force_refresh: bool = False) -> DBNMetadata:
@@ -39,19 +35,12 @@ class CSVMetadataExtractor:
         Args:
             file_path: Path to CSV file
             symbol: Symbol name provided by user
-            force_refresh: Force refresh of cached metadata
+            force_refresh: Ignored (kept for compatibility)
             
         Returns:
             DBNMetadata object with CSV-specific information
         """
         try:
-            # Check cache first
-            if not force_refresh:
-                cached_metadata = self._load_cached_metadata(file_path, symbol)
-                if cached_metadata:
-                    logger.info(f"Using cached metadata for {file_path}")
-                    return cached_metadata
-            
             logger.info(f"Extracting metadata from CSV file: {file_path}")
             
             # Get basic file info
@@ -122,9 +111,6 @@ class CSVMetadataExtractor:
             metadata.csv_sample_data = sample_rows[:5]  # Store first 5 rows for preview
             metadata.csv_parser_config = parser_config
             metadata.data_quality = data_quality
-            
-            # Cache the metadata
-            self._cache_metadata(file_path, symbol, metadata)
             
             logger.info(f"Successfully extracted metadata: {record_count} records, "
                        f"date range: {start_date} to {end_date}")
@@ -326,122 +312,6 @@ class CSVMetadataExtractor:
         except Exception as e:
             logger.error(f"Error analyzing data quality: {e}")
             return {'error': str(e), 'quality_score': 0}
-    
-    def _get_cache_key(self, file_path: Path, symbol: str) -> str:
-        """
-        Generate cache key for file and symbol combination.
-        
-        Args:
-            file_path: Path to file
-            symbol: Symbol name
-            
-        Returns:
-            Cache key string
-        """
-        # Include file path, symbol, and modification time in cache key
-        file_stat = file_path.stat()
-        cache_input = f"{file_path}_{symbol}_{file_stat.st_mtime}_{file_stat.st_size}"
-        return hashlib.md5(cache_input.encode()).hexdigest()
-    
-    def _cache_metadata(self, file_path: Path, symbol: str, metadata: DBNMetadata):
-        """
-        Cache metadata to disk.
-        
-        Args:
-            file_path: Path to source file
-            symbol: Symbol name
-            metadata: Metadata to cache
-        """
-        try:
-            cache_key = self._get_cache_key(file_path, symbol)
-            cache_file = self.cache_dir / f"csv_{cache_key}.json"
-            
-            # Convert metadata to dict for JSON serialization
-            metadata_dict = metadata.model_dump()
-            
-            with open(cache_file, 'w') as f:
-                json.dump(metadata_dict, f, indent=2, default=str)
-            
-            logger.debug(f"Cached metadata for {file_path} with symbol {symbol}")
-            
-        except Exception as e:
-            logger.warning(f"Error caching metadata: {e}")
-    
-    def _load_cached_metadata(self, file_path: Path, symbol: str) -> Optional[DBNMetadata]:
-        """
-        Load cached metadata from disk.
-        
-        Args:
-            file_path: Path to source file
-            symbol: Symbol name
-            
-        Returns:
-            Cached metadata or None if not found/invalid
-        """
-        try:
-            cache_key = self._get_cache_key(file_path, symbol)
-            cache_file = self.cache_dir / f"csv_{cache_key}.json"
-            
-            if not cache_file.exists():
-                return None
-            
-            with open(cache_file, 'r') as f:
-                metadata_dict = json.load(f)
-            
-            # Convert back to DBNMetadata object
-            return DBNMetadata(**metadata_dict)
-            
-        except Exception as e:
-            logger.debug(f"Error loading cached metadata: {e}")
-            return None
-    
-    def get_cache_stats(self) -> Dict[str, Any]:
-        """
-        Get statistics about the metadata cache.
-        
-        Returns:
-            Dictionary with cache statistics
-        """
-        try:
-            cache_files = list(self.cache_dir.glob("csv_*.json"))
-            total_size = sum(f.stat().st_size for f in cache_files)
-            
-            return {
-                'cache_directory': str(self.cache_dir),
-                'cached_files': len(cache_files),
-                'total_cache_size_bytes': total_size,
-                'total_cache_size_mb': round(total_size / (1024 * 1024), 2)
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting cache stats: {e}")
-            return {'error': str(e)}
-    
-    def clear_cache(self, older_than_days: Optional[int] = None):
-        """
-        Clear metadata cache.
-        
-        Args:
-            older_than_days: Only clear cache files older than this many days
-        """
-        try:
-            removed_count = 0
-            
-            for cache_file in self.cache_dir.glob("csv_*.json"):
-                should_remove = True
-                
-                if older_than_days:
-                    file_age_days = (datetime.now().timestamp() - cache_file.stat().st_mtime) / (24 * 3600)
-                    should_remove = file_age_days > older_than_days
-                
-                if should_remove:
-                    cache_file.unlink()
-                    removed_count += 1
-            
-            logger.info(f"Cleared {removed_count} cache files")
-            
-        except Exception as e:
-            logger.error(f"Error clearing cache: {e}")
 
 
 # Global instance
