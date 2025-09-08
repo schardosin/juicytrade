@@ -36,6 +36,10 @@ from .services.data_import.import_manager import import_manager
 from .services.data_import.import_models import (
     ImportRequest, ImportJobStatus, ImportFilters, DateRange
 )
+from .services.data_aggregation import (
+    DataAggregationService, AggregationRequest, AggregatedData, TimeFrame,
+    get_aggregation_service
+)
 from datetime import datetime, date
 
 # Configure logging
@@ -1679,6 +1683,152 @@ async def clear_api_metadata_cache():
     except Exception as e:
         logger.error(f"Error clearing metadata cache: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# === Data Aggregation Endpoints ===
+
+@app.get("/api/data/aggregated/{symbol}", response_model=ApiResponse)
+async def get_aggregated_data(
+    symbol: str,
+    timeframe: str = "5min",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    market_hours_only: bool = True,
+    limit: Optional[int] = None
+):
+    """Get aggregated OHLCV data for a symbol with flexible timeframes."""
+    try:
+        # Create aggregation request
+        request = AggregationRequest(
+            symbol=symbol,
+            timeframe=timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            market_hours_only=market_hours_only,
+            limit=limit
+        )
+        
+        # Get aggregation service and process request
+        aggregation_service = get_aggregation_service()
+        result = aggregation_service.get_aggregated_data(request)
+        
+        return ApiResponse(
+            success=True,
+            data=result.dict(),
+            message=f"Retrieved {result.record_count} {result.timeframe} bars for {symbol}"
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting aggregated data for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data/symbols", response_model=ApiResponse)
+async def get_available_symbols():
+    """Get list of available symbols in the aggregated data."""
+    try:
+        aggregation_service = get_aggregation_service()
+        symbols = aggregation_service.get_available_symbols()
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "symbols": symbols,
+                "total_symbols": len(symbols)
+            },
+            message=f"Found {len(symbols)} available symbols"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting available symbols: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data/symbols/{symbol}/date-range", response_model=ApiResponse)
+async def get_symbol_date_range(symbol: str):
+    """Get the available date range for a specific symbol."""
+    try:
+        aggregation_service = get_aggregation_service()
+        date_range = aggregation_service.get_symbol_date_range(symbol)
+        
+        if not date_range:
+            raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
+        
+        return ApiResponse(
+            success=True,
+            data=date_range,
+            message=f"Retrieved date range for {symbol}"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting date range for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data/timeframes", response_model=ApiResponse)
+async def get_supported_timeframes():
+    """Get supported timeframes for data aggregation."""
+    try:
+        aggregation_service = get_aggregation_service()
+        timeframes = aggregation_service.get_supported_timeframes()
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "timeframes": timeframes,
+                "total_timeframes": len(timeframes)
+            },
+            message="Retrieved supported timeframes"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting supported timeframes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data/market-hours", response_model=ApiResponse)
+async def get_market_hours_info():
+    """Get market hours information."""
+    try:
+        from .services.data_aggregation.market_hours import get_market_hours_filter
+        
+        market_hours_filter = get_market_hours_filter()
+        open_time, close_time = market_hours_filter.get_market_hours_bounds()
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "market_open": open_time.strftime('%H:%M'),
+                "market_close": close_time.strftime('%H:%M'),
+                "timezone": "America/New_York",
+                "description": market_hours_filter.format_market_hours_info(),
+                "trading_days": "Monday-Friday"
+            },
+            message="Retrieved market hours information"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting market hours info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Legacy endpoint for backward compatibility
+@app.get("/data/aggregated/{symbol}", response_model=ApiResponse)
+async def get_aggregated_data_legacy(
+    symbol: str,
+    timeframe: str = "5min",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    market_hours_only: bool = True,
+    limit: Optional[int] = None
+):
+    """Get aggregated OHLCV data for a symbol (legacy endpoint)."""
+    return await get_aggregated_data(
+        symbol=symbol,
+        timeframe=timeframe,
+        start_date=start_date,
+        end_date=end_date,
+        market_hours_only=market_hours_only,
+        limit=limit
+    )
 
 # === WebSocket Endpoint ===
 

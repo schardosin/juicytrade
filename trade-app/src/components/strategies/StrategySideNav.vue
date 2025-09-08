@@ -61,7 +61,7 @@ export default {
       },
       {
         id: "backtest",
-        label: "Backtesting",
+        label: "Backtest",
         icon: "pi pi-chart-bar",
         route: "/strategies/backtest",
       },
@@ -135,7 +135,7 @@ export default {
 
 <style scoped>
 .side-nav {
-  width: 80px;
+  width: 90px;
   background-color: var(--bg-primary);
   border-right: 1px solid var(--border-primary);
   display: flex;
