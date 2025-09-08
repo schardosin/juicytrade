@@ -702,23 +702,40 @@ async def run_strategy_backtest(strategy_id: str, backtest_request: Dict[str, An
                 # Initialize the strategy
                 await strategy_instance.initialize_strategy()
                 
-                # Create backtest engine with real provider manager
+                # Create backtest engine with ONLY aggregation service - NO FALLBACKS
                 from .backtest_engine import StrategyBacktestEngine
                 
-                # Get provider manager from the main application
-                provider_manager = None
+                # Get aggregation service for imported parquet data
+                aggregation_service = None
                 try:
-                    from ..provider_manager import provider_manager as global_provider_manager
-                    provider_manager = global_provider_manager
-                    logger.info("Using real provider manager for backtest")
-                except ImportError:
-                    logger.warning("Could not import provider manager, using mock data")
+                    from ..services.data_aggregation.aggregation_service import get_aggregation_service
+                    aggregation_service = get_aggregation_service()
+                    logger.info("✅ Using DataAggregationService for backtest (imported parquet data)")
+                except ImportError as e:
+                    logger.error(f"❌ BACKTEST FAILED: Could not import aggregation service: {e}")
+                    return {
+                        "success": False,
+                        "message": "Backtest requires DataAggregationService with imported parquet data",
+                        "error": f"DataAggregationService not available: {e}",
+                        "run_id": run_id
+                    }
                 
+                if not aggregation_service:
+                    logger.error("❌ BACKTEST FAILED: DataAggregationService is None")
+                    return {
+                        "success": False,
+                        "message": "Backtest requires DataAggregationService with imported parquet data",
+                        "error": "DataAggregationService is not initialized",
+                        "run_id": run_id
+                    }
+                
+                # 🚨 BACKTEST MODE: NO PROVIDER MANAGER FALLBACK
                 backtest_engine = StrategyBacktestEngine(
                     initial_capital=initial_capital,
                     commission_per_trade=parameters.get("commission_per_trade", 1.0),
                     slippage_bps=2.0,
-                    provider_manager=provider_manager,
+                    aggregation_service=aggregation_service,  # 🎯 ONLY parquet data
+                    provider_manager=None,                    # 🚨 NO FALLBACK
                     timeframe=timeframe  # Pass timeframe to backtest engine
                 )
                 

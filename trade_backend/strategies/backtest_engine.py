@@ -163,11 +163,15 @@ class BacktestMetrics:
 
 class RealHistoricalDataProvider:
     """
-    Real historical data provider for backtesting using the actual provider system.
+    Real historical data provider for backtesting using imported parquet data.
+    
+    This provider uses the DataAggregationService to access high-quality imported data
+    from DBN and CSV files, with support for flexible timeframes and perfect market alignment.
     """
     
-    def __init__(self, provider_manager=None):
-        self.provider_manager = provider_manager
+    def __init__(self, aggregation_service=None, provider_manager=None):
+        self.aggregation_service = aggregation_service
+        self.provider_manager = provider_manager  # Fallback for compatibility
         self.data_cache = {}
     
     async def get_historical_data(
@@ -178,14 +182,124 @@ class RealHistoricalDataProvider:
         interval: str = "1min"
     ) -> pd.DataFrame:
         """
-        Get historical OHLCV data for a symbol using real providers.
+        Get historical OHLCV data for a symbol using imported parquet data ONLY.
+        
+        🚨 BACKTEST MODE: NO FALLBACKS - Only uses imported parquet data
         
         Returns DataFrame with columns: timestamp, open, high, low, close, volume
         """
-        if not self.provider_manager:
-            logger.warning("No provider manager available, falling back to mock data")
-            return self._generate_mock_data(symbol, start_date, end_date, interval)
+        if self.aggregation_service:
+            # Use high-quality imported parquet data ONLY
+            return await self._get_parquet_data(symbol, start_date, end_date, interval)
+        else:
+            # NO FALLBACKS IN BACKTEST MODE
+            logger.error(f"❌ BACKTEST FAILED: No aggregation service available for {symbol}")
+            raise ValueError(f"Backtest requires DataAggregationService with imported parquet data. No aggregation service configured.")
+    
+    async def _get_parquet_data(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        interval: str = "1min"
+    ) -> pd.DataFrame:
+        """
+        Get historical data from imported parquet files using DataAggregationService.
         
+        This method leverages the powerful aggregation system to provide:
+        - High-quality imported data (DBN + CSV)
+        - Perfect time alignment (9:30, 9:35, 9:40...)
+        - Flexible timeframes (1min, 5min, 15min, 30min, 1hr, daily)
+        - Market hours filtering
+        - Automatic price scaling correction
+        """
+        try:
+            # Import the aggregation models
+            from ..services.data_aggregation.models import AggregationRequest
+            
+            # Map backtest intervals to aggregation service timeframes
+            timeframe_map = {
+                "1min": "1min",
+                "5min": "5min", 
+                "15min": "15min",
+                "30min": "30min",
+                "1hour": "1hr",
+                "1hr": "1hr",
+                "1day": "daily",
+                "daily": "daily",
+                "D": "daily"
+            }
+            
+            aggregation_timeframe = timeframe_map.get(interval, "1min")
+            
+            # Create aggregation request
+            request = AggregationRequest(
+                symbol=symbol,
+                timeframe=aggregation_timeframe,
+                start_date=start_date.strftime('%Y-%m-%d'),
+                end_date=end_date.strftime('%Y-%m-%d'),
+                market_hours_only=True,  # Use market hours filtering
+                limit=None  # Get all available data
+            )
+            
+            logger.info(f"Requesting parquet data for {symbol} ({aggregation_timeframe}) from {request.start_date} to {request.end_date}")
+            
+            # Get aggregated data
+            result = self.aggregation_service.get_aggregated_data(request)
+            
+            # Check if we got data (AggregatedData object structure)
+            if not hasattr(result, 'data') or not result.data:
+                logger.error(f"❌ BACKTEST FAILED: No parquet data available for {symbol} ({aggregation_timeframe})")
+                logger.error(f"❌ Available symbols: {self.aggregation_service.get_available_symbols() if self.aggregation_service else 'N/A'}")
+                raise ValueError(f"No parquet data available for {symbol}. Backtest requires imported data.")
+            
+            # Convert aggregated data to DataFrame format expected by backtest engine
+            data = []
+            for bar in result.data:
+                # Convert OHLCVData to dictionary format
+                data.append({
+                    "timestamp": bar.timestamp,
+                    "open": bar.open,
+                    "high": bar.high,
+                    "low": bar.low,
+                    "close": bar.close,
+                    "volume": bar.volume
+                })
+            
+            df = pd.DataFrame(data)
+            
+            if not df.empty:
+                # Ensure timestamp is datetime
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                
+                # Sort by timestamp
+                df = df.sort_values('timestamp').reset_index(drop=True)
+                
+                logger.info(f"Retrieved {len(df)} parquet data points for {symbol} ({aggregation_timeframe})")
+                logger.info(f"Data range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+                
+                # Log first few data points for verification
+                if len(df) > 0:
+                    logger.info(f"First bar: {df.iloc[0]['timestamp']} OHLCV: {df.iloc[0]['open']:.2f}/{df.iloc[0]['high']:.2f}/{df.iloc[0]['low']:.2f}/{df.iloc[0]['close']:.2f}/{df.iloc[0]['volume']}")
+                if len(df) > 1:
+                    logger.info(f"Second bar: {df.iloc[1]['timestamp']} OHLCV: {df.iloc[1]['open']:.2f}/{df.iloc[1]['high']:.2f}/{df.iloc[1]['low']:.2f}/{df.iloc[1]['close']:.2f}/{df.iloc[1]['volume']}")
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"❌ BACKTEST FAILED: Error getting parquet data for {symbol}: {e}")
+            raise ValueError(f"Backtest requires parquet data for {symbol}. Error: {e}")
+    
+    async def _get_broker_data(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        interval: str = "1min"
+    ) -> pd.DataFrame:
+        """
+        Get historical data from broker (original implementation as fallback).
+        """
         try:
             # Map interval to provider format
             timeframe_map = {
@@ -209,15 +323,15 @@ class RealHistoricalDataProvider:
             )
             
             if not bars:
-                logger.warning(f"No historical data returned for {symbol}, using mock data")
-                return self._generate_mock_data(symbol, start_date, end_date, interval)
+                logger.warning(f"No broker data returned for {symbol}")
+                return pd.DataFrame()
             
             # Convert bars to DataFrame
             data = []
             for i, bar in enumerate(bars):
                 # Debug: Log first few bars to see the structure
                 if i < 3:
-                    logger.info(f"Bar {i}: {bar}")
+                    logger.info(f"Broker bar {i}: {bar}")
                 
                 # Parse timestamp - handle different formats
                 timestamp = None
@@ -233,7 +347,7 @@ class RealHistoricalDataProvider:
                     timestamp = pd.to_datetime(bar['datetime'])
                 else:
                     # Log the bar structure to understand what fields are available
-                    logger.warning(f"No timestamp found in bar: {list(bar.keys())}")
+                    logger.warning(f"No timestamp found in broker bar: {list(bar.keys())}")
                 
                 data.append({
                     "timestamp": timestamp,
@@ -249,14 +363,34 @@ class RealHistoricalDataProvider:
             # Sort by timestamp
             if not df.empty:
                 df = df.sort_values('timestamp').reset_index(drop=True)
-                logger.info(f"Retrieved {len(df)} real historical data points for {symbol}")
+                logger.info(f"Retrieved {len(df)} broker data points for {symbol}")
             
             return df
             
         except Exception as e:
-            logger.error(f"Error getting real historical data for {symbol}: {e}")
-            logger.info("Falling back to mock data generation")
-            return self._generate_mock_data(symbol, start_date, end_date, interval)
+            logger.error(f"Error getting broker data for {symbol}: {e}")
+            return pd.DataFrame()
+    
+    async def _try_fallback_data(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        interval: str = "1min"
+    ) -> pd.DataFrame:
+        """
+        Try fallback data sources in order of preference.
+        """
+        # Try broker data if available
+        if self.provider_manager:
+            logger.info(f"Trying broker data fallback for {symbol}")
+            broker_data = await self._get_broker_data(symbol, start_date, end_date, interval)
+            if not broker_data.empty:
+                return broker_data
+        
+        # Final fallback to mock data
+        logger.info(f"Using mock data fallback for {symbol}")
+        return self._generate_mock_data(symbol, start_date, end_date, interval)
     
     def _generate_mock_data(
         self,
@@ -374,6 +508,7 @@ class StrategyBacktestEngine:
         slippage_bps: float = 2.0,  # Basis points
         market_type: MarketType = MarketType.STOCK,
         provider_manager=None,
+        aggregation_service=None,  # NEW: Support for imported parquet data
         timeframe: str = "1min"  # Add configurable timeframe
     ):
         self.initial_capital = initial_capital
@@ -382,8 +517,11 @@ class StrategyBacktestEngine:
         self.market_type = market_type
         self.timeframe = timeframe  # Store timeframe for data fetching
         
-        # Data provider - use real provider if available
-        self.data_provider = RealHistoricalDataProvider(provider_manager)
+        # Data provider - prioritize aggregation service for imported data
+        self.data_provider = RealHistoricalDataProvider(
+            aggregation_service=aggregation_service,
+            provider_manager=provider_manager
+        )
         
         # Backtest state
         self.current_capital = initial_capital
