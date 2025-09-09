@@ -374,10 +374,14 @@ export default {
       
       try {
         deleting.value = true
-        const response = await api.delete(`/api/data-import/imported-data/${selectedDataset.value.symbol}`)
+        
+        // Pass the asset_type as a query parameter to ensure only the specific asset type is deleted
+        const assetType = selectedDataset.value.asset_type
+        const url = `/api/data-import/imported-data/${selectedDataset.value.symbol}?asset_type=${encodeURIComponent(assetType)}`
+        const response = await api.delete(url)
         
         if (response.data.success) {
-          showSuccess(`Dataset "${selectedDataset.value.symbol}" deleted successfully!`, 'Dataset Deleted')
+          showSuccess(`${assetType} dataset for "${selectedDataset.value.symbol}" deleted successfully!`, 'Dataset Deleted')
           await loadImportedData() // Reload data
           closeDeleteDialog()
         } else {

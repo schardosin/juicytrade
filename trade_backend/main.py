@@ -1749,25 +1749,35 @@ async def get_storage_stats():
 
 
 @app.delete("/api/data-import/imported-data/{symbol}", response_model=ApiResponse)
-async def delete_imported_dataset(symbol: str):
-    """Delete all imported data for a specific symbol."""
+async def delete_imported_dataset(symbol: str, asset_type: Optional[str] = None):
+    """Delete imported data for a specific symbol and optionally specific asset type."""
     try:
-        deleted = import_manager.delete_imported_data(symbol)
+        deleted = import_manager.delete_imported_data(symbol, asset_type)
         
         if deleted:
+            if asset_type:
+                message = f"Successfully deleted {asset_type} data for symbol '{symbol}'"
+            else:
+                message = f"Successfully deleted all data for symbol '{symbol}'"
+            
             return ApiResponse(
                 success=True,
-                data={"symbol": symbol, "deleted": True},
-                message=f"Successfully deleted all data for symbol '{symbol}'"
+                data={"symbol": symbol, "asset_type": asset_type, "deleted": True},
+                message=message
             )
         else:
+            if asset_type:
+                message = f"No {asset_type} data found for symbol '{symbol}' or deletion failed"
+            else:
+                message = f"No data found for symbol '{symbol}' or deletion failed"
+            
             return ApiResponse(
                 success=False,
-                data={"symbol": symbol, "deleted": False},
-                message=f"No data found for symbol '{symbol}' or deletion failed"
+                data={"symbol": symbol, "asset_type": asset_type, "deleted": False},
+                message=message
             )
     except Exception as e:
-        logger.error(f"Error deleting imported data for {symbol}: {e}")
+        logger.error(f"Error deleting imported data for {symbol} (asset_type: {asset_type}): {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # === Data Aggregation Endpoints ===

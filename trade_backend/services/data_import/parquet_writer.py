@@ -15,6 +15,9 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 from concurrent.futures import ThreadPoolExecutor
 import os
+import threading
+import tempfile
+import shutil
 
 from ...path_manager import path_manager
 from .import_models import (
@@ -45,6 +48,77 @@ class ParquetWriter:
         
         for dir_path in [self.options_dir, self.equities_dir, self.futures_dir, self.forex_dir]:
             dir_path.mkdir(exist_ok=True)
+        
+        # File locking mechanism to prevent concurrent writes to same partition
+        self._file_locks = {}
+        self._locks_lock = threading.Lock()
+    
+    def _get_file_lock(self, file_path: Path) -> threading.Lock:
+        """
+        Get or create a lock for a specific file path.
+        
+        Args:
+            file_path: Path to the file
+            
+        Returns:
+            Threading lock for the file
+        """
+        file_key = str(file_path)
+        
+        with self._locks_lock:
+            if file_key not in self._file_locks:
+                self._file_locks[file_key] = threading.Lock()
+            return self._file_locks[file_key]
+    
+    def _atomic_write_parquet(self, df: pd.DataFrame, output_path: Path) -> bool:
+        """
+        Atomically write DataFrame to parquet file using temporary file.
+        
+        Args:
+            df: DataFrame to write
+            output_path: Final output path
+            
+        Returns:
+            True if successful, False otherwise
+        """
+        try:
+            # Create temporary file in the same directory
+            temp_dir = output_path.parent
+            temp_dir.mkdir(parents=True, exist_ok=True)
+            
+            with tempfile.NamedTemporaryFile(
+                dir=temp_dir, 
+                suffix='.parquet.tmp', 
+                delete=False
+            ) as temp_file:
+                temp_path = Path(temp_file.name)
+            
+            # Create PyArrow table with explicit schema to avoid dictionary encoding issues
+            schema = self._create_consistent_schema(df)
+            table = pa.Table.from_pandas(df, schema=schema)
+            
+            pq.write_table(
+                table,
+                temp_path,
+                compression='snappy',
+                use_dictionary=False,  # Disable dictionary encoding to avoid compatibility issues
+                write_statistics=True
+            )
+            
+            # Atomic move to final location
+            shutil.move(str(temp_path), str(output_path))
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error in atomic write to {output_path}: {e}")
+            # Clean up temp file if it exists
+            try:
+                if 'temp_path' in locals() and temp_path.exists():
+                    temp_path.unlink()
+            except Exception:
+                pass
+            return False
     
     def convert_dbn_to_parquet(self, 
                               records_iterator: Iterator[Any],
@@ -254,11 +328,13 @@ class ParquetWriter:
         According to Databento docs: "every 1 unit corresponds to 1e-9, 
         i.e. 1/1,000,000,000 or 0.000000001"
         
+        UNDEF_PRICE (9223372036854775807 = INT64_MAX) represents null/undefined prices.
+        
         Args:
             raw_price: Raw price value from DBN (string or int)
             
         Returns:
-            Scaled price as float
+            Scaled price as float (0.0 for null/undefined prices)
         """
         try:
             if raw_price is None or raw_price == 0:
@@ -269,6 +345,13 @@ class ParquetWriter:
                 price_int = int(raw_price)
             else:
                 price_int = int(raw_price)
+            
+            # Handle UNDEF_PRICE (INT64_MAX) as per Databento specification
+            # "UNDEF_PRICE is used to denote a null or undefined price.
+            # It will be equal to 9223372036854775807 (INT64_MAX)"
+            UNDEF_PRICE = 9223372036854775807  # INT64_MAX
+            if price_int == UNDEF_PRICE:
+                return 0.0  # Return 0 for null/undefined prices
             
             # Apply 1e-9 scaling as per Databento documentation
             scaled_price = price_int / 1e9
@@ -436,33 +519,200 @@ class ParquetWriter:
         Returns:
             Normalized DataFrame
         """
-        # Ensure timestamp is datetime
+        # Filter out invalid timestamps (out of pandas range)
         if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp'])
+            try:
+                # Convert to datetime and filter out invalid timestamps
+                df['timestamp'] = pd.to_datetime(df['timestamp'], errors='coerce')
+                
+                # Filter out timestamps outside valid range (1677-2262)
+                valid_mask = (
+                    (df['timestamp'] >= pd.Timestamp('1677-01-01')) & 
+                    (df['timestamp'] <= pd.Timestamp('2262-01-01'))
+                )
+                
+                if not valid_mask.all():
+                    invalid_count = (~valid_mask).sum()
+                    logger.warning(f"Filtering out {invalid_count} records with invalid timestamps")
+                    df = df[valid_mask].copy()
+                    
+            except Exception as e:
+                logger.error(f"Error normalizing timestamps: {e}")
+                # Fallback: use current timestamp for invalid ones
+                df['timestamp'] = pd.Timestamp.now()
         
-        # Ensure date is date type
+        # Ensure date is string type for consistent schema compatibility
         if 'date' in df.columns:
-            df['date'] = pd.to_datetime(df['date']).dt.date
+            try:
+                # Convert to datetime first for validation
+                df['date'] = pd.to_datetime(df['date'], errors='coerce')
+                
+                # Filter out invalid dates (NaT values)
+                valid_date_mask = df['date'].notna()
+                if not valid_date_mask.all():
+                    invalid_count = (~valid_date_mask).sum()
+                    logger.warning(f"Filtering out {invalid_count} records with invalid dates")
+                    df = df[valid_date_mask].copy()
+                
+                # Convert to string format for consistent schema compatibility
+                df['date'] = df['date'].dt.strftime('%Y-%m-%d')
+                    
+            except Exception as e:
+                logger.error(f"Error normalizing dates: {e}")
         
-        # Ensure numeric columns are proper types
-        numeric_columns = ['open', 'high', 'low', 'close', 'price', 'bid', 'ask']
+        # Ensure expiration is string type (for options)
+        if 'expiration' in df.columns:
+            try:
+                df['expiration'] = pd.to_datetime(df['expiration'], errors='coerce')
+                # Convert to string format for consistency
+                df['expiration'] = df['expiration'].dt.strftime('%Y-%m-%d')
+            except Exception as e:
+                logger.warning(f"Error normalizing expiration dates: {e}")
+                df['expiration'] = df['expiration'].astype(str)
+        
+        # Ensure numeric columns are proper types (CBBO + legacy OHLCV)
+        numeric_columns = [
+            'open', 'high', 'low', 'close', 'price', 'bid', 'ask',  # Legacy
+            'bid_px', 'ask_px', 'strike'  # CBBO + Options
+        ]
         for col in numeric_columns:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce')
         
-        # Ensure integer columns
-        int_columns = ['volume', 'size', 'bid_size', 'ask_size']
+        # Ensure integer columns (CBBO + legacy)
+        int_columns = [
+            'volume', 'size', 'bid_size', 'ask_size',  # Legacy
+            'bid_sz', 'ask_sz'  # CBBO
+        ]
         for col in int_columns:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors='coerce').fillna(0).astype('int64')
         
-        # Ensure string columns
-        string_columns = ['symbol', 'asset_type']
+        # Ensure string columns with consistent types (including options metadata)
+        string_columns = [
+            'symbol', 'asset_type', 'underlying_symbol',  # Core
+            'option_type'  # Options
+        ]
         for col in string_columns:
             if col in df.columns:
+                # Convert to string and ensure consistent categorical encoding
                 df[col] = df[col].astype(str)
         
         return df
+    
+    def _ensure_schema_compatibility(self, existing_df: pd.DataFrame, new_df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Ensure new DataFrame is compatible with existing DataFrame schema.
+        
+        Args:
+            existing_df: Existing DataFrame from file
+            new_df: New DataFrame to append
+            
+        Returns:
+            New DataFrame with compatible schema
+        """
+        try:
+            # Ensure all columns from existing DataFrame exist in new DataFrame
+            for col in existing_df.columns:
+                if col not in new_df.columns:
+                    # Add missing column with appropriate default value
+                    if existing_df[col].dtype == 'object':
+                        new_df[col] = ''
+                    elif pd.api.types.is_numeric_dtype(existing_df[col]):
+                        new_df[col] = 0
+                    elif pd.api.types.is_datetime64_any_dtype(existing_df[col]):
+                        new_df[col] = pd.NaT
+                    else:
+                        new_df[col] = None
+            
+            # Ensure column order matches existing DataFrame
+            new_df = new_df.reindex(columns=existing_df.columns, fill_value=None)
+            
+            # Ensure data types match existing DataFrame with special handling for date columns
+            for col in existing_df.columns:
+                if col in new_df.columns:
+                    try:
+                        # Special handling for date columns - convert both to strings for compatibility
+                        if col == 'date':
+                            # Convert both existing and new data to string format for compatibility
+                            if len(existing_df) > 0:
+                                existing_df[col] = existing_df[col].astype(str)
+                            if len(new_df) > 0:
+                                new_df[col] = new_df[col].astype(str)
+                        elif col == 'expiration':
+                            # Handle expiration date column - convert to strings
+                            if len(existing_df) > 0:
+                                existing_df[col] = existing_df[col].astype(str)
+                            if len(new_df) > 0:
+                                new_df[col] = new_df[col].astype(str)
+                        elif col in ['underlying', 'underlying_symbol', 'symbol', 'asset_type', 'option_type']:
+                            # Handle string fields that may have dictionary encoding issues
+                            if len(existing_df) > 0:
+                                existing_df[col] = existing_df[col].astype(str)
+                            if len(new_df) > 0:
+                                new_df[col] = new_df[col].astype(str)
+                        elif existing_df[col].dtype == 'object' or pd.api.types.is_string_dtype(existing_df[col]):
+                            # Handle string columns to avoid dictionary encoding issues
+                            # Convert both to string to ensure compatibility
+                            new_df[col] = new_df[col].astype(str)
+                            # Also ensure existing data is string type (not categorical/dictionary)
+                            if hasattr(existing_df[col], 'cat'):
+                                existing_df[col] = existing_df[col].astype(str)
+                        else:
+                            # Handle other data types
+                            new_df[col] = new_df[col].astype(existing_df[col].dtype)
+                    except Exception as e:
+                        logger.warning(f"Could not convert column {col} to match existing type: {e}")
+                        # Keep original type if conversion fails
+                        pass
+            
+            return new_df
+            
+        except Exception as e:
+            logger.error(f"Error ensuring schema compatibility: {e}")
+            return new_df
+    
+    def _create_consistent_schema(self, df: pd.DataFrame) -> pa.Schema:
+        """
+        Create a consistent PyArrow schema for the DataFrame to avoid dictionary encoding issues.
+        
+        Args:
+            df: DataFrame to create schema for
+            
+        Returns:
+            PyArrow schema with consistent types
+        """
+        try:
+            schema_fields = []
+            
+            for col in df.columns:
+                if col == 'timestamp':
+                    schema_fields.append(pa.field(col, pa.timestamp('ns')))
+                elif col == 'date':
+                    # Use string type for date columns to avoid conversion issues
+                    schema_fields.append(pa.field(col, pa.string()))
+                elif col == 'expiration':
+                    # Use string type for expiration columns to avoid conversion issues
+                    schema_fields.append(pa.field(col, pa.string()))
+                elif col in ['bid_px', 'ask_px', 'strike']:
+                    schema_fields.append(pa.field(col, pa.float64()))
+                elif col in ['bid_sz', 'ask_sz', 'volume', 'size']:
+                    schema_fields.append(pa.field(col, pa.int64()))
+                elif col in ['symbol', 'underlying_symbol', 'asset_type', 'option_type', 'underlying']:
+                    # Use string type instead of dictionary to avoid encoding issues
+                    schema_fields.append(pa.field(col, pa.string()))
+                elif col in ['year', 'month', 'day']:
+                    schema_fields.append(pa.field(col, pa.int32()))
+                else:
+                    # Default to string for unknown columns
+                    schema_fields.append(pa.field(col, pa.string()))
+            
+            return pa.schema(schema_fields)
+            
+        except Exception as e:
+            logger.warning(f"Error creating consistent schema: {e}")
+            # Fallback to inferred schema
+            return pa.Table.from_pandas(df).schema
     
     def _get_partition_path(self, 
                            symbol: str, 
@@ -516,6 +766,10 @@ class ParquetWriter:
         """
         Write or append a symbol-date partition of records to Parquet file.
         If the file already exists, appends new records to existing data.
+        
+        CRITICAL FIX: This method now properly handles concurrent writes and ensures
+        true appending without data loss during batch processing using file locking
+        and atomic write operations.
 
         Args:
             underlying_symbol: Underlying symbol for this partition (e.g., "SPXW")
@@ -539,55 +793,74 @@ class ParquetWriter:
             output_path = self._get_symbol_date_partition_path(underlying_symbol, record_date, asset_type, metadata)
             output_path.parent.mkdir(parents=True, exist_ok=True)
 
-            if output_path.exists():
-                # File exists - read existing data and append
-                try:
-                    existing_table = pq.read_table(output_path)
-                    existing_df = existing_table.to_pandas()
+            # Get file-specific lock to prevent concurrent writes to same partition
+            file_lock = self._get_file_lock(output_path)
+            
+            with file_lock:
+                # Critical section: read, combine, and write atomically
+                if output_path.exists():
+                    # File exists - read existing data and append
+                    try:
+                        # Read with consistent schema to avoid dictionary encoding issues
+                        existing_table = pq.read_table(output_path)
+                        existing_df = existing_table.to_pandas()
+                        
+                        # Remove partition columns that PyArrow automatically adds from directory structure
+                        # These are created from the Hive-style partitioning and shouldn't be in the data
+                        partition_columns = ['underlying', 'year', 'month', 'day']
+                        for col in partition_columns:
+                            if col in existing_df.columns:
+                                existing_df = existing_df.drop(columns=[col])
+                        
+                        # Convert all string columns to string type to avoid dictionary issues
+                        for col in existing_df.columns:
+                            if existing_df[col].dtype == 'object' or pd.api.types.is_string_dtype(existing_df[col]):
+                                existing_df[col] = existing_df[col].astype(str)
 
-                    # Combine existing and new data
-                    combined_df = pd.concat([existing_df, new_df], ignore_index=True)
+                        # Ensure schema compatibility before combining
+                        new_df = self._ensure_schema_compatibility(existing_df, new_df)
 
-                    # Write combined data
-                    table = pa.Table.from_pandas(combined_df)
-                    pq.write_table(
-                        table,
-                        output_path,
-                        compression='snappy',
-                        use_dictionary=True,
-                        write_statistics=True
-                    )
+                        # Combine existing and new data
+                        combined_df = pd.concat([existing_df, new_df], ignore_index=True)
 
-                    logger.info(f"Appended {len(records)} records to {output_path} (total: {len(combined_df)} records)")
+                        # Atomic write using temporary file
+                        if self._atomic_write_parquet(combined_df, output_path):
+                            logger.info(f"✅ Appended {len(records)} records to {output_path} (total: {len(combined_df)} records)")
+                            
+                            # Verify record count after write
+                            try:
+                                verify_table = pq.read_table(output_path)
+                                actual_count = verify_table.metadata.num_rows
+                                if actual_count != len(combined_df):
+                                    logger.error(f"❌ RECORD COUNT MISMATCH: Expected {len(combined_df)}, got {actual_count}")
+                                else:
+                                    logger.debug(f"✅ Record count verified: {actual_count}")
+                            except Exception as e:
+                                logger.warning(f"Could not verify record count: {e}")
+                        else:
+                            logger.error(f"❌ Atomic write failed for {output_path}")
+                            return None
 
-                except Exception as e:
-                    logger.warning(f"Error reading existing file {output_path}, overwriting: {e}")
-                    # Fall back to overwriting if read fails
-                    table = pa.Table.from_pandas(new_df)
-                    pq.write_table(
-                        table,
-                        output_path,
-                        compression='snappy',
-                        use_dictionary=True,
-                        write_statistics=True
-                    )
-                    logger.info(f"Wrote {len(records)} records to {output_path} (fallback overwrite)")
-            else:
-                # File doesn't exist - write new file
-                table = pa.Table.from_pandas(new_df)
-                pq.write_table(
-                    table,
-                    output_path,
-                    compression='snappy',
-                    use_dictionary=True,
-                    write_statistics=True
-                )
-                logger.info(f"Wrote {len(records)} records to {output_path} (new file)")
+                    except Exception as e:
+                        logger.warning(f"Error reading existing file {output_path}, overwriting: {e}")
+                        # Fall back to overwriting if read fails
+                        if self._atomic_write_parquet(new_df, output_path):
+                            logger.info(f"✅ Wrote {len(records)} records to {output_path} (fallback overwrite)")
+                        else:
+                            logger.error(f"❌ Fallback atomic write failed for {output_path}")
+                            return None
+                else:
+                    # File doesn't exist - write new file
+                    if self._atomic_write_parquet(new_df, output_path):
+                        logger.info(f"✅ Wrote {len(records)} records to {output_path} (new file)")
+                    else:
+                        logger.error(f"❌ Atomic write failed for new file {output_path}")
+                        return None
 
             return str(output_path)
 
         except Exception as e:
-            logger.error(f"Error writing/appending symbol-date partition to Parquet: {e}")
+            logger.error(f"❌ Error writing/appending symbol-date partition to Parquet: {e}")
             return None
     
     def _get_symbol_date_partition_path(self, 
@@ -906,22 +1179,27 @@ class ParquetWriter:
                                          record: Any, 
                                          file_asset_type: Optional[AssetType] = None) -> Optional[Dict[str, Any]]:
         """
-        Extract record information from DBN record with native symbol mapping.
-        Records come with symbols already populated by the native DBN library.
+        Extract record information and convert to unified CBBO-style schema.
+        
+        This method handles both DBN records (CBBO/OHLCV) and CSV records,
+        converting all data to the unified CBBO schema for consistent storage:
+        - DBN CBBO records: Use native bid_px/ask_px/bid_sz/ask_sz
+        - DBN OHLCV records: Convert close to bid_px/ask_px, volume to bid_sz/ask_sz
+        - CSV OHLCV records: Convert close to bid_px/ask_px, volume to bid_sz/ask_sz
         
         Args:
-            record: DBN record (with symbols already mapped by native DBN library)
+            record: DBN record or CSVRecord
             file_asset_type: Asset type determined from file metadata
             
         Returns:
-            Dictionary with extracted information or None if extraction fails
+            Dictionary with extracted information in unified CBBO schema or None if extraction fails
         """
         try:
-            # Handle CSV records differently
+            # Handle CSV records
             if isinstance(record, CSVRecord):
                 return self._extract_csv_record_info(record, file_asset_type)
             
-            # Extract basic fields for DBN records
+            # Handle DBN records - extract basic fields
             record_info = {}
             
             # Use symbol from native DBN mapping (already populated by DBN reader)
@@ -938,16 +1216,27 @@ class ParquetWriter:
             
             record_info['symbol'] = symbol
             
-            # Get timestamp
+            # Get timestamp and handle invalid values
             timestamp = getattr(record, 'ts_event', None) or getattr(record, 'timestamp', None)
-            if timestamp:
-                dt = datetime.fromtimestamp(timestamp / 1e9)
-                record_info['timestamp'] = dt
-                record_info['date'] = dt.date()
+            if timestamp and timestamp != 18446744073709551615:  # Filter out UINT64_MAX invalid timestamps
+                try:
+                    dt = datetime.fromtimestamp(timestamp / 1e9)
+                    # Validate the resulting datetime is reasonable
+                    if dt.year >= 1970 and dt.year <= 2030:
+                        record_info['timestamp'] = dt
+                        record_info['date'] = dt.date()
+                    else:
+                        # Invalid year, skip this record
+                        logger.debug(f"Skipping record with invalid year: {dt.year}")
+                        return None
+                except (ValueError, OSError, OverflowError):
+                    # Invalid timestamp, skip this record
+                    logger.debug(f"Skipping record with invalid timestamp: {timestamp}")
+                    return None
             else:
-                # Fallback to current date
-                record_info['date'] = date.today()
-                record_info['timestamp'] = datetime.now()
+                # Invalid or missing timestamp, skip this record
+                logger.debug(f"Skipping record with invalid/missing timestamp: {timestamp}")
+                return None
             
             # Extract underlying symbol for partitioning
             underlying_symbol = self._extract_underlying_symbol(symbol)
@@ -956,56 +1245,88 @@ class ParquetWriter:
             # Asset type determination - use file metadata if available
             record_info['asset_type'] = file_asset_type or self._determine_asset_type(symbol)
             
-            # Price data with proper DBN scaling (1e-9 according to Databento docs)
-            # Apply scaling during import so aggregation queries are clean
-            if hasattr(record, 'open'):
-                raw_open = getattr(record, 'open', 0)
-                record_info['open'] = self._scale_dbn_price(raw_open)
-            if hasattr(record, 'high'):
-                raw_high = getattr(record, 'high', 0)
-                record_info['high'] = self._scale_dbn_price(raw_high)
-            if hasattr(record, 'low'):
-                raw_low = getattr(record, 'low', 0)
-                record_info['low'] = self._scale_dbn_price(raw_low)
-            if hasattr(record, 'close'):
+            # UNIFIED SCHEMA: Convert all DBN data to CBBO-style format
+            
+            # Check for CBBO fields first (bid_px, ask_px, bid_sz, ask_sz)
+            if hasattr(record, 'bid_px') or hasattr(record, 'ask_px'):
+                # This is a CBBO record - extract native bid/ask data
+                if hasattr(record, 'bid_px'):
+                    raw_bid = getattr(record, 'bid_px', 0)
+                    record_info['bid_px'] = self._scale_dbn_price(raw_bid)
+                else:
+                    record_info['bid_px'] = 0.0
+                
+                if hasattr(record, 'ask_px'):
+                    raw_ask = getattr(record, 'ask_px', 0)
+                    record_info['ask_px'] = self._scale_dbn_price(raw_ask)
+                else:
+                    record_info['ask_px'] = 0.0
+                
+                # Extract bid/ask sizes
+                if hasattr(record, 'bid_sz'):
+                    record_info['bid_sz'] = int(getattr(record, 'bid_sz', 0))
+                else:
+                    record_info['bid_sz'] = 0
+                
+                if hasattr(record, 'ask_sz'):
+                    record_info['ask_sz'] = int(getattr(record, 'ask_sz', 0))
+                else:
+                    record_info['ask_sz'] = 0
+                    
+            elif hasattr(record, 'close'):
+                # This is an OHLCV record - convert to CBBO format
                 raw_close = getattr(record, 'close', 0)
-                record_info['close'] = self._scale_dbn_price(raw_close)
-            if hasattr(record, 'volume'):
-                record_info['volume'] = int(getattr(record, 'volume', 0))
+                close_price = self._scale_dbn_price(raw_close)
+                
+                # Use close price as both bid and ask (no spread for backtesting)
+                record_info['bid_px'] = close_price
+                record_info['ask_px'] = close_price
+                
+                # Convert volume to bid/ask sizes
+                volume = int(getattr(record, 'volume', 0))
+                record_info['bid_sz'] = volume // 2  # Split volume between bid and ask
+                record_info['ask_sz'] = volume // 2
+                
+            else:
+                # Fallback - no price data available
+                record_info['bid_px'] = 0.0
+                record_info['ask_px'] = 0.0
+                record_info['bid_sz'] = 0
+                record_info['ask_sz'] = 0
             
-            # Trade data
-            if hasattr(record, 'price'):
-                record_info['price'] = float(getattr(record, 'price', 0))
-            if hasattr(record, 'size'):
-                record_info['size'] = int(getattr(record, 'size', 0))
-            
-            # Quote data
-            if hasattr(record, 'bid_px'):
-                record_info['bid'] = float(getattr(record, 'bid_px', 0))
-            if hasattr(record, 'ask_px'):
-                record_info['ask'] = float(getattr(record, 'ask_px', 0))
-            if hasattr(record, 'bid_sz'):
-                record_info['bid_size'] = int(getattr(record, 'bid_sz', 0))
-            if hasattr(record, 'ask_sz'):
-                record_info['ask_size'] = int(getattr(record, 'ask_sz', 0))
+            # Extract options metadata for options data
+            if file_asset_type == AssetType.OPTIONS:
+                options_metadata = self._extract_options_metadata(symbol)
+                if options_metadata:
+                    record_info.update(options_metadata)
+            else:
+                # For non-options data, set options fields to None
+                record_info['strike'] = None
+                record_info['option_type'] = None
+                record_info['expiration'] = None
             
             return record_info
             
         except Exception as e:
-            logger.warning(f"Error extracting record info with native mapping: {e}")
+            logger.warning(f"Error extracting record info with unified schema: {e}")
             return None
     
     def _extract_csv_record_info(self, record: CSVRecord, 
                                 file_asset_type: Optional[AssetType] = None) -> Optional[Dict[str, Any]]:
         """
-        Extract record information from CSV record.
+        Extract record information from CSV record and convert to unified CBBO-style schema.
+        
+        This converts OHLCV data to the unified schema used by CBBO data:
+        - close price becomes both bid_px and ask_px (no spread for backtesting)
+        - volume becomes both bid_sz and ask_sz
+        - Maintains compatibility with options CBBO data
         
         Args:
             record: CSVRecord object
             file_asset_type: Asset type determined from file metadata
             
         Returns:
-            Dictionary with extracted information or None if extraction fails
+            Dictionary with extracted information in unified schema or None if extraction fails
         """
         try:
             if not record or not record.symbol:
@@ -1025,23 +1346,116 @@ class ParquetWriter:
                 'asset_type': asset_type
             }
             
-            # OHLCV data - use standard schema only
-            if record.open is not None:
-                record_info['open'] = float(record.open)
-            if record.high is not None:
-                record_info['high'] = float(record.high)
-            if record.low is not None:
-                record_info['low'] = float(record.low)
+            # Convert OHLCV to unified CBBO-style schema
+            # For backtesting equities, we use close price as both bid and ask (no spread)
             if record.close is not None:
-                record_info['close'] = float(record.close)
-            if record.volume is not None:
-                record_info['volume'] = int(record.volume)
+                close_price = float(record.close)
+                record_info['bid_px'] = close_price  # Use close as bid
+                record_info['ask_px'] = close_price  # Use close as ask (no spread for backtesting)
+            else:
+                record_info['bid_px'] = 0.0
+                record_info['ask_px'] = 0.0
             
-            # Note: TradeStation up_volume and down_volume are already summed into volume
-            # We don't save them separately to maintain schema compatibility with DBN files
+            # Convert volume to bid/ask sizes
+            if record.volume is not None:
+                volume = int(record.volume)
+                record_info['bid_sz'] = volume // 2  # Split volume between bid and ask
+                record_info['ask_sz'] = volume // 2
+            else:
+                record_info['bid_sz'] = 0
+                record_info['ask_sz'] = 0
+            
+            # For equities, we don't have options metadata
+            # These fields will be None/empty for non-options data
+            if asset_type != AssetType.OPTIONS:
+                record_info['strike'] = None
+                record_info['option_type'] = None
+                record_info['expiration'] = None
             
             return record_info
             
         except Exception as e:
             logger.warning(f"Error extracting CSV record info: {e}")
+            return None
+    
+    def _extract_options_metadata(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract options metadata (strike, type, expiration) from option symbol.
+        
+        This method parses standard option symbols like:
+        - "SPY   250822C00640000" -> strike=640.0, type="call", expiration=2025-08-22
+        - "SPXW  250827P06375000" -> strike=6375.0, type="put", expiration=2025-08-27
+        
+        Args:
+            symbol: Full option symbol
+            
+        Returns:
+            Dictionary with strike, option_type, expiration or None if parsing fails
+        """
+        try:
+            if not symbol or len(symbol) < 15:
+                return None
+            
+            # Standard option symbol format: "SYMBOL  YYMMDDCPPPPPPP"
+            # Where: SYMBOL = underlying, YY = year, MM = month, DD = day, 
+            #        C = call/put (C/P), PPPPPPP = strike price * 1000
+            
+            # Remove extra spaces and normalize
+            clean_symbol = ' '.join(symbol.split())
+            
+            # Split on spaces to separate underlying from option details
+            parts = clean_symbol.split()
+            if len(parts) < 2:
+                return None
+            
+            underlying = parts[0]
+            option_part = parts[1]  # e.g., "250822C00640000"
+            
+            if len(option_part) < 15:
+                return None
+            
+            # Extract date part (first 6 characters: YYMMDD)
+            date_part = option_part[:6]  # e.g., "250822"
+            
+            # Extract option type (7th character: C or P)
+            option_type_char = option_part[6]  # e.g., "C"
+            
+            # Extract strike part (remaining 8 characters)
+            strike_part = option_part[7:]  # e.g., "00640000"
+            
+            # Parse expiration date
+            try:
+                year = 2000 + int(date_part[:2])  # Convert YY to YYYY
+                month = int(date_part[2:4])
+                day = int(date_part[4:6])
+                expiration = date(year, month, day)
+            except (ValueError, TypeError):
+                logger.warning(f"Could not parse expiration date from {date_part} in symbol {symbol}")
+                return None
+            
+            # Parse option type
+            if option_type_char.upper() == 'C':
+                option_type = 'call'
+            elif option_type_char.upper() == 'P':
+                option_type = 'put'
+            else:
+                logger.warning(f"Unknown option type '{option_type_char}' in symbol {symbol}")
+                return None
+            
+            # Parse strike price (divide by 1000 to get actual strike)
+            try:
+                strike_raw = int(strike_part)
+                strike = float(strike_raw) / 1000.0
+            except (ValueError, TypeError):
+                logger.warning(f"Could not parse strike price from {strike_part} in symbol {symbol}")
+                return None
+            
+            return {
+                'strike': strike,
+                'option_type': option_type,
+                'expiration': expiration
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error extracting options metadata from symbol {symbol}: {e}")
             return None

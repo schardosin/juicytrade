@@ -824,28 +824,66 @@ class DBNReader:
 
         date_ranges = instrument_to_symbol_map[instrument_id]
         
-        # Sort the date ranges to ensure deterministic behavior
-        sorted_ranges = sorted(date_ranges, key=lambda x: (datetime.strptime(x[0], '%Y-%m-%d').date() if isinstance(x[0], str) else x[0]) or date.min)
+        # Robust date parsing with error handling
+        def safe_parse_date(date_str):
+            """Safely parse date string with multiple format attempts."""
+            if not date_str or not isinstance(date_str, str):
+                return None
+            
+            # Try multiple date formats
+            formats = ['%Y-%m-%d', '%Y%m%d', '%m/%d/%Y', '%d/%m/%Y']
+            for fmt in formats:
+                try:
+                    return datetime.strptime(date_str, fmt).date()
+                except ValueError:
+                    continue
+            
+            # If all formats fail, log and return None
+            logger.debug(f"Could not parse date string: {date_str}")
+            return None
+
+        # Sort ranges with safe date parsing
+        def safe_sort_key(range_tuple):
+            start_date, _, _ = range_tuple
+            parsed_date = safe_parse_date(start_date)
+            return parsed_date if parsed_date else date.min
+        
+        try:
+            sorted_ranges = sorted(date_ranges, key=safe_sort_key)
+        except Exception as e:
+            logger.warning(f"Error sorting date ranges for instrument {instrument_id}: {e}")
+            sorted_ranges = date_ranges
 
         if record_timestamp is not None:
             try:
-                record_date = datetime.fromtimestamp(record_timestamp / 1e9).date()
-                
-                for start_date, end_date, symbol in sorted_ranges:
-                    # Ensure dates are valid before comparison
-                    s_date = datetime.strptime(start_date, '%Y-%m-%d').date() if isinstance(start_date, str) else start_date
-                    e_date = datetime.strptime(end_date, '%Y-%m-%d').date() if isinstance(end_date, str) else end_date
+                # Validate timestamp is reasonable (not corrupted)
+                if record_timestamp < 0 or record_timestamp > 2e18:  # Reasonable bounds check
+                    # Use fallback without timestamp
+                    pass
+                else:
+                    record_date = datetime.fromtimestamp(record_timestamp / 1e9).date()
                     
-                    if s_date and e_date and s_date <= record_date <= e_date:
-                        return symbol
-
-                # If no matching range is found, log a warning and fallback
-                logger.warning(f"No valid date range found for instrument {instrument_id} on date {record_date}. Falling back to most recent.")
+                    # Validate record date is reasonable
+                    if record_date.year < 1990 or record_date.year > 2030:
+                        logger.warning(f"Unreasonable record date {record_date} for instrument {instrument_id}")
+                    else:
+                        # Find matching date range with safe parsing
+                        for start_date, end_date, symbol in sorted_ranges:
+                            s_date = safe_parse_date(start_date)
+                            e_date = safe_parse_date(end_date)
+                            
+                            if s_date and e_date and s_date <= record_date <= e_date:
+                                return symbol
                 
-            except Exception as e:
-                logger.error(f"Error processing timestamp for instrument {instrument_id}: {e}")
+            except (ValueError, OSError, OverflowError) as e:
+                logger.warning(f"Error processing timestamp {record_timestamp} for instrument {instrument_id}: {e}")
 
-        # Fallback to the symbol from the most recent date range
+        # Fallback to the symbol from the most recent valid date range
+        for start_date, end_date, symbol in reversed(sorted_ranges):
+            if safe_parse_date(start_date) and safe_parse_date(end_date):
+                return symbol
+        
+        # Final fallback - use any available symbol
         return sorted_ranges[-1][2] if sorted_ranges else str(instrument_id)
     
     def get_symbol_mapping(self, file_path: Path) -> Dict[int, str]:

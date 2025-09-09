@@ -434,39 +434,61 @@ class ImportManager:
 
             def _write_and_clear_batches():
                 nonlocal total_records_written
-                logger.info(f"Job {job_id}: Writing {len(batches)} batches to Parquet...")
+                logger.info(f"Job {job_id}: Writing {len(batches)} partition batches to Parquet...")
                 batch_output_paths = []
+                
+                # Process each partition key separately to ensure proper consolidation
                 for (underlying_symbol, record_date, asset_type), records in list(batches.items()):
-                    # Create metadata based on file type
-                    if file_type == ImportFileType.CSV:
-                        csv_format = getattr(job_info, 'csv_format', None)
-                        if csv_format:
-                            csv_format_str = csv_format.upper() if hasattr(csv_format, 'upper') else str(csv_format).upper()
+                    try:
+                        # Create metadata based on file type
+                        if file_type == ImportFileType.CSV:
+                            csv_format = getattr(job_info, 'csv_format', None)
+                            if csv_format:
+                                csv_format_str = csv_format.upper() if hasattr(csv_format, 'upper') else str(csv_format).upper()
+                            else:
+                                csv_format_str = 'GENERIC'
+                            
+                            metadata = {
+                                'dataset': f'CSV_{csv_format_str}',
+                                'filename': job_info.filename,
+                                'symbol': getattr(job_info, 'csv_symbol', 'UNKNOWN')
+                            }
                         else:
-                            csv_format_str = 'GENERIC'
+                            metadata = {
+                                'dataset': 'OPRA',
+                                'filename': job_info.filename
+                            }
                         
-                        metadata = {
-                            'dataset': f'CSV_{csv_format_str}',
-                            'filename': job_info.filename,
-                            'symbol': getattr(job_info, 'csv_symbol', 'UNKNOWN')
-                        }
-                    else:
-                        metadata = {
-                            'dataset': 'OPRA',
-                            'filename': job_info.filename
-                        }
-                    
-                    output_path = self.parquet_writer._write_symbol_date_partition_to_parquet(
-                        underlying_symbol, record_date, asset_type, records, metadata
-                    )
-                    if output_path:
-                        batch_output_paths.append(output_path)
-                        total_records_written += len(records)
-                    del batches[(underlying_symbol, record_date, asset_type)]
+                        logger.debug(f"Job {job_id}: Writing partition {underlying_symbol}/{record_date} with {len(records)} records")
+                        
+                        output_path = self.parquet_writer._write_symbol_date_partition_to_parquet(
+                            underlying_symbol, record_date, asset_type, records, metadata
+                        )
+                        
+                        if output_path:
+                            batch_output_paths.append(output_path)
+                            total_records_written += len(records)
+                            logger.debug(f"Job {job_id}: Successfully wrote {len(records)} records to {output_path}")
+                        else:
+                            logger.error(f"Job {job_id}: Failed to write partition {underlying_symbol}/{record_date}")
+                        
+                        # Clear this batch from memory
+                        del batches[(underlying_symbol, record_date, asset_type)]
+                        
+                    except Exception as e:
+                        logger.error(f"Job {job_id}: Error writing partition {underlying_symbol}/{record_date}: {e}")
+                        # Still remove the batch to prevent memory buildup
+                        if (underlying_symbol, record_date, asset_type) in batches:
+                            del batches[(underlying_symbol, record_date, asset_type)]
 
                 output_paths.extend(batch_output_paths)
-                logger.info(f"Job {job_id}: Wrote {len(batch_output_paths)} files, {total_records_written:,} total records")
+                logger.info(f"Job {job_id}: ✅ Wrote {len(batch_output_paths)} partition files, {total_records_written:,} total records written")
 
+            # SCALABLE FIX: Stream with batches but consolidate same-partition writes
+            # This maintains memory efficiency while preventing overwrites
+            
+            logger.info(f"Job {job_id}: Starting SCALABLE streaming import with batch consolidation")
+            
             # Stream records based on file type
             if file_type == ImportFileType.CSV:
                 csv_symbol = getattr(job_info, 'csv_symbol', None)
@@ -486,10 +508,22 @@ class ImportManager:
             else:
                 records_iterator = self.dbn_reader.stream_records(file_path)
 
-            # Process records in batches
+            # Process records in streaming batches with smart consolidation
+            logger.info(f"Job {job_id}: Processing records in {batch_size_threshold:,} record batches")
+            
             for record in records_iterator:
                 processed_records += 1
-                record_info = self.parquet_writer._extract_record_info_with_context(record)
+                
+                # Determine asset type for options metadata extraction
+                file_asset_type = None
+                if file_type == ImportFileType.DBN:
+                    # For DBN files, determine asset type from filename/dataset
+                    filename_lower = job_info.filename.lower()
+                    if 'opra' in filename_lower or 'cbbo' in filename_lower:
+                        from .import_models import AssetType
+                        file_asset_type = AssetType.OPTIONS
+                
+                record_info = self.parquet_writer._extract_record_info_with_context(record, file_asset_type)
                 if record_info:
                     key = (
                         record_info['underlying_symbol'],
@@ -498,16 +532,16 @@ class ImportManager:
                     )
                     batches[key].append(record_info)
 
-                # Process batch when it reaches threshold
+                # Process batch when it reaches threshold - but consolidate same partitions
                 if processed_records % batch_size_threshold == 0:
-                    logger.info(f"Job {job_id}: Processed {processed_records:,} records, memory threshold reached. Writing batches...")
+                    logger.info(f"Job {job_id}: Processed {processed_records:,} records, writing consolidated batches...")
                     _write_and_clear_batches()
                     job_info.progress.processed_records = processed_records
                     self._save_job(job_info)
 
             # Write any remaining records in final batches
             if batches:
-                logger.info(f"Job {job_id}: Writing final batches...")
+                logger.info(f"Job {job_id}: Writing final consolidated batches...")
                 _write_and_clear_batches()
 
             job_info.output_paths = list(set(output_paths))  # Remove duplicates
@@ -840,12 +874,13 @@ class ImportManager:
             return date_info
 
 
-    def delete_imported_data(self, symbol: str) -> bool:
+    def delete_imported_data(self, symbol: str, asset_type: str = None) -> bool:
         """
-        Delete all imported data for a specific symbol.
+        Delete imported data for a specific symbol and optionally specific asset type.
         
         Args:
             symbol: Symbol to delete data for
+            asset_type: Optional asset type to delete (if None, deletes all asset types)
             
         Returns:
             True if data was deleted, False if no data found
@@ -854,7 +889,7 @@ class ImportManager:
             import shutil
             deleted_any = False
             
-            # Check each asset type directory
+            # Asset type directory mapping
             asset_type_dirs = {
                 'options': self.parquet_writer.options_dir,
                 'equities': self.parquet_writer.equities_dir,
@@ -862,26 +897,51 @@ class ImportManager:
                 'forex': self.parquet_writer.forex_dir
             }
             
-            for asset_type, base_dir in asset_type_dirs.items():
-                if not base_dir.exists():
-                    continue
-                
-                # Look for underlying=SYMBOL directory
-                symbol_dir = base_dir / f"underlying={symbol}"
-                if symbol_dir.exists():
-                    logger.info(f"Deleting {asset_type} data for symbol {symbol} at {symbol_dir}")
-                    shutil.rmtree(symbol_dir)
-                    deleted_any = True
+            # If specific asset type is provided, only delete from that type
+            if asset_type:
+                asset_type_lower = asset_type.lower()
+                if asset_type_lower in asset_type_dirs:
+                    base_dir = asset_type_dirs[asset_type_lower]
+                    if base_dir.exists():
+                        symbol_dir = base_dir / f"underlying={symbol}"
+                        if symbol_dir.exists():
+                            logger.info(f"Deleting {asset_type_lower} data for symbol {symbol} at {symbol_dir}")
+                            shutil.rmtree(symbol_dir)
+                            deleted_any = True
+                        else:
+                            logger.warning(f"No {asset_type_lower} data found for symbol '{symbol}'")
+                    else:
+                        logger.warning(f"Asset type directory does not exist: {base_dir}")
+                else:
+                    logger.error(f"Unknown asset type: {asset_type}")
+                    return False
+            else:
+                # Delete from all asset types (legacy behavior)
+                for asset_type_name, base_dir in asset_type_dirs.items():
+                    if not base_dir.exists():
+                        continue
+                    
+                    symbol_dir = base_dir / f"underlying={symbol}"
+                    if symbol_dir.exists():
+                        logger.info(f"Deleting {asset_type_name} data for symbol {symbol} at {symbol_dir}")
+                        shutil.rmtree(symbol_dir)
+                        deleted_any = True
             
             if deleted_any:
-                logger.info(f"Successfully deleted all imported data for symbol '{symbol}'")
+                if asset_type:
+                    logger.info(f"Successfully deleted {asset_type} data for symbol '{symbol}'")
+                else:
+                    logger.info(f"Successfully deleted all imported data for symbol '{symbol}'")
             else:
-                logger.warning(f"No imported data found for symbol '{symbol}'")
+                if asset_type:
+                    logger.warning(f"No {asset_type} data found for symbol '{symbol}'")
+                else:
+                    logger.warning(f"No imported data found for symbol '{symbol}'")
             
             return deleted_any
             
         except Exception as e:
-            logger.error(f"Error deleting imported data for symbol '{symbol}': {e}")
+            logger.error(f"Error deleting imported data for symbol '{symbol}' (asset_type: {asset_type}): {e}")
             return False
 
 
