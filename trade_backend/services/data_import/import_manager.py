@@ -9,11 +9,12 @@ import asyncio
 import json
 import logging
 import uuid
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timezone, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Callable
 import threading
 from concurrent.futures import ThreadPoolExecutor
+import calendar
 
 from ...path_manager import path_manager
 from .import_models import (
@@ -407,7 +408,7 @@ class ImportManager:
         """
         Execute an import job (runs in thread pool).
         This implementation uses streaming batch processing for memory efficiency
-        with append mode to prevent data loss.
+        with append mode to prevent data loss and day-based progress tracking.
         """
         job_info = self._active_jobs.get(job_id)
         if not job_info:
@@ -425,12 +426,45 @@ class ImportManager:
             # Detect file type
             file_type = getattr(job_info, 'file_type', None) or self._detect_file_type(job_info.filename)
 
+            # Get file metadata for date range (for progress calculation)
+            try:
+                if file_type == ImportFileType.CSV:
+                    csv_symbol = getattr(job_info, 'csv_symbol', None)
+                    metadata = csv_metadata_extractor.get_file_metadata(file_path, csv_symbol)
+                else:
+                    metadata = metadata_extractor.get_file_metadata(file_path)
+                
+                # Extract date range for progress tracking
+                import_start_date = None
+                import_end_date = None
+                
+                if metadata and metadata.overall_date_range:
+                    import_start_date = metadata.overall_date_range.start_date
+                    import_end_date = metadata.overall_date_range.end_date
+                elif metadata and hasattr(metadata, 'start_timestamp') and hasattr(metadata, 'end_timestamp'):
+                    if metadata.start_timestamp:
+                        import_start_date = metadata.start_timestamp.date()
+                    if metadata.end_timestamp:
+                        import_end_date = metadata.end_timestamp.date()
+                
+                logger.info(f"Job {job_id}: Import date range: {import_start_date} to {import_end_date}")
+                
+            except Exception as e:
+                logger.warning(f"Job {job_id}: Could not extract metadata for progress tracking: {e}")
+                import_start_date = None
+                import_end_date = None
+
             from collections import defaultdict
             batches = defaultdict(list)
             processed_records = 0
             total_records_written = 0
             output_paths = []
             batch_size_threshold = 500000  # Process in chunks for memory efficiency
+            
+            # Progress tracking variables
+            current_processing_date = None
+            last_progress_update = 0
+            progress_update_interval = 100000  # Update progress every 100k records
 
             def _write_and_clear_batches():
                 nonlocal total_records_written
@@ -493,6 +527,7 @@ class ImportManager:
             if file_type == ImportFileType.CSV:
                 csv_symbol = getattr(job_info, 'csv_symbol', None)
                 if not csv_symbol:
+                     
                     raise ValueError("CSV symbol not found in job info")
                 
                 # Get timestamp convention from job info
@@ -531,6 +566,33 @@ class ImportManager:
                         record_info['asset_type']
                     )
                     batches[key].append(record_info)
+                    
+                    # Update progress tracking based on current date
+                    record_date = self._extract_date_from_record_info(record_info)
+                    if record_date and import_start_date and import_end_date:
+                        if current_processing_date != record_date:
+                            current_processing_date = record_date
+                            
+                            # Calculate day-based progress
+                            progress_info = self._calculate_trading_day_progress(
+                                current_processing_date, import_start_date, import_end_date
+                            )
+                            
+                            # Update job progress with day-based information
+                            if not hasattr(job_info.progress, 'progress_percentage'):
+                                job_info.progress.progress_percentage = progress_info['progress_percentage']
+                            else:
+                                job_info.progress.progress_percentage = progress_info['progress_percentage']
+                            
+                            job_info.progress.current_symbol = progress_info['status_message']
+                            
+                            logger.info(f"Job {job_id}: {progress_info['status_message']} - {progress_info['progress_percentage']}% complete")
+
+                # Update progress periodically (every 100k records)
+                if processed_records - last_progress_update >= progress_update_interval:
+                    last_progress_update = processed_records
+                    job_info.progress.processed_records = processed_records
+                    self._save_job(job_info)
 
                 # Process batch when it reaches threshold - but consolidate same partitions
                 if processed_records % batch_size_threshold == 0:
@@ -549,6 +611,10 @@ class ImportManager:
             job_info.progress.processed_records = processed_records
             job_info.progress.total_records = processed_records
             job_info.total_output_size = total_records_written
+            
+            # Ensure progress shows 100% when completed
+            job_info.progress.progress_percentage = 100.0
+            job_info.progress.current_symbol = "Import completed successfully!"
 
             logger.info(f"Job {job_id} completed. Processed {processed_records:,} records, wrote {total_records_written:,} records to {len(job_info.output_paths)} unique files.")
 
@@ -943,6 +1009,148 @@ class ImportManager:
         except Exception as e:
             logger.error(f"Error deleting imported data for symbol '{symbol}' (asset_type: {asset_type}): {e}")
             return False
+
+    def _calculate_trading_day_progress(self, current_date: date, start_date: date, end_date: date) -> Dict[str, Any]:
+        """
+        Calculate trading day-based progress with month boundary adjustments.
+        
+        Args:
+            current_date: Current date being processed
+            start_date: Import start date
+            end_date: Import end date
+            
+        Returns:
+            Dictionary with progress information
+        """
+        try:
+            # Calculate total months in the import range
+            total_months = self._get_months_between(start_date, end_date)
+            if total_months == 0:
+                total_months = 1  # At least one month
+            
+            # Calculate which month we're currently in (0-based)
+            current_month_index = self._get_months_between(start_date, current_date)
+            
+            # Each month represents 20% of progress (assuming 20 trading days per month)
+            progress_per_month = 100.0 / total_months
+            progress_per_day = progress_per_month / 20.0  # 20 trading days per month
+            
+            # Base progress from completed months
+            base_progress = current_month_index * progress_per_month
+            
+            # Calculate trading day within current month
+            trading_day_in_month = self._get_trading_day_in_month(current_date)
+            
+            # Add progress within current month (up to one month's worth)
+            day_progress_in_month = min(trading_day_in_month * progress_per_day, progress_per_month)
+            
+            # Total progress (capped at 100%)
+            total_progress = min(base_progress + day_progress_in_month, 100.0)
+            
+            # Format current date for display
+            current_date_str = current_date.strftime("%B %d, %Y")
+            
+            return {
+                'progress_percentage': round(total_progress, 1),
+                'current_date': current_date_str,
+                'current_month': current_date.strftime("%B %Y"),
+                'trading_day_in_month': trading_day_in_month,
+                'total_months': total_months,
+                'current_month_index': current_month_index + 1,  # 1-based for display
+                'status_message': f"Processing {current_date_str}"
+            }
+            
+        except Exception as e:
+            logger.warning(f"Error calculating trading day progress: {e}")
+            return {
+                'progress_percentage': 0.0,
+                'current_date': str(current_date),
+                'current_month': current_date.strftime("%B %Y"),
+                'trading_day_in_month': 1,
+                'total_months': 1,
+                'current_month_index': 1,
+                'status_message': f"Processing {current_date}"
+            }
+    
+    def _get_months_between(self, start_date: date, end_date: date) -> int:
+        """
+        Calculate the number of months between two dates.
+        
+        Args:
+            start_date: Start date
+            end_date: End date
+            
+        Returns:
+            Number of months between the dates
+        """
+        try:
+            if end_date < start_date:
+                return 0
+            
+            # Calculate months difference
+            months = (end_date.year - start_date.year) * 12 + (end_date.month - start_date.month)
+            
+            # If we haven't reached the same day in the end month, don't count the partial month
+            if end_date.day < start_date.day:
+                months -= 1
+            
+            return max(0, months)
+            
+        except Exception as e:
+            logger.warning(f"Error calculating months between {start_date} and {end_date}: {e}")
+            return 1
+    
+    def _get_trading_day_in_month(self, current_date: date) -> int:
+        """
+        Calculate which trading day of the month this is (1-20).
+        Assumes 20 trading days per month for simplicity.
+        
+        Args:
+            current_date: Current date
+            
+        Returns:
+            Trading day number in month (1-20)
+        """
+        try:
+            # Simple approximation: use the day of month and scale to 1-20
+            day_of_month = current_date.day
+            
+            # Get total days in this month
+            _, days_in_month = calendar.monthrange(current_date.year, current_date.month)
+            
+            # Scale to 1-20 range (trading days)
+            trading_day = max(1, min(20, int((day_of_month / days_in_month) * 20)))
+            
+            return trading_day
+            
+        except Exception as e:
+            logger.warning(f"Error calculating trading day for {current_date}: {e}")
+            return 1
+    
+    def _extract_date_from_record_info(self, record_info: Dict[str, Any]) -> Optional[date]:
+        """
+        Extract date from record info for progress tracking.
+        
+        Args:
+            record_info: Record information dictionary
+            
+        Returns:
+            Date object or None if extraction fails
+        """
+        try:
+            if 'date' in record_info and record_info['date']:
+                record_date = record_info['date']
+                if isinstance(record_date, date):
+                    return record_date
+                elif isinstance(record_date, str):
+                    # Try to parse string date
+                    return datetime.strptime(record_date, '%Y-%m-%d').date()
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error extracting date from record info: {e}")
+            return None
 
 
 # Global instance

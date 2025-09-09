@@ -209,9 +209,21 @@ class ImportProgress(BaseModel):
     current_date: Optional[date] = None
     estimated_completion: Optional[datetime] = None
     
-    @property
-    def progress_percentage(self) -> float:
-        """Progress as percentage (0-100)"""
+    # Day-based progress tracking fields
+    progress_percentage: Optional[float] = None  # Override calculated percentage with day-based progress
+    current_month: Optional[str] = None
+    trading_day_in_month: Optional[int] = None
+    total_months: Optional[int] = None
+    current_month_index: Optional[int] = None
+    status_message: Optional[str] = None
+    
+    def get_progress_percentage(self) -> float:
+        """Get progress as percentage (0-100), preferring day-based over record-based"""
+        # Use day-based progress if available
+        if self.progress_percentage is not None:
+            return round(self.progress_percentage, 2)
+        
+        # Fallback to record-based progress
         if self.total_records == 0:
             return 0.0
         return round((self.processed_records / self.total_records) * 100, 2)

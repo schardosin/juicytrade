@@ -248,7 +248,7 @@
             </div>
             
             <div v-if="importStatus.current_symbol" class="current-activity">
-              <span class="activity-label">Processing:</span>
+              <span class="activity-label">Status:</span>
               <span class="activity-value">{{ importStatus.current_symbol }}</span>
             </div>
             
@@ -579,11 +579,13 @@ export default {
           // The status is nested in status.data, not directly in status
           const jobData = status.data || status
           
-          // Calculate progress percentage if not provided
+          // Calculate progress percentage using day-based or record-based progress
           let progressPercentage = 0
           if (jobData.progress?.progress_percentage !== undefined) {
+            // Use day-based progress if available
             progressPercentage = jobData.progress.progress_percentage
           } else if (jobData.progress?.processed_records && jobData.progress?.total_records) {
+            // Fallback to record-based progress
             progressPercentage = Math.round((jobData.progress.processed_records / jobData.progress.total_records) * 100)
           }
           
@@ -607,7 +609,7 @@ export default {
           
           const newStatus = {
             status: statusMessage,
-            progress: Math.min(100, Math.max(0, progressPercentage)),
+            progress: jobData.status === 'completed' ? 100 : Math.min(100, Math.max(0, progressPercentage)),
             current_symbol: jobData.progress?.current_symbol || '',
             processed_records: jobData.progress?.processed_records || 0,
             total_records: jobData.progress?.total_records || 0,
