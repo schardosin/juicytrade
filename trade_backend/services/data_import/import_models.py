@@ -217,6 +217,9 @@ class ImportProgress(BaseModel):
     current_month_index: Optional[int] = None
     status_message: Optional[str] = None
     
+    # Symbol tracking for frontend overlay matching
+    primary_symbols: Optional[List[str]] = None
+    
     def get_progress_percentage(self) -> float:
         """Get progress as percentage (0-100), preferring day-based over record-based"""
         # Use day-based progress if available

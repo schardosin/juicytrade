@@ -830,7 +830,8 @@ class ParquetWriter:
                             # Verify record count after write
                             try:
                                 verify_table = pq.read_table(output_path)
-                                actual_count = verify_table.metadata.num_rows
+                                # Use len() instead of metadata.num_rows for PyArrow compatibility
+                                actual_count = len(verify_table)
                                 if actual_count != len(combined_df):
                                     logger.error(f"❌ RECORD COUNT MISMATCH: Expected {len(combined_df)}, got {actual_count}")
                                 else:

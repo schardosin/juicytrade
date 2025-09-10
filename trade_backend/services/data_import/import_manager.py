@@ -5,7 +5,6 @@ Orchestrates the data import process, managing async jobs, progress tracking,
 and coordination between DBN reading, metadata extraction, and Parquet writing.
 """
 
-import asyncio
 import json
 import logging
 import uuid
@@ -18,8 +17,8 @@ import calendar
 
 from ...path_manager import path_manager
 from .import_models import (
-    ImportRequest, ImportJobInfo, ImportJobStatus, ImportProgress,
-    ImportFilters, ImportSummary, ImportFileInfo, DBNMetadata,
+    ImportRequest, ImportJobInfo, ImportJobStatus,
+    ImportSummary, ImportFileInfo, DBNMetadata,
     ImportFileType, CSVFormat
 )
 from .metadata_extractor import metadata_extractor
@@ -427,33 +426,8 @@ class ImportManager:
             file_type = getattr(job_info, 'file_type', None) or self._detect_file_type(job_info.filename)
 
             # Get file metadata for date range (for progress calculation)
-            try:
-                if file_type == ImportFileType.CSV:
-                    csv_symbol = getattr(job_info, 'csv_symbol', None)
-                    metadata = csv_metadata_extractor.get_file_metadata(file_path, csv_symbol)
-                else:
-                    metadata = metadata_extractor.get_file_metadata(file_path)
-                
-                # Extract date range for progress tracking
-                import_start_date = None
-                import_end_date = None
-                
-                if metadata and metadata.overall_date_range:
-                    import_start_date = metadata.overall_date_range.start_date
-                    import_end_date = metadata.overall_date_range.end_date
-                elif metadata and hasattr(metadata, 'start_timestamp') and hasattr(metadata, 'end_timestamp'):
-                    if metadata.start_timestamp:
-                        import_start_date = metadata.start_timestamp.date()
-                    if metadata.end_timestamp:
-                        import_end_date = metadata.end_timestamp.date()
-                
-                logger.info(f"Job {job_id}: Import date range: {import_start_date} to {import_end_date}")
-                
-            except Exception as e:
-                logger.warning(f"Job {job_id}: Could not extract metadata for progress tracking: {e}")
-                import_start_date = None
-                import_end_date = None
-
+            import_start_date, import_end_date = self._get_import_date_range(job_info, file_path, file_type)
+            
             from collections import defaultdict
             batches = defaultdict(list)
             processed_records = 0
@@ -474,24 +448,8 @@ class ImportManager:
                 # Process each partition key separately to ensure proper consolidation
                 for (underlying_symbol, record_date, asset_type), records in list(batches.items()):
                     try:
-                        # Create metadata based on file type
-                        if file_type == ImportFileType.CSV:
-                            csv_format = getattr(job_info, 'csv_format', None)
-                            if csv_format:
-                                csv_format_str = csv_format.upper() if hasattr(csv_format, 'upper') else str(csv_format).upper()
-                            else:
-                                csv_format_str = 'GENERIC'
-                            
-                            metadata = {
-                                'dataset': f'CSV_{csv_format_str}',
-                                'filename': job_info.filename,
-                                'symbol': getattr(job_info, 'csv_symbol', 'UNKNOWN')
-                            }
-                        else:
-                            metadata = {
-                                'dataset': 'OPRA',
-                                'filename': job_info.filename
-                            }
+                        # Create metadata
+                        metadata = self._create_write_metadata(job_info, file_type)
                         
                         logger.debug(f"Job {job_id}: Writing partition {underlying_symbol}/{record_date} with {len(records)} records")
                         
@@ -523,25 +481,8 @@ class ImportManager:
             
             logger.info(f"Job {job_id}: Starting SCALABLE streaming import with batch consolidation")
             
-            # Stream records based on file type
-            if file_type == ImportFileType.CSV:
-                csv_symbol = getattr(job_info, 'csv_symbol', None)
-                if not csv_symbol:
-                     
-                    raise ValueError("CSV symbol not found in job info")
-                
-                # Get timestamp convention from job info
-                timestamp_convention = getattr(job_info, 'timestamp_convention', None)
-                if timestamp_convention:
-                    timestamp_convention = timestamp_convention.value if hasattr(timestamp_convention, 'value') else timestamp_convention
-                
-                records_iterator = self.csv_reader.stream_records(
-                    file_path, 
-                    csv_symbol, 
-                    timestamp_convention=timestamp_convention
-                )
-            else:
-                records_iterator = self.dbn_reader.stream_records(file_path)
+            # Initialize record streaming
+            records_iterator = self._get_records_iterator(job_info, file_path, file_type)
 
             # Process records in streaming batches with smart consolidation
             logger.info(f"Job {job_id}: Processing records in {batch_size_threshold:,} record batches")
@@ -549,16 +490,8 @@ class ImportManager:
             for record in records_iterator:
                 processed_records += 1
                 
-                # Determine asset type for options metadata extraction
-                file_asset_type = None
-                if file_type == ImportFileType.DBN:
-                    # For DBN files, determine asset type from filename/dataset
-                    filename_lower = job_info.filename.lower()
-                    if 'opra' in filename_lower or 'cbbo' in filename_lower:
-                        from .import_models import AssetType
-                        file_asset_type = AssetType.OPTIONS
-                
-                record_info = self.parquet_writer._extract_record_info_with_context(record, file_asset_type)
+                # Process record
+                record_info = self._process_record(record, job_info, file_type)
                 if record_info:
                     key = (
                         record_info['underlying_symbol'],
@@ -585,6 +518,16 @@ class ImportManager:
                                 job_info.progress.progress_percentage = progress_info['progress_percentage']
                             
                             job_info.progress.current_symbol = progress_info['status_message']
+                            
+                            # Track primary symbols being processed for frontend overlay matching
+                            if job_info.progress.primary_symbols is None:
+                                job_info.progress.primary_symbols = []
+                            
+                            # Add underlying symbols from current batches to primary symbols
+                            current_symbols = set(job_info.progress.primary_symbols)
+                            for (underlying_symbol, _, _) in batches.keys():
+                                current_symbols.add(underlying_symbol)
+                            job_info.progress.primary_symbols = list(current_symbols)
                             
                             logger.info(f"Job {job_id}: {progress_info['status_message']} - {progress_info['progress_percentage']}% complete")
 
@@ -650,8 +593,18 @@ class ImportManager:
         """
         try:
             job_file = self.jobs_dir / f"{job_info.job_id}.json"
+            
+            # Convert job info to dict and handle set serialization
+            job_data = job_info.model_dump()
+            
+            # Convert primary_symbols set to list for JSON serialization
+            if hasattr(job_info.progress, 'primary_symbols') and job_info.progress.primary_symbols:
+                if 'progress' not in job_data:
+                    job_data['progress'] = {}
+                job_data['progress']['primary_symbols'] = list(job_info.progress.primary_symbols)
+            
             with open(job_file, 'w') as f:
-                json.dump(job_info.model_dump(), f, indent=2, default=str)
+                json.dump(job_data, f, indent=2, default=str)
         except Exception as e:
             logger.error(f"Error saving job {job_info.job_id}: {e}")
     
@@ -1151,6 +1104,177 @@ class ImportManager:
         except Exception as e:
             logger.debug(f"Error extracting date from record info: {e}")
             return None
+
+    def _get_import_date_range(self, job_info: ImportJobInfo, file_path: Path, file_type: ImportFileType) -> tuple:
+        """
+        Get import date range for progress tracking.
+        
+        Args:
+            job_info: Job information
+            file_path: Path to the import file
+            file_type: Type of file being imported
+            
+        Returns:
+            Tuple of (start_date, end_date) or (None, None) if extraction fails
+        """
+        try:
+            if file_type == ImportFileType.CSV:
+                csv_symbol = getattr(job_info, 'csv_symbol', None)
+                metadata = csv_metadata_extractor.get_file_metadata(file_path, csv_symbol)
+            else:
+                metadata = metadata_extractor.get_file_metadata(file_path)
+            
+            # Extract date range for progress tracking
+            import_start_date = None
+            import_end_date = None
+            
+            if metadata and metadata.overall_date_range:
+                import_start_date = metadata.overall_date_range.start_date
+                import_end_date = metadata.overall_date_range.end_date
+            elif metadata and hasattr(metadata, 'start_timestamp') and hasattr(metadata, 'end_timestamp'):
+                if metadata.start_timestamp:
+                    import_start_date = metadata.start_timestamp.date()
+                if metadata.end_timestamp:
+                    import_end_date = metadata.end_timestamp.date()
+            
+            return import_start_date, import_end_date
+            
+        except Exception as e:
+            logger.warning(f"Could not extract metadata for progress tracking: {e}")
+            return None, None
+
+    def _get_records_iterator(self, job_info: ImportJobInfo, file_path: Path, file_type: ImportFileType):
+        """
+        Get records iterator based on file type.
+        
+        Args:
+            job_info: Job information
+            file_path: Path to the import file
+            file_type: Type of file being imported
+            
+        Returns:
+            Records iterator
+        """
+        if file_type == ImportFileType.CSV:
+            csv_symbol = getattr(job_info, 'csv_symbol', None)
+            if not csv_symbol:
+                raise ValueError("CSV symbol not found in job info")
+            
+            # Get timestamp convention from job info
+            timestamp_convention = getattr(job_info, 'timestamp_convention', None)
+            if timestamp_convention:
+                timestamp_convention = timestamp_convention.value if hasattr(timestamp_convention, 'value') else timestamp_convention
+            
+            return self.csv_reader.stream_records(
+                file_path, 
+                csv_symbol, 
+                timestamp_convention=timestamp_convention
+            )
+        else:
+            return self.dbn_reader.stream_records(file_path)
+
+    def _process_record(self, record, job_info: ImportJobInfo, file_type: ImportFileType):
+        """
+        Process a single record and extract record info.
+        
+        Args:
+            record: Raw record from file
+            job_info: Job information
+            file_type: Type of file being imported
+            
+        Returns:
+            Processed record info or None if processing fails
+        """
+        try:
+            # Determine asset type for options metadata extraction
+            file_asset_type = None
+            if file_type == ImportFileType.DBN:
+                # For DBN files, determine asset type from filename/dataset
+                filename_lower = job_info.filename.lower()
+                if 'opra' in filename_lower or 'cbbo' in filename_lower:
+                    from .import_models import AssetType
+                    file_asset_type = AssetType.OPTIONS
+            
+            return self.parquet_writer._extract_record_info_with_context(record, file_asset_type)
+            
+        except Exception as e:
+            logger.debug(f"Error processing record: {e}")
+            return None
+
+    def _create_write_metadata(self, job_info: ImportJobInfo, file_type: ImportFileType) -> Dict[str, Any]:
+        """
+        Create metadata for Parquet write operations.
+        
+        Args:
+            job_info: Job information
+            file_type: Type of file being imported
+            
+        Returns:
+            Metadata dictionary
+        """
+        if file_type == ImportFileType.CSV:
+            csv_format = getattr(job_info, 'csv_format', None)
+            if csv_format:
+                csv_format_str = csv_format.upper() if hasattr(csv_format, 'upper') else str(csv_format).upper()
+            else:
+                csv_format_str = 'GENERIC'
+            
+            return {
+                'dataset': f'CSV_{csv_format_str}',
+                'filename': job_info.filename,
+                'symbol': getattr(job_info, 'csv_symbol', 'UNKNOWN')
+            }
+        else:
+            return {
+                'dataset': 'OPRA',
+                'filename': job_info.filename
+            }
+
+    def _update_progress_tracking(self, job_info: ImportJobInfo, record_info: Dict[str, Any], 
+                                 import_start_date: Optional[date], import_end_date: Optional[date],
+                                 batches: Dict, current_processing_date: Optional[date], job_id: str):
+        """
+        Update progress tracking based on current record.
+        
+        Args:
+            job_info: Job information
+            record_info: Current record information
+            import_start_date: Import start date
+            import_end_date: Import end date
+            batches: Current batches dictionary
+            current_processing_date: Current processing date
+            job_id: Job ID for logging
+        """
+        try:
+            # Update progress tracking based on current date
+            record_date = self._extract_date_from_record_info(record_info)
+            if record_date and import_start_date and import_end_date:
+                if current_processing_date != record_date:
+                    current_processing_date = record_date
+                    
+                    # Calculate day-based progress
+                    progress_info = self._calculate_trading_day_progress(
+                        current_processing_date, import_start_date, import_end_date
+                    )
+                    
+                    # Update job progress with day-based information
+                    job_info.progress.progress_percentage = progress_info['progress_percentage']
+                    job_info.progress.current_symbol = progress_info['status_message']
+                    
+                    # Track primary symbols being processed for frontend overlay matching
+                    if job_info.progress.primary_symbols is None:
+                        job_info.progress.primary_symbols = []
+                    
+                    # Add underlying symbols from current batches to primary symbols
+                    current_symbols = set(job_info.progress.primary_symbols)
+                    for (underlying_symbol, _, _) in batches.keys():
+                        current_symbols.add(underlying_symbol)
+                    job_info.progress.primary_symbols = list(current_symbols)
+                    
+                    logger.debug(f"Job {job_id}: {progress_info['status_message']} - {progress_info['progress_percentage']}% complete")
+                    
+        except Exception as e:
+            logger.debug(f"Error updating progress tracking: {e}")
 
 
 # Global instance

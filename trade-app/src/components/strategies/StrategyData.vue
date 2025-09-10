@@ -1,5 +1,39 @@
 <template>
   <div class="strategy-data">
+    <!-- Global Import Progress Banner -->
+    <div v-if="hasMultiSymbolJob" class="global-progress-banner">
+      <div class="progress-content">
+        <div class="progress-info">
+          <span class="progress-icon">📥</span>
+          <div class="progress-text">
+            <h4>Multi-Symbol Import in Progress</h4>
+            <p>{{ getMultiSymbolJobInfo()?.statusMessage || 'Processing data...' }}</p>
+          </div>
+        </div>
+        <div class="progress-stats">
+          <div class="progress-circle">
+            <svg width="40" height="40" viewBox="0 0 40 40">
+              <circle cx="20" cy="20" r="18" fill="none" stroke="var(--border-secondary)" stroke-width="2"/>
+              <circle 
+                cx="20" cy="20" r="18" fill="none" 
+                stroke="var(--color-brand)" 
+                stroke-width="2"
+                stroke-linecap="round"
+                :stroke-dasharray="`${2 * Math.PI * 18}`"
+                :stroke-dashoffset="`${2 * Math.PI * 18 * (1 - (getMultiSymbolJobInfo()?.progress || 0) / 100)}`"
+                transform="rotate(-90 20 20)"
+              />
+            </svg>
+            <span class="progress-percentage">{{ Math.round(getMultiSymbolJobInfo()?.progress || 0) }}%</span>
+          </div>
+          <div class="progress-details">
+            <span class="filename">{{ getMultiSymbolJobInfo()?.filename || '' }}</span>
+            <span class="records">{{ formatNumber(getMultiSymbolJobInfo()?.processedRecords || 0) }} records processed</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
     <!-- Header -->
     <div class="data-header">
       <div class="header-content">
@@ -42,7 +76,18 @@
         v-for="dataset in importedData" 
         :key="dataset.id"
         class="data-card"
+        :class="{ 'has-overlay': hasActiveJob(dataset.symbol, dataset.asset_type) }"
       >
+        <!-- Import Progress Overlay for Cards -->
+        <ImportProgressOverlay
+          v-if="hasActiveJob(dataset.symbol, dataset.asset_type)"
+          :progress="getJobForSymbol(dataset.symbol, dataset.asset_type)?.progress || 0"
+          :status-message="getJobForSymbol(dataset.symbol, dataset.asset_type)?.statusMessage || 'Importing...'"
+          :filename="getJobForSymbol(dataset.symbol, dataset.asset_type)?.filename || ''"
+          :processed-records="getJobForSymbol(dataset.symbol, dataset.asset_type)?.processedRecords || 0"
+          :compact="false"
+          :show-details="true"
+        />
         <!-- Dataset Header -->
         <div class="dataset-header">
           <div class="dataset-info">
@@ -135,7 +180,18 @@
         v-for="dataset in importedData" 
         :key="dataset.id"
         class="data-row"
+        :class="{ 'has-overlay': hasActiveJob(dataset.symbol, dataset.asset_type) }"
       >
+        <!-- Import Progress Overlay for List View -->
+        <ImportProgressOverlay
+          v-if="hasActiveJob(dataset.symbol, dataset.asset_type)"
+          :progress="getJobForSymbol(dataset.symbol, dataset.asset_type)?.progress || 0"
+          :status-message="getJobForSymbol(dataset.symbol, dataset.asset_type)?.statusMessage || 'Importing...'"
+          :filename="getJobForSymbol(dataset.symbol, dataset.asset_type)?.filename || ''"
+          :processed-records="getJobForSymbol(dataset.symbol, dataset.asset_type)?.processedRecords || 0"
+          :compact="true"
+          :show-details="false"
+        />
         <div class="list-col col-dataset">
           <div class="dataset-name-info">
             <h4 class="dataset-name">{{ dataset.symbol }}</h4>
@@ -245,20 +301,43 @@
 </template>
 
 <script>
-import { ref, onMounted } from 'vue'
+import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useNotifications } from '../../composables/useNotifications.js'
+import { useGlobalBackgroundJobs } from '../../composables/useBackgroundJobs.js'
 import { api } from '../../services/api.js'
 import DataImportDialog from './DataImportDialog.vue'
+import ImportProgressOverlay from './ImportProgressOverlay.vue'
 
 export default {
   name: 'StrategyData',
   components: {
-    DataImportDialog
+    DataImportDialog,
+    ImportProgressOverlay
   },
   setup() {
     const router = useRouter()
     const { showSuccess, showError } = useNotifications()
+    const { getJobForSymbol, hasActiveJob, activeJobs, activeJobCount } = useGlobalBackgroundJobs()
+    
+    // Debug logging for job matching
+    const logJobMatching = () => {
+      console.log('📊 Data Cards Debug:', JSON.stringify({
+        totalDatasets: importedData.value.length,
+        datasets: importedData.value.map(dataset => ({
+          symbol: dataset.symbol,
+          asset_type: dataset.asset_type,
+          identifier: `${dataset.symbol}_${dataset.asset_type}`,
+          hasJob: hasActiveJob(dataset.symbol, dataset.asset_type),
+          jobInfo: getJobForSymbol(dataset.symbol, dataset.asset_type)
+        })),
+        activeJobsCount: activeJobCount.value,
+        activeJobsData: activeJobs.value
+      }, null, 2))
+    }
+    
+    // Log job matching every few seconds for debugging
+    setInterval(logJobMatching, 3000)
     
     // Reactive state
     const importedData = ref([])
@@ -395,6 +474,15 @@ export default {
       }
     }
 
+    // Multi-symbol job handling
+    const hasMultiSymbolJob = computed(() => {
+      return getJobForSymbol('MULTI', 'EQUITIES') !== null || getJobForSymbol('MULTI', 'OPTIONS') !== null
+    })
+
+    const getMultiSymbolJobInfo = () => {
+      return getJobForSymbol('MULTI', 'EQUITIES') || getJobForSymbol('MULTI', 'OPTIONS')
+    }
+
     // Event handlers
     const handleDataImported = () => {
       showImportDialog.value = false
@@ -419,6 +507,14 @@ export default {
       showDeleteDialog,
       selectedDataset,
       deleting,
+      
+      // Background job functions
+      getJobForSymbol,
+      hasActiveJob,
+      
+      // Multi-symbol job functions
+      hasMultiSymbolJob,
+      getMultiSymbolJobInfo,
       
       // Helper functions
       formatDateRange,
@@ -447,6 +543,115 @@ export default {
   height: 100%;
   overflow-y: auto;
   background-color: var(--bg-secondary);
+}
+
+/* Global Progress Banner Styles */
+.global-progress-banner {
+  background: linear-gradient(135deg, var(--color-brand) 0%, var(--color-brand-hover) 100%);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-lg);
+  margin-bottom: var(--spacing-xl);
+  box-shadow: 0 4px 12px rgba(255, 107, 53, 0.2);
+  animation: pulse-glow 2s ease-in-out infinite alternate;
+}
+
+@keyframes pulse-glow {
+  0% { box-shadow: 0 4px 12px rgba(255, 107, 53, 0.2); }
+  100% { box-shadow: 0 6px 20px rgba(255, 107, 53, 0.4); }
+}
+
+.progress-content {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+.progress-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  flex: 1;
+}
+
+.progress-icon {
+  font-size: 2rem;
+  animation: bounce 1s ease-in-out infinite alternate;
+}
+
+@keyframes bounce {
+  0% { transform: translateY(0px); }
+  100% { transform: translateY(-4px); }
+}
+
+.progress-text h4 {
+  margin: 0 0 var(--spacing-xs) 0;
+  color: var(--text-primary);
+  font-size: var(--font-size-lg);
+  font-weight: var(--font-weight-semibold);
+}
+
+.progress-text p {
+  margin: 0;
+  color: rgba(255, 255, 255, 0.9);
+  font-size: var(--font-size-md);
+}
+
+.progress-stats {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+.progress-circle {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.progress-percentage {
+  position: absolute;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.progress-details {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.progress-details .filename {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  max-width: 200px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.progress-details .records {
+  font-size: var(--font-size-xs);
+  color: rgba(255, 255, 255, 0.8);
+}
+
+@media (max-width: 768px) {
+  .progress-content {
+    flex-direction: column;
+    gap: var(--spacing-md);
+    text-align: center;
+  }
+  
+  .progress-stats {
+    justify-content: center;
+  }
+  
+  .progress-details .filename {
+    max-width: 150px;
+  }
 }
 
 .data-header {
@@ -528,6 +733,7 @@ export default {
   border-radius: var(--radius-lg);
   padding: var(--spacing-xl);
   transition: var(--transition-normal);
+  position: relative; /* Required for overlay positioning */
 }
 
 .data-card:hover {
@@ -787,6 +993,7 @@ export default {
   border-bottom: 1px solid var(--border-primary);
   transition: var(--transition-fast);
   align-items: center;
+  position: relative; /* Required for overlay positioning */
 }
 
 .data-row:hover {

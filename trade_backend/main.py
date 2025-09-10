@@ -1558,6 +1558,42 @@ async def get_import_job_status_api(job_id: str):
         logger.error(f"Error getting job status for {job_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/api/data-import/jobs", response_model=ApiResponse)
+async def list_import_jobs_api(
+    status: Optional[str] = None,
+    limit: int = 50
+):
+    """List import jobs with optional status filtering (API endpoint)."""
+    try:
+        # Convert string status to enum if provided
+        status_filter = None
+        if status:
+            try:
+                status_filter = ImportJobStatus(status.lower())
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+        
+        jobs = await import_manager.list_import_jobs(status_filter, limit)
+        
+        # Convert to dict format
+        jobs_data = [job.model_dump() for job in jobs]
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "jobs": jobs_data,
+                "total_jobs": len(jobs_data),
+                "status_filter": status,
+                "limit": limit
+            },
+            message=f"Retrieved {len(jobs_data)} import jobs"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing import jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 @app.delete("/api/data-import/jobs/{job_id}", response_model=ApiResponse)
 async def cancel_import_job_api(job_id: str):
     """Cancel a running import job (API endpoint)."""
