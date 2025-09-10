@@ -396,13 +396,6 @@ class BaseStrategy(ABC):
                 debug_mode=self.debug
             )
             
-            # **FRAMEWORK ENHANCEMENT**: Record decision for this data point
-            # This allows any strategy to capture decisions at every execution cycle
-            try:
-                await self.record_cycle_decision(context)
-            except Exception as e:
-                self.logger.error(f"Error recording cycle decision: {e}")
-            
             # Check scheduled time events
             ready_events = self.time_scheduler.check_scheduled_events()
             for event in ready_events:
@@ -414,7 +407,8 @@ class BaseStrategy(ABC):
                 except Exception as e:
                     self.logger.error(f"Error executing scheduled event {event['name']}: {e}")
             
-            # Execute all active actions (especially important for continuous monitoring)
+            # CRITICAL FIX: Execute all active actions FIRST (especially TimeActions)
+            # This ensures TimeActions set state flags before flow engine checks them
             active_actions = self.action_queue.get_active_actions()
             
             for action in active_actions:
@@ -442,6 +436,13 @@ class BaseStrategy(ABC):
                 except Exception as e:
                     self.logger.error(f"Error executing action {action.name}: {e}")
                     self.execution_stats["error_count"] += 1
+            
+            # **FRAMEWORK ENHANCEMENT**: Record decision for this data point AFTER actions
+            # This allows TimeActions to set state flags before flow engine checks them
+            try:
+                await self.record_cycle_decision(context)
+            except Exception as e:
+                self.logger.error(f"Error recording cycle decision: {e}")
             
             # Call legacy market data handler if overridden
             if hasattr(self, '_has_market_data_handler'):

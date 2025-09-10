@@ -165,12 +165,13 @@ class RealHistoricalDataProvider:
     """
     Real historical data provider for backtesting using imported parquet data.
     
-    This provider uses the DataAggregationService to access high-quality imported data
-    from DBN and CSV files, with support for flexible timeframes and perfect market alignment.
+    This provider uses the CBBODataService for raw bid/ask data (no OHLCV conversion)
+    and DataAggregationService for OHLCV data when needed.
     """
     
-    def __init__(self, aggregation_service=None, provider_manager=None):
+    def __init__(self, aggregation_service=None, provider_manager=None, cbbo_service=None):
         self.aggregation_service = aggregation_service
+        self.cbbo_service = cbbo_service
         self.provider_manager = provider_manager  # Fallback for compatibility
         self.data_cache = {}
     
@@ -182,20 +183,98 @@ class RealHistoricalDataProvider:
         interval: str = "1min"
     ) -> pd.DataFrame:
         """
-        Get historical OHLCV data for a symbol using imported parquet data ONLY.
+        Get historical data for a symbol using imported parquet data ONLY.
         
         🚨 BACKTEST MODE: NO FALLBACKS - Only uses imported parquet data
         
-        Returns DataFrame with columns: timestamp, open, high, low, close, volume
+        Priority:
+        1. CBBO service for raw bid/ask data (preferred for options strategies)
+        2. Aggregation service for OHLCV data (fallback for equity strategies)
+        
+        Returns DataFrame with columns: timestamp, bid, ask, mid, spread OR timestamp, open, high, low, close, volume
         """
+        # Try CBBO service first (preferred for options strategies)
+        if self.cbbo_service:
+            try:
+                return await self._get_cbbo_data(symbol, start_date, end_date, interval)
+            except Exception as e:
+                logger.warning(f"CBBO service failed for {symbol}: {e}, falling back to aggregation service")
+        
+        # Fallback to aggregation service for OHLCV data
         if self.aggregation_service:
-            # Use high-quality imported parquet data ONLY
             return await self._get_parquet_data(symbol, start_date, end_date, interval)
         else:
             # NO FALLBACKS IN BACKTEST MODE
-            logger.error(f"❌ BACKTEST FAILED: No aggregation service available for {symbol}")
-            raise ValueError(f"Backtest requires DataAggregationService with imported parquet data. No aggregation service configured.")
+            logger.error(f"❌ BACKTEST FAILED: No data services available for {symbol}")
+            raise ValueError(f"Backtest requires CBBO or DataAggregation service with imported parquet data. No services configured.")
     
+    async def _get_cbbo_data(
+        self,
+        symbol: str,
+        start_date: datetime,
+        end_date: datetime,
+        interval: str = "1min"
+    ) -> pd.DataFrame:
+        """
+        Get historical CBBO data using CBBODataService.
+        
+        Returns DataFrame with columns: timestamp, bid, ask, mid, spread, bid_size, ask_size
+        """
+        try:
+            logger.info(f"Requesting CBBO data for {symbol} from {start_date} to {end_date}")
+            
+            # Get CBBO data from service
+            cbbo_data = await self.cbbo_service.get_cbbo_data(
+                symbol=symbol,
+                start_date=start_date.strftime('%Y-%m-%d'),
+                end_date=end_date.strftime('%Y-%m-%d')
+            )
+            
+            if not cbbo_data:
+                logger.error(f"❌ BACKTEST FAILED: No CBBO data available for {symbol}")
+                raise ValueError(f"No CBBO data available for {symbol}. Backtest requires imported CBBO data.")
+            
+            # Convert CBBOData objects to DataFrame
+            data = []
+            for cbbo_point in cbbo_data:
+                data.append({
+                    "timestamp": cbbo_point.timestamp,
+                    "bid": cbbo_point.bid,
+                    "ask": cbbo_point.ask,
+                    "mid": cbbo_point.mid,
+                    "spread": cbbo_point.spread,
+                    "bid_size": cbbo_point.bid_size,
+                    "ask_size": cbbo_point.ask_size,
+                    # For compatibility with existing backtest engine, also provide 'close' as mid price
+                    "close": cbbo_point.mid
+                })
+            
+            df = pd.DataFrame(data)
+            
+            if not df.empty:
+                # Ensure timestamp is datetime
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                
+                # Sort by timestamp
+                df = df.sort_values('timestamp').reset_index(drop=True)
+                
+                logger.info(f"Retrieved {len(df)} CBBO data points for {symbol}")
+                logger.info(f"Data range: {df['timestamp'].min()} to {df['timestamp'].max()}")
+                
+                # Log first few data points for verification
+                if len(df) > 0:
+                    first_row = df.iloc[0]
+                    logger.info(f"First CBBO: {first_row['timestamp']} Bid/Ask: {first_row['bid']:.2f}/{first_row['ask']:.2f} Mid: {first_row['mid']:.2f} Spread: {first_row['spread']:.4f}")
+                if len(df) > 1:
+                    second_row = df.iloc[1]
+                    logger.info(f"Second CBBO: {second_row['timestamp']} Bid/Ask: {second_row['bid']:.2f}/{second_row['ask']:.2f} Mid: {second_row['mid']:.2f} Spread: {second_row['spread']:.4f}")
+            
+            return df
+            
+        except Exception as e:
+            logger.error(f"❌ BACKTEST FAILED: Error getting CBBO data for {symbol}: {e}")
+            raise ValueError(f"Backtest requires CBBO data for {symbol}. Error: {e}")
+
     async def _get_parquet_data(
         self,
         symbol: str,
@@ -219,6 +298,15 @@ class RealHistoricalDataProvider:
             
             # Map backtest intervals to aggregation service timeframes
             timeframe_map = {
+                # Frontend format -> Backend format
+                "1m": "1min",
+                "5m": "5min",
+                "15m": "15min", 
+                "30m": "30min",
+                "1h": "1hr",
+                "4h": "1hr",  # Map 4h to 1hr (closest available)
+                "D": "daily",
+                # Legacy formats
                 "1min": "1min",
                 "5min": "5min", 
                 "15min": "15min",
@@ -226,8 +314,7 @@ class RealHistoricalDataProvider:
                 "1hour": "1hr",
                 "1hr": "1hr",
                 "1day": "daily",
-                "daily": "daily",
-                "D": "daily"
+                "daily": "daily"
             }
             
             aggregation_timeframe = timeframe_map.get(interval, "1min")
@@ -508,7 +595,8 @@ class StrategyBacktestEngine:
         slippage_bps: float = 2.0,  # Basis points
         market_type: MarketType = MarketType.STOCK,
         provider_manager=None,
-        aggregation_service=None,  # NEW: Support for imported parquet data
+        aggregation_service=None,  # Support for OHLCV data
+        cbbo_service=None,  # NEW: Support for CBBO data (preferred)
         timeframe: str = "1min"  # Add configurable timeframe
     ):
         self.initial_capital = initial_capital
@@ -517,9 +605,10 @@ class StrategyBacktestEngine:
         self.market_type = market_type
         self.timeframe = timeframe  # Store timeframe for data fetching
         
-        # Data provider - prioritize aggregation service for imported data
+        # Data provider - prioritize CBBO service for options strategies
         self.data_provider = RealHistoricalDataProvider(
             aggregation_service=aggregation_service,
+            cbbo_service=cbbo_service,
             provider_manager=provider_manager
         )
         

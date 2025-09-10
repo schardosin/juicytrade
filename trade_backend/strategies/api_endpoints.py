@@ -705,36 +705,44 @@ async def run_strategy_backtest(strategy_id: str, backtest_request: Dict[str, An
                 # Create backtest engine with ONLY aggregation service - NO FALLBACKS
                 from .backtest_engine import StrategyBacktestEngine
                 
-                # Get aggregation service for imported parquet data
+                # Get data services for imported parquet data
                 aggregation_service = None
+                cbbo_service = None
+                
                 try:
                     from ..services.data_aggregation.aggregation_service import get_aggregation_service
+                    from ..services.data_aggregation.cbbo_service import get_cbbo_service
+                    
                     aggregation_service = get_aggregation_service()
-                    logger.info("✅ Using DataAggregationService for backtest (imported parquet data)")
+                    cbbo_service = get_cbbo_service()
+                    
+                    logger.info("✅ Using DataAggregationService and CBBOService for backtest (imported parquet data)")
                 except ImportError as e:
-                    logger.error(f"❌ BACKTEST FAILED: Could not import aggregation service: {e}")
+                    logger.error(f"❌ BACKTEST FAILED: Could not import data services: {e}")
                     return {
                         "success": False,
-                        "message": "Backtest requires DataAggregationService with imported parquet data",
-                        "error": f"DataAggregationService not available: {e}",
+                        "message": "Backtest requires DataAggregationService and CBBOService with imported parquet data",
+                        "error": f"Data services not available: {e}",
                         "run_id": run_id
                     }
                 
-                if not aggregation_service:
-                    logger.error("❌ BACKTEST FAILED: DataAggregationService is None")
+                if not aggregation_service and not cbbo_service:
+                    logger.error("❌ BACKTEST FAILED: No data services available")
                     return {
                         "success": False,
-                        "message": "Backtest requires DataAggregationService with imported parquet data",
-                        "error": "DataAggregationService is not initialized",
+                        "message": "Backtest requires at least one data service (CBBO or Aggregation) with imported parquet data",
+                        "error": "No data services are initialized",
                         "run_id": run_id
                     }
                 
                 # 🚨 BACKTEST MODE: NO PROVIDER MANAGER FALLBACK
+                # Priority: CBBO service for options strategies, Aggregation service for equity strategies
                 backtest_engine = StrategyBacktestEngine(
                     initial_capital=initial_capital,
                     commission_per_trade=parameters.get("commission_per_trade", 1.0),
                     slippage_bps=2.0,
-                    aggregation_service=aggregation_service,  # 🎯 ONLY parquet data
+                    aggregation_service=aggregation_service,  # OHLCV data fallback
+                    cbbo_service=cbbo_service,                # 🎯 CBBO data (preferred)
                     provider_manager=None,                    # 🚨 NO FALLBACK
                     timeframe=timeframe  # Pass timeframe to backtest engine
                 )

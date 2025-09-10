@@ -1248,9 +1248,39 @@ class ParquetWriter:
             
             # UNIFIED SCHEMA: Convert all DBN data to CBBO-style format
             
-            # Check for CBBO fields first (bid_px, ask_px, bid_sz, ask_sz)
-            if hasattr(record, 'bid_px') or hasattr(record, 'ask_px'):
-                # This is a CBBO record - extract native bid/ask data
+            # Check for CBBO fields - first try levels array (where CBBO data is actually stored)
+            if hasattr(record, 'levels') and record.levels and len(record.levels) > 0:
+                # This is a CBBO record - extract bid/ask data from levels array
+                level = record.levels[0]  # Use first level (best bid/ask)
+                
+                # Extract bid price from levels
+                if hasattr(level, 'bid_px'):
+                    raw_bid = getattr(level, 'bid_px', 0)
+                    record_info['bid_px'] = self._scale_dbn_price(raw_bid)
+                else:
+                    record_info['bid_px'] = 0.0
+                
+                # Extract ask price from levels
+                if hasattr(level, 'ask_px'):
+                    raw_ask = getattr(level, 'ask_px', 0)
+                    record_info['ask_px'] = self._scale_dbn_price(raw_ask)
+                else:
+                    record_info['ask_px'] = 0.0
+                
+                # Extract bid/ask sizes from levels
+                if hasattr(level, 'bid_sz'):
+                    record_info['bid_sz'] = int(getattr(level, 'bid_sz', 0))
+                else:
+                    record_info['bid_sz'] = 0
+                
+                if hasattr(level, 'ask_sz'):
+                    record_info['ask_sz'] = int(getattr(level, 'ask_sz', 0))
+                else:
+                    record_info['ask_sz'] = 0
+                    
+            # Fallback: Check for direct CBBO fields (bid_px, ask_px, bid_sz, ask_sz)
+            elif hasattr(record, 'bid_px') or hasattr(record, 'ask_px'):
+                # This is a CBBO record with direct fields - extract native bid/ask data
                 if hasattr(record, 'bid_px'):
                     raw_bid = getattr(record, 'bid_px', 0)
                     record_info['bid_px'] = self._scale_dbn_price(raw_bid)

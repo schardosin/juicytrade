@@ -15,6 +15,11 @@ class TimeFrameCalculator:
     def __init__(self):
         """Initialize timeframe calculator."""
         self.timeframe_configs = {
+            TimeFrame.ONE_MIN: {
+                'minutes': 1,
+                'sql_interval': "1 minute",
+                'description': '1-minute bars'
+            },
             TimeFrame.FIVE_MIN: {
                 'minutes': 5,
                 'sql_interval': "5 minutes",
@@ -88,16 +93,17 @@ class TimeFrameCalculator:
             )
             """
         
-        # Complete SQL query - clean and simple, no price scaling
-        # Data should be imported in the correct format at the import phase
+        # Complete SQL query - Convert CBBO data to OHLCV format
+        # CBBO data has bid_px, ask_px, bid_sz, ask_sz columns
+        # We'll use mid-price (bid+ask)/2 for OHLC and bid_sz+ask_sz for volume
         sql = f"""
         SELECT 
             {time_bucket_sql} as time_bucket,
-            FIRST(open ORDER BY timestamp) as open,
-            MAX(high) as high,
-            MIN(low) as low,
-            LAST(close ORDER BY timestamp) as close,
-            SUM(volume) as volume,
+            FIRST((bid_px + ask_px) / 2.0 ORDER BY timestamp) as open,
+            MAX((bid_px + ask_px) / 2.0) as high,
+            MIN((bid_px + ask_px) / 2.0) as low,
+            LAST((bid_px + ask_px) / 2.0 ORDER BY timestamp) as close,
+            SUM(bid_sz + ask_sz) as volume,
             COUNT(*) as record_count
         FROM parquet_data
         WHERE 1=1

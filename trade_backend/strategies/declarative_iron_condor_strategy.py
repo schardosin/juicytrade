@@ -531,7 +531,7 @@ class DeclarativeIronCondorStrategy(BaseStrategy):
             return None
 
         except Exception as e:
-            self.log_error(f"Error getting current price: {e}")
+            self.log_error(f"Error getting current price for {self.underlying}: {e}")
             return None
     
     # ========================================================================
@@ -551,7 +551,7 @@ class DeclarativeIronCondorStrategy(BaseStrategy):
             "parameters": {
                 "underlying": {
                     "type": "string",
-                    "default": "SPXW",
+                    "default": "SPY",
                     "description": "Underlying symbol for options trading",
                     "category": "strategy"
                 },

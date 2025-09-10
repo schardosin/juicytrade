@@ -244,9 +244,11 @@ class TimeAction(Action):
                     details=f"Time trigger reached at {current_time}"
                 )
         
-        # Not yet triggered
+        # CRITICAL FIX: Return success=True when waiting so action stays active
+        # This prevents the action from being marked as failed and removed from queue
         return ActionResult(
-            success=False,
+            success=True,  # Changed from False to True
+            data={"waiting": True, "target_time": self.trigger_time.isoformat(), "current_time": current_time.isoformat()},
             details=f"Waiting for {self.trigger_time}, current: {current_time}"
         )
 
@@ -704,6 +706,12 @@ class ActionExecutor:
                     # unless they explicitly indicate completion
                     if isinstance(action, MonitorAction) and action.continuous and not result.data.get("condition_met", False):
                         # Keep monitoring action active for continuous monitoring
+                        action.status = ActionStatus.EXECUTING
+                        self.execution_stats["successful"] += 1
+                        return result
+                    # CRITICAL FIX: For TimeAction, don't mark as completed if just waiting
+                    elif isinstance(action, TimeAction) and result.data and result.data.get("waiting", False):
+                        # Keep TimeAction active while waiting for trigger time
                         action.status = ActionStatus.EXECUTING
                         self.execution_stats["successful"] += 1
                         return result

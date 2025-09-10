@@ -143,14 +143,21 @@ class DataAggregationService:
         """
         file_paths = []
         
-        # Check all asset type directories
-        for asset_dir in ['equities', 'options', 'futures', 'forex']:
+        # Check all asset type directories in priority order
+        # IMPORTANT: Only use ONE asset type to avoid schema conflicts
+        asset_dirs = ['equities', 'options', 'futures', 'forex']
+        
+        for asset_dir in asset_dirs:
             symbol_dir = self.parquet_dir / asset_dir / f"underlying={symbol}"
             
             if symbol_dir.exists():
                 # Find all data.parquet files recursively
                 parquet_files = list(symbol_dir.rglob("data.parquet"))
-                file_paths.extend([str(f) for f in parquet_files])
+                if parquet_files:
+                    file_paths.extend([str(f) for f in parquet_files])
+                    logger.info(f"Using {asset_dir} data for {symbol} ({len(parquet_files)} files)")
+                    # CRITICAL: Only use the first asset type found to avoid schema conflicts
+                    break
         
         logger.debug(f"Found {len(file_paths)} files for symbol {symbol}")
         return file_paths

@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 
 class TimeFrame(str, Enum):
     """Supported timeframes for aggregation."""
+    ONE_MIN = "1min"
     FIVE_MIN = "5min"
     FIFTEEN_MIN = "15min"
     THIRTY_MIN = "30min"
