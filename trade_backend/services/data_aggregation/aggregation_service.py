@@ -162,6 +162,33 @@ class DataAggregationService:
         logger.debug(f"Found {len(file_paths)} files for symbol {symbol}")
         return file_paths
     
+    def _get_options_file_paths(self, symbol: str) -> List[str]:
+        """
+        Get OPTIONS-specific Parquet file paths for a symbol.
+        
+        This method specifically looks for options data, not equities data.
+        
+        Args:
+            symbol: Symbol to find options files for
+            
+        Returns:
+            List of options file paths
+        """
+        file_paths = []
+        
+        # Look specifically in the options directory
+        symbol_dir = self.parquet_dir / "options" / f"underlying={symbol}"
+        
+        if symbol_dir.exists():
+            # Find all data.parquet files recursively
+            parquet_files = list(symbol_dir.rglob("data.parquet"))
+            if parquet_files:
+                file_paths.extend([str(f) for f in parquet_files])
+                logger.info(f"Using options data for {symbol} ({len(parquet_files)} files)")
+        
+        logger.debug(f"Found {len(file_paths)} options files for symbol {symbol}")
+        return file_paths
+    
     def _create_parquet_view(self, file_paths: List[str], 
                            start_date: Optional[str] = None,
                            end_date: Optional[str] = None):
@@ -375,6 +402,136 @@ class DataAggregationService:
             Dictionary mapping timeframe values to descriptions
         """
         return self.timeframe_calculator.get_supported_timeframes()
+    
+    def get_available_options_expirations(self, symbol: str, current_time: datetime) -> List[str]:
+        """
+        Get available options expirations for a symbol.
+        
+        Args:
+            symbol: Symbol to get expirations for
+            current_time: Current timestamp
+            
+        Returns:
+            List of expiration dates (YYYY-MM-DD format)
+        """
+        try:
+            # CRITICAL FIX: Use options-specific file path discovery
+            file_paths = self._get_options_file_paths(symbol)
+            if not file_paths:
+                logger.warning(f"No options data found for symbol: {symbol}")
+                return []
+            
+            # Create temporary view and query unique expirations
+            target_date = current_time.date().strftime('%Y-%m-%d')
+            self._create_parquet_view(file_paths, target_date, target_date)
+            
+            result = self.conn.execute("""
+                SELECT DISTINCT expiration
+                FROM parquet_data
+                WHERE expiration IS NOT NULL
+                ORDER BY expiration
+            """).fetchall()
+            
+            expirations = [row[0] for row in result if row[0]]
+            logger.info(f"Found {len(expirations)} expirations for {symbol}")
+            return expirations
+            
+        except Exception as e:
+            logger.error(f"Error getting expirations for {symbol}: {e}")
+            return []
+        finally:
+            try:
+                self.conn.execute("DROP VIEW IF EXISTS parquet_data")
+            except:
+                pass
+    
+    def get_options_chain(self, symbol: str, expiration: str, current_time: datetime):
+        """
+        Get options chain for a symbol and expiration.
+        
+        Args:
+            symbol: Symbol to get chain for
+            expiration: Expiration date (YYYY-MM-DD)
+            current_time: Current timestamp
+            
+        Returns:
+            OptionsChain object with contracts
+        """
+        try:
+            from ..data_aggregation.price_query_service import get_price_query_service
+            from ...strategies.options_models import OptionsChain
+            from ...models import OptionContract
+            
+            # Use our new PriceQueryService for better price lookups
+            price_service = get_price_query_service()
+            
+            # CRITICAL FIX: Use options-specific file path discovery
+            file_paths = self._get_options_file_paths(symbol)
+            if not file_paths:
+                logger.warning(f"No options data found for symbol: {symbol}")
+                return None
+            
+            # Create temporary view and query contracts for the expiration
+            target_date = current_time.date().strftime('%Y-%m-%d')
+            self._create_parquet_view(file_paths, target_date, target_date)
+            
+            result = self.conn.execute(f"""
+                SELECT DISTINCT 
+                    symbol,
+                    strike,
+                    option_type,
+                    expiration
+                FROM parquet_data
+                WHERE expiration = '{expiration}'
+                  AND strike IS NOT NULL
+                  AND option_type IS NOT NULL
+                ORDER BY option_type, strike
+            """).fetchall()
+            
+            contracts = []
+            for row in result:
+                symbol_name, strike, option_type, exp = row
+                
+                # Get current price for this contract using our PriceQueryService
+                price_data = price_service.get_price_before(symbol_name, current_time)
+                
+                bid = price_data.bid if price_data else 0.0
+                ask = price_data.ask if price_data else 0.0
+                
+                contract = OptionContract(
+                    symbol=symbol_name,
+                    strike_price=float(strike),
+                    type=option_type,
+                    expiration_date=exp,
+                    bid=bid,
+                    ask=ask,
+                    close_price=0.0,  # Not available in CBBO data
+                    volume=0,  # Not available in CBBO data
+                    underlying_symbol=symbol  # Add underlying symbol
+                )
+                contracts.append(contract)
+            
+            if contracts:
+                chain = OptionsChain(
+                    underlying=symbol,
+                    expiration=expiration,
+                    timestamp=current_time,
+                    contracts=contracts
+                )
+                logger.info(f"Built options chain for {symbol} exp={expiration} with {len(contracts)} contracts")
+                return chain
+            else:
+                logger.warning(f"No contracts found for {symbol} exp={expiration}")
+                return None
+            
+        except Exception as e:
+            logger.error(f"Error getting options chain for {symbol} exp={expiration}: {e}")
+            return None
+        finally:
+            try:
+                self.conn.execute("DROP VIEW IF EXISTS parquet_data")
+            except:
+                pass
     
     def close(self):
         """Close the DuckDB connection."""
