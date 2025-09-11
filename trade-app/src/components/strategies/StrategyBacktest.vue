@@ -317,30 +317,62 @@
           <div class="trade-history">
             <h3 class="history-title">Trade History</h3>
             <div class="history-table">
-              <div class="table-header">
-                <div class="col-date">Date</div>
-                <div class="col-symbol">Symbol</div>
-                <div class="col-action">Action</div>
-                <div class="col-quantity">Quantity</div>
-                <div class="col-price">Price</div>
-                <div class="col-pnl">P&L</div>
-              </div>
               <div
                 v-for="trade in backtestResults.trades"
                 :key="trade.id"
-                class="table-row"
+                class="trade-group"
               >
-                <div class="col-date">{{ formatDate(trade.timestamp) }}</div>
-                <div class="col-symbol">{{ trade.symbol }}</div>
-                <div class="col-action">
-                  <span class="action-badge" :class="trade.action.toLowerCase()">
-                    {{ trade.action }}
-                  </span>
+                <!-- Trade Header -->
+                <div class="trade-header">
+                  <div class="trade-symbol">{{ getTradeSymbol(trade) }}</div>
+                  <div class="trade-info">
+                    <span class="trade-type">{{ getTradeType(trade) }}</span>
+                    <span class="trade-date">{{ formatDate(trade.timestamp || trade.submitted_at) }}</span>
+                    <span class="trade-status" :class="trade.status?.toLowerCase() || 'filled'">
+                      {{ (trade.status || 'FILLED').toUpperCase() }}
+                    </span>
+                  </div>
                 </div>
-                <div class="col-quantity">{{ trade.quantity }}</div>
-                <div class="col-price">{{ formatCurrency(trade.price) }}</div>
-                <div class="col-pnl" :class="getPnLClass(trade.pnl)">
-                  {{ formatCurrency(trade.pnl) }}
+
+                <!-- Trade Summary -->
+                <div class="trade-summary">
+                  <div class="trade-pnl">
+                    <span class="pnl-label">P&L</span>
+                    <span class="pnl-value" :class="getPnLClass(trade.pnl)">
+                      {{ formatCurrency(trade.pnl) }}
+                    </span>
+                  </div>
+                  <div class="trade-price">
+                    <span class="price-label">Price</span>
+                    <span class="price-value">{{ formatCurrency(trade.avg_fill_price || trade.price) }}</span>
+                  </div>
+                </div>
+
+                <!-- Trade Legs -->
+                <div class="trade-legs">
+                  <!-- Multi-leg trades -->
+                  <div
+                    v-if="trade.legs && trade.legs.length > 0"
+                    v-for="leg in trade.legs"
+                    :key="leg.symbol"
+                    class="trade-leg"
+                  >
+                    <div class="leg-qty">{{ leg.qty }}</div>
+                    <div class="leg-symbol">{{ leg.symbol }}</div>
+                    <div class="leg-side" :class="getLegSideClass(leg.side)">
+                      {{ formatLegSide(leg.side) }}
+                    </div>
+                    <div class="leg-price">{{ formatCurrency(leg.price) }}</div>
+                  </div>
+                  <!-- Single leg trade (legacy format) -->
+                  <div v-else class="trade-leg">
+                    <div class="leg-qty">{{ trade.quantity || trade.qty }}</div>
+                    <div class="leg-symbol">{{ trade.symbol }}</div>
+                    <div class="leg-side" :class="getLegSideClass(trade.action)">
+                      {{ formatLegSide(trade.action) }}
+                    </div>
+                    <div class="leg-price">{{ formatCurrency(trade.price) }}</div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -898,6 +930,88 @@ export default {
       }
     }
 
+    // Trade History Helper Methods
+    const getTradeSymbol = (trade) => {
+      // Always extract underlying symbol for display
+      if (trade.legs && trade.legs.length > 0) {
+        const firstLeg = trade.legs[0];
+        return extractUnderlyingFromOptionSymbol(firstLeg.symbol) || firstLeg.symbol;
+      }
+
+      if (isOptionSymbol(trade.symbol)) {
+        return extractUnderlyingFromOptionSymbol(trade.symbol) || trade.symbol;
+      }
+
+      return trade.symbol;
+    }
+
+    const getTradeType = (trade) => {
+      // Multi-leg orders: use strategy detection or backend-provided name
+      if (trade.legs && trade.legs.length > 1) {
+        // If backend provides strategy name in symbol field, use it
+        if (!isOptionSymbol(trade.symbol)) {
+          return trade.symbol; // e.g., "Iron Condor"
+        }
+        // Otherwise use centralized strategy detection
+        return detectStrategy(trade.legs);
+      }
+      
+      // Single leg orders: categorize by type
+      if (trade.legs && trade.legs.length === 1) {
+        const leg = trade.legs[0];
+        if (isOptionSymbol(leg.symbol)) {
+          return "Option";
+        } else {
+          return "Equity";
+        }
+      }
+      
+      // Legacy single orders (no legs array)
+      if (isOptionSymbol(trade.symbol)) {
+        return "Option";
+      } else {
+        return "Equity";
+      }
+    }
+
+    const formatLegSide = (side) => {
+      if (typeof side === 'string') {
+        if (side.toLowerCase().includes("buy")) {
+          return "BTO";
+        } else if (side.toLowerCase().includes("sell")) {
+          return "STO";
+        }
+      }
+      return (side || '').toString().toUpperCase();
+    }
+
+    const getLegSideClass = (side) => {
+      const formattedSide = formatLegSide(side);
+      return {
+        "buy-side": formattedSide === "BTO" || formattedSide === "BUY",
+        "sell-side": formattedSide === "STO" || formattedSide === "SELL",
+      };
+    }
+
+    const isOptionSymbol = (symbol) => {
+      return symbol && symbol.length > 10 && /[CP]\d{8}$/.test(symbol);
+    }
+
+    const extractUnderlyingFromOptionSymbol = (symbol) => {
+      if (!isOptionSymbol(symbol)) return null;
+      const match = symbol.match(/^([A-Z]+)/);
+      return match ? match[1] : null;
+    }
+
+    const detectStrategy = (legs) => {
+      // Simple strategy detection based on leg count
+      if (!legs || legs.length === 0) return "Unknown";
+      if (legs.length === 1) return "Single";
+      if (legs.length === 2) return "Spread";
+      if (legs.length === 4) return "Iron Condor";
+      return `${legs.length}-Leg Strategy`;
+    }
+
     return {
       // Router
       route,
@@ -937,7 +1051,16 @@ export default {
       formatNumber, // NEW: Number formatting
       getDecisionSuccessRate, // NEW: Decision success rate calculation
       handleDatapointSelected, // NEW: Event handler for datapoint selection
-      selectedDecisionPoint // NEW: Selected decision point reactive ref
+      selectedDecisionPoint, // NEW: Selected decision point reactive ref
+      
+      // Trade History Methods
+      getTradeSymbol,
+      getTradeType,
+      formatLegSide,
+      getLegSideClass,
+      isOptionSymbol,
+      extractUnderlyingFromOptionSymbol,
+      detectStrategy
     }
   }
 }
@@ -1845,38 +1968,158 @@ export default {
 .history-table {
   max-height: 400px;
   overflow-y: auto;
+  padding: var(--spacing-md);
 }
 
-.table-header {
-  display: grid;
-  grid-template-columns: 1.5fr 1fr 1fr 1fr 1fr 1fr;
-  gap: var(--spacing-md);
-  padding: var(--spacing-md) var(--spacing-lg);
-  background: var(--bg-tertiary);
-  border-bottom: 1px solid var(--border-primary);
-  font-size: var(--font-size-sm);
-  font-weight: var(--font-weight-semibold);
-  color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
+.trade-group {
+  background: var(--bg-primary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-md);
+  overflow: hidden;
 }
 
-.table-row {
-  display: grid;
-  grid-template-columns: 1.5fr 1fr 1fr 1fr 1fr 1fr;
-  gap: var(--spacing-md);
-  padding: var(--spacing-md) var(--spacing-lg);
-  border-bottom: 1px solid var(--border-primary);
-  transition: var(--transition-normal);
+.trade-group:last-child {
+  margin-bottom: 0;
+}
+
+.trade-header {
+  display: flex;
+  justify-content: space-between;
   align-items: center;
-}
-
-.table-row:hover {
+  padding: var(--spacing-md) var(--spacing-lg);
   background: var(--bg-tertiary);
+  border-bottom: 1px solid var(--border-primary);
 }
 
-.table-row:last-child {
+.trade-symbol {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.trade-info {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.trade-type {
+  font-weight: var(--font-weight-medium);
+  color: var(--color-brand);
+}
+
+.trade-status {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  background: var(--color-success);
+  color: white;
+}
+
+.trade-status.pending {
+  background: var(--color-warning);
+}
+
+.trade-status.cancelled {
+  background: var(--color-danger);
+}
+
+.trade-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.trade-pnl,
+.trade-price {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.pnl-label,
+.price-label {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+}
+
+.pnl-value,
+.price-value {
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  font-family: monospace;
+}
+
+.pnl-value.positive {
+  color: var(--color-success);
+}
+
+.pnl-value.negative {
+  color: var(--color-danger);
+}
+
+.trade-legs {
+  padding: var(--spacing-sm) 0;
+}
+
+.trade-leg {
+  display: grid;
+  grid-template-columns: 60px 1fr 60px 100px;
+  gap: var(--spacing-sm);
+  align-items: center;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  font-size: var(--font-size-sm);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.trade-leg:last-child {
   border-bottom: none;
+}
+
+.leg-qty {
+  text-align: center;
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.leg-symbol {
+  color: var(--text-primary);
+  font-weight: var(--font-weight-medium);
+  font-family: monospace;
+}
+
+.leg-side {
+  text-align: center;
+  font-weight: var(--font-weight-semibold);
+  font-size: var(--font-size-xs);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+}
+
+.leg-side.buy-side {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--color-success);
+}
+
+.leg-side.sell-side {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--color-danger);
+}
+
+.leg-price {
+  text-align: right;
+  font-weight: var(--font-weight-medium);
+  color: var(--text-primary);
+  font-family: monospace;
 }
 
 .action-badge {

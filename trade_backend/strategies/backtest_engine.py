@@ -41,9 +41,13 @@ class BacktestTrade:
     strategy_action: str  # Name of the action that generated this trade
     pnl: float = 0.0
     commission: float = 0.0
+    legs: Optional[List[Dict[str, Any]]] = None  # For grouped UI display
+    status: str = "filled"  # For UI compatibility
+    avg_fill_price: Optional[float] = None  # For UI compatibility
+    limit_price: Optional[float] = None  # For UI compatibility
     
     def to_dict(self) -> Dict[str, Any]:
-        return {
+        result = {
             "timestamp": self.timestamp.isoformat(),
             "symbol": self.symbol,
             "action": self.action,
@@ -53,8 +57,22 @@ class BacktestTrade:
             "trade_id": self.trade_id,
             "strategy_action": self.strategy_action,
             "pnl": self.pnl,
-            "commission": self.commission
+            "commission": self.commission,
+            "status": self.status,
+            "avg_fill_price": self.avg_fill_price or self.price,
+            "limit_price": self.limit_price or self.price,
+            # UI compatibility fields (mapping backend fields to UI expected names)
+            "id": self.trade_id,  # UI expects 'id' field
+            "submitted_at": self.timestamp.isoformat(),  # UI expects 'submitted_at' field
+            "qty": self.quantity,  # UI expects 'qty' field
+            "side": self.action.lower()  # UI expects 'side' field
         }
+        
+        # Add legs for grouped display if available
+        if self.legs:
+            result["legs"] = self.legs
+            
+        return result
 
 @dataclass
 class BacktestPosition:
@@ -992,7 +1010,8 @@ class StrategyBacktestEngine:
         """
         Place an options order with multiple legs (Iron Condor, etc.) in backtest mode.
         
-        This method executes each leg as a separate trade for proper backtest tracking.
+        FIXED: Creates grouped trades for UI display like in the image.
+        Creates one grouped trade with legs array for UI to display properly.
 
         Args:
             legs: List of OptionsLeg objects defining the multi-leg order
@@ -1007,12 +1026,15 @@ class StrategyBacktestEngine:
                 logger.error("No legs provided for options order")
                 return ''
 
-            executed_trades = []
             composite_order_id = f"OPTIONS_{len(legs)}LEG_{self.current_time.timestamp()}"
             
-            logger.info(f"🎯 BACKTEST: Executing {len(legs)}-leg options order")
+            logger.info(f"🎯 BACKTEST: Executing {len(legs)}-leg options order with UI grouping")
             
-            # Execute each leg as a separate trade
+            # Execute each leg and collect data for grouped trade
+            leg_data = []
+            total_net_premium = 0.0
+            all_legs_executed = True
+            
             for i, leg in enumerate(legs):
                 try:
                     # Map options action to standard trade side
@@ -1029,31 +1051,86 @@ class StrategyBacktestEngine:
                     symbol = leg.contract.symbol
                     quantity = leg.quantity
                     
-                    # Execute the individual leg trade
-                    trade_id = self.place_market_order(
-                        symbol=symbol,
-                        quantity=quantity,
-                        side=side,
-                        reason=f"Options Leg {i+1}/{len(legs)} - {leg.action} {leg.contract.type} {leg.contract.strike_price}"
-                    )
-                    
-                    if trade_id:
-                        executed_trades.append(trade_id)
-                        logger.info(f"✅ BACKTEST: Executed leg {i+1}: {side} {quantity} {symbol}")
+                    # Get fresh price for this leg
+                    if self._is_option_symbol(symbol):
+                        price = self._get_option_contract_price(symbol)
+                        if price is None:
+                            logger.error(f"❌ BACKTEST: No price for leg {i+1}: {symbol}")
+                            all_legs_executed = False
+                            break
                     else:
-                        logger.error(f"❌ BACKTEST: Failed to execute leg {i+1}: {symbol}")
+                        logger.error(f"❌ BACKTEST: Invalid option symbol: {symbol}")
+                        all_legs_executed = False
+                        break
+                    
+                    # Update positions and capital directly (no individual trades)
+                    self._update_position_for_leg(symbol, quantity, side, price)
+                    
+                    # Track net premium for group (FIXED: Use original leg action)
+                    # Apply options multiplier (100 shares per contract)
+                    options_multiplier = 100
+                    if leg.action.lower() in ['sell', 'sell_to_open']:
+                        total_net_premium += price * quantity * options_multiplier  # Premium collected (positive)
+                    else:
+                        total_net_premium -= price * quantity * options_multiplier  # Premium paid (negative)
+                    
+                    # Store leg data for UI display (matches ActivitySection.vue format)
+                    leg_data.append({
+                        'symbol': symbol,
+                        'side': leg.action.lower(),  # Use original action from strategy
+                        'qty': quantity,  # Always positive quantity
+                        'price': price
+                    })
+                    
+                    logger.info(f"✅ BACKTEST: Executed leg {i+1}: {side} {quantity} {symbol} @ ${price:.4f}")
                         
                 except Exception as e:
                     logger.error(f"Error executing options leg {i+1}: {e}")
+                    all_legs_executed = False
+                    break
             
-            # Return composite order ID if all legs executed successfully
-            if len(executed_trades) == len(legs):
-                logger.info(f"🎉 BACKTEST: All {len(legs)} options legs executed successfully")
+            if all_legs_executed:
+                # Extract underlying symbol from first leg for header
+                underlying_symbol = ""
+                if legs and hasattr(legs[0], 'contract') and hasattr(legs[0].contract, 'symbol'):
+                    option_symbol = legs[0].contract.symbol
+                    if self._is_option_symbol(option_symbol):
+                        import re
+                        underlying_match = re.match(r'^([A-Z]+)', option_symbol)
+                        if underlying_match:
+                            underlying_symbol = underlying_match.group(1)
+
+                # Create ONE grouped trade for UI display (like in your image)
+                # For credit spreads, net premium should be negative (we collect money)
+                net_credit = -total_net_premium  # Invert sign for credit display
+                
+                grouped_trade = BacktestTrade(
+                    timestamp=self.current_time,
+                    symbol=underlying_symbol,  # Use extracted underlying symbol for header
+                    action="STRATEGY_ORDER",
+                    quantity=len(legs),  # Number of legs
+                    price=net_credit,  # Net credit for the strategy (negative = credit)
+                    order_type="MARKET",
+                    trade_id=composite_order_id,
+                    strategy_action=f"Iron Condor {len(legs)}-Leg Order",
+                    pnl=total_net_premium,  # Set P&L to the net premium collected/paid
+                    commission=self.commission_per_trade,
+                    legs=leg_data,  # Individual legs for UI display
+                    status="filled",
+                    avg_fill_price=net_credit,
+                    limit_price=net_credit
+                )
+                
+                # Add to trades list (this will show in UI as grouped order)
+                self.trades.append(grouped_trade)
+                
+                logger.info(f"🎉 BACKTEST: {len(legs)}-leg options order executed with UI grouping")
                 logger.info(f"   Composite Order ID: {composite_order_id}")
-                logger.info(f"   Individual Trade IDs: {executed_trades}")
+                logger.info(f"   Net Premium: ${total_net_premium:.2f}")
+                
                 return composite_order_id
             else:
-                logger.error(f"❌ BACKTEST: Only {len(executed_trades)}/{len(legs)} legs executed")
+                logger.error(f"❌ BACKTEST: Failed to execute all legs")
                 return ''
                 
         except Exception as e:
@@ -1064,8 +1141,9 @@ class StrategyBacktestEngine:
         """Execute a trade and update positions"""
         symbol = trade.symbol
         
-        # Calculate trade value
-        trade_value = trade.quantity * trade.price
+        # Calculate trade value with options multiplier
+        options_multiplier = 100 if self._is_option_symbol(symbol) else 1
+        trade_value = trade.quantity * trade.price * options_multiplier
         
         # Update capital (subtract for buys, add for sells)
         if trade.action in ["BUY", "BUY_TO_OPEN"]:
@@ -1179,10 +1257,10 @@ class StrategyBacktestEngine:
         # Basic metrics
         duration_days = max((end_date - start_date).days, 1)  # Ensure at least 1 day
         
-        # FIXED: Count round-trip trades, not individual orders
-        # Only trades with P&L represent completed round-trip trades (buy + sell)
+        # Count all trades including strategy orders (Iron Condor, etc.)
+        # For options strategies, each multi-leg order counts as one trade
+        total_trades = len(self.trades)
         completed_trades = [t for t in self.trades if t.pnl != 0]
-        total_trades = len(completed_trades)  # This is the correct count for round-trip trades
         
         # P&L metrics
         total_pnl = sum(trade.pnl for trade in self.trades)
@@ -1397,8 +1475,8 @@ class StrategyBacktestEngine:
         
         # For options strategies, don't auto-close positions
         # The strategy should handle its own closing logic
-        options_positions = [pos for symbol, pos in positions_to_close if self._is_option_symbol(symbol)]
-        equity_positions = [pos for symbol, pos in positions_to_close if not self._is_option_symbol(symbol)]
+        options_positions = [(symbol, pos) for symbol, pos in positions_to_close if self._is_option_symbol(symbol)]
+        equity_positions = [(symbol, pos) for symbol, pos in positions_to_close if not self._is_option_symbol(symbol)]
         
         if options_positions:
             logger.info(f"Skipping auto-close for {len(options_positions)} options positions - strategy should handle closing")
@@ -1454,6 +1532,56 @@ class StrategyBacktestEngine:
         
         if equity_positions:
             logger.info(f"Closed {len(equity_positions)} equity positions at end of backtest")
+
+    def _update_position_for_leg(self, symbol: str, quantity: int, side: str, price: float):
+        """Update position for individual leg without creating separate trade record"""
+        # Calculate trade value with options multiplier (100 shares per contract)
+        options_multiplier = 100 if self._is_option_symbol(symbol) else 1
+        trade_value = quantity * price * options_multiplier
+        
+        # Update capital (subtract for buys, add for sells)
+        if side in ["BUY", "BUY_TO_OPEN"]:
+            self.current_capital -= trade_value + (self.commission_per_trade / 4)  # Split commission across legs
+        else:
+            self.current_capital += trade_value - (self.commission_per_trade / 4)
+        
+        # Update positions
+        if symbol not in self.positions:
+            self.positions[symbol] = BacktestPosition(
+                symbol=symbol,
+                quantity=0,
+                avg_price=0.0,
+                current_price=price,
+                unrealized_pnl=0.0,
+                realized_pnl=0.0
+            )
+        
+        position = self.positions[symbol]
+        
+        if side in ["BUY", "BUY_TO_OPEN"]:
+            if position.quantity >= 0:
+                # Adding to long position
+                total_cost = (position.quantity * position.avg_price) + (quantity * price)
+                position.quantity += quantity
+                position.avg_price = total_cost / position.quantity if position.quantity > 0 else 0
+            else:
+                # Covering short position
+                if abs(position.quantity) >= quantity:
+                    position.quantity += quantity
+                    if position.quantity == 0:
+                        position.avg_price = 0.0
+        else:
+            if position.quantity > 0:
+                # Reducing long position
+                position.quantity -= quantity
+                if position.quantity == 0:
+                    position.avg_price = 0.0
+            else:
+                # Adding to short position
+                if position.quantity <= 0:
+                    total_value = (abs(position.quantity) * position.avg_price) + (quantity * price)
+                    position.quantity -= quantity
+                    position.avg_price = total_value / abs(position.quantity) if position.quantity != 0 else 0
 
     def _serialize_json_safe(self, data: Any) -> Any:
         """Convert data to JSON-safe format by handling datetime objects and all boolean types"""
