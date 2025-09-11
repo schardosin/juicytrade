@@ -125,15 +125,24 @@
         <div class="dataset-summary">
           <div class="summary-stats">
             <div class="stat-item">
-              <span class="stat-number">{{ formatNumber(dataset.partition_count) }}</span>
+              <span class="stat-number" :class="{ 'loading-stat': dataset.loading_details }">
+                <span v-if="dataset.loading_details" class="loading-dots">•••</span>
+                <span v-else>{{ formatNumber(dataset.partition_count) }}</span>
+              </span>
               <span class="stat-label">Partitions</span>
             </div>
             <div class="stat-item">
-              <span class="stat-number">{{ formatNumber(dataset.record_count) }}</span>
+              <span class="stat-number" :class="{ 'loading-stat': dataset.loading_details }">
+                <span v-if="dataset.loading_details" class="loading-dots">•••</span>
+                <span v-else>{{ formatNumber(dataset.record_count) }}</span>
+              </span>
               <span class="stat-label">Records</span>
             </div>
             <div class="stat-item">
-              <span class="stat-number">{{ formatFileSize(dataset.file_size) }}</span>
+              <span class="stat-number" :class="{ 'loading-stat': dataset.loading_details }">
+                <span v-if="dataset.loading_details" class="loading-dots">•••</span>
+                <span v-else>{{ formatFileSize(dataset.file_size) }}</span>
+              </span>
               <span class="stat-label">Size</span>
             </div>
             <div class="stat-item">
@@ -353,18 +362,77 @@ export default {
     // View mode state
     const viewMode = ref('cards') // 'cards' or 'list'
 
-    // Load imported data
+    // Load imported data with two-phase loading
     const loadImportedData = async () => {
       try {
         loading.value = true
-        const response = await api.get('/api/data-import/imported-data')
-        importedData.value = response.data.data || []
+        
+        // Phase 1: Quick load with basic info only
+        const basicResponse = await api.get('/api/data-import/imported-data?expand=false')
+        const basicData = basicResponse.data.data || []
+        
+        // Show cards immediately with loading indicators for details
+        importedData.value = basicData.map(dataset => ({
+          ...dataset,
+          loading_details: true
+        }))
+        loading.value = false
+        
+        // Phase 2: Load detailed information asynchronously for each card
+        if (basicData.length > 0) {
+          loadDetailedInformation(basicData)
+        }
+        
       } catch (err) {
         console.error('Error loading imported data:', err)
         error.value = 'Failed to load imported data'
         showError('Failed to load imported data', 'Data Error')
-      } finally {
         loading.value = false
+      }
+    }
+
+    // Load detailed information asynchronously
+    const loadDetailedInformation = async (basicData) => {
+      try {
+        // Load detailed information with expand=true
+        const detailedResponse = await api.get('/api/data-import/imported-data?expand=true')
+        const detailedData = detailedResponse.data.data || []
+        
+        // Create a map for quick lookup
+        const detailedMap = new Map()
+        detailedData.forEach(dataset => {
+          detailedMap.set(dataset.id, dataset)
+        })
+        
+        // Update the cards with detailed information
+        importedData.value = importedData.value.map(dataset => {
+          const detailed = detailedMap.get(dataset.id)
+          if (detailed) {
+            return {
+              ...dataset,
+              record_count: detailed.record_count,
+              file_size: detailed.file_size,
+              partition_count: detailed.partition_count,
+              loading_details: false
+            }
+          }
+          return {
+            ...dataset,
+            loading_details: false
+          }
+        })
+        
+      } catch (err) {
+        console.error('Error loading detailed data:', err)
+        // Don't show error to user since basic cards are already loaded
+        // Just mark all cards as finished loading
+        importedData.value = importedData.value.map(dataset => ({
+          ...dataset,
+          loading_details: false,
+          record_count: 'N/A',
+          file_size: 'N/A',
+          partition_count: 'N/A'
+        }))
       }
     }
 
@@ -962,6 +1030,21 @@ export default {
 
 .icon {
   font-size: var(--font-size-md);
+}
+
+/* Loading indicator styles */
+.loading-stat {
+  opacity: 0.6;
+}
+
+.loading-dots {
+  animation: loading-pulse 1.5s ease-in-out infinite;
+  color: var(--text-secondary);
+}
+
+@keyframes loading-pulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
 }
 
 /* List View Styles */

@@ -1450,16 +1450,22 @@ async def list_import_files_detailed():
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/data-import/imported-data", response_model=ApiResponse)
-async def get_imported_data():
-    """Get list of imported datasets by symbol."""
+async def get_imported_data(expand: bool = False):
+    """Get list of imported datasets by symbol with optional detailed information."""
     try:
-        # Get symbol-level data instead of asset-type aggregates
-        symbol_datasets = import_manager.get_symbol_level_data()
+        if expand:
+            # Get detailed symbol-level data (slower, includes record counts, file sizes, etc.)
+            symbol_datasets = import_manager.get_symbol_level_data()
+            message = f"Retrieved {len(symbol_datasets)} imported symbol datasets with detailed information"
+        else:
+            # Get basic symbol-level data (faster, just symbol names and basic info)
+            symbol_datasets = import_manager.get_symbol_level_data_basic()
+            message = f"Retrieved {len(symbol_datasets)} imported symbol datasets (basic info only)"
         
         return ApiResponse(
             success=True,
             data=symbol_datasets,
-            message=f"Retrieved {len(symbol_datasets)} imported symbol datasets"
+            message=message
         )
     except Exception as e:
         logger.error(f"Error getting imported data: {e}")

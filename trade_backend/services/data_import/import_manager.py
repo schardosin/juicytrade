@@ -795,6 +795,71 @@ class ImportManager:
             logger.error(f"Error getting symbol-level data: {e}")
             return []
     
+    def get_symbol_level_data_basic(self) -> List[Dict[str, Any]]:
+        """
+        Get basic symbol-level data without expensive operations (fast loading).
+        Only includes symbol names, asset types, and basic directory info.
+        
+        Returns:
+            List of dictionaries with basic symbol information
+        """
+        symbol_data = []
+        
+        try:
+            # Scan each asset type directory
+            asset_type_dirs = {
+                'options': self.parquet_writer.options_dir,
+                'equities': self.parquet_writer.equities_dir,
+                'futures': self.parquet_writer.futures_dir,
+                'forex': self.parquet_writer.forex_dir
+            }
+            
+            for asset_type, base_dir in asset_type_dirs.items():
+                if not base_dir.exists():
+                    continue
+                
+                # Look for underlying=SYMBOL directories
+                for underlying_dir in base_dir.glob("underlying=*"):
+                    try:
+                        # Extract symbol name from directory
+                        symbol = underlying_dir.name.split('=')[1]
+                        
+                        # Quick check if directory has any data (just check if any year directories exist)
+                        has_data = any(underlying_dir.glob("year=*"))
+                        
+                        if has_data:
+                            # Get basic date range without expensive operations
+                            basic_date_info = self._get_basic_date_range(underlying_dir)
+                            
+                            symbol_entry = {
+                                'id': f"symbol_{symbol}_{asset_type}",
+                                'symbol': symbol,
+                                'asset_type': asset_type.upper(),
+                                'start_date': basic_date_info.get('start_date'),
+                                'end_date': basic_date_info.get('end_date'),
+                                # Placeholder values for detailed info (will be loaded later)
+                                'record_count': None,
+                                'file_size': None,
+                                'partition_count': None,
+                                'imported_at': datetime.now().isoformat(),
+                                'loading_details': True  # Flag to indicate details are being loaded
+                            }
+                            symbol_data.append(symbol_entry)
+                            
+                    except Exception as e:
+                        logger.warning(f"Error processing symbol directory {underlying_dir}: {e}")
+                        continue
+            
+            # Sort by symbol name
+            symbol_data.sort(key=lambda x: x['symbol'])
+            
+            logger.info(f"Found {len(symbol_data)} symbols with imported data (basic info)")
+            return symbol_data
+            
+        except Exception as e:
+            logger.error(f"Error getting basic symbol-level data: {e}")
+            return []
+    
     def _detect_file_type(self, filename: str) -> ImportFileType:
         """
         Detect file type from filename extension.
@@ -890,6 +955,69 @@ class ImportManager:
             
         except Exception as e:
             logger.error(f"Error analyzing symbol date structure for {symbol_dir}: {e}")
+            return date_info
+    
+    def _get_basic_date_range(self, symbol_dir: Path) -> Dict[str, Any]:
+        """
+        Get basic date range information without expensive operations (fast).
+        Only looks at directory structure, doesn't read Parquet metadata.
+        
+        Args:
+            symbol_dir: Path to the underlying=SYMBOL directory
+            
+        Returns:
+            Dictionary with basic date range information
+        """
+        date_info = {
+            'start_date': None,
+            'end_date': None
+        }
+        
+        try:
+            dates = []
+            
+            # Scan year directories (fast directory listing)
+            for year_dir in symbol_dir.glob("year=*"):
+                try:
+                    year = int(year_dir.name.split('=')[1])
+                    
+                    # Scan month directories
+                    for month_dir in year_dir.glob("month=*"):
+                        try:
+                            month = int(month_dir.name.split('=')[1])
+                            
+                            # Scan day directories (just check existence, don't read files)
+                            for day_dir in month_dir.glob("day=*"):
+                                try:
+                                    day = int(day_dir.name.split('=')[1])
+                                    
+                                    # Quick check if data.parquet exists (no file reading)
+                                    parquet_file = day_dir / "data.parquet"
+                                    if parquet_file.exists():
+                                        dates.append(date(year, month, day))
+                                        
+                                except (ValueError, Exception) as e:
+                                    logger.debug(f"Error processing day directory {day_dir}: {e}")
+                                    continue
+                                    
+                        except (ValueError, Exception) as e:
+                            logger.debug(f"Error processing month directory {month_dir}: {e}")
+                            continue
+                            
+                except (ValueError, Exception) as e:
+                    logger.debug(f"Error processing year directory {year_dir}: {e}")
+                    continue
+            
+            # Determine date range (fast)
+            if dates:
+                dates.sort()
+                date_info['start_date'] = dates[0].isoformat()
+                date_info['end_date'] = dates[-1].isoformat()
+            
+            return date_info
+            
+        except Exception as e:
+            logger.debug(f"Error getting basic date range for {symbol_dir}: {e}")
             return date_info
 
 
