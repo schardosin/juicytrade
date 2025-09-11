@@ -7,7 +7,7 @@ by date, symbol, and asset type.
 """
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Any, Iterator
 import pandas as pd
@@ -1326,10 +1326,20 @@ class ParquetWriter:
                 record_info['ask_sz'] = 0
             
             # Extract options metadata for options data
-            if file_asset_type == AssetType.OPTIONS:
+            # CRITICAL FIX: Always try to extract options metadata for option-like symbols
+            # regardless of file_asset_type, since symbol detection is more reliable
+            if file_asset_type == AssetType.OPTIONS or self._determine_asset_type(symbol) == AssetType.OPTIONS:
                 options_metadata = self._extract_options_metadata(symbol)
                 if options_metadata:
                     record_info.update(options_metadata)
+                    # Ensure the asset type is correctly set for options
+                    record_info['asset_type'] = AssetType.OPTIONS
+                else:
+                    # Options symbol but metadata extraction failed
+                    logger.debug(f"Options metadata extraction failed for symbol: {symbol}")
+                    record_info['strike'] = None
+                    record_info['option_type'] = None
+                    record_info['expiration'] = None
             else:
                 # For non-options data, set options fields to None
                 record_info['strike'] = None

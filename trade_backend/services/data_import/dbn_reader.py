@@ -728,8 +728,6 @@ class DBNReader:
             logger.info(f"Built instrument-to-symbol map with {len(instrument_to_symbol_map)} mappings")
             
             record_count = 0
-            target_symbol = "SPXW  250827C06375000"
-            target_found_in_stream = False
             
             # Iterate through ALL records and apply native symbol mapping
             for record in store:
@@ -738,6 +736,14 @@ class DBNReader:
                 # Apply symbol mapping using native mappings
                 instrument_id = getattr(record, 'instrument_id', None)
                 timestamp = getattr(record, 'ts_event', None)
+                
+                # CRITICAL FIX: Skip corrupted timestamps like the DBN CLI does
+                # This filters out records with timestamp = 18446744073709551615 (UINT64_MAX)
+                is_corrupted_timestamp = (timestamp == 18446744073709551615)
+                
+                if is_corrupted_timestamp:
+                    # Skip this record entirely - don't process corrupted timestamps
+                    continue
                 
                 if instrument_id and instrument_to_symbol_map:
                     try:
@@ -869,10 +875,23 @@ class DBNReader:
                     else:
                         # Find matching date range with safe parsing
                         for start_date, end_date, symbol in sorted_ranges:
-                            s_date = safe_parse_date(start_date)
-                            e_date = safe_parse_date(end_date)
+                            # Handle both string and datetime.date objects
+                            if isinstance(start_date, str):
+                                s_date = safe_parse_date(start_date)
+                            elif isinstance(start_date, date):
+                                s_date = start_date
+                            else:
+                                s_date = None
+                                
+                            if isinstance(end_date, str):
+                                e_date = safe_parse_date(end_date)
+                            elif isinstance(end_date, date):
+                                e_date = end_date
+                            else:
+                                e_date = None
                             
                             if s_date and e_date and s_date <= record_date <= e_date:
+                                logger.debug(f"Found matching date range for {instrument_id}: {s_date} <= {record_date} <= {e_date} -> {symbol}")
                                 return symbol
                 
             except (ValueError, OSError, OverflowError) as e:
