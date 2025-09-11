@@ -187,26 +187,34 @@ class RealHistoricalDataProvider:
         
         🚨 BACKTEST MODE: NO FALLBACKS - Only uses imported parquet data
         
-        Priority:
-        1. CBBO service for raw bid/ask data (preferred for options strategies)
-        2. Aggregation service for OHLCV data (fallback for equity strategies)
+        Priority for timeframe-based backtests:
+        1. Aggregation service for OHLCV data (preferred for timeframe aggregation)
+        2. CBBO service for raw bid/ask data (only for tick-level analysis)
         
-        Returns DataFrame with columns: timestamp, bid, ask, mid, spread OR timestamp, open, high, low, close, volume
+        Returns DataFrame with columns: timestamp, open, high, low, close, volume OR timestamp, bid, ask, mid, spread
         """
-        # Try CBBO service first (preferred for options strategies)
+        logger.info(f"🎯 DATA LOADING: Requesting {symbol} data with interval '{interval}'")
+        
+        # For timeframe-based backtests, prioritize aggregation service
+        # CBBO service returns raw tick data which is too granular for most backtests
+        if self.aggregation_service and interval != "tick":
+            logger.info(f"🎯 Using aggregation service for timeframe-based data: {interval}")
+            try:
+                return await self._get_parquet_data(symbol, start_date, end_date, interval)
+            except Exception as e:
+                logger.warning(f"Aggregation service failed for {symbol}: {e}, falling back to CBBO service")
+        
+        # Fallback to CBBO service for tick-level data or when aggregation fails
         if self.cbbo_service:
+            logger.info(f"🎯 Using CBBO service for raw tick data")
             try:
                 return await self._get_cbbo_data(symbol, start_date, end_date, interval)
             except Exception as e:
-                logger.warning(f"CBBO service failed for {symbol}: {e}, falling back to aggregation service")
+                logger.error(f"CBBO service failed for {symbol}: {e}")
         
-        # Fallback to aggregation service for OHLCV data
-        if self.aggregation_service:
-            return await self._get_parquet_data(symbol, start_date, end_date, interval)
-        else:
-            # NO FALLBACKS IN BACKTEST MODE
-            logger.error(f"❌ BACKTEST FAILED: No data services available for {symbol}")
-            raise ValueError(f"Backtest requires CBBO or DataAggregation service with imported parquet data. No services configured.")
+        # NO FALLBACKS IN BACKTEST MODE
+        logger.error(f"❌ BACKTEST FAILED: No data services available for {symbol}")
+        raise ValueError(f"Backtest requires CBBO or DataAggregation service with imported parquet data. No services configured.")
     
     async def _get_cbbo_data(
         self,
@@ -223,8 +231,8 @@ class RealHistoricalDataProvider:
         try:
             logger.info(f"Requesting CBBO data for {symbol} from {start_date} to {end_date}")
             
-            # Get CBBO data from service
-            cbbo_data = await self.cbbo_service.get_cbbo_data(
+            # Get CBBO data from service (not async)
+            cbbo_data = self.cbbo_service.get_cbbo_data(
                 symbol=symbol,
                 start_date=start_date.strftime('%Y-%m-%d'),
                 end_date=end_date.strftime('%Y-%m-%d')
@@ -318,6 +326,8 @@ class RealHistoricalDataProvider:
             }
             
             aggregation_timeframe = timeframe_map.get(interval, "1min")
+            
+            logger.info(f"🎯 TIMEFRAME MAPPING: '{interval}' -> '{aggregation_timeframe}'")
             
             # Create aggregation request
             request = AggregationRequest(
@@ -730,7 +740,7 @@ class StrategyBacktestEngine:
     ):
         """Load historical data for all symbols"""
         for symbol in symbols:
-            logger.info(f"Loading historical data for {symbol}")
+            logger.info(f"Loading historical data for {symbol} with timeframe: {self.timeframe}")
             
             data = await self.data_provider.get_historical_data(
                 symbol, start_date, end_date, self.timeframe
@@ -738,7 +748,7 @@ class StrategyBacktestEngine:
             
             if not data.empty:
                 self.market_data_cache[symbol] = data
-                logger.info(f"Loaded {len(data)} data points for {symbol}")
+                logger.info(f"Loaded {len(data)} data points for {symbol} using {self.timeframe} timeframe")
             else:
                 logger.warning(f"No data available for {symbol}")
     
@@ -893,9 +903,20 @@ class StrategyBacktestEngine:
         reason: str = ""
     ) -> str:
         """Simulate market order execution"""
-        if symbol not in self.current_prices:
-            logger.warning(f"No price data for {symbol}")
-            return ""
+        # Try to get price data for the symbol
+        # For options: ALWAYS get fresh price (no caching) since prices change significantly
+        if symbol not in self.current_prices or self._is_option_symbol(symbol):
+            if self._is_option_symbol(symbol):
+                price = self._get_option_contract_price(symbol)
+                if price is not None:
+                    self.current_prices[symbol] = price
+                    logger.info(f"Fresh option price: {symbol} = ${price:.4f} at {self.current_time}")
+                else:
+                    logger.warning(f"No price data available for option contract: {symbol}")
+                    return ""
+            else:
+                logger.warning(f"No price data for {symbol}")
+                return ""
         
         # Calculate execution price with slippage
         base_price = self.current_prices[symbol]
@@ -926,6 +947,118 @@ class StrategyBacktestEngine:
         
         logger.info(f"Executed trade: {side} {quantity} {symbol} @ ${execution_price:.2f}")
         return trade_id
+
+    def _is_option_symbol(self, symbol: str) -> bool:
+        """Check if symbol is an option contract symbol"""
+        # Option symbols are typically longer and contain specific patterns
+        # Example: "SPY   250812P00639000" (SPY options)
+        return len(symbol) > 10 and ('C' in symbol[-9:] or 'P' in symbol[-9:])
+
+    def _get_option_contract_price(self, option_symbol: str) -> Optional[float]:
+        """
+        Get price for an individual option contract using PriceQueryService.
+        
+        This method uses the PriceQueryService to find the closest price before
+        the current backtest time for the specific option contract.
+        """
+        try:
+            # Import the price query service
+            from ..services.data_aggregation.price_query_service import get_price_query_service
+            
+            price_service = get_price_query_service()
+            
+            # Get price data for this option contract at current backtest time
+            price_data = price_service.get_price_before(option_symbol, self.current_time)
+            
+            if price_data:
+                # Use mid price (average of bid/ask) for execution
+                mid_price = (price_data.bid + price_data.ask) / 2.0 if price_data.bid > 0 and price_data.ask > 0 else 0.0
+                
+                if mid_price > 0:
+                    logger.info(f"Found option price: {option_symbol} bid={price_data.bid:.2f} ask={price_data.ask:.2f} mid={mid_price:.2f}")
+                    return mid_price
+                else:
+                    logger.warning(f"Invalid option price data: {option_symbol} bid={price_data.bid} ask={price_data.ask}")
+                    return None
+            else:
+                logger.warning(f"No price data found for option contract: {option_symbol}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting option contract price for {option_symbol}: {e}")
+            return None
+
+    def place_options_order(self, legs: List, order_type: str = "market", strategy_id: str = '') -> str:
+        """
+        Place an options order with multiple legs (Iron Condor, etc.) in backtest mode.
+        
+        This method executes each leg as a separate trade for proper backtest tracking.
+
+        Args:
+            legs: List of OptionsLeg objects defining the multi-leg order
+            order_type: Type of order ("market", "limit", etc.)
+            strategy_id: ID of the strategy placing the order
+
+        Returns:
+            Composite order ID if successful, empty string if failed
+        """
+        try:
+            if not legs:
+                logger.error("No legs provided for options order")
+                return ''
+
+            executed_trades = []
+            composite_order_id = f"OPTIONS_{len(legs)}LEG_{self.current_time.timestamp()}"
+            
+            logger.info(f"🎯 BACKTEST: Executing {len(legs)}-leg options order")
+            
+            # Execute each leg as a separate trade
+            for i, leg in enumerate(legs):
+                try:
+                    # Map options action to standard trade side
+                    side_mapping = {
+                        'buy': 'BUY',
+                        'sell': 'SELL',
+                        'buy_to_open': 'BUY',
+                        'sell_to_open': 'SELL',
+                        'buy_to_close': 'BUY',
+                        'sell_to_close': 'SELL'
+                    }
+                    
+                    side = side_mapping.get(leg.action.lower(), 'BUY')
+                    symbol = leg.contract.symbol
+                    quantity = leg.quantity
+                    
+                    # Execute the individual leg trade
+                    trade_id = self.place_market_order(
+                        symbol=symbol,
+                        quantity=quantity,
+                        side=side,
+                        reason=f"Options Leg {i+1}/{len(legs)} - {leg.action} {leg.contract.type} {leg.contract.strike_price}"
+                    )
+                    
+                    if trade_id:
+                        executed_trades.append(trade_id)
+                        logger.info(f"✅ BACKTEST: Executed leg {i+1}: {side} {quantity} {symbol}")
+                    else:
+                        logger.error(f"❌ BACKTEST: Failed to execute leg {i+1}: {symbol}")
+                        
+                except Exception as e:
+                    logger.error(f"Error executing options leg {i+1}: {e}")
+            
+            # Return composite order ID if all legs executed successfully
+            if len(executed_trades) == len(legs):
+                logger.info(f"🎉 BACKTEST: All {len(legs)} options legs executed successfully")
+                logger.info(f"   Composite Order ID: {composite_order_id}")
+                logger.info(f"   Individual Trade IDs: {executed_trades}")
+                return composite_order_id
+            else:
+                logger.error(f"❌ BACKTEST: Only {len(executed_trades)}/{len(legs)} legs executed")
+                return ''
+                
+        except Exception as e:
+            logger.error(f"Error executing options order in backtest: {e}")
+            return ''
     
     def _execute_trade(self, trade: BacktestTrade):
         """Execute a trade and update positions"""
@@ -937,8 +1070,14 @@ class StrategyBacktestEngine:
         # Update capital (subtract for buys, add for sells)
         if trade.action in ["BUY", "BUY_TO_OPEN"]:
             self.current_capital -= trade_value + trade.commission
+            # For options, buying means paying premium (immediate cash outflow)
+            if self._is_option_symbol(trade.symbol):
+                trade.pnl = -trade_value  # Negative P&L for premium paid
         else:
             self.current_capital += trade_value - trade.commission
+            # For options, selling means collecting premium (immediate cash inflow)
+            if self._is_option_symbol(trade.symbol):
+                trade.pnl = trade_value   # Positive P&L for premium collected
         
         # Update positions
         if symbol not in self.positions:
@@ -954,26 +1093,76 @@ class StrategyBacktestEngine:
         position = self.positions[symbol]
         
         if trade.action in ["BUY", "BUY_TO_OPEN"]:
-            # Adding to position
-            total_cost = (position.quantity * position.avg_price) + (trade.quantity * trade.price)
-            position.quantity += trade.quantity
-            position.avg_price = total_cost / position.quantity if position.quantity > 0 else 0
-        else:
-            # Reducing position
-            if position.quantity >= trade.quantity:
-                # Calculate realized P&L
-                realized_pnl = (trade.price - position.avg_price) * trade.quantity
-                trade.pnl = realized_pnl
-                position.realized_pnl += realized_pnl
-                position.quantity -= trade.quantity
-                
-                if position.quantity == 0:
-                    position.avg_price = 0.0
+            # Adding to position (long)
+            if position.quantity >= 0:
+                # Adding to existing long position or creating new long position
+                total_cost = (position.quantity * position.avg_price) + (trade.quantity * trade.price)
+                position.quantity += trade.quantity
+                position.avg_price = total_cost / position.quantity if position.quantity > 0 else 0
             else:
-                logger.warning(f"Insufficient position for {symbol}: have {position.quantity}, trying to sell {trade.quantity}")
+                # Covering short position
+                if abs(position.quantity) >= trade.quantity:
+                    # Partial or full cover
+                    realized_pnl = (position.avg_price - trade.price) * trade.quantity
+                    trade.pnl = realized_pnl
+                    position.realized_pnl += realized_pnl
+                    position.quantity += trade.quantity
+                    
+                    if position.quantity == 0:
+                        position.avg_price = 0.0
+                else:
+                    # Over-covering (short to long)
+                    cover_quantity = abs(position.quantity)
+                    realized_pnl = (position.avg_price - trade.price) * cover_quantity
+                    trade.pnl = realized_pnl
+                    position.realized_pnl += realized_pnl
+                    
+                    # Remaining quantity becomes new long position
+                    remaining_quantity = trade.quantity - cover_quantity
+                    position.quantity = remaining_quantity
+                    position.avg_price = trade.price
+        else:
+            # SELL action
+            if position.quantity > 0:
+                # Reducing long position
+                if position.quantity >= trade.quantity:
+                    # Partial or full sale
+                    realized_pnl = (trade.price - position.avg_price) * trade.quantity
+                    trade.pnl = realized_pnl
+                    position.realized_pnl += realized_pnl
+                    position.quantity -= trade.quantity
+                    
+                    if position.quantity == 0:
+                        position.avg_price = 0.0
+                else:
+                    # Over-selling (long to short)
+                    sell_quantity = position.quantity
+                    realized_pnl = (trade.price - position.avg_price) * sell_quantity
+                    trade.pnl = realized_pnl
+                    position.realized_pnl += realized_pnl
+                    
+                    # Remaining quantity becomes new short position
+                    remaining_quantity = trade.quantity - sell_quantity
+                    position.quantity = -remaining_quantity
+                    position.avg_price = trade.price
+            else:
+                # Adding to short position or creating new short position
+                if position.quantity <= 0:
+                    total_value = (abs(position.quantity) * position.avg_price) + (trade.quantity * trade.price)
+                    position.quantity -= trade.quantity
+                    position.avg_price = total_value / abs(position.quantity) if position.quantity != 0 else 0
+                else:
+                    # This shouldn't happen with the logic above, but handle it
+                    logger.warning(f"Unexpected position state for {symbol}: quantity={position.quantity}, action={trade.action}")
         
         # Add trade to history
         self.trades.append(trade)
+        
+        # Log trade execution with P&L
+        if trade.pnl != 0:
+            logger.info(f"Trade executed with P&L: {trade.action} {trade.quantity} {symbol} @ ${trade.price:.2f}, P&L: ${trade.pnl:.2f}")
+        else:
+            logger.info(f"Trade executed (opening): {trade.action} {trade.quantity} {symbol} @ ${trade.price:.2f}")
     
     # ========================================================================
     # Metrics Calculation
@@ -1194,8 +1383,11 @@ class StrategyBacktestEngine:
         """
         Close all open positions at the end of the backtest period.
         This ensures that unrealized P&L is captured in the final results.
+        
+        For options strategies, we skip automatic closing since the strategy
+        should handle its own position management.
         """
-        logger.info("Closing all open positions at end of backtest")
+        logger.info("Checking for positions to close at end of backtest")
         
         positions_to_close = [(symbol, pos) for symbol, pos in self.positions.items() if pos.quantity != 0]
         
@@ -1203,7 +1395,16 @@ class StrategyBacktestEngine:
             logger.info("No open positions to close")
             return
         
-        for symbol, position in positions_to_close:
+        # For options strategies, don't auto-close positions
+        # The strategy should handle its own closing logic
+        options_positions = [pos for symbol, pos in positions_to_close if self._is_option_symbol(symbol)]
+        equity_positions = [pos for symbol, pos in positions_to_close if not self._is_option_symbol(symbol)]
+        
+        if options_positions:
+            logger.info(f"Skipping auto-close for {len(options_positions)} options positions - strategy should handle closing")
+        
+        # Only auto-close equity positions
+        for symbol, position in equity_positions:
             if symbol not in self.current_prices:
                 logger.warning(f"No current price for {symbol}, cannot close position")
                 continue
@@ -1241,7 +1442,7 @@ class StrategyBacktestEngine:
                 # Closing long position
                 realized_pnl = (closing_price - position.avg_price) * quantity
             else:
-                # Closing short position
+                # Close short position
                 realized_pnl = (position.avg_price - closing_price) * quantity
             
             trade.pnl = realized_pnl
@@ -1249,9 +1450,10 @@ class StrategyBacktestEngine:
             # Execute the trade
             self._execute_trade(trade)
             
-            logger.info(f"Closed position: {side} {quantity} {symbol} @ ${closing_price:.2f}, P&L: ${realized_pnl:.2f}")
+            logger.info(f"Closed equity position: {side} {quantity} {symbol} @ ${closing_price:.2f}, P&L: ${realized_pnl:.2f}")
         
-        logger.info(f"Closed {len(positions_to_close)} positions at end of backtest")
+        if equity_positions:
+            logger.info(f"Closed {len(equity_positions)} equity positions at end of backtest")
 
     def _serialize_json_safe(self, data: Any) -> Any:
         """Convert data to JSON-safe format by handling datetime objects and all boolean types"""

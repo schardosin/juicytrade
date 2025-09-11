@@ -124,6 +124,148 @@ class OrderExecutor:
         """
         return self._place_order('stop', symbol, quantity, side, reason, strategy_id, stop_price)
 
+    def place_options_order(self, legs: List, order_type: str = "market", strategy_id: str = '') -> str:
+        """
+        Place an options order with multiple legs (Iron Condor, etc.).
+        
+        This method is specifically designed for options strategies like Iron Condors
+        that use OptionsLeg objects from the options_models framework.
+
+        Args:
+            legs: List of OptionsLeg objects defining the multi-leg order
+            order_type: Type of order ("market", "limit", etc.)
+            strategy_id: ID of the strategy placing the order
+
+        Returns:
+            Order ID if successful, empty string if failed
+        """
+        try:
+            if not legs:
+                logger.error("No legs provided for options order")
+                return ''
+
+            # Convert OptionsLeg objects to order format
+            order_details = self._convert_options_legs_to_order(legs, order_type)
+            
+            # For backtesting, we need to handle this differently than live trading
+            # Check if we're in backtest mode (order_executor is actually the backtest engine)
+            if hasattr(self, 'place_market_order') and hasattr(self, 'current_time'):
+                # We're in backtest mode - execute each leg as separate trades
+                return self._execute_options_order_in_backtest(legs, order_type, strategy_id)
+            else:
+                # Live trading mode - use the multi-leg order system
+                return self.place_multi_leg_order(order_details, strategy_id)
+
+        except Exception as e:
+            logger.error(f"Error placing options order: {e}")
+            return ''
+
+    def _convert_options_legs_to_order(self, legs: List, order_type: str) -> Dict[str, Any]:
+        """
+        Convert OptionsLeg objects to multi-leg order format.
+        
+        Args:
+            legs: List of OptionsLeg objects
+            order_type: Order type
+            
+        Returns:
+            Dictionary in multi-leg order format
+        """
+        if not legs:
+            return {}
+        
+        # Use the first leg's underlying as the primary symbol
+        primary_symbol = getattr(legs[0].contract, 'underlying_symbol', 'UNKNOWN')
+        
+        # Convert legs to provider format
+        leg_data = []
+        for leg in legs:
+            leg_dict = leg.to_provider_leg() if hasattr(leg, 'to_provider_leg') else {
+                'symbol': leg.contract.symbol,
+                'side': leg.action,
+                'qty': leg.quantity,
+                'asset_class': 'us_option'
+            }
+            leg_data.append(leg_dict)
+        
+        return {
+            'symbol': primary_symbol,
+            'legs': leg_data,
+            'order_type': order_type,
+            'action': 'multi_leg',
+            'quantity': 1,  # Multi-leg orders typically use quantity 1
+            'reason': f'{len(legs)}-leg options order'
+        }
+
+    def _execute_options_order_in_backtest(self, legs: List, order_type: str, strategy_id: str) -> str:
+        """
+        Execute options order in backtest mode by placing individual leg trades.
+        
+        This method handles the special case where the order_executor is actually
+        the backtest engine, and we need to execute each leg separately.
+        
+        Args:
+            legs: List of OptionsLeg objects
+            order_type: Order type
+            strategy_id: Strategy ID
+            
+        Returns:
+            Composite order ID representing all legs
+        """
+        try:
+            executed_trades = []
+            composite_order_id = f"OPTIONS_{len(legs)}LEG_{self.current_time.timestamp()}"
+            
+            logger.info(f"🎯 BACKTEST: Executing {len(legs)}-leg options order")
+            
+            # Execute each leg as a separate trade
+            for i, leg in enumerate(legs):
+                try:
+                    # Map options action to standard trade side
+                    side_mapping = {
+                        'buy': 'BUY',
+                        'sell': 'SELL',
+                        'buy_to_open': 'BUY',
+                        'sell_to_open': 'SELL',
+                        'buy_to_close': 'BUY',
+                        'sell_to_close': 'SELL'
+                    }
+                    
+                    side = side_mapping.get(leg.action.lower(), 'BUY')
+                    symbol = leg.contract.symbol
+                    quantity = leg.quantity
+                    
+                    # Execute the individual leg trade
+                    trade_id = self.place_market_order(
+                        symbol=symbol,
+                        quantity=quantity,
+                        side=side,
+                        reason=f"Options Leg {i+1}/{len(legs)} - {leg.action} {leg.contract.type} {leg.contract.strike_price}"
+                    )
+                    
+                    if trade_id:
+                        executed_trades.append(trade_id)
+                        logger.info(f"✅ BACKTEST: Executed leg {i+1}: {side} {quantity} {symbol}")
+                    else:
+                        logger.error(f"❌ BACKTEST: Failed to execute leg {i+1}: {symbol}")
+                        
+                except Exception as e:
+                    logger.error(f"Error executing options leg {i+1}: {e}")
+            
+            # Return composite order ID if all legs executed successfully
+            if len(executed_trades) == len(legs):
+                logger.info(f"🎉 BACKTEST: All {len(legs)} options legs executed successfully")
+                logger.info(f"   Composite Order ID: {composite_order_id}")
+                logger.info(f"   Individual Trade IDs: {executed_trades}")
+                return composite_order_id
+            else:
+                logger.error(f"❌ BACKTEST: Only {len(executed_trades)}/{len(legs)} legs executed")
+                return ''
+                
+        except Exception as e:
+            logger.error(f"Error executing options order in backtest: {e}")
+            return ''
+
     def place_multi_leg_order(self, order_details: Dict[str, Any],
                              strategy_id: str = '') -> str:
         """

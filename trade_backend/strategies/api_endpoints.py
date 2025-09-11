@@ -747,6 +747,8 @@ async def run_strategy_backtest(strategy_id: str, backtest_request: Dict[str, An
                     timeframe=timeframe  # Pass timeframe to backtest engine
                 )
                 
+                logger.info(f"🎯 BACKTEST ENGINE: Using timeframe '{timeframe}' for strategy {strategy_id}")
+                
                 # Run the backtest
                 symbols = [parameters.get("symbol", "SPY")]
                 backtest_results = await backtest_engine.run_backtest(

@@ -19,6 +19,7 @@ Key Features:
 
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List
+import asyncio
 
 from .base_strategy import BaseStrategy
 from .actions import ActionContext
@@ -155,13 +156,22 @@ class DeclarativeIronCondorStrategy(BaseStrategy):
     # ========================================================================
     
     def is_entry_time(self, context: ActionContext) -> bool:
-        """Rule: Check if entry time has been triggered"""
+        """Rule: Check if entry time has been triggered and no position exists"""
         entry_triggered = self.get_state("entry_triggered", False)
+        current_position = self.get_state("current_position")
         
-        if self.debug and entry_triggered:
-            self.log_info("DEBUG: Entry time triggered - ready for iron condor execution")
+        # Only allow entry if triggered AND no current position
+        can_enter = entry_triggered and current_position is None
         
-        return entry_triggered
+        if self.debug:
+            if entry_triggered and current_position is not None:
+                self.log_info("DEBUG: Entry time triggered but position already exists - skipping entry")
+            elif can_enter:
+                self.log_info("DEBUG: Entry time triggered and no position - ready for iron condor execution")
+            elif not entry_triggered:
+                self.log_info("DEBUG: Entry time not triggered")
+        
+        return can_enter
     
     def can_build_iron_condor(self, context: ActionContext) -> bool:
         """Rule: Check if we can build the iron condor structure"""
@@ -262,7 +272,11 @@ class DeclarativeIronCondorStrategy(BaseStrategy):
             
             # Execute the 4-leg order
             if hasattr(self.order_executor, 'place_options_order'):
-                order_id = await self.order_executor.place_options_order(legs, "market")
+                # Check if place_options_order is async or sync
+                if asyncio.iscoroutinefunction(self.order_executor.place_options_order):
+                    order_id = await self.order_executor.place_options_order(legs, "market")
+                else:
+                    order_id = self.order_executor.place_options_order(legs, "market")
                 
                 if order_id:
                     # Store position information
@@ -283,6 +297,17 @@ class DeclarativeIronCondorStrategy(BaseStrategy):
                         "atm_strike": atm_strike,
                         "net_cost": net_cost,
                         "timestamp": context.current_time.isoformat()
+                    })
+                    
+                    # Record entry signal metadata using checkpoint system
+                    self.add_checkpoint("iron_condor_entry_signal", {
+                        "signal_type": "IRON_CONDOR_ENTRY",
+                        "symbol": self.underlying,
+                        "price": self.get_state("underlying_price"),
+                        "timestamp": context.current_time.isoformat(),
+                        "atm_strike": atm_strike,
+                        "order_id": order_id,
+                        "legs": len(legs)
                     })
                     
                     # Reset entry trigger
