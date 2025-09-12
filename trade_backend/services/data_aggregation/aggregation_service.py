@@ -407,6 +407,9 @@ class DataAggregationService:
         """
         Get available options expirations for a symbol.
         
+        This method should find expirations available in data recorded
+        on or around the target date, not filter by expiration date itself.
+        
         Args:
             symbol: Symbol to get expirations for
             current_time: Current timestamp
@@ -423,7 +426,8 @@ class DataAggregationService:
             
             target_date = current_time.date().strftime('%Y-%m-%d')
             
-            # Create temporary view and query unique expirations
+            # CRITICAL FIX: Look for data recorded on the target date
+            # This will show what expirations were available for trading on that date
             self._create_parquet_view(file_paths, target_date, target_date)
             
             result = self.conn.execute("""
@@ -434,7 +438,7 @@ class DataAggregationService:
             """).fetchall()
             
             expirations = [row[0] for row in result if row[0]]
-            logger.info(f"Found {len(expirations)} expirations for {symbol}")
+            logger.info(f"Found {len(expirations)} expirations for {symbol} recorded on {target_date}: {expirations}")
             return expirations
             
         except Exception as e:

@@ -236,17 +236,24 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                     self.log_info(f"🔍 Getting available expirations for {self.options_symbol}...")
                     
                     # Get available expirations using the options symbol (SPXW for SPX)
-                    expirations = aggregation_service.get_available_options_expirations(self.options_symbol, current_time)
+                    expirations = aggregation_service.get_available_options_expirations(self.options_symbol, context.current_time)
                     
                     if expirations:
-                        self.log_info(f"📅 Found {len(expirations)} expirations: {expirations[:3]}...")  # Show first 3
+                        self.log_info(f"📅 Found {len(expirations)} expirations: {expirations}")
                         
-                        # Use the first available expiration (closest to today)
-                        target_exp = expirations[0]
-                        self.log_info(f"🎯 Loading options chain for {self.underlying} (options: {self.options_symbol}) exp={target_exp}")
+                        # CRITICAL FIX: Look for options that EXPIRE on our target date (today)
+                        target_exp = today  # We want options expiring today (2025-08-12)
+                        
+                        if target_exp in expirations:
+                            self.log_info(f"🎯 Found target expiration {target_exp} - loading options chain for {self.underlying} (options: {self.options_symbol})")
+                        else:
+                            self.log_warning(f"Target expiration {target_exp} not found in available expirations: {expirations}")
+                            # Try to use the closest expiration as fallback
+                            target_exp = expirations[0]
+                            self.log_info(f"🔄 Using fallback expiration: {target_exp}")
                         
                         # Get the options chain using the options symbol
-                        chain = aggregation_service.get_options_chain(self.options_symbol, target_exp, current_time)
+                        chain = aggregation_service.get_options_chain(self.options_symbol, target_exp, context.current_time)
                         
                         if chain and hasattr(chain, 'contracts') and chain.contracts:
                             self.set_state("options_chain", chain)
@@ -257,7 +264,7 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                             self.log_error(f"❌ Options chain loaded but no contracts available for {self.options_symbol} exp={target_exp}")
                             return False
                     else:
-                        self.log_error(f"❌ No available expirations found for {self.options_symbol} at {current_time}")
+                        self.log_error(f"❌ No available expirations found for {self.options_symbol} at {context.current_time}")
                         return False
                 else:
                     self.log_error("❌ No aggregation service available for options data")
