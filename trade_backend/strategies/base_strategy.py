@@ -99,6 +99,9 @@ class BaseStrategy(ABC):
         # Symbol registration for additional data loading
         self.additional_symbols = set()
         
+        # UI state registration for flow engine context display
+        self.ui_states = set()
+        
         # Execution state
         self.is_running = False
         self.is_paused = False
@@ -656,6 +659,44 @@ class BaseStrategy(ABC):
         all_symbols.update(self.additional_symbols)
         
         return list(all_symbols)
+    
+    # ========================================================================
+    # UI State Registration for Flow Engine Context Display
+    # ========================================================================
+    
+    def register_ui_state(self, state_name: str):
+        """
+        Register a state variable to be exposed to the UI through the flow engine.
+        
+        This allows strategies to specify which state variables should be displayed
+        in the UI's market context during flow engine execution, replacing the
+        hardcoded list in the flow engine.
+        
+        Args:
+            state_name: Name of the state variable to expose to UI
+            
+        Example:
+            # For moving average strategy
+            self.register_ui_state("current_fast_ma")
+            self.register_ui_state("current_slow_ma")
+            self.register_ui_state("current_position")
+            
+            # For vertical spread strategy  
+            self.register_ui_state("short_leg")
+            self.register_ui_state("long_leg")
+            self.register_ui_state("price_vertical")
+        """
+        self.ui_states.add(state_name)
+        self.logger.info(f"Registered UI state for flow engine display: {state_name}")
+    
+    def get_ui_states(self) -> List[str]:
+        """
+        Get list of state variables registered for UI display.
+        
+        Returns:
+            List of state variable names that should be displayed in UI
+        """
+        return list(self.ui_states)
     
     # ========================================================================
     # State Management Helpers

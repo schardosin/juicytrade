@@ -482,12 +482,16 @@ class FlowEngine:
                     pass
             
             if hasattr(self.strategy, 'get_state'):
-                # Try to get common state values
-                common_states = [
-                    "current_fast_ma", "current_slow_ma", "current_position", 
-                    "entry_price", "symbol"
-                ]
-                for state_key in common_states:
+                # Get UI states registered by the strategy
+                ui_states = []
+                if hasattr(self.strategy, 'get_ui_states'):
+                    ui_states = self.strategy.get_ui_states()
+                    self.logger.debug(f"Using strategy-registered UI states: {ui_states}")
+                else:
+                    # No UI states registered - only capture standard framework fields
+                    self.logger.debug("No UI states registered by strategy")
+                
+                for state_key in ui_states:
                     try:
                         value = self.strategy.get_state(state_key)
                         if value is not None:

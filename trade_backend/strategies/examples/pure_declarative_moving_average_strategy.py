@@ -75,6 +75,14 @@ class PureDeclarativeMovingAverageStrategy(BaseStrategy):
             name="wait_for_market_open"
         )
         
+        # Register UI states for flow engine context display
+        self.register_ui_state("current_fast_ma")
+        self.register_ui_state("current_slow_ma")
+        self.register_ui_state("current_position")
+        self.register_ui_state("entry_price")
+        self.register_ui_state("symbol")
+        self.log_info("Registered UI states for flow engine display")
+        
         # --- PURE DECLARATIVE FLOW DEFINITION ---
         # This is the ONLY place where strategy logic is defined!
         self._define_strategy_flow()

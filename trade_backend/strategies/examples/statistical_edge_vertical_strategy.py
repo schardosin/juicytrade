@@ -73,6 +73,16 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
             self.register_additional_symbol("SPXW")
             self.log_info(f"Registered additional symbol for options data: SPXW")
         
+        # Register UI states for flow engine context display
+        self.register_ui_state("underlying_price")
+        self.register_ui_state("short_leg")
+        self.register_ui_state("long_leg")
+        self.register_ui_state("price_vertical")
+        self.register_ui_state("target_expiration")
+        self.register_ui_state("strikes_monitored")
+        self.register_ui_state("monitoring_active")
+        self.log_info("Registered UI states for flow engine display")
+        
         # Initialize state
         self.set_state("underlying", self.underlying)
         self.set_state("monitoring_start", self.monitoring_start)
