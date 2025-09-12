@@ -113,7 +113,6 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
         # Register data processors in order of execution
         self.register_data_processor(self.update_underlying_price)
         self.register_data_processor(self.update_options_chain)
-        self.register_data_processor(self.find_target_vertical)
         self.register_data_processor(self.update_vertical_price)
         
         self.log_info(f"Statistical Edge Vertical Strategy initialized for {self.underlying}")
@@ -126,20 +125,36 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
     
     def _define_strategy_flow(self):
         """Define the monitoring flow for Phase 1"""
-        # Phase 1: Only monitoring flow - no trading actions yet
+        # Create action node for finding target vertical
+        find_vertical_action = self.flow.add_action("Find Target Vertical", self.find_target_vertical_action)
+        
+        # Vertical Search Flow: Only runs when monitoring is active AND has options data AND no vertical found yet
+        vertical_search_flow = self.flow.add_decision(
+            name="Vertical Search",
+            condition=Rules.AllOf(
+                self.is_monitoring_time,
+                self.has_options_data,
+                self.needs_target_vertical
+            ),
+            if_true=find_vertical_action,
+            if_false=None,
+            execution_condition=self._can_run_vertical_search  # Custom condition to control execution
+        )
+        
+        # General Monitoring Flow: Always runs when monitoring is active (just for UI updates)
         monitoring_flow = self.flow.add_decision(
-            name="Vertical Spread Monitoring",
+            name="General Monitoring",
             condition=Rules.AllOf(
                 self.is_monitoring_time,
                 self.has_options_data
             ),
-            if_true=None,  # No action, just monitoring
+            if_true=None,  # No action, just monitoring for UI
             if_false=None
         )
         
-        self.flow.set_parallel_flows([monitoring_flow])
+        self.flow.set_parallel_flows([vertical_search_flow, monitoring_flow])
         
-        self.log_info(f"Statistical Edge Vertical monitoring flow defined with {self.flow.get_node_count()} nodes")
+        self.log_info(f"Statistical Edge Vertical declarative flows defined with {self.flow.get_node_count()} nodes")
     
     async def start_monitoring(self, context: ActionContext):
         """Start monitoring - called at 1:30 PM"""
@@ -176,6 +191,78 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
             self.log_info(f"🔍 has_options_data check - {chain_status}, underlying_price: {underlying_price}, result: {has_data}")
         
         return has_data
+    
+    def needs_target_vertical(self, context: ActionContext) -> bool:
+        """Rule: Check if we need to find a target vertical spread"""
+        current_short = self.get_state("short_leg")
+        current_long = self.get_state("long_leg")
+        
+        # Return True if we don't have both legs yet
+        needs_vertical = not (current_short and current_long)
+        
+        if self.debug and self.get_state("monitoring_active", False):
+            self.log_info(f"DEBUG: needs_target_vertical - short_leg: {current_short}, long_leg: {current_long}, needs: {needs_vertical}")
+        
+        return needs_vertical
+    
+    # ========================================================================
+    # Execution Condition Methods - Control when flows should run
+    # ========================================================================
+    
+    def _can_run_vertical_search(self, context: ActionContext) -> bool:
+        """Execution condition: Vertical search only runs when monitoring is active AND has data AND needs vertical"""
+        # All conditions are already checked in the decision condition
+        # This method can add additional constraints if needed
+        return True
+    
+    # ========================================================================
+    # Action Methods - Functions executed by action nodes
+    # ========================================================================
+    
+    async def find_target_vertical_action(self, context: ActionContext):
+        """Action: Find the first credit spread paying ~$0.01"""
+        try:
+            underlying_price = self.get_state("underlying_price")
+            options_chain = self.get_state("options_chain")
+            
+            if not underlying_price or not options_chain:
+                self.log_error("Missing underlying price or options chain for vertical search")
+                return
+            
+            # Find call spreads above current price (OTM)
+            target_spread = self._find_target_credit_spread(options_chain, underlying_price)
+            
+            if target_spread:
+                short_strike, long_strike, short_contract, long_contract = target_spread
+                
+                # Store the legs
+                self.set_state("short_leg", short_contract.symbol)
+                self.set_state("long_leg", long_contract.symbol)
+                self.set_state("short_strike", short_strike)
+                self.set_state("long_strike", long_strike)
+                self.set_state("short_contract", short_contract)
+                self.set_state("long_contract", long_contract)
+                
+                # Create display info
+                strikes_info = f"{short_strike}/{long_strike} Call Spread ({self.spread_width}-wide)"
+                self.set_state("strikes_monitored", strikes_info)
+                
+                self.log_info(f"🎯 TARGET VERTICAL FOUND:")
+                self.log_info(f"   Short: {short_contract.symbol} @ ${short_strike}")
+                self.log_info(f"   Long:  {long_contract.symbol} @ ${long_strike}")
+                self.log_info(f"   Spread: {strikes_info}")
+                
+                self.add_checkpoint("target_vertical_found", {
+                    "short_strike": short_strike,
+                    "long_strike": long_strike,
+                    "underlying_price": underlying_price,
+                    "timestamp": context.current_time.isoformat()
+                })
+            else:
+                self.log_warning("No suitable credit spread found paying target credit")
+            
+        except Exception as e:
+            self.log_error(f"Error finding target vertical: {e}")
     
     # ========================================================================
     # Data Processor Methods - Registered in order of execution
@@ -278,62 +365,6 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
             
         except Exception as e:
             self.log_error(f"❌ Error in update_options_chain: {e}")
-            return False
-    
-    def find_target_vertical(self, context: ActionContext) -> bool:
-        """Data Processor 3: Find the first credit spread paying ~$0.01"""
-        try:
-            # Only find new target if we don't have one or monitoring just started
-            current_short = self.get_state("short_leg")
-            current_long = self.get_state("long_leg")
-            
-            # If we already have legs, skip finding new ones for now (Phase 1)
-            if current_short and current_long:
-                return True
-            
-            underlying_price = self.get_state("underlying_price")
-            options_chain = self.get_state("options_chain")
-            
-            if not underlying_price or not options_chain:
-                return False
-            
-            # Find call spreads above current price (OTM)
-            target_spread = self._find_target_credit_spread(options_chain, underlying_price)
-            
-            if target_spread:
-                short_strike, long_strike, short_contract, long_contract = target_spread
-                
-                # Store the legs
-                self.set_state("short_leg", short_contract.symbol)
-                self.set_state("long_leg", long_contract.symbol)
-                self.set_state("short_strike", short_strike)
-                self.set_state("long_strike", long_strike)
-                self.set_state("short_contract", short_contract)
-                self.set_state("long_contract", long_contract)
-                
-                # Create display info
-                strikes_info = f"{short_strike}/{long_strike} Call Spread ({self.spread_width}-wide)"
-                self.set_state("strikes_monitored", strikes_info)
-                
-                self.log_info(f"🎯 TARGET VERTICAL FOUND:")
-                self.log_info(f"   Short: {short_contract.symbol} @ ${short_strike}")
-                self.log_info(f"   Long:  {long_contract.symbol} @ ${long_strike}")
-                self.log_info(f"   Spread: {strikes_info}")
-                
-                self.add_checkpoint("target_vertical_found", {
-                    "short_strike": short_strike,
-                    "long_strike": long_strike,
-                    "underlying_price": underlying_price,
-                    "timestamp": context.current_time.isoformat()
-                })
-                
-                return True
-            else:
-                self.log_warning("No suitable credit spread found paying target credit")
-                return False
-            
-        except Exception as e:
-            self.log_error(f"Error finding target vertical: {e}")
             return False
     
     def update_vertical_price(self, context: ActionContext) -> bool:
