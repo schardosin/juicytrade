@@ -96,6 +96,9 @@ class BaseStrategy(ABC):
         self.flow = FlowEngine(self)
         self.data_update_processors = []
         
+        # Symbol registration for additional data loading
+        self.additional_symbols = set()
+        
         # Execution state
         self.is_running = False
         self.is_paused = False
@@ -593,6 +596,66 @@ class BaseStrategy(ABC):
     def get_current_session(self) -> TradingSession:
         """Get current trading session"""
         return self.time_scheduler.get_current_session()
+    
+    # ========================================================================
+    # Symbol Registration for Data Loading
+    # ========================================================================
+    
+    def register_additional_symbol(self, symbol: str):
+        """
+        Register an additional symbol for data loading during backtests.
+        
+        This allows strategies to load data for symbols beyond the primary
+        underlying symbol. Useful for:
+        - Options strategies needing different option symbol formats (SPX -> SPXW)
+        - Multi-asset strategies requiring correlated symbols
+        - Volatility analysis requiring VIX data
+        
+        Args:
+            symbol: Additional symbol to load data for
+            
+        Example:
+            # For SPX options strategy that needs SPXW options data
+            if self.config.get("underlying") == "SPX":
+                self.register_additional_symbol("SPXW")
+        """
+        self.additional_symbols.add(symbol)
+        self.logger.info(f"Registered additional symbol for data loading: {symbol}")
+    
+    def get_additional_symbols(self) -> List[str]:
+        """
+        Get list of additional symbols registered by this strategy.
+        
+        Returns:
+            List of additional symbol strings that should be loaded
+            for this strategy during backtests
+        """
+        return list(self.additional_symbols)
+    
+    def get_all_required_symbols(self, primary_symbol: str = None) -> List[str]:
+        """
+        Get all symbols required by this strategy (primary + additional).
+        
+        Args:
+            primary_symbol: The primary underlying symbol (if not provided,
+                          will try to get from config["underlying"] or config["symbol"])
+        
+        Returns:
+            List of all symbols this strategy needs for data loading
+        """
+        # Get primary symbol from parameter or config
+        if not primary_symbol:
+            primary_symbol = (
+                self.config.get("underlying") or 
+                self.config.get("symbol") or 
+                "SPY"  # Default fallback
+            )
+        
+        # Combine primary and additional symbols
+        all_symbols = {primary_symbol}
+        all_symbols.update(self.additional_symbols)
+        
+        return list(all_symbols)
     
     # ========================================================================
     # State Management Helpers

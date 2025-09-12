@@ -749,8 +749,9 @@ async def run_strategy_backtest(strategy_id: str, backtest_request: Dict[str, An
                 
                 logger.info(f"🎯 BACKTEST ENGINE: Using timeframe '{timeframe}' for strategy {strategy_id}")
                 
-                # Run the backtest
-                symbols = [parameters.get("symbol", "SPY")]
+                # Run the backtest - use underlying symbol
+                primary_symbol = parameters.get("underlying", "SPY")
+                symbols = [primary_symbol]
                 backtest_results = await backtest_engine.run_backtest(
                     strategy=strategy_instance,
                     start_date=start_date,
@@ -943,7 +944,7 @@ async def run_backtest(strategy_id: str, backtest_request: Dict[str, Any]):
         )
         
         # Run the backtest
-        symbols = [backtest_request.get("parameters", {}).get("symbol", "SPY")]
+        symbols = [backtest_request.get("parameters", {}).get("underlying", "SPY")]
         start_date = datetime.fromisoformat(backtest_request.get("start_date"))
         end_date = datetime.fromisoformat(backtest_request.get("end_date"))
         

@@ -246,6 +246,9 @@ class StrategyRegistry:
             ).replace(
                 'from .options_models import OptionsChain, OptionsLeg, OptionsOrder',
                 '# OptionsChain, OptionsLeg, OptionsOrder already available in globals'
+            ).replace(
+                'from .options_models import OptionsChain',
+                '# OptionsChain already available in globals'
             )
             
             # Execute the processed strategy code

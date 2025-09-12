@@ -681,8 +681,8 @@ class StrategyBacktestEngine:
             symbols = symbols or ["SPY"]
             await self._initialize_backtest(strategy, start_date, end_date, symbols)
             
-            # Load historical data
-            await self._load_historical_data(symbols, start_date, end_date)
+            # Load historical data (with strategy for additional symbols)
+            await self._load_historical_data(symbols, start_date, end_date, strategy)
             
             # Run backtest simulation
             await self._run_simulation(strategy, start_date, end_date, speed_multiplier)
@@ -754,10 +754,21 @@ class StrategyBacktestEngine:
         self,
         symbols: List[str],
         start_date: datetime,
-        end_date: datetime
+        end_date: datetime,
+        strategy: BaseStrategy = None
     ):
-        """Load historical data for all symbols"""
-        for symbol in symbols:
+        """Load historical data for all symbols (primary + additional from strategy)"""
+        # Get additional symbols from strategy if provided
+        all_symbols = set(symbols)
+        if strategy and hasattr(strategy, 'get_additional_symbols'):
+            additional_symbols = strategy.get_additional_symbols()
+            if additional_symbols:
+                all_symbols.update(additional_symbols)
+                logger.info(f"Strategy registered additional symbols: {additional_symbols}")
+        
+        logger.info(f"Loading data for {len(all_symbols)} symbols: {sorted(all_symbols)}")
+        
+        for symbol in all_symbols:
             logger.info(f"Loading historical data for {symbol} with timeframe: {self.timeframe}")
             
             data = await self.data_provider.get_historical_data(
