@@ -654,9 +654,14 @@ async def run_strategy_backtest(strategy_id: str, backtest_request: Dict[str, An
         if not strategy_details:
             raise HTTPException(status_code=404, detail="Strategy not found")
         
-        # Parse dates
-        start_date = datetime.fromisoformat(start_date_str)
-        end_date = datetime.fromisoformat(end_date_str)
+        from zoneinfo import ZoneInfo
+        eastern_tz = ZoneInfo("America/New_York")
+
+        start_date_naive = datetime.fromisoformat(start_date_str)
+        end_date_naive = datetime.fromisoformat(end_date_str)
+
+        start_date = start_date_naive.replace(tzinfo=eastern_tz)
+        end_date = end_date_naive.replace(tzinfo=eastern_tz)
         
         # Generate run ID
         run_id = f"run_{strategy_id}_{uuid.uuid4().hex[:8]}"

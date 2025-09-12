@@ -421,8 +421,9 @@ class DataAggregationService:
                 logger.warning(f"No options data found for symbol: {symbol}")
                 return []
             
-            # Create temporary view and query unique expirations
             target_date = current_time.date().strftime('%Y-%m-%d')
+            
+            # Create temporary view and query unique expirations
             self._create_parquet_view(file_paths, target_date, target_date)
             
             result = self.conn.execute("""
@@ -471,8 +472,9 @@ class DataAggregationService:
                 logger.warning(f"No options data found for symbol: {symbol}")
                 return None
             
-            # Create temporary view and query contracts for the expiration
             target_date = current_time.date().strftime('%Y-%m-%d')
+            
+            # Create temporary view and query contracts for the expiration
             self._create_parquet_view(file_paths, target_date, target_date)
             
             result = self.conn.execute(f"""

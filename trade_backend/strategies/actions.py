@@ -58,6 +58,8 @@ class ActionContext:
     positions: Dict[str, Any]
     account_info: Dict[str, Any]
     debug_mode: bool = False
+    # ARCHITECTURAL FIX: Add virtual_date so strategy never needs to calculate "what day is it"
+    virtual_date: Optional[str] = None  # "2025-08-12" - the date context (backtest sets this, live can too)
 
     def get_snapshot(self) -> Dict[str, Any]:
         """Returns a serializable snapshot of the context."""
@@ -67,16 +69,7 @@ class ActionContext:
             "current_time": self.current_time.isoformat(),
             "positions": self.positions,
             "account_info": self.account_info,
-        }
-
-    def get_snapshot(self) -> Dict[str, Any]:
-        """Returns a serializable snapshot of the context."""
-        return {
-            "strategy_state": self.strategy_state,
-            "market_data": self.market_data,
-            "current_time": self.current_time.isoformat(),
-            "positions": self.positions,
-            "account_info": self.account_info,
+            "virtual_date": self.virtual_date,
         }
 
 class Rule:

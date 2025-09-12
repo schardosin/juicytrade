@@ -204,13 +204,14 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
     def update_options_chain(self, context: ActionContext) -> bool:
         """Data Processor 2: Update options chain for current day"""
         try:
-            current_time = context.current_time
-            if not current_time:
-                self.log_warning("No current_time available in context")
+            # ARCHITECTURAL FIX: Strategy is timezone-agnostic
+            # Use virtual_date provided by backtest engine or system
+            if not context.virtual_date:
+                self.log_error("No virtual_date provided - strategy needs date context from system")
                 return False
             
-            # Get today's date for options
-            today = current_time.date().strftime("%Y-%m-%d")
+            today = context.virtual_date  # Format: "YYYY-MM-DD"
+            self.log_info(f"�️ Using system date context: {today}")
             
             # Check if we already have the chain for today
             stored_chain = self.get_state("options_chain")

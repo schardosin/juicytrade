@@ -121,6 +121,9 @@ class BaseStrategy(ABC):
         # Logging
         self.logger = logging.getLogger(f"BaseStrategy.{strategy_id}")
         
+        # ARCHITECTURAL FIX: Virtual date for strategy agnosticism
+        self._virtual_date: Optional[str] = None  # Set by backtest engine
+        
         logger.info(f"BaseStrategy initialized: {strategy_id} (dry_run={dry_run}, debug={debug})")
     
     # ========================================================================
@@ -399,7 +402,8 @@ class BaseStrategy(ABC):
                 current_time=current_time,
                 positions=await self.get_positions(),
                 account_info=await self.get_account_info(),
-                debug_mode=self.debug
+                debug_mode=self.debug,
+                virtual_date=self._virtual_date  # Pass virtual date to actions
             )
             
             # Check scheduled time events
@@ -936,6 +940,31 @@ class BaseStrategy(ABC):
         """Log error message"""
         self.logger.error(message)
         self.execution_stats["error_count"] += 1
+    
+    # ========================================================================
+    # ARCHITECTURAL FIX: Virtual Date Management
+    # ========================================================================
+    
+    def _set_virtual_date(self, virtual_date: str):
+        """
+        Set virtual date for strategy (called by backtest engine).
+        
+        This allows the strategy to know what date it should think it's "living" on
+        during backtesting without doing any timezone calculations.
+        
+        Args:
+            virtual_date: Date string in format "YYYY-MM-DD" (e.g., "2025-08-12")
+        """
+        self._virtual_date = virtual_date
+    
+    def get_virtual_date(self) -> Optional[str]:
+        """
+        Get the virtual date if set by backtest engine.
+        
+        Returns:
+            Virtual date string ("YYYY-MM-DD") or None if not in backtest
+        """
+        return self._virtual_date
     
     def __str__(self):
         return f"BaseStrategy(id={self.strategy_id}, running={self.is_running}, actions={len(self.action_queue.actions)})"

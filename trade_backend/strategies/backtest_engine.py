@@ -792,6 +792,22 @@ class StrategyBacktestEngine:
         # Start the strategy
         await strategy.start()
         
+        # ARCHITECTURAL FIX: Calculate the virtual date for the backtest
+        # This is the date the strategy thinks it's "living" on
+        # Convert start_date to Eastern Time to get the proper date
+        from zoneinfo import ZoneInfo
+        eastern_tz = ZoneInfo("America/New_York")
+        
+        # Convert start_date to Eastern Time and extract date
+        if start_date.tzinfo is None:
+            import pytz
+            start_date_utc = pytz.utc.localize(start_date)
+        else:
+            start_date_utc = start_date
+        
+        eastern_date = start_date_utc.astimezone(eastern_tz).date()
+        virtual_date = eastern_date.strftime('%Y-%m-%d')
+        
         # Get all timestamps from market data
         all_timestamps = set()
         for symbol, symbol_data in self.market_data_cache.items():
@@ -838,6 +854,11 @@ class StrategyBacktestEngine:
             
             # Update positions with current prices
             self._update_positions()
+            
+            # ARCHITECTURAL FIX: Inject virtual_date into strategy context
+            # The strategy will receive this and never need to calculate "what day is it"
+            if hasattr(strategy, '_set_virtual_date'):
+                strategy._set_virtual_date(virtual_date)
             
             # Execute strategy cycle
             await strategy.execute_cycle()
