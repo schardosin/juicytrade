@@ -50,6 +50,15 @@ class ImportJobStatus(str, Enum):
     CANCELLED = "cancelled"
 
 
+class QueueStatus(str, Enum):
+    """Queue item status values"""
+    QUEUED = "queued"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
 class AssetType(str, Enum):
     """Asset types supported"""
     OPTIONS = "options"
@@ -299,3 +308,78 @@ class ImportSummary(BaseModel):
         if self.total_jobs == 0:
             return 0.0
         return round((self.completed_jobs / self.total_jobs) * 100, 2)
+
+
+class ImportQueueItem(BaseModel):
+    """Individual item in the import queue"""
+    queue_id: str
+    filename: str
+    queue_position: int
+    queue_status: QueueStatus
+    job_id: Optional[str] = None  # Set when processing starts
+    created_at: datetime
+    started_at: Optional[datetime] = None
+    completed_at: Optional[datetime] = None
+    error_message: Optional[str] = None
+    
+    # File configuration
+    file_type: Optional[ImportFileType] = None
+    csv_symbol: Optional[str] = None
+    csv_format: Optional[CSVFormat] = None
+    timestamp_convention: Optional[TimestampConvention] = None
+    overwrite_existing: bool = False
+    
+    # Batch information
+    batch_id: Optional[str] = None
+    batch_name: Optional[str] = None
+    
+    class Config:
+        use_enum_values = True
+    
+    @property
+    def is_csv_file(self) -> bool:
+        """Check if this is a CSV file"""
+        return (
+            self.file_type == ImportFileType.CSV or 
+            self.filename.lower().endswith('.csv')
+        )
+
+
+class MultiFileImportRequest(BaseModel):
+    """Request to import multiple files in queue"""
+    files: List[Dict[str, Any]]  # List of file configurations
+    batch_name: Optional[str] = None
+    overwrite_existing: bool = False
+    
+    @validator('files')
+    def validate_files(cls, v):
+        if not v or len(v) == 0:
+            raise ValueError('At least one file must be specified')
+        return v
+
+
+class ImportQueueStatus(BaseModel):
+    """Status of the import queue"""
+    queue_items: List[ImportQueueItem] = []
+    current_processing: Optional[ImportQueueItem] = None
+    total_items: int = 0
+    completed_items: int = 0
+    failed_items: int = 0
+    queued_items: int = 0
+    
+    @property
+    def progress_percentage(self) -> float:
+        """Overall queue progress percentage"""
+        if self.total_items == 0:
+            return 0.0
+        return round(((self.completed_items + self.failed_items) / self.total_items) * 100, 2)
+    
+    @property
+    def is_processing(self) -> bool:
+        """Whether the queue is currently processing"""
+        return self.current_processing is not None
+    
+    @property
+    def is_complete(self) -> bool:
+        """Whether all items in queue are complete"""
+        return self.total_items > 0 and (self.completed_items + self.failed_items) == self.total_items

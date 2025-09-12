@@ -9,6 +9,7 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { api } from '../services/api.js'
 
 const activeJobs = ref({})
+const queueStatus = ref(null)
 const isPolling = ref(false)
 const lastError = ref(null)
 let pollInterval = null
@@ -130,34 +131,34 @@ export function useBackgroundJobs() {
   }
 
   /**
+   * Fetch queue status and update state
+   */
+  const fetchQueueStatus = async () => {
+    try {
+      const response = await api.get('/api/data-import/queue/status')
+      queueStatus.value = response.data?.data || null
+    } catch (error) {
+      console.error('Error fetching queue status:', error)
+      // Don't clear queue status on error - it might still be valid
+    }
+  }
+
+  /**
    * Fetch active import jobs and update state
    */
   const fetchActiveJobs = async () => {
     try {
-      const response = await api.get('/api/data-import/jobs?status=running&limit=50')
-      const jobs = response.data?.data?.jobs || []
+      // Fetch both individual jobs and queue status
+      const [jobsResponse] = await Promise.all([
+        api.get('/api/data-import/jobs?status=running&limit=50'),
+        fetchQueueStatus()
+      ])
       
-      console.log('🔍 Background Jobs Debug:', JSON.stringify({
-        totalJobs: jobs.length,
-        jobs: jobs.map(job => ({
-          job_id: job.job_id,
-          filename: job.filename,
-          status: job.status,
-          csv_symbol: job.csv_symbol,
-          progress: job.progress
-        }))
-      }, null, 2))
-      
+      const jobs = jobsResponse.data?.data?.jobs || []
       const newActiveJobs = {}
       
       for (const job of jobs) {
         const identifier = extractJobIdentifier(job)
-        console.log('🎯 Job Identifier Extraction:', {
-          job_id: job.job_id,
-          filename: job.filename,
-          csv_symbol: job.csv_symbol,
-          extracted_identifier: identifier
-        })
         
         if (identifier) {
           // Get progress percentage using our day-based progress
@@ -201,7 +202,6 @@ export function useBackgroundJobs() {
                   ...jobInfo,
                   statusMessage: `${statusMessage} (${symbol} ${assetType.toLowerCase()})`
                 }
-                console.log(`🎯 Created specific symbol entry from backend data: ${specificIdentifier}`)
               }
             }
           }
@@ -302,6 +302,43 @@ export function useBackgroundJobs() {
   })
 
   /**
+   * Check if there are items in the import queue
+   */
+  const hasQueueItems = computed(() => {
+    return queueStatus.value && queueStatus.value.total_items > 0
+  })
+
+  /**
+   * Get queue progress percentage
+   */
+  const queueProgress = computed(() => {
+    if (!queueStatus.value || queueStatus.value.total_items === 0) return 0
+    return Math.round((queueStatus.value.completed_items / queueStatus.value.total_items) * 100)
+  })
+
+  /**
+   * Get queue status message
+   */
+  const queueStatusMessage = computed(() => {
+    if (!queueStatus.value) return null
+    
+    const { total_items, completed_items, failed_items, queued_items, current_processing } = queueStatus.value
+    
+    if (current_processing) {
+      const currentIndex = completed_items + 1
+      return `Processing file ${currentIndex} of ${total_items}: ${current_processing.filename}`
+    } else if (queued_items > 0) {
+      return `${queued_items} files queued for import (${completed_items}/${total_items} completed)`
+    } else if (completed_items === total_items && total_items > 0) {
+      return failed_items > 0 
+        ? `Queue complete: ${completed_items}/${total_items} successful, ${failed_items} failed` 
+        : `All ${total_items} files imported successfully`
+    } else {
+      return 'Queue idle'
+    }
+  })
+
+  /**
    * Manual refresh of active jobs
    */
   const refresh = async () => {
@@ -321,10 +358,16 @@ export function useBackgroundJobs() {
   return {
     // State
     activeJobs: computed(() => activeJobs.value),
+    queueStatus: computed(() => queueStatus.value),
     isPolling: computed(() => isPolling.value),
     lastError: computed(() => lastError.value),
     activeJobCount,
     activeJobIdentifiers,
+    
+    // Queue computed properties
+    hasQueueItems,
+    queueProgress,
+    queueStatusMessage,
     
     // Methods
     startPolling,

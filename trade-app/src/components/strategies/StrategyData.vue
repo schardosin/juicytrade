@@ -70,6 +70,9 @@
       </div>
     </div>
 
+    <!-- Queue Status Panel -->
+    <QueueStatusPanel />
+
     <!-- Data Cards View -->
     <div v-if="importedData.length > 0 && viewMode === 'cards'" class="data-grid">
       <div 
@@ -317,36 +320,20 @@ import { useGlobalBackgroundJobs } from '../../composables/useBackgroundJobs.js'
 import { api } from '../../services/api.js'
 import DataImportDialog from './DataImportDialog.vue'
 import ImportProgressOverlay from './ImportProgressOverlay.vue'
+import QueueStatusPanel from './QueueStatusPanel.vue'
 
 export default {
   name: 'StrategyData',
   components: {
     DataImportDialog,
-    ImportProgressOverlay
+    ImportProgressOverlay,
+    QueueStatusPanel
   },
   setup() {
     const router = useRouter()
     const { showSuccess, showError } = useNotifications()
-    const { getJobForSymbol, hasActiveJob, activeJobs, activeJobCount } = useGlobalBackgroundJobs()
+    const { getJobForSymbol, hasActiveJob, activeJobs, activeJobCount, hasQueueItems, queueStatus, queueProgress, queueStatusMessage } = useGlobalBackgroundJobs()
     
-    // Debug logging for job matching
-    const logJobMatching = () => {
-      console.log('📊 Data Cards Debug:', JSON.stringify({
-        totalDatasets: importedData.value.length,
-        datasets: importedData.value.map(dataset => ({
-          symbol: dataset.symbol,
-          asset_type: dataset.asset_type,
-          identifier: `${dataset.symbol}_${dataset.asset_type}`,
-          hasJob: hasActiveJob(dataset.symbol, dataset.asset_type),
-          jobInfo: getJobForSymbol(dataset.symbol, dataset.asset_type)
-        })),
-        activeJobsCount: activeJobCount.value,
-        activeJobsData: activeJobs.value
-      }, null, 2))
-    }
-    
-    // Log job matching every few seconds for debugging
-    setInterval(logJobMatching, 3000)
     
     // Reactive state
     const importedData = ref([])
@@ -542,12 +529,31 @@ export default {
       }
     }
 
-    // Multi-symbol job handling
+    // Multi-symbol job handling - now uses queue information
     const hasMultiSymbolJob = computed(() => {
-      return getJobForSymbol('MULTI', 'EQUITIES') !== null || getJobForSymbol('MULTI', 'OPTIONS') !== null
+      return hasQueueItems.value || getJobForSymbol('MULTI', 'EQUITIES') !== null || getJobForSymbol('MULTI', 'OPTIONS') !== null
     })
 
     const getMultiSymbolJobInfo = () => {
+      // Prefer queue information if available
+      if (hasQueueItems.value && queueStatus.value) {
+        const { total_items, completed_items, current_processing } = queueStatus.value
+        const currentIndex = current_processing ? completed_items + 1 : completed_items
+        
+        return {
+          progress: queueProgress.value,
+          statusMessage: queueStatusMessage.value,
+          filename: current_processing ? current_processing.filename : 'Queue processing',
+          processedRecords: 0, // Queue doesn't track individual records
+          queueInfo: {
+            currentFile: currentIndex,
+            totalFiles: total_items,
+            completedFiles: completed_items
+          }
+        }
+      }
+      
+      // Fallback to individual job info
       return getJobForSymbol('MULTI', 'EQUITIES') || getJobForSymbol('MULTI', 'OPTIONS')
     }
 

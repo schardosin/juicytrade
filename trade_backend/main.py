@@ -35,7 +35,7 @@ from .strategies.execution_engine import StrategyExecutionEngine
 from .services.data_import.import_manager import import_manager
 from .services.data_import.import_models import (
     ImportRequest, ImportJobStatus, ImportFilters, DateRange,
-    ImportFileType, CSVFormat
+    ImportFileType, CSVFormat, MultiFileImportRequest, ImportQueueStatus
 )
 from .services.data_aggregation import (
     DataAggregationService, AggregationRequest, AggregatedData, TimeFrame,
@@ -1820,6 +1820,103 @@ async def delete_imported_dataset(symbol: str, asset_type: Optional[str] = None)
             )
     except Exception as e:
         logger.error(f"Error deleting imported data for {symbol} (asset_type: {asset_type}): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# === Data Import Queue Endpoints ===
+
+@app.post("/api/data-import/queue", response_model=ApiResponse)
+async def add_files_to_import_queue(request: MultiFileImportRequest):
+    """Add multiple files to the import queue for sequential processing."""
+    try:
+        queue_ids = import_manager.import_queue.add_files_to_queue(request)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "queue_ids": queue_ids,
+                "batch_name": request.batch_name,
+                "total_files": len(request.files)
+            },
+            message=f"Added {len(request.files)} files to import queue"
+        )
+    except Exception as e:
+        logger.error(f"Error adding files to import queue: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-import/queue/status", response_model=ApiResponse)
+async def get_import_queue_status():
+    """Get current status of the import queue."""
+    try:
+        queue_status = import_manager.import_queue.get_queue_status()
+        
+        return ApiResponse(
+            success=True,
+            data=queue_status.model_dump(),
+            message=f"Retrieved queue status - {queue_status.total_items} items, {queue_status.queued_items} queued, {queue_status.completed_items} completed"
+        )
+    except Exception as e:
+        logger.error(f"Error getting import queue status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/data-import/queue/batch", response_model=ApiResponse)
+async def add_batch_to_import_queue(request: dict):
+    """Add multiple files to the import queue as a batch."""
+    try:
+        jobs = request.get('jobs', [])
+        if not jobs:
+            raise HTTPException(status_code=400, detail="No jobs provided in batch")
+        
+        # Process each job in the batch
+        job_ids = []
+        for job_data in jobs:
+            # Convert job data to ImportRequest
+            import_request = ImportRequest(
+                filename=job_data['filename'],
+                job_name=job_data.get('job_name', f"Import {job_data['filename']}"),
+                overwrite_existing=job_data.get('overwrite_existing', False),
+                file_type=job_data.get('file_type'),
+                csv_symbol=job_data.get('csv_symbol'),
+                csv_format=job_data.get('csv_format'),
+                timestamp_convention=job_data.get('timestamp_convention')
+            )
+            
+            # Start the import job
+            job_id = await import_manager.start_import_job(import_request)
+            job_ids.append(job_id)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "job_ids": job_ids,
+                "total_jobs": len(job_ids),
+                "batch_size": len(jobs)
+            },
+            message=f"Successfully added {len(jobs)} files to import queue"
+        )
+    except Exception as e:
+        logger.error(f"Error adding batch to import queue: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/data-import/queue/{queue_id}", response_model=ApiResponse)
+async def remove_from_import_queue(queue_id: str):
+    """Remove an item from the import queue."""
+    try:
+        removed = import_manager.import_queue.remove_from_queue(queue_id)
+        
+        if removed:
+            return ApiResponse(
+                success=True,
+                data={"queue_id": queue_id, "removed": True},
+                message=f"Queue item {queue_id} removed successfully"
+            )
+        else:
+            return ApiResponse(
+                success=False,
+                data={"queue_id": queue_id, "removed": False},
+                message=f"Could not remove queue item {queue_id} (not found or currently processing)"
+            )
+    except Exception as e:
+        logger.error(f"Error removing from import queue {queue_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # === Data Aggregation Endpoints ===

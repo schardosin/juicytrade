@@ -26,6 +26,7 @@ from .csv_metadata_extractor import csv_metadata_extractor
 from .dbn_reader import DBNReader
 from .csv_reader import CSVReader
 from .parquet_writer import ParquetWriter
+from .import_queue import ImportQueue
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,9 @@ class ImportManager:
         
         # Load existing jobs
         self._load_existing_jobs()
+        
+        # Initialize import queue
+        self.import_queue = ImportQueue(self)
     
     async def list_available_files(self) -> List[ImportFileInfo]:
         """

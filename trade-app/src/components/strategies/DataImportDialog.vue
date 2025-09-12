@@ -29,8 +29,26 @@
       <div class="dialog-body">
         <!-- Step 1: File Selection -->
         <div v-if="currentStep === 0" class="step-content">
-          <h3>Select Import File</h3>
-          <p class="step-description">Choose a file from your available files to import (DBN or CSV).</p>
+          <h3>Select Import Files</h3>
+          <p class="step-description">Choose one or more files to import. Multiple files will be processed sequentially in a queue.</p>
+          
+          <!-- Selection Mode Toggle -->
+          <div class="selection-mode-toggle">
+            <button 
+              class="mode-btn"
+              :class="{ active: selectionMode === 'single' }"
+              @click="selectionMode = 'single'"
+            >
+              Single File
+            </button>
+            <button 
+              class="mode-btn"
+              :class="{ active: selectionMode === 'multiple' }"
+              @click="selectionMode = 'multiple'"
+            >
+              Multiple Files
+            </button>
+          </div>
           
           <div v-if="loadingFiles" class="loading-files">
             <div class="spinner-small"></div>
@@ -44,23 +62,55 @@
           </div>
           
           <div v-else-if="availableFiles && availableFiles.length > 0" class="file-selector">
+            <!-- Multi-select controls -->
+            <div v-if="selectionMode === 'multiple'" class="multi-select-controls">
+              <button 
+                class="btn btn-sm btn-outline"
+                @click="selectAllFiles"
+                :disabled="selectedFiles.length === availableFiles.length"
+              >
+                Select All
+              </button>
+              <button 
+                class="btn btn-sm btn-outline"
+                @click="clearSelection"
+                :disabled="selectedFiles.length === 0"
+              >
+                Clear All
+              </button>
+              <span class="selection-count">{{ selectedFiles.length }} of {{ availableFiles.length }} files selected</span>
+            </div>
+            
             <div class="file-list">
               <div 
                 v-for="file in availableFiles" 
                 :key="file?.filename || file?.file_path || Math.random()"
                 class="file-option"
-                :class="{ selected: selectedFile && selectedFile.filename === file?.filename }"
-                @click="selectFile(file)"
+                :class="{ 
+                  selected: isFileSelected(file),
+                  'multi-select': selectionMode === 'multiple'
+                }"
+                @click="toggleFileSelection(file)"
               >
                 <div class="file-info">
                   <h4 class="file-name">{{ file?.filename || 'Unknown File' }}</h4>
                   <div class="file-details">
                     <span class="file-size">{{ formatFileSize(file?.file_size) }}</span>
                     <span class="file-date">{{ formatFileDate(file?.modified_at) }}</span>
+                    <span v-if="file?.file_type === 'csv'" class="file-type-badge csv">CSV</span>
+                    <span v-else class="file-type-badge dbn">DBN</span>
                   </div>
                 </div>
                 <div class="file-status">
-                  <div v-if="selectedFile && selectedFile.filename === file?.filename" class="selected-indicator">✓</div>
+                  <div v-if="selectionMode === 'multiple'" class="checkbox-indicator">
+                    <input 
+                      type="checkbox" 
+                      :checked="isFileSelected(file)"
+                      @click.stop
+                      @change="toggleFileSelection(file)"
+                    />
+                  </div>
+                  <div v-else-if="isFileSelected(file)" class="selected-indicator">✓</div>
                 </div>
               </div>
             </div>
@@ -70,103 +120,141 @@
         <!-- Step 2: Metadata Preview -->
         <div v-if="currentStep === 1" class="step-content">
           <h3>File Preview</h3>
-          <p class="step-description">Review the file information before importing all data.</p>
+          <p v-if="selectionMode === 'single'" class="step-description">Review the file information before importing all data.</p>
+          <p v-else class="step-description">Review the selected files before importing. Multiple files will be processed sequentially.</p>
           
-          <!-- CSV Symbol Input -->
-          <div v-if="isCSVFile" class="csv-symbol-input">
-            <div class="form-group">
-              <label>Symbol (required for CSV files):</label>
-              <input 
-                type="text" 
-                v-model="csvSymbol"
-                placeholder="e.g., SPX"
-                class="form-input"
-                required
-              />
-              <p class="form-help">Enter the single symbol that this CSV file contains data for.</p>
+          <!-- Multi-file Summary -->
+          <div v-if="selectionMode === 'multiple'" class="multi-file-summary">
+            <div class="summary-header">
+              <h4>Selected Files Summary</h4>
+              <span class="file-count">{{ selectedFiles.length }} files selected</span>
             </div>
             
-            <div class="form-group">
-              <label>Timestamp Convention:</label>
-              <div class="timestamp-convention-selector">
-                <label class="radio-group">
-                  <input 
-                    type="radio" 
-                    name="timestampConvention"
-                    v-model="timestampConvention"
-                    value="begin_of_minute"
-                  />
-                  <span>Beginning of Minute (9:30)</span>
-                </label>
-                <label class="radio-group">
-                  <input 
-                    type="radio" 
-                    name="timestampConvention"
-                    v-model="timestampConvention"
-                    value="end_of_minute"
-                  />
-                  <span>End of Minute (9:31) - TradeStation</span>
-                </label>
-              </div>
-              <p class="form-help">
-                <strong>Beginning of Minute:</strong> 9:30 timestamp represents the 9:30-9:31 minute bar (standard)<br>
-                <strong>End of Minute:</strong> 9:31 timestamp represents the 9:30-9:31 minute bar (TradeStation format)
-              </p>
-            </div>
-          </div>
-          
-          <div v-if="loadingMetadata" class="loading-metadata">
-            <div class="spinner-small"></div>
-            <span>Extracting metadata...</span>
-          </div>
-          
-          <div v-else-if="metadata" class="metadata-preview">
-            <!-- Dataset Info -->
-            <div class="metadata-section">
-              <h4>Dataset Information</h4>
-              <div class="metadata-grid">
-                <div class="metadata-item">
-                  <span class="metadata-label">File:</span>
-                  <span class="metadata-value">{{ selectedFile?.filename }}</span>
-                </div>
-                <div class="metadata-item">
-                  <span class="metadata-label">Dataset:</span>
-                  <span class="metadata-value">{{ metadata.dataset }}</span>
-                </div>
-                <div class="metadata-item">
-                  <span class="metadata-label">Asset Types:</span>
-                  <div class="asset-types">
-                    <span 
-                      v-for="assetType in metadata.asset_types" 
-                      :key="assetType"
-                      class="asset-badge"
-                      :class="`asset-${assetType.toLowerCase()}`"
-                    >
-                      {{ assetType }}
-                    </span>
+            <div class="files-list">
+              <div 
+                v-for="file in selectedFiles" 
+                :key="file.filename"
+                class="file-summary-item"
+              >
+                <div class="file-summary-info">
+                  <h5 class="file-summary-name">{{ file.filename }}</h5>
+                  <div class="file-summary-details">
+                    <span class="file-size">{{ formatFileSize(file.file_size) }}</span>
+                    <span v-if="file.file_type === 'csv'" class="file-type-badge csv">CSV</span>
+                    <span v-else class="file-type-badge dbn">DBN</span>
                   </div>
                 </div>
-                <div class="metadata-item">
-                  <span class="metadata-label">Date Range:</span>
-                  <span class="metadata-value">{{ formatDateRange(metadata?.overall_date_range?.start_date || metadata?.start_date, metadata?.overall_date_range?.end_date || metadata?.end_date) }}</span>
-                </div>
-                <div class="metadata-item">
-                  <span class="metadata-label">Total Records:</span>
-                  <span class="metadata-value">{{ formatNumber(metadata?.total_records) }}</span>
-                </div>
-                <div class="metadata-item">
-                  <span class="metadata-label">Unique Symbols:</span>
-                  <span class="metadata-value">{{ formatNumber(metadata?.symbols?.length) }}</span>
-                </div>
               </div>
             </div>
-
-            <!-- Import Notice -->
+            
+            <!-- Multi-file Import Notice -->
             <div class="import-notice">
-              <div class="notice-icon">ℹ️</div>
+              <div class="notice-icon">📋</div>
               <div class="notice-content">
-                <h4>Complete File Import</h4>
-                <p>This will import <strong>ALL data</strong> from the selected file without any filtering. All symbols and dates will be processed to ensure complete data coverage.</p>
+                <h4>Multi-File Import</h4>
+                <p>All {{ selectedFiles.length }} selected files will be imported sequentially. Each file will be processed as a separate import job and added to the import queue.</p>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Single File Details (existing logic) -->
+          <div v-else>
+            <!-- CSV Symbol Input -->
+            <div v-if="isCSVFile" class="csv-symbol-input">
+              <div class="form-group">
+                <label>Symbol (required for CSV files):</label>
+                <input 
+                  type="text" 
+                  v-model="csvSymbol"
+                  placeholder="e.g., SPX"
+                  class="form-input"
+                  required
+                />
+                <p class="form-help">Enter the single symbol that this CSV file contains data for.</p>
+              </div>
+              
+              <div class="form-group">
+                <label>Timestamp Convention:</label>
+                <div class="timestamp-convention-selector">
+                  <label class="radio-group">
+                    <input 
+                      type="radio" 
+                      name="timestampConvention"
+                      v-model="timestampConvention"
+                      value="begin_of_minute"
+                    />
+                    <span>Beginning of Minute (9:30)</span>
+                  </label>
+                  <label class="radio-group">
+                    <input 
+                      type="radio" 
+                      name="timestampConvention"
+                      v-model="timestampConvention"
+                      value="end_of_minute"
+                    />
+                    <span>End of Minute (9:31) - TradeStation</span>
+                  </label>
+                </div>
+                <p class="form-help">
+                  <strong>Beginning of Minute:</strong> 9:30 timestamp represents the 9:30-9:31 minute bar (standard)<br>
+                  <strong>End of Minute:</strong> 9:31 timestamp represents the 9:30-9:31 minute bar (TradeStation format)
+                </p>
+              </div>
+            </div>
+            
+            <div v-if="loadingMetadata" class="loading-metadata">
+              <div class="spinner-small"></div>
+              <span>Extracting metadata...</span>
+            </div>
+            
+            <div v-else-if="metadata" class="metadata-preview">
+              <!-- Dataset Info -->
+              <div class="metadata-section">
+                <h4>Dataset Information</h4>
+                <div class="metadata-grid">
+                  <div class="metadata-item">
+                    <span class="metadata-label">File:</span>
+                    <span class="metadata-value">{{ selectedFile?.filename }}</span>
+                  </div>
+                  <div class="metadata-item">
+                    <span class="metadata-label">Dataset:</span>
+                    <span class="metadata-value">{{ metadata.dataset }}</span>
+                  </div>
+                  <div class="metadata-item">
+                    <span class="metadata-label">Asset Types:</span>
+                    <div class="asset-types">
+                      <span 
+                        v-for="assetType in metadata.asset_types" 
+                        :key="assetType"
+                        class="asset-badge"
+                        :class="`asset-${assetType.toLowerCase()}`"
+                      >
+                        {{ assetType }}
+                      </span>
+                    </div>
+                  </div>
+                  <div class="metadata-item">
+                    <span class="metadata-label">Date Range:</span>
+                    <span class="metadata-value">{{ formatDateRange(metadata?.overall_date_range?.start_date || metadata?.start_date, metadata?.overall_date_range?.end_date || metadata?.end_date) }}</span>
+                  </div>
+                  <div class="metadata-item">
+                    <span class="metadata-label">Total Records:</span>
+                    <span class="metadata-value">{{ formatNumber(metadata?.total_records) }}</span>
+                  </div>
+                  <div class="metadata-item">
+                    <span class="metadata-label">Unique Symbols:</span>
+                    <span class="metadata-value">{{ formatNumber(metadata?.symbols?.length) }}</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Import Notice -->
+              <div class="import-notice">
+                <div class="notice-icon">ℹ️</div>
+                <div class="notice-content">
+                  <h4>Complete File Import</h4>
+                  <p>This will import <strong>ALL data</strong> from the selected file without any filtering. All symbols and dates will be processed to ensure complete data coverage.</p>
+                </div>
               </div>
             </div>
           </div>
@@ -376,6 +464,8 @@ export default {
     // File selection
     const availableFiles = ref([])
     const selectedFile = ref(null)
+    const selectedFiles = ref([])
+    const selectionMode = ref('single')
     const loadingFiles = ref(false)
     
     // CSV-specific
@@ -421,7 +511,11 @@ export default {
     const canProceed = computed(() => {
       switch (currentStep.value) {
         case 0:
-          return selectedFile.value !== null
+          if (selectionMode.value === 'multiple') {
+            return selectedFiles.value.length > 0
+          } else {
+            return selectedFile.value !== null
+          }
         case 1:
           // For CSV files, require symbol input
           if (isCSVFile.value) {
@@ -450,7 +544,13 @@ export default {
         loadingFiles.value = true
         const response = await api.get('/api/data-import/files')
         // The API returns { success: true, data: [...] }
-        availableFiles.value = response.data?.data || []
+        const files = response.data?.data || []
+        // Sort files alphabetically by filename
+        availableFiles.value = files.sort((a, b) => {
+          const filenameA = (a.filename || '').toLowerCase()
+          const filenameB = (b.filename || '').toLowerCase()
+          return filenameA.localeCompare(filenameB)
+        })
       } catch (error) {
         console.error('Error loading files:', error)
         showError('Failed to load available files', 'File Error')
@@ -532,31 +632,70 @@ export default {
           error: null
         }
         
-        // Prepare import request (no filtering - import all data)
-        const importRequest = {
-          filename: selectedFile.value.filename,
-          job_name: importConfig.value.job_name,
-          overwrite_existing: importConfig.value.overwrite_existing
-        }
+        // Handle multiple files or single file
+        const filesToImport = selectionMode.value === 'multiple' ? selectedFiles.value : [selectedFile.value]
         
-        // Add CSV-specific fields if it's a CSV file
-        if (isCSVFile.value) {
-          importRequest.file_type = 'csv'
-          importRequest.csv_symbol = csvSymbol.value.trim()
-          importRequest.csv_format = selectedFile.value.csv_format || 'tradestation'
-          importRequest.timestamp_convention = timestampConvention.value
-        }
-        
-        const response = await api.post('/api/data-import/jobs', importRequest)
-        
-        if (response.data.success) {
-          // The job ID is in response.data.data, not response.data.job_id
-          importJobId.value = response.data.data?.job_id || response.data.data
-          currentStep.value = 3
-          startProgressMonitoring()
+        if (filesToImport.length === 1) {
+          // Single file import - use existing logic
+          const file = filesToImport[0]
+          const importRequest = {
+            filename: file.filename,
+            job_name: importConfig.value.job_name,
+            overwrite_existing: importConfig.value.overwrite_existing
+          }
+          
+          // Add CSV-specific fields if it's a CSV file
+          if (file?.filename?.toLowerCase().endsWith('.csv') || file?.file_type === 'csv') {
+            importRequest.file_type = 'csv'
+            importRequest.csv_symbol = csvSymbol.value.trim()
+            importRequest.csv_format = file.csv_format || 'tradestation'
+            importRequest.timestamp_convention = timestampConvention.value
+          }
+          
+          const response = await api.post('/api/data-import/jobs', importRequest)
+          
+          if (response.data.success) {
+            importJobId.value = response.data.data?.job_id || response.data.data
+            currentStep.value = 3
+            startProgressMonitoring()
+          } else {
+            throw new Error(response.data.error || 'Failed to start import')
+          }
         } else {
-          console.error('Import job creation failed:', response.data)
-          throw new Error(response.data.error || 'Failed to start import')
+          // Multiple files - use queue system
+          const queueRequests = filesToImport.map((file, index) => {
+            const request = {
+              filename: file.filename,
+              job_name: `${importConfig.value.job_name} - ${file.filename}`,
+              overwrite_existing: importConfig.value.overwrite_existing,
+              priority: index + 1 // Higher priority for files selected first
+            }
+            
+            // Add CSV-specific fields if it's a CSV file
+            if (file?.filename?.toLowerCase().endsWith('.csv') || file?.file_type === 'csv') {
+              request.file_type = 'csv'
+              request.csv_symbol = csvSymbol.value.trim()
+              request.csv_format = file.csv_format || 'tradestation'
+              request.timestamp_convention = timestampConvention.value
+            }
+            
+            return request
+          })
+          
+          // Submit all files to the queue
+          const response = await api.post('/api/data-import/queue/batch', {
+            jobs: queueRequests
+          })
+          
+          if (response.data.success) {
+            // For multiple files, we'll monitor the queue status instead of individual jobs
+            importJobId.value = 'QUEUE_BATCH'
+            currentStep.value = 3
+            startQueueMonitoring()
+            showSuccess(`${filesToImport.length} files added to import queue`, 'Queue Updated')
+          } else {
+            throw new Error(response.data.error || 'Failed to add files to queue')
+          }
         }
       } catch (error) {
         console.error('Error starting import:', error)
@@ -647,6 +786,94 @@ export default {
           }
         }
       }, 1000) // Check every 1 second for more responsive updates
+    }
+
+    const startQueueMonitoring = () => {
+      progressInterval = setInterval(async () => {
+        try {
+          const response = await api.get('/api/data-import/queue/status')
+          const queueData = response.data.data || response.data
+          
+          // Calculate overall progress based on queue status
+          const totalJobs = queueData.total_items || 0
+          const completedJobs = queueData.completed_items || 0
+          const failedJobs = queueData.failed_items || 0
+          const queuedJobs = queueData.queued_items || 0
+          const currentProcessing = queueData.current_processing
+          
+          let progressPercentage = 0
+          if (totalJobs > 0) {
+            progressPercentage = Math.round((completedJobs / totalJobs) * 100)
+          }
+          
+          // Determine status message with better queue information
+          let statusMessage = 'Processing queue...'
+          let currentSymbol = ''
+          
+          if (currentProcessing) {
+            // Show which file is currently being processed
+            const currentIndex = completedJobs + 1 // Current file index (1-based)
+            statusMessage = `Processing file ${currentIndex} of ${totalJobs}: ${currentProcessing.filename}`
+            currentSymbol = `File ${currentIndex}/${totalJobs}`
+          } else if (queuedJobs > 0) {
+            statusMessage = `${queuedJobs} files queued for processing`
+            currentSymbol = `${completedJobs}/${totalJobs} completed`
+          } else if (completedJobs === totalJobs && totalJobs > 0) {
+            statusMessage = 'All files processed successfully!'
+            currentSymbol = `${totalJobs}/${totalJobs} completed`
+          } else if (failedJobs > 0 && completedJobs + failedJobs === totalJobs) {
+            statusMessage = `Processing complete (${failedJobs} failed)`
+            currentSymbol = `${completedJobs}/${totalJobs} completed`
+          }
+          
+          const newStatus = {
+            status: statusMessage,
+            progress: progressPercentage,
+            current_symbol: currentSymbol,
+            processed_records: queueData.total_processed_records || 0,
+            symbols_processed: completedJobs,
+            started_at: importStatus.value.started_at,
+            completed: completedJobs === totalJobs && totalJobs > 0 && !currentProcessing,
+            failed: failedJobs > 0 && completedJobs + failedJobs === totalJobs && !currentProcessing,
+            error: failedJobs > 0 ? `${failedJobs} file${failedJobs > 1 ? 's' : ''} failed to import` : null,
+            
+            // Additional queue information
+            queue_info: {
+              total_files: totalJobs,
+              completed_files: completedJobs,
+              failed_files: failedJobs,
+              queued_files: queuedJobs,
+              current_file: currentProcessing ? currentProcessing.filename : null,
+              current_file_index: currentProcessing ? completedJobs + 1 : null
+            }
+          }
+          
+          importStatus.value = newStatus
+          
+          // Stop monitoring when all jobs are complete
+          if (newStatus.completed || newStatus.failed) {
+            clearInterval(progressInterval)
+            progressInterval = null
+            importing.value = false
+            
+            if (newStatus.completed && failedJobs === 0) {
+              showSuccess(`All ${totalJobs} files imported successfully! Processed ${queueData.total_processed_records?.toLocaleString() || 0} records.`, 'Queue Complete')
+            } else if (failedJobs > 0) {
+              showError(`Queue processing complete with ${failedJobs} failed imports out of ${totalJobs} total files.`, 'Queue Complete with Errors')
+            }
+          }
+        } catch (error) {
+          console.error('Error checking queue status:', error)
+          
+          // If we can't get queue status, stop monitoring
+          clearInterval(progressInterval)
+          progressInterval = null
+          importing.value = false
+          importStatus.value.error = 'Unable to monitor queue status'
+          importStatus.value.failed = true
+          showError('Unable to monitor import queue status.', 'Queue Error')
+        }
+      }, 2000) // Check every 2 seconds for queue monitoring
     }
 
     const cancelImport = async () => {
@@ -786,15 +1013,74 @@ export default {
       }
     })
 
+    // Multi-file selection methods
+    const isFileSelected = (file) => {
+      if (selectionMode.value === 'multiple') {
+        return selectedFiles.value.some(f => f.filename === file.filename)
+      } else {
+        return selectedFile.value && selectedFile.value.filename === file.filename
+      }
+    }
+
+    const toggleFileSelection = (file) => {
+      if (selectionMode.value === 'multiple') {
+        const index = selectedFiles.value.findIndex(f => f.filename === file.filename)
+        if (index >= 0) {
+          selectedFiles.value.splice(index, 1)
+        } else {
+          selectedFiles.value.push(file)
+        }
+        // Set the first selected file as the primary file for metadata
+        if (selectedFiles.value.length > 0) {
+          selectedFile.value = selectedFiles.value[0]
+        } else {
+          selectedFile.value = null
+        }
+      } else {
+        selectedFile.value = file
+        selectedFiles.value = [file]
+      }
+    }
+
+    const selectAllFiles = () => {
+      selectedFiles.value = [...availableFiles.value]
+      if (selectedFiles.value.length > 0) {
+        selectedFile.value = selectedFiles.value[0]
+      }
+    }
+
+    const clearSelection = () => {
+      selectedFiles.value = []
+      selectedFile.value = null
+    }
+
+    // Watch for selection mode changes
+    watch(selectionMode, (newMode) => {
+      if (newMode === 'single') {
+        // Keep only the first selected file
+        if (selectedFiles.value.length > 0) {
+          selectedFile.value = selectedFiles.value[0]
+          selectedFiles.value = [selectedFiles.value[0]]
+        }
+      } else {
+        // Multiple mode - ensure selectedFiles includes selectedFile
+        if (selectedFile.value && !selectedFiles.value.some(f => f.filename === selectedFile.value.filename)) {
+          selectedFiles.value = [selectedFile.value]
+        }
+      }
+    })
+
     return {
       // State
       currentStep,
       steps,
       availableFiles,
       selectedFile,
+      selectedFiles,
+      selectionMode,
       loadingFiles,
       csvSymbol,
-      timestampConvention, // ← MISSING! This was the bug
+      timestampConvention,
       metadata,
       loadingMetadata,
       importConfig,
@@ -816,6 +1102,12 @@ export default {
       finishImport,
       closeDialog,
       closeInBackground,
+      
+      // Multi-file selection methods
+      isFileSelected,
+      toggleFileSelection,
+      selectAllFiles,
+      clearSelection,
       
       // Helpers
       formatFileSize,
@@ -1016,6 +1308,62 @@ export default {
   color: var(--text-secondary);
 }
 
+/* Selection Mode Toggle */
+.selection-mode-toggle {
+  display: flex;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  border: 1px solid var(--border-primary);
+  margin-bottom: var(--spacing-lg);
+  width: fit-content;
+}
+
+.mode-btn {
+  background: none;
+  border: none;
+  padding: var(--spacing-sm) var(--spacing-lg);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: var(--transition-fast);
+  color: var(--text-secondary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-medium);
+}
+
+.mode-btn:hover {
+  color: var(--text-primary);
+  background: var(--bg-quaternary);
+}
+
+.mode-btn.active {
+  background: var(--color-brand);
+  color: var(--text-primary);
+  box-shadow: 0 2px 4px rgba(255, 107, 53, 0.2);
+}
+
+/* Multi-select Controls */
+.multi-select-controls {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  margin-bottom: var(--spacing-md);
+}
+
+.selection-count {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  margin-left: auto;
+}
+
+.btn-sm {
+  padding: var(--spacing-xs) var(--spacing-md);
+  font-size: var(--font-size-sm);
+}
+
 /* File Selector */
 .file-selector {
   display: flex;
@@ -1089,6 +1437,32 @@ export default {
   gap: var(--spacing-lg);
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
+  align-items: center;
+}
+
+.file-type-badge {
+  padding: 2px var(--spacing-xs);
+  border-radius: var(--radius-xs);
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  font-size: var(--font-size-xs);
+}
+
+.file-type-badge.csv {
+  background: var(--color-info);
+  color: var(--text-primary);
+}
+
+.file-type-badge.dbn {
+  background: var(--color-brand);
+  color: var(--text-primary);
+}
+
+.file-status {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
 }
 
 .selected-indicator {
@@ -1101,6 +1475,22 @@ export default {
   align-items: center;
   justify-content: center;
   font-weight: var(--font-weight-bold);
+}
+
+.checkbox-indicator {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.checkbox-indicator input[type="checkbox"] {
+  width: 18px;
+  height: 18px;
+  cursor: pointer;
+}
+
+.file-option.multi-select {
+  padding-left: var(--spacing-md);
 }
 
 /* CSV Symbol Input */
@@ -1185,6 +1575,90 @@ export default {
 .asset-stocks { background: var(--color-info); color: var(--text-primary); opacity: 0.8; }
 .asset-futures { background: var(--color-warning); color: var(--text-primary); opacity: 0.8; }
 .asset-forex { background: var(--color-success); color: var(--text-primary); opacity: 0.8; }
+
+/* Multi-file Summary */
+.multi-file-summary {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+.summary-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding-bottom: var(--spacing-md);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.summary-header h4 {
+  margin: 0;
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+}
+
+.file-count {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  background: var(--bg-tertiary);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.files-list {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+  max-height: 200px;
+  overflow-y: auto;
+  padding: var(--spacing-sm);
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+}
+
+.files-list::-webkit-scrollbar {
+  width: 6px;
+}
+
+.files-list::-webkit-scrollbar-track {
+  background: var(--bg-quaternary);
+  border-radius: var(--radius-sm);
+}
+
+.files-list::-webkit-scrollbar-thumb {
+  background: var(--border-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.file-summary-item {
+  display: flex;
+  align-items: center;
+  padding: var(--spacing-sm);
+  background: var(--bg-primary);
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border-primary);
+}
+
+.file-summary-info {
+  flex: 1;
+}
+
+.file-summary-name {
+  margin: 0 0 var(--spacing-xs) 0;
+  color: var(--text-primary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.file-summary-details {
+  display: flex;
+  gap: var(--spacing-md);
+  align-items: center;
+  font-size: var(--font-size-xs);
+  color: var(--text-secondary);
+}
 
 /* Import Notice */
 .import-notice {
