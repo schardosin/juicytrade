@@ -5,6 +5,7 @@ Manages strategy registration, storage, and retrieval using SQLite database.
 Follows the same patterns as existing system components (ProviderCredentialStore).
 """
 
+import os
 import asyncio
 import logging
 import uuid
@@ -155,15 +156,28 @@ class StrategyRegistry:
             # Check in-memory cache first
             if strategy_id in self._strategy_classes:
                 return self._strategy_classes[strategy_id]
-            
-            # Get strategy code from database
+
+            # Get strategy details (metadata) from the database
+            strategy_details = self.store.get_strategy(strategy_id)
+            if not strategy_details:
+                logger.warning(f"⚠️ Strategy metadata not found: {strategy_id}")
+                return None
+
+            # Explicitly get the python code
             python_code = self.store.get_strategy_code(strategy_id)
             if not python_code:
-                logger.warning(f"⚠️ Strategy code not found: {strategy_id}")
+                logger.error(f"❌ Strategy python_code is missing for {strategy_id}")
+                return None
+
+            filename = strategy_details.get('filename')
+
+            # Filename is only strictly required for debug mode
+            if os.environ.get("DEBUG_STRATEGY") and not filename:
+                logger.error(f"❌ DEBUG MODE: Strategy filename is missing for {strategy_id}")
                 return None
             
             # Load strategy class dynamically
-            strategy_class = await self._load_strategy_class(strategy_id, python_code)
+            strategy_class = await self._load_strategy_class(strategy_id, python_code, filename)
             if strategy_class:
                 # Cache the loaded class
                 self._strategy_classes[strategy_id] = strategy_class
@@ -176,10 +190,10 @@ class StrategyRegistry:
             logger.error(f"❌ Error getting strategy class: {e}")
             return None
     
-    async def _load_strategy_class(self, strategy_id: str, python_code: str) -> Optional[Type[BaseStrategy]]:
+    async def _load_strategy_class(self, strategy_id: str, python_code: str, filename: str) -> Optional[Type[BaseStrategy]]:
         """
         Dynamically load strategy class from Python code.
-        Uses safe execution environment.
+        In debug mode, it loads from the source file to allow breakpoints.
         """
         try:
             # Create a safe execution environment with all necessary imports
@@ -195,7 +209,7 @@ class StrategyRegistry:
             exec_globals = {
                 '__builtins__': __builtins__,
                 '__name__': f'strategy_{strategy_id}',
-                '__file__': f'<strategy_{strategy_id}>',
+                '__file__': f'<strategy_{strategy_id}>', # Default value
                 'BaseStrategy': BaseStrategy,
                 'ActionContext': ActionContext,
                 'actions': actions,
@@ -217,10 +231,24 @@ class StrategyRegistry:
                 'Dict': __import__('typing').Dict,
                 'Any': __import__('typing').Any,
             }
+
+            code_to_execute = python_code
+
             
+            filename_for_debugger = f'<strategy_{strategy_id}>'
+            if os.environ.get("DEBUG_STRATEGY") and filename:
+                strategy_file_path = os.path.abspath(os.path.join('trade_backend', 'strategies', 'examples', filename))
+                if os.path.exists(strategy_file_path):
+                    filename_for_debugger = strategy_file_path
+                    with open(strategy_file_path, 'r') as f:
+                        code_to_execute = f.read()
+                    logger.info(f"✅ DEBUG MODE: Loaded code from {filename_for_debugger}")
+                else:
+                    logger.warning(f"⚠️ DEBUG MODE: Source file not found at {strategy_file_path}. Falling back to database code.")
+
             # Preprocess the code to replace relative imports with absolute references
-            processed_code = python_code.replace(
-                'from .base_strategy import BaseStrategy', 
+            processed_code = code_to_execute.replace(
+                'from .base_strategy import BaseStrategy',
                 '# BaseStrategy already available in globals'
             ).replace(
                 'from .actions import ActionContext',
@@ -250,9 +278,12 @@ class StrategyRegistry:
                 'from .options_models import OptionsChain',
                 '# OptionsChain already available in globals'
             )
+
+            # Compile the code first, associating it with the filename for the debugger
+            compiled_code = compile(processed_code, filename_for_debugger, 'exec')
             
-            # Execute the processed strategy code
-            exec(processed_code, exec_globals)
+            # Execute the compiled code object
+            exec(compiled_code, exec_globals)
             
             # Find the strategy class (should inherit from BaseStrategy)
             strategy_class = None

@@ -1,7 +1,21 @@
+import os
+import debugpy
 import asyncio
 import uvicorn
 import logging
 from contextlib import asynccontextmanager
+
+# Check for debug mode at the very start
+if os.environ.get("DEBUG_STRATEGY"):
+    try:
+        debug_port = 5678
+        debugpy.listen(("0.0.0.0", debug_port))
+        # The logging is configured later, so we use print here
+        print(f"🚀 Strategy Debug Mode is ON. Waiting for debugger to attach on port {debug_port}...")
+        debugpy.wait_for_client()
+        print("✅ Debugger attached!")
+    except Exception as e:
+        print(f"❌ Error starting debugpy: {e}")
 from typing import Dict, List, Optional, Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
