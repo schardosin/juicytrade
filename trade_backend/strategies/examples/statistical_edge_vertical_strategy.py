@@ -179,17 +179,17 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
         """Rule: Check if we have options chain data available"""
         options_chain = self.get_state("options_chain")
         underlying_price = self.get_state("underlying_price")
-        
+
         has_data = options_chain is not None and underlying_price is not None
-        
+
         # Always log the detailed status when monitoring is active
         if self.get_state("monitoring_active", False):
             chain_status = f"chain: {options_chain is not None}"
             if options_chain is not None:
                 chain_status += f" ({len(options_chain.contracts)} contracts)" if hasattr(options_chain, 'contracts') and options_chain.contracts else " (no contracts)"
-            
+
             self.log_info(f"🔍 has_options_data check - {chain_status}, underlying_price: {underlying_price}, result: {has_data}")
-        
+
         return has_data
     
     def needs_target_vertical(self, context: ActionContext) -> bool:
@@ -316,13 +316,21 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                     # BacktestEngine has aggregation service
                     aggregation_service = self.data_provider.data_provider.aggregation_service
                     
-                    self.log_info(f"🔍 Getting available expirations for {self.options_symbol}...")
-                    
-                    # Get available expirations using the options symbol (SPXW for SPX)
-                    expirations = aggregation_service.get_available_options_expirations(self.options_symbol, context.current_time)
-                    
+                    # OPTIMIZATION 1: Cache expirations by date (safe - expirations don't change intra-day)
+                    cached_expirations_key = f"expirations_{self.options_symbol}_{today}"
+                    expirations = self.get_state(cached_expirations_key)
+
+                    if expirations is None:
+                        # Only call expensive expiration discovery once per symbol per day
+                        self.log_info(f"🔍 DISCOVERING expirations for {self.options_symbol}...")
+                        expirations = aggregation_service.get_available_options_expirations(self.options_symbol, context.current_time)
+                        self.set_state(cached_expirations_key, expirations)
+                        self.log_info(f"📅 DISCOVERED and cached {len(expirations)} expirations")
+                    else:
+                        # Use cached expirations (fast!)
+                        self.log_info(f"📅 Using cached {len(expirations)} expirations")
+
                     if expirations:
-                        self.log_info(f"📅 Found {len(expirations)} expirations")
                         
                         # CRITICAL FIX: Look for options that EXPIRE on our target date (today)
                         target_exp = today

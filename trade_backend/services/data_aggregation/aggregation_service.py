@@ -466,7 +466,7 @@ class DataAggregationService:
             """).fetchall()
             
             expirations = [row[0] for row in result if row[0]]
-            logger.info(f"Found {len(expirations)} expirations for {symbol} recorded on {target_date}: {expirations}")
+            logger.info(f"Found {len(expirations)} expirations for {symbol} recorded on {target_date}")
             return expirations
             
         except Exception as e:
