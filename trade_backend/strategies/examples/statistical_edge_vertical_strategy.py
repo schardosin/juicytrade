@@ -300,12 +300,8 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
             today = context.virtual_date  # Format: "YYYY-MM-DD"
             self.log_info(f"�️ Using system date context: {today}")
             
-            # Check if we already have the chain for today
-            stored_chain = self.get_state("options_chain")
-            stored_date = self.get_state("options_chain_date")
-            
-            if stored_chain and stored_date == today:
-                return True  # Already have today's chain
+            # REMOVED: Check if we already have the chain for today
+            # always reload the chain to get fresh data
             
             # Log the SPX -> SPXW mapping
             self.log_info(f"📊 Loading options chain: {self.underlying} -> {self.options_symbol} for {today}")
@@ -326,10 +322,10 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                     expirations = aggregation_service.get_available_options_expirations(self.options_symbol, context.current_time)
                     
                     if expirations:
-                        self.log_info(f"📅 Found {len(expirations)} expirations: {expirations}")
+                        self.log_info(f"📅 Found {len(expirations)} expirations")
                         
                         # CRITICAL FIX: Look for options that EXPIRE on our target date (today)
-                        target_exp = today  # We want options expiring today (2025-08-12)
+                        target_exp = today
                         
                         if target_exp in expirations:
                             self.log_info(f"🎯 Found target expiration {target_exp} - loading options chain for {self.underlying} (options: {self.options_symbol})")
@@ -339,8 +335,12 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                             target_exp = expirations[0]
                             self.log_info(f"🔄 Using fallback expiration: {target_exp}")
                         
-                        # Get the options chain using the options symbol
-                        chain = aggregation_service.get_options_chain(self.options_symbol, target_exp, context.current_time)
+                        # Get the options chain using the options symbol and underlying price from strategy state
+                        current_price = self.get_state("underlying_price")
+                        chain = aggregation_service.get_options_chain(
+                            self.options_symbol, target_exp, context.current_time,
+                            strikes_around_atm=20, underlying_price=current_price
+                        )
                         
                         if chain and hasattr(chain, 'contracts') and chain.contracts:
                             self.set_state("options_chain", chain)

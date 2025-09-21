@@ -31,10 +31,12 @@ class DataAggregationService:
     
     def __init__(self):
         """Initialize the aggregation service."""
+        from ..data_aggregation.price_query_service import get_price_query_service
         self.conn = duckdb.connect()
         self.parquet_dir = path_manager.data_dir / "parquet"
         self.market_hours_filter = get_market_hours_filter()
         self.timeframe_calculator = get_timeframe_calculator()
+        self.price_service = get_price_query_service()
         
         # Configure DuckDB for optimal performance
         self._configure_duckdb()
@@ -80,13 +82,13 @@ class DataAggregationService:
             # Validate timeframe
             timeframe = self.timeframe_calculator.validate_timeframe(request.timeframe)
             
-            # Build file paths for the symbol
-            file_paths = self._get_symbol_file_paths(request.symbol)
-            if not file_paths:
+            # Get wildcard path for the symbol to let DuckDB handle file discovery
+            wildcard_path = self._get_symbol_wildcard_path(request.symbol)
+            if not wildcard_path:
                 raise ValueError(f"No data found for symbol: {request.symbol}")
-            
-            # Create DuckDB view from Parquet files
-            self._create_parquet_view(file_paths, request.start_date, request.end_date)
+
+            # Create DuckDB view from wildcard path
+            self._create_parquet_view_from_wildcard(wildcard_path, request.start_date, request.end_date)
             
             # Generate and execute aggregation query
             sql = self._build_aggregation_query(
@@ -125,42 +127,39 @@ class DataAggregationService:
             logger.error(f"Error aggregating data for {request.symbol}: {e}")
             raise
         finally:
-            # Clean up view
+            # Clean up view but keep connection open for service lifetime
             try:
                 self.conn.execute("DROP VIEW IF EXISTS parquet_data")
             except:
                 pass
     
-    def _get_symbol_file_paths(self, symbol: str) -> List[str]:
+    def _get_symbol_wildcard_path(self, symbol: str) -> str:
         """
-        Get all Parquet file paths for a symbol.
-        
+        Get wildcard path for a symbol using DuckDB's partition pruning.
+
+        Instead of collecting file paths manually, return a wildcard path that
+        DuckDB can use for efficient file pruning based on query filters.
+
         Args:
             symbol: Symbol to find files for
-            
+
         Returns:
-            List of file paths
+            Wildcard path string for DuckDB read_parquet
         """
-        file_paths = []
-        
-        # Check all asset type directories in priority order
-        # IMPORTANT: Only use ONE asset type to avoid schema conflicts
+        # Determine asset type and return appropriate wildcard path
         asset_dirs = ['equities', 'options', 'futures', 'forex']
-        
+
         for asset_dir in asset_dirs:
             symbol_dir = self.parquet_dir / asset_dir / f"underlying={symbol}"
-            
+
             if symbol_dir.exists():
-                # Find all data.parquet files recursively
-                parquet_files = list(symbol_dir.rglob("data.parquet"))
-                if parquet_files:
-                    file_paths.extend([str(f) for f in parquet_files])
-                    logger.info(f"Using {asset_dir} data for {symbol} ({len(parquet_files)} files)")
-                    # CRITICAL: Only use the first asset type found to avoid schema conflicts
-                    break
-        
-        logger.debug(f"Found {len(file_paths)} files for symbol {symbol}")
-        return file_paths
+                # Use wildcard path, let DuckDB handle file discovery and partitioning
+                wildcard_path = str(symbol_dir / "**" / "data.parquet")
+                logger.info(f"Using {asset_dir} wildcard path for {symbol}: {wildcard_path}")
+                return wildcard_path
+
+        logger.warning(f"No data directory found for symbol {symbol}")
+        return ""
     
     def _get_options_file_paths(self, symbol: str) -> List[str]:
         """
@@ -218,8 +217,38 @@ class DataAggregationService:
         
         # Create view
         create_view_sql = f"CREATE OR REPLACE VIEW parquet_data AS {base_query}"
-        
+
         logger.debug(f"Creating parquet view with {len(file_paths)} files")
+        self.conn.execute(create_view_sql)
+
+    def _create_parquet_view_from_wildcard(self, wildcard_path: str,
+                                         start_date: Optional[str] = None,
+                                         end_date: Optional[str] = None):
+        """
+        Create a DuckDB view from a wildcard path, letting DuckDB handle file discovery.
+
+        Args:
+            wildcard_path: Wildcard path like "parquet/options/underlying=SPXW/**/*.parquet"
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+        """
+        # Base query using wildcard - DuckDB will handle partition pruning
+        base_query = f"SELECT * FROM read_parquet('{wildcard_path}')"
+
+        # Add date filtering if specified
+        where_conditions = []
+        if start_date:
+            where_conditions.append(f"date >= '{start_date}'")
+        if end_date:
+            where_conditions.append(f"date <= '{end_date}'")
+
+        if where_conditions:
+            base_query += " WHERE " + " AND ".join(where_conditions)
+
+        # Create view
+        create_view_sql = f"CREATE OR REPLACE VIEW parquet_data AS {base_query}"
+
+        logger.debug(f"Creating parquet view from wildcard: {wildcard_path}")
         self.conn.execute(create_view_sql)
     
     def _build_aggregation_query(self, 
@@ -418,17 +447,16 @@ class DataAggregationService:
             List of expiration dates (YYYY-MM-DD format)
         """
         try:
-            # CRITICAL FIX: Use options-specific file path discovery
-            file_paths = self._get_options_file_paths(symbol)
-            if not file_paths:
+            # Get options wildcard path for the symbol
+            options_wildcard = self._get_symbol_wildcard_path(symbol)
+            if not options_wildcard:
                 logger.warning(f"No options data found for symbol: {symbol}")
                 return []
-            
+
             target_date = current_time.date().strftime('%Y-%m-%d')
-            
-            # CRITICAL FIX: Look for data recorded on the target date
-            # This will show what expirations were available for trading on that date
-            self._create_parquet_view(file_paths, target_date, target_date)
+
+            # Create view using wildcard path - DuckDB will handle file discovery
+            self._create_parquet_view_from_wildcard(options_wildcard, target_date, target_date)
             
             result = self.conn.execute("""
                 SELECT DISTINCT expiration
@@ -450,94 +478,34 @@ class DataAggregationService:
             except:
                 pass
     
-    def get_options_chain(self, symbol: str, expiration: str, current_time: datetime):
+    def get_options_chain(self, symbol: str, expiration: str, current_time: datetime, strikes_around_atm: Optional[int] = None, underlying_symbol: Optional[str] = None, underlying_price: Optional[float] = None):
         """
-        Get options chain for a symbol and expiration.
-        
+        Get options chain for a symbol and expiration using the centralized data service.
+
+        This method delegates to CentralizedDataService to avoid file handle issues.
+
         Args:
-            symbol: Symbol to get chain for
+            symbol: Symbol to get options chain for (normally the options symbol like SPXW)
             expiration: Expiration date (YYYY-MM-DD)
             current_time: Current timestamp
-            
+            strikes_around_atm: Number of strikes to get around the at-the-money price
+            underlying_symbol: Underlying equivalency symbol for price lookups (like SPX)
+            underlying_price: Known underlying price to use directly (avoids re-querying)
+
         Returns:
             OptionsChain object with contracts
         """
         try:
-            from ..data_aggregation.price_query_service import get_price_query_service
-            from ...strategies.options_models import OptionsChain
-            from ...models import OptionContract
-            
-            # Use our new PriceQueryService for better price lookups
-            price_service = get_price_query_service()
-            
-            # CRITICAL FIX: Use options-specific file path discovery
-            file_paths = self._get_options_file_paths(symbol)
-            if not file_paths:
-                logger.warning(f"No options data found for symbol: {symbol}")
-                return None
-            
-            target_date = current_time.date().strftime('%Y-%m-%d')
-            
-            # Create temporary view and query contracts for the expiration
-            self._create_parquet_view(file_paths, target_date, target_date)
-            
-            result = self.conn.execute(f"""
-                SELECT DISTINCT 
-                    symbol,
-                    strike,
-                    option_type,
-                    expiration
-                FROM parquet_data
-                WHERE expiration = '{expiration}'
-                  AND strike IS NOT NULL
-                  AND option_type IS NOT NULL
-                ORDER BY option_type, strike
-            """).fetchall()
-            
-            contracts = []
-            for row in result:
-                symbol_name, strike, option_type, exp = row
-                
-                # Get current price for this contract using our PriceQueryService
-                price_data = price_service.get_price_before(symbol_name, current_time)
-                
-                bid = price_data.bid if price_data else 0.0
-                ask = price_data.ask if price_data else 0.0
-                
-                contract = OptionContract(
-                    symbol=symbol_name,
-                    strike_price=float(strike),
-                    type=option_type,
-                    expiration_date=exp,
-                    bid=bid,
-                    ask=ask,
-                    close_price=0.0,  # Not available in CBBO data
-                    volume=0,  # Not available in CBBO data
-                    underlying_symbol=symbol  # Add underlying symbol
-                )
-                contracts.append(contract)
-            
-            if contracts:
-                chain = OptionsChain(
-                    underlying=symbol,
-                    expiration=expiration,
-                    timestamp=current_time,
-                    contracts=contracts
-                )
-                logger.info(f"Built options chain for {symbol} exp={expiration} with {len(contracts)} contracts")
-                return chain
-            else:
-                logger.warning(f"No contracts found for {symbol} exp={expiration}")
-                return None
-            
+            # Immediately delegate to centralized service
+            from .centralized_data_service import get_centralized_data_service
+            centralized_service = get_centralized_data_service()
+            return centralized_service.get_options_chain(
+                symbol, expiration, current_time,
+                strikes_around_atm, underlying_symbol, underlying_price
+            )
         except Exception as e:
             logger.error(f"Error getting options chain for {symbol} exp={expiration}: {e}")
             return None
-        finally:
-            try:
-                self.conn.execute("DROP VIEW IF EXISTS parquet_data")
-            except:
-                pass
     
     def close(self):
         """Close the DuckDB connection."""

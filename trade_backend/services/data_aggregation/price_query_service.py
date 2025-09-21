@@ -115,16 +115,16 @@ class PriceQueryService:
             
             # Extract underlying symbol for file path lookup
             underlying = symbol.split()[0] if ' ' in symbol else symbol
-            
-            # Build file paths for the underlying symbol
-            file_paths = self._get_symbol_file_paths(underlying)
-            if not file_paths:
+
+            # Get wildcard path for the underlying symbol
+            wildcard_path = self._get_symbol_wildcard_path(underlying)
+            if not wildcard_path:
                 logger.warning(f"No data files found for underlying: {underlying}")
                 return None
-            
-            # Create DuckDB view from Parquet files
+
+            # Create DuckDB view from wildcard path
             target_date = target_time.date().strftime('%Y-%m-%d')
-            self._create_parquet_view(file_paths, target_date, target_date)
+            self._create_parquet_view_from_wildcard(wildcard_path, target_date, target_date)
             
             # Build and execute "closest before" query
             sql = self._build_closest_before_query(symbol, target_time, lookback_start)
@@ -170,6 +170,7 @@ class PriceQueryService:
             # Clean up view
             try:
                 self.conn.execute("DROP VIEW IF EXISTS parquet_data")
+                self.conn.close()
             except:
                 pass
     
@@ -389,25 +390,54 @@ class PriceQueryService:
         
         return groups
     
+    def _get_symbol_wildcard_path(self, symbol: str) -> str:
+        """
+        Get wildcard path for a symbol using DuckDB's partition pruning.
+
+        Instead of collecting file paths manually, return a wildcard path that
+        DuckDB can use for efficient file pruning based on query filters.
+
+        Args:
+            symbol: Symbol to find files for
+
+        Returns:
+            Wildcard path string for DuckDB read_parquet
+        """
+        # Check all asset type directories
+        asset_dirs = ['options', 'equities', 'futures', 'forex']
+
+        for asset_dir in asset_dirs:
+            symbol_dir = self.parquet_dir / asset_dir / f"underlying={symbol}"
+
+            if symbol_dir.exists():
+                # Use wildcard path, let DuckDB handle file discovery and partitioning
+                wildcard_path = str(symbol_dir / "**" / "data.parquet")
+                logger.debug(f"Using wildcard path for {symbol}: {wildcard_path}")
+                return wildcard_path
+
+        logger.warning(f"No data directory found for symbol {symbol}")
+        return ""
+
     def _get_symbol_file_paths(self, symbol: str) -> List[str]:
         """
-        Get all Parquet file paths for a symbol (underlying).
-        
+        LEGACY: Get all Parquet file paths for a symbol (underlying).
+        Only kept for backward compatibility with methods not yet updated.
+
         Args:
             symbol: Symbol/underlying to find files for
-            
+
         Returns:
             List of file paths
         """
         file_paths = []
-        
+
         # Check all asset type directories
         # Priority: options > equities > futures > forex
         asset_dirs = ['options', 'equities', 'futures', 'forex']
-        
+
         for asset_dir in asset_dirs:
             symbol_dir = self.parquet_dir / asset_dir / f"underlying={symbol}"
-            
+
             if symbol_dir.exists():
                 # Find all data.parquet files recursively
                 parquet_files = list(symbol_dir.rglob("data.parquet"))
@@ -416,7 +446,7 @@ class PriceQueryService:
                     logger.debug(f"Using {asset_dir} data for {symbol} ({len(parquet_files)} files)")
                     # Use the first asset type found to avoid schema conflicts
                     break
-        
+
         return file_paths
     
     def _create_parquet_view(self, file_paths: List[str], 
@@ -448,8 +478,38 @@ class PriceQueryService:
         
         # Create view
         create_view_sql = f"CREATE OR REPLACE VIEW parquet_data AS {base_query}"
-        
+
         logger.debug(f"Creating parquet view with {len(file_paths)} files")
+        self.conn.execute(create_view_sql)
+
+    def _create_parquet_view_from_wildcard(self, wildcard_path: str,
+                                         start_date: Optional[str] = None,
+                                         end_date: Optional[str] = None):
+        """
+        Create a DuckDB view from a wildcard path, letting DuckDB handle file discovery.
+
+        Args:
+            wildcard_path: Wildcard path like "parquet/options/underlying=SPXW/**/*.parquet"
+            start_date: Optional start date filter (YYYY-MM-DD)
+            end_date: Optional end date filter (YYYY-MM-DD)
+        """
+        # Base query using wildcard - DuckDB will handle partition pruning
+        base_query = f"SELECT * FROM read_parquet('{wildcard_path}')"
+
+        # Add date filtering if specified
+        where_conditions = []
+        if start_date:
+            where_conditions.append(f"date >= '{start_date}'")
+        if end_date:
+            where_conditions.append(f"date <= '{end_date}'")
+
+        if where_conditions:
+            base_query += " WHERE " + " AND ".join(where_conditions)
+
+        # Create view
+        create_view_sql = f"CREATE OR REPLACE VIEW parquet_data AS {base_query}"
+
+        logger.debug(f"Creating parquet view from wildcard: {wildcard_path}")
         self.conn.execute(create_view_sql)
     
     def close(self):
