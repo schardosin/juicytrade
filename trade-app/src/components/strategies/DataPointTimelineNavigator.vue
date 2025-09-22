@@ -26,7 +26,7 @@
           class="nav-btn"
           title="Previous data point"
         >
-          ⏪
+          ⏴
         </button>
         <button 
           @click="goToNext" 
@@ -34,7 +34,7 @@
           class="nav-btn"
           title="Next data point"
         >
-          ⏩
+          ⏵
         </button>
         <button 
           @click="goToLast" 
