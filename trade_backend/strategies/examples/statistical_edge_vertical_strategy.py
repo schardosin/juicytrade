@@ -129,30 +129,28 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
         find_vertical_action = self.flow.add_action("Find Target Vertical", self.find_target_vertical_action)
         
         # Vertical Search Flow: Only runs when monitoring is active AND has options data AND no vertical found yet
+        monitoring_active = self.flow.add_decision(
+            name="Monitoring Active",
+            condition=Rules.AllOf(
+                self.is_monitoring_time
+            ),
+            if_true=find_vertical_action,
+            if_false=None
+        )
+
         vertical_search_flow = self.flow.add_decision(
             name="Vertical Search",
             condition=Rules.AllOf(
-                self.is_monitoring_time,
                 self.has_options_data,
                 self.needs_target_vertical
             ),
             if_true=find_vertical_action,
             if_false=None,
-            execution_condition=self._can_run_vertical_search  # Custom condition to control execution
+            execution_condition=self.is_monitoring_time  # Custom condition to control execution
         )
-        
-        # General Monitoring Flow: Always runs when monitoring is active (just for UI updates)
-        monitoring_flow = self.flow.add_decision(
-            name="General Monitoring",
-            condition=Rules.AllOf(
-                self.is_monitoring_time,
-                self.has_options_data
-            ),
-            if_true=None,  # No action, just monitoring for UI
-            if_false=None
-        )
-        
-        self.flow.set_parallel_flows([vertical_search_flow, monitoring_flow])
+
+        #self.flow.set_parallel_flows([vertical_search_flow, monitoring_flow])
+        self.flow.set_parallel_flows([vertical_search_flow])
         
         self.log_info(f"Statistical Edge Vertical declarative flows defined with {self.flow.get_node_count()} nodes")
     
@@ -376,15 +374,29 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
             return False
     
     def update_vertical_price(self, context: ActionContext) -> bool:
-        """Data Processor 4: Update the price of tracked vertical spread"""
+        """Data Processor 4: Update the price of tracked vertical spread using fresh options chain data"""
         try:
-            short_contract = self.get_state("short_contract")
-            long_contract = self.get_state("long_contract")
+            # Get the stored leg symbols (not the stale contract objects)
+            short_symbol = self.get_state("short_leg")
+            long_symbol = self.get_state("long_leg")
             
-            if not short_contract or not long_contract:
+            if not short_symbol or not long_symbol:
                 return False
             
-            # Get current prices for both legs
+            # Get current options chain (updated each cycle with fresh data)
+            options_chain = self.get_state("options_chain")
+            if not options_chain:
+                return False
+            
+            # Find fresh contracts by symbol in current options chain
+            short_contract = self._find_contract_by_symbol(options_chain, short_symbol)
+            long_contract = self._find_contract_by_symbol(options_chain, long_symbol)
+            
+            if not short_contract or not long_contract:
+                self.log_warning(f"Could not find contracts in current chain: short={short_symbol}, long={long_symbol}")
+                return False
+            
+            # Get current prices from fresh contracts
             short_price = self._get_option_price(short_contract)
             long_price = self._get_option_price(long_contract)
             
@@ -401,11 +413,11 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                 if self.debug and old_price != vertical_price:
                     change = vertical_price - old_price if old_price else 0
                     direction = "↑" if change > 0 else "↓" if change < 0 else "→"
-                    self.log_info(f"DEBUG: Vertical price updated: ${vertical_price:.3f} {direction} (${change:+.3f})")
+                    self.log_info(f"DEBUG: Vertical price updated: ${vertical_price:.3f} {direction} (${change:+.3f}) - Fresh chain data")
                 
                 return True
             else:
-                self.log_warning("Could not get prices for vertical legs")
+                self.log_warning("Could not get prices for vertical legs from fresh contracts")
                 return False
             
         except Exception as e:
@@ -432,7 +444,7 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
         return symbol_mapping.get(underlying, underlying)
     
     def _find_target_credit_spread(self, options_chain: OptionsChain, underlying_price: float):
-        """Find the first OTM credit spread paying target credit"""
+        """Find the first OTM credit spread paying target credit or less - simple logic with immediate return"""
         try:
             # Get call contracts and sort by strike
             call_contracts = [c for c in options_chain.contracts if c.type == "call"]
@@ -442,14 +454,17 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
             otm_calls = [c for c in call_contracts if c.strike_price > underlying_price]
             
             if len(otm_calls) < 2:
+                self.log_warning("❌ Not enough OTM call contracts for spread construction")
                 return None
             
-            # Look for 5-wide spreads starting from closest OTM
+            self.log_info(f"🔍 Searching for {self.spread_width}-wide credit spread with target credit ≤ ${self.target_credit:.3f}")
+            
+            # Simple single loop: check each spread, return first one that meets criteria
             for i, short_contract in enumerate(otm_calls):
                 short_strike = short_contract.strike_price
                 target_long_strike = short_strike + self.spread_width
                 
-                # Find the long leg
+                # Find the corresponding long leg
                 long_contract = None
                 for long_candidate in otm_calls[i+1:]:
                     if long_candidate.strike_price == target_long_strike:
@@ -457,49 +472,45 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                         break
                 
                 if long_contract:
-                    # Get prices
+                    # Get current prices for both legs
                     short_price = self._get_option_price(short_contract)
                     long_price = self._get_option_price(long_contract)
                     
                     if short_price is not None and long_price is not None:
                         credit = short_price - long_price
                         
-                        # Check if this spread pays close to target credit
-                        if abs(credit - self.target_credit) <= 0.005:  # Within 0.5 cents
+                        self.log_info(f"   Checking {short_strike}/{target_long_strike} spread: credit=${credit:.3f}")
+                        
+                        # Simple logic: If credit is target or less, take it immediately and exit!
+                        if credit <= self.target_credit:
+                            self.log_info(f"✅ FOUND FIRST ACCEPTABLE SPREAD: {short_strike}/{target_long_strike} credit=${credit:.3f} (≤ ${self.target_credit:.3f})")
                             return (short_strike, target_long_strike, short_contract, long_contract)
+                        else:
+                            self.log_info(f"   → Skipping: credit ${credit:.3f} > target ${self.target_credit:.3f}")
             
-            # If no exact match, find the closest to target credit
-            best_spread = None
-            best_diff = float('inf')
-            
-            for i, short_contract in enumerate(otm_calls):
-                short_strike = short_contract.strike_price
-                target_long_strike = short_strike + self.spread_width
-                
-                # Find the long leg
-                long_contract = None
-                for long_candidate in otm_calls[i+1:]:
-                    if long_candidate.strike_price == target_long_strike:
-                        long_contract = long_candidate
-                        break
-                
-                if long_contract:
-                    # Get prices
-                    short_price = self._get_option_price(short_contract)
-                    long_price = self._get_option_price(long_contract)
-                    
-                    if short_price is not None and long_price is not None:
-                        credit = short_price - long_price
-                        diff = abs(credit - self.target_credit)
-                        
-                        if diff < best_diff:
-                            best_diff = diff
-                            best_spread = (short_strike, target_long_strike, short_contract, long_contract)
-            
-            return best_spread
+            # If we get here, no spread met the criteria
+            self.log_warning(f"❌ No credit spread found paying ${self.target_credit:.3f} or less")
+            return None
             
         except Exception as e:
             self.log_error(f"Error finding target credit spread: {e}")
+            return None
+    
+    def _find_contract_by_symbol(self, options_chain: OptionsChain, symbol: str):
+        """Find a specific contract by symbol in the current options chain"""
+        try:
+            if not options_chain or not hasattr(options_chain, 'contracts') or not options_chain.contracts:
+                return None
+            
+            # Search through all contracts in the chain
+            for contract in options_chain.contracts:
+                if hasattr(contract, 'symbol') and contract.symbol == symbol:
+                    return contract
+            
+            return None
+            
+        except Exception as e:
+            self.log_error(f"Error finding contract by symbol {symbol}: {e}")
             return None
     
     def _get_option_price(self, contract) -> Optional[float]:
@@ -572,7 +583,7 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                 },
                 "target_credit": {
                     "type": "float",
-                    "default": 0.01,
+                    "default": 0.04,
                     "min": 0.005,
                     "max": 0.50,
                     "step": 0.005,
