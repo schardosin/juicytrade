@@ -30,20 +30,29 @@ class QueryOptimizer:
     
     @staticmethod
     def build_timestamp_filter(start_time: datetime, end_time: Optional[datetime] = None,
-                              column_name: str = "timestamp") -> str:
+                              column_name: str = "timestamp", mode: str = "inclusive") -> str:
         """
         Build optimized timestamp filter clause.
         
         Args:
-            start_time: Start timestamp (inclusive)
-            end_time: End timestamp (exclusive), defaults to start_time + 1 minute
+            start_time: Start timestamp (inclusive for "inclusive" mode, target time for "before" mode)
+            end_time: End timestamp (exclusive), defaults based on mode
             column_name: Name of timestamp column in database
+            mode: "inclusive" (start_time to start_time+1min) or "before" (start_time-1min to start_time)
             
         Returns:
             SQL WHERE clause for timestamp filtering
         """
-        if end_time is None:
-            end_time = start_time + timedelta(minutes=1)
+        if mode == "before":
+            # For "before" mode: look in the minute BEFORE the target time
+            # If target is 11:20:00, look from 11:19:00 to 11:20:00
+            if end_time is None:
+                end_time = start_time
+                start_time = start_time - timedelta(minutes=1)
+        else:
+            # Default "inclusive" mode: look from start_time to start_time + 1 minute
+            if end_time is None:
+                end_time = start_time + timedelta(minutes=1)
         
         # Convert to UTC format for database compatibility
         start_utc = start_time.strftime('%Y-%m-%dT%H:%M:%S-00:00')
@@ -153,7 +162,8 @@ class QueryOptimizer:
     def build_options_base_query(symbol: str, expiration: str, timestamp_range: Tuple[datetime, datetime],
                                required_fields: Optional[List[str]] = None,
                                strike_range: Optional[Tuple[float, float]] = None,
-                               option_types: Optional[List[str]] = None) -> str:
+                               option_types: Optional[List[str]] = None,
+                               timestamp_mode: str = "inclusive") -> str:
         """
         Build optimized base query for options data.
         
@@ -164,6 +174,7 @@ class QueryOptimizer:
             required_fields: Optional list of required column names
             strike_range: Optional tuple of (min_strike, max_strike)
             option_types: Optional list of option types ('call', 'put')
+            timestamp_mode: "inclusive" or "before" mode for timestamp filtering
             
         Returns:
             Complete SQL query string
@@ -184,9 +195,9 @@ class QueryOptimizer:
         # Expiration filter
         conditions.append(f"expiration = '{expiration}'")
         
-        # Timestamp filter
+        # Timestamp filter with mode support
         start_time, end_time = timestamp_range
-        conditions.append(QueryOptimizer.build_timestamp_filter(start_time, end_time))
+        conditions.append(QueryOptimizer.build_timestamp_filter(start_time, end_time, mode=timestamp_mode))
         
         # Strike range filter
         if strike_range:

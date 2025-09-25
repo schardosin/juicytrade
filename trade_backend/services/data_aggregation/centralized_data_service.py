@@ -184,8 +184,11 @@ class CentralizedDataService:
                     logger.warning(f"No underlying price found for pricing strikes")
                     return None
 
-            # FRAMEWORK OPTIMIZATION 2: Use QueryOptimizer for efficient SQL
-            minute_end = minute_start + timedelta(minutes=1)
+            # FRAMEWORK OPTIMIZATION 2: Use QueryOptimizer for efficient SQL with "before" mode
+            # This ensures consistent pricing with execution phase by using the same "closest before" logic
+            # For "before" mode, we look from minute_start-1 to minute_start (not minute_start to minute_start+1)
+            minute_end = minute_start  # End time is the target time
+            minute_start = minute_start - timedelta(minutes=1)  # Start time is 1 minute before
             timestamp_range = (minute_start, minute_end)
             
             # Build optimized strike range if requested
@@ -201,15 +204,17 @@ class CentralizedDataService:
                 logger.warning(f"No data file found for {symbol} on {date_str}")
                 return None
 
-            # FRAMEWORK OPTIMIZATION 3: Build optimized query with minimal columns
+            # FRAMEWORK OPTIMIZATION 3: Build optimized query with minimal columns and "before" mode
             required_fields = ["symbol", "strike", "option_type", "expiration", "timestamp", "bid_px", "ask_px"]
             
-            # Use QueryOptimizer to build efficient query
+            # Use QueryOptimizer to build efficient query with "before" timestamp mode
+            # This ensures we get prices from BEFORE the target time, same as execution phase
             base_query = QueryOptimizer.build_options_base_query(
                 symbol=symbol,
                 expiration=expiration,
                 timestamp_range=timestamp_range,
-                required_fields=required_fields
+                required_fields=required_fields,
+                timestamp_mode="before"  # KEY FIX: Use "before" mode for consistent pricing
             )
             
             # Replace placeholder with actual file path

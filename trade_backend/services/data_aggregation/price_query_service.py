@@ -12,9 +12,9 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, List, Dict, Any, Tuple
 import pandas as pd
-import duckdb
 
 from ...path_manager import path_manager
+from .centralized_data_service import get_centralized_data_service
 
 logger = logging.getLogger(__name__)
 
@@ -55,38 +55,21 @@ class PriceQueryService:
     
     def __init__(self, max_lookback_minutes: int = 5):
         """
-        Initialize the price query service.
+        Initialize the price query service using CentralizedDataService.
         
         Args:
             max_lookback_minutes: Maximum time to look back for closest price (default: 5 minutes)
         """
-        self.conn = duckdb.connect()
-        self.parquet_dir = path_manager.data_dir / "parquet"
+        self.centralized_service = get_centralized_data_service()
         self.max_lookback_minutes = max_lookback_minutes
         
-        # Configure DuckDB for optimal performance
-        self._configure_duckdb()
-        
-        logger.info(f"PriceQueryService initialized with {max_lookback_minutes}min lookback")
+        logger.info(f"PriceQueryService initialized with CentralizedDataService, {max_lookback_minutes}min lookback")
     
-    def _configure_duckdb(self):
-        """Configure DuckDB settings for optimal performance."""
-        try:
-            # Enable parallel processing
-            self.conn.execute("SET threads TO 4")
-            
-            # Optimize memory usage
-            self.conn.execute("SET memory_limit = '2GB'")
-            
-            logger.debug("DuckDB configured for price queries")
-            
-        except Exception as e:
-            logger.warning(f"Error configuring DuckDB: {e}")
     
     def get_price_before(self, symbol: str, target_time: datetime, 
                         max_lookback_minutes: Optional[int] = None) -> Optional[PriceData]:
         """
-        Get the closest price BEFORE the target timestamp.
+        Get the closest price BEFORE the target timestamp using CentralizedDataService.
         
         This is the core method that implements "closest timestamp before" logic.
         If you request a price at 13:30:00, it will find the most recent price
@@ -115,24 +98,22 @@ class PriceQueryService:
             
             # Extract underlying symbol for file path lookup
             underlying = symbol.split()[0] if ' ' in symbol else symbol
-
-            # Get wildcard path for the underlying symbol
-            wildcard_path = self._get_symbol_wildcard_path(underlying)
-            if not wildcard_path:
-                logger.warning(f"No data files found for underlying: {underlying}")
-                return None
-
-            # Create DuckDB view from wildcard path
+            
+            # Use CentralizedDataService to get exact file path
             target_date = target_time.date().strftime('%Y-%m-%d')
-            self._create_parquet_view_from_wildcard(wildcard_path, target_date, target_date)
+            exact_path = self.centralized_service.get_exact_symbol_date_path(underlying, target_date)
             
-            # Build and execute "closest before" query
-            sql = self._build_closest_before_query(symbol, target_time, lookback_start)
+            if not exact_path:
+                logger.warning(f"No data file found for underlying: {underlying} on {target_date}")
+                return None
             
-            logger.debug(f"Executing closest-before query:\n{sql}")
+            # Build "closest before" query using CentralizedDataService connection
+            sql = self._build_closest_before_query_with_file(symbol, target_time, lookback_start, exact_path)
             
-            # Execute query and get results
-            result = self.conn.execute(sql).fetchone()
+            logger.debug(f"Executing closest-before query via CentralizedDataService:\n{sql}")
+            
+            # Execute query using CentralizedDataService connection (no connection closing issues!)
+            result = self.centralized_service.conn.execute(sql).fetchone()
             
             if not result:
                 logger.debug(f"No price found before {target_time} for {symbol} "
@@ -166,13 +147,7 @@ class PriceQueryService:
         except Exception as e:
             logger.error(f"Error getting price before {target_time} for {symbol}: {e}")
             return None
-        finally:
-            # Clean up view
-            try:
-                self.conn.execute("DROP VIEW IF EXISTS parquet_data")
-                self.conn.close()
-            except:
-                pass
+        # No finally block - CentralizedDataService manages its own connection!
     
     def get_prices_before_batch(self, symbols: List[str], target_time: datetime,
                                max_lookback_minutes: Optional[int] = None) -> Dict[str, Optional[PriceData]]:
@@ -223,8 +198,8 @@ class PriceQueryService:
                     
                     logger.debug(f"Executing batch query for {underlying}:\n{sql}")
                     
-                    # Execute query and process results
-                    query_results = self.conn.execute(sql).fetchall()
+                    # Execute query and process results using CentralizedDataService
+                    query_results = self.centralized_service.conn.execute(sql).fetchall()
                     
                     # Convert results to PriceData objects
                     for row in query_results:
@@ -269,10 +244,50 @@ class PriceQueryService:
         finally:
             # Clean up view
             try:
-                self.conn.execute("DROP VIEW IF EXISTS parquet_data")
+                self.centralized_service.conn.execute("DROP VIEW IF EXISTS parquet_data")
             except:
                 pass
     
+    def _build_closest_before_query_with_file(self, symbol: str, target_time: datetime, 
+                                            lookback_start: datetime, file_path: str) -> str:
+        """
+        Build SQL query to find closest timestamp before target time using exact file path.
+        
+        Args:
+            symbol: Specific symbol to query for
+            target_time: Target timestamp to look before
+            lookback_start: Earliest time to consider
+            file_path: Exact path to parquet file
+            
+        Returns:
+            SQL query string
+        """
+        # Convert timezone-aware datetime to timezone-naive for compatibility with CBBO data
+        if target_time.tzinfo is not None:
+            target_time = target_time.replace(tzinfo=None)
+        if lookback_start.tzinfo is not None:
+            lookback_start = lookback_start.replace(tzinfo=None)
+        
+        sql = f"""
+        SELECT 
+            timestamp,
+            bid_px,
+            ask_px,
+            bid_sz,
+            ask_sz,
+            strike,
+            option_type,
+            expiration
+        FROM read_parquet('{file_path}')
+        WHERE symbol = '{symbol}'
+          AND timestamp < '{target_time.isoformat()}'
+          AND timestamp >= '{lookback_start.isoformat()}'
+        ORDER BY timestamp DESC
+        LIMIT 1
+        """
+        
+        return sql.strip()
+
     def _build_closest_before_query(self, symbol: str, target_time: datetime, lookback_start: datetime) -> str:
         """
         Build SQL query to find closest timestamp before target time for a specific symbol.
@@ -407,7 +422,7 @@ class PriceQueryService:
         asset_dirs = ['options', 'equities', 'futures', 'forex']
 
         for asset_dir in asset_dirs:
-            symbol_dir = self.parquet_dir / asset_dir / f"underlying={symbol}"
+            symbol_dir = self.centralized_service.parquet_dir / asset_dir / f"underlying={symbol}"
 
             if symbol_dir.exists():
                 # Use wildcard path, let DuckDB handle file discovery and partitioning
@@ -436,7 +451,7 @@ class PriceQueryService:
         asset_dirs = ['options', 'equities', 'futures', 'forex']
 
         for asset_dir in asset_dirs:
-            symbol_dir = self.parquet_dir / asset_dir / f"underlying={symbol}"
+            symbol_dir = self.centralized_service.parquet_dir / asset_dir / f"underlying={symbol}"
 
             if symbol_dir.exists():
                 # Find all data.parquet files recursively
@@ -480,7 +495,7 @@ class PriceQueryService:
         create_view_sql = f"CREATE OR REPLACE VIEW parquet_data AS {base_query}"
 
         logger.debug(f"Creating parquet view with {len(file_paths)} files")
-        self.conn.execute(create_view_sql)
+        self.centralized_service.conn.execute(create_view_sql)
 
     def _create_parquet_view_from_wildcard(self, wildcard_path: str,
                                          start_date: Optional[str] = None,
@@ -510,15 +525,11 @@ class PriceQueryService:
         create_view_sql = f"CREATE OR REPLACE VIEW parquet_data AS {base_query}"
 
         logger.debug(f"Creating parquet view from wildcard: {wildcard_path}")
-        self.conn.execute(create_view_sql)
+        self.centralized_service.conn.execute(create_view_sql)
     
     def close(self):
-        """Close the DuckDB connection."""
-        try:
-            self.conn.close()
-            logger.info("PriceQueryService closed")
-        except Exception as e:
-            logger.error(f"Error closing PriceQueryService: {e}")
+        """Close method for compatibility. CentralizedDataService manages its own connection."""
+        logger.info("PriceQueryService close() called - CentralizedDataService manages connections")
 
 
 # Global service instance

@@ -85,3 +85,13 @@ class MockOrderExecutor:
     def get_account_balance(self) -> float:
         """Mock account balance."""
         return 100000.0
+    
+    def place_options_order(self, legs: List, order_type: str = "market", strategy_id: str = '') -> str:
+        """Mock options order placement - always succeeds with order ID."""
+        mock_order_id = f"MOCK_OPTIONS_{len(legs)}LEG_{id(legs)}"
+        return mock_order_id
+    
+    def place_market_order(self, symbol: str, quantity: int, side: str, reason: str = "") -> str:
+        """Mock market order placement - always succeeds with order ID."""
+        mock_order_id = f"MOCK_MARKET_{symbol}_{quantity}_{side}_{id(reason)}"
+        return mock_order_id

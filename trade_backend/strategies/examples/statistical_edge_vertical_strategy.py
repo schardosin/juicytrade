@@ -25,7 +25,7 @@ import asyncio
 from .base_strategy import BaseStrategy
 from .actions import ActionContext
 from .rules import Rules
-from .options_models import OptionsChain
+from .options_models import OptionsChain, OptionsLeg, OptionsOrder
 
 import logging
 logger = logging.getLogger(__name__)
@@ -58,9 +58,10 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
         """Initialize strategy parameters and define the monitoring flow"""
         # Initialize parameters
         self.underlying = self.get_config_value("underlying", "SPX")
-        self.monitoring_start = self.get_config_value("monitoring_start", "13:30")  # 1:30 PM
+        self.monitoring_start = self.get_config_value("monitoring_start", "11:00")  # 1:30 PM
         self.spread_width = self.get_config_value("spread_width", 5)  # 5-wide spreads
         self.target_credit = self.get_config_value("target_credit", 0.01)  # Target $0.01
+        self.buy_price = self.get_config_value("buy_price", 0.10)  # Buy signal at $0.10
         self.option_type = self.get_config_value("option_type", "call")  # Call spreads
         self.min_dte = self.get_config_value("min_dte", 0)  # 0DTE options
         self.max_dte = self.get_config_value("max_dte", 7)  # Up to weekly
@@ -124,35 +125,44 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
         })
     
     def _define_strategy_flow(self):
-        """Define the monitoring flow for Phase 1"""
-        # Create action node for finding target vertical
-        find_vertical_action = self.flow.add_action("Find Target Vertical", self.find_target_vertical_action)
+        """Define the single tree flow with cascading decisions (Option Alpha style)"""
         
-        # Vertical Search Flow: Only runs when monitoring is active AND has options data AND no vertical found yet
-        monitoring_active = self.flow.add_decision(
-            name="Monitoring Active",
-            condition=Rules.AllOf(
-                self.is_monitoring_time
-            ),
-            if_true=find_vertical_action,
-            if_false=None
+        # Actions (terminal leaf nodes)
+        find_vertical_action = self.flow.add_action("Find Target Vertical", self.find_target_vertical_action)
+        replace_legs_action = self.flow.add_action("Replace Current Legs", self.replace_current_legs_action)
+        buy_legs_action = self.flow.add_action("Buy Monitored Legs", self.buy_monitored_legs_action)
+        
+        # Build the tree from bottom up (like Option Alpha)
+        buy_signal_check = self.flow.add_decision(
+            name="Price reached buy target?",
+            condition=Rules.AllOf(self.price_reached_buy_target),
+            if_true=buy_legs_action,      # YES → Buy legs and stop monitoring
+            if_false=None                 # NO → End cycle (wait for next data)
         )
-
-        vertical_search_flow = self.flow.add_decision(
-            name="Vertical Search",
+        
+        closer_legs_check = self.flow.add_decision(
+            name="Found closer legs at target credit?",
+            condition=Rules.AllOf(self.found_closer_legs_at_target_credit),
+            if_true=replace_legs_action,  # YES → Replace legs and end cycle
+            if_false=buy_signal_check     # NO → Check buy signal
+        )
+        
+        # Root decision that branches the entire tree
+        root_decision = self.flow.add_decision(
+            name="Need to find vertical?",
             condition=Rules.AllOf(
                 self.has_options_data,
                 self.needs_target_vertical
             ),
-            if_true=find_vertical_action,
-            if_false=None,
-            execution_condition=self.is_monitoring_time  # Custom condition to control execution
+            if_true=find_vertical_action,    # YES → Find vertical (then end cycle)
+            if_false=closer_legs_check,      # NO → Check for closer legs (monitoring mode)
+            execution_condition=self.is_monitoring_time
         )
-
-        #self.flow.set_parallel_flows([vertical_search_flow, monitoring_flow])
-        self.flow.set_parallel_flows([vertical_search_flow])
         
-        self.log_info(f"Statistical Edge Vertical declarative flows defined with {self.flow.get_node_count()} nodes")
+        # Set single root node (no parallel flows - creates single tree)
+        self.flow.set_root_node(root_decision)
+        
+        self.log_info(f"Statistical Edge Vertical single tree flow defined with {self.flow.get_node_count()} nodes")
     
     async def start_monitoring(self, context: ActionContext):
         """Start monitoring - called at 1:30 PM"""
@@ -165,8 +175,15 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
     # ========================================================================
     
     def is_monitoring_time(self, context: ActionContext) -> bool:
-        """Rule: Check if monitoring time has been triggered"""
+        """Rule: Check if monitoring time has been triggered and legs haven't been bought yet"""
         monitoring_active = self.get_state("monitoring_active", False)
+        legs_bought = self.get_state("legs_bought", False)
+        
+        # Stop monitoring if legs have been bought
+        if legs_bought:
+            if self.debug:
+                self.log_info("DEBUG: Monitoring stopped - legs have been bought")
+            return False
         
         if self.debug and monitoring_active:
             self.log_info("DEBUG: Monitoring time active - tracking vertical spreads")
@@ -202,6 +219,62 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
             self.log_info(f"DEBUG: needs_target_vertical - short_leg: {current_short}, long_leg: {current_long}, needs: {needs_vertical}")
         
         return needs_vertical
+    
+    def found_closer_legs_at_target_credit(self, context: ActionContext) -> bool:
+        """Rule: Check if there are closer legs paying the same target credit"""
+        # Only check if we have a current vertical to compare against
+        current_short = self.get_state("short_leg")
+        current_long = self.get_state("long_leg")
+        if not current_short or not current_long:
+            return False
+        
+        current_price = self.get_state("underlying_price")
+        current_short_strike = self.get_state("short_strike")
+        target_credit = self.get_state("target_credit")
+        
+        if not current_price or not current_short_strike:
+            return False
+        
+        # Get current distance from price to short strike
+        current_distance = abs(current_price - current_short_strike)
+        
+        # Search for spreads closer to current price
+        options_chain = self.get_state("options_chain")
+        if not options_chain:
+            return False
+        
+        closer_spread = self._find_closer_spread_at_target_credit(
+            options_chain, current_price, current_short_strike, target_credit, current_distance
+        )
+        
+        if closer_spread:
+            # Store the closer spread for the replacement action
+            self.set_state("replacement_spread", closer_spread)
+            
+            short_strike, long_strike, short_contract, long_contract = closer_spread
+            distance_improvement = current_distance - abs(current_price - short_strike)
+            
+            self.log_info(f"🔍 FOUND CLOSER LEGS: {short_strike}/{long_strike} (${distance_improvement:.1f} closer to price)")
+            return True
+        
+        return False
+    
+    def price_reached_buy_target(self, context: ActionContext) -> bool:
+        """Rule: Check if the current vertical price has reached the buy target price"""
+        current_vertical_price = self.get_state("price_vertical")
+        buy_price = self.get_state("buy_price", self.buy_price)
+        
+        # Only check if we have a current vertical price
+        if current_vertical_price is None:
+            return False
+        
+        # Check if current spread price >= buy target price
+        reached_target = current_vertical_price >= buy_price
+        
+        if reached_target:
+            self.log_info(f"🎯 BUY SIGNAL: Vertical price ${current_vertical_price:.3f} reached target ${buy_price:.2f}")
+        
+        return reached_target
     
     # ========================================================================
     # Execution Condition Methods - Control when flows should run
@@ -261,6 +334,142 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
             
         except Exception as e:
             self.log_error(f"Error finding target vertical: {e}")
+    
+    async def replace_current_legs_action(self, context: ActionContext):
+        """Action: Replace current legs with closer legs at same target credit"""
+        try:
+            replacement_spread = self.get_state("replacement_spread")
+            if not replacement_spread:
+                self.log_error("No replacement spread available for leg replacement")
+                return
+            
+            # Get current leg info for logging
+            old_short_symbol = self.get_state("short_leg", "Unknown")
+            old_long_symbol = self.get_state("long_leg", "Unknown")
+            old_short_strike = self.get_state("short_strike")
+            old_long_strike = self.get_state("long_strike")
+            
+            # Extract new spread info
+            short_strike, long_strike, short_contract, long_contract = replacement_spread
+            
+            # Update to new vertical
+            self.set_state("short_leg", short_contract.symbol)
+            self.set_state("long_leg", long_contract.symbol)
+            self.set_state("short_strike", short_strike)
+            self.set_state("long_strike", long_strike)
+            self.set_state("short_contract", short_contract)
+            self.set_state("long_contract", long_contract)
+            
+            # Update display info
+            strikes_info = f"{short_strike}/{long_strike} Call Spread ({self.spread_width}-wide)"
+            self.set_state("strikes_monitored", strikes_info)
+            
+            # Calculate distance improvement
+            underlying_price = self.get_state("underlying_price")
+            if underlying_price and old_short_strike:
+                old_distance = abs(underlying_price - old_short_strike)
+                new_distance = abs(underlying_price - short_strike)
+                distance_improvement = old_distance - new_distance
+                
+                self.log_info(f"🔄 REPLACED LEGS:")
+                self.log_info(f"   OLD: {old_short_strike}/{old_long_strike} ({old_short_symbol}/{old_long_symbol})")
+                self.log_info(f"   NEW: {short_strike}/{long_strike} ({short_contract.symbol}/{long_contract.symbol})")
+                self.log_info(f"   Improvement: ${distance_improvement:.1f} closer to current price ${underlying_price:.2f}")
+            else:
+                self.log_info(f"🔄 REPLACED LEGS:")
+                self.log_info(f"   OLD: {old_short_symbol}/{old_long_symbol}")
+                self.log_info(f"   NEW: {short_contract.symbol}/{long_contract.symbol}")
+            
+            self.add_checkpoint("legs_replaced", {
+                "old_short_strike": old_short_strike,
+                "old_long_strike": old_long_strike,
+                "new_short_strike": short_strike,
+                "new_long_strike": long_strike,
+                "underlying_price": underlying_price,
+                "timestamp": context.current_time.isoformat()
+            })
+            
+            # Clear the replacement spread
+            self.set_state("replacement_spread", None)
+            
+        except Exception as e:
+            self.log_error(f"Error replacing current legs: {e}")
+    
+    async def buy_monitored_legs_action(self, context: ActionContext):
+        """Action: Buy the monitored legs using proper options order placement"""
+        try:
+            short_contract = self.get_state("short_contract")
+            long_contract = self.get_state("long_contract")
+            current_vertical_price = self.get_state("price_vertical")
+            buy_price = self.get_state("buy_price", self.buy_price)
+            
+            if not short_contract or not long_contract:
+                self.log_error("No leg contracts available to buy")
+                return
+            
+            self.log_info(f"💰 BUYING MONITORED LEGS:")
+            self.log_info(f"   Short: {short_contract.symbol} @ ${short_contract.strike_price}")
+            self.log_info(f"   Long:  {long_contract.symbol} @ ${long_contract.strike_price}")
+            self.log_info(f"   Buy Price: ${current_vertical_price:.3f} (target was ${buy_price:.2f})")
+
+            
+            # Build vertical spread legs
+            legs = [
+                # Sell to open the short leg (collect premium)
+                OptionsLeg(
+                    contract=short_contract,
+                    action="sell",
+                    quantity=1
+                ),
+                # Buy to open the long leg (pay premium for protection)
+                OptionsLeg(
+                    contract=long_contract,
+                    action="buy",
+                    quantity=1
+                )
+            ]
+            
+            # Create OptionsOrder object and convert to proper format
+            vertical_order = OptionsOrder(legs=legs, order_type="market")
+            net_cost = vertical_order.calculate_net_debit_credit()
+            
+            self.log_info(f"   Net Cost: ${net_cost:.2f}")
+            
+            # Place the options order using the framework's proper method
+            if hasattr(self.order_executor, 'place_options_order'):
+                # Check if place_options_order is async or sync
+                if asyncio.iscoroutinefunction(self.order_executor.place_options_order):
+                    order_id = await self.order_executor.place_options_order(legs, "market")
+                else:
+                    order_id = self.order_executor.place_options_order(legs, "market")
+                
+                if order_id:
+                    self.log_info(f"✅ VERTICAL SPREAD EXECUTED: Order ID {order_id}")
+                    
+                    # Mark that legs have been bought - this stops all monitoring
+                    self.set_state("legs_bought", True)
+                    self.set_state("monitoring_active", False)  # Stop monitoring
+                    self.set_state("position_order_id", order_id)
+                    
+                    self.add_checkpoint("legs_bought", {
+                        "order_id": order_id,
+                        "short_symbol": short_contract.symbol,
+                        "long_symbol": long_contract.symbol,
+                        "short_strike": short_contract.strike_price,
+                        "long_strike": long_contract.strike_price,
+                        "buy_price": current_vertical_price,
+                        "target_buy_price": buy_price,
+                        "timestamp": context.current_time.isoformat()
+                    })
+                    
+                    self.log_info("🛑 MONITORING STOPPED - Legs have been bought")
+                else:
+                    self.log_error("Vertical spread execution failed - no order ID returned")
+            else:
+                self.log_error("Order executor does not support place_options_order")
+            
+        except Exception as e:
+            self.log_error(f"Error buying monitored legs: {e}")
     
     # ========================================================================
     # Data Processor Methods - Registered in order of execution
@@ -539,6 +748,54 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
             self.log_error(f"Error getting option price for {contract.symbol}: {e}")
             return None
     
+    def _find_closer_spread_at_target_credit(self, options_chain: OptionsChain, current_price: float, 
+                                           current_short_strike: float, target_credit: float, 
+                                           current_distance: float):
+        """Find a spread closer to current price that still pays the target credit"""
+        try:
+            # Get call contracts and sort by strike
+            call_contracts = [c for c in options_chain.contracts if c.type == "call"]
+            call_contracts.sort(key=lambda x: x.strike_price)
+            
+            # Find strikes above current price (OTM calls) but closer than current short strike
+            closer_calls = [c for c in call_contracts 
+                          if c.strike_price > current_price 
+                          and c.strike_price < current_short_strike]
+            
+            if len(closer_calls) < 1:
+                return None  # No closer strikes available
+            
+            # Check each closer strike for a spread that meets target credit
+            for short_contract in closer_calls:
+                short_strike = short_contract.strike_price
+                target_long_strike = short_strike + self.spread_width
+                
+                # Find the corresponding long leg
+                long_contract = None
+                for long_candidate in call_contracts:
+                    if long_candidate.strike_price == target_long_strike:
+                        long_contract = long_candidate
+                        break
+                
+                if long_contract:
+                    # Get current prices for both legs
+                    short_price = self._get_option_price(short_contract)
+                    long_price = self._get_option_price(long_contract)
+                    
+                    if short_price is not None and long_price is not None:
+                        credit = short_price - long_price
+                        distance_to_current_price = abs(current_price - short_strike)
+                        
+                        # Check if this spread is closer AND pays target credit or less
+                        if credit <= target_credit and distance_to_current_price < current_distance:
+                            return (short_strike, target_long_strike, short_contract, long_contract)
+            
+            return None  # No closer spread found that meets criteria
+            
+        except Exception as e:
+            self.log_error(f"Error finding closer spread at target credit: {e}")
+            return None
+
     def get_current_price_from_provider(self) -> Optional[float]:
         """Get current price from the data provider"""
         try:
@@ -577,7 +834,7 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                 },
                 "monitoring_start_time": {
                     "type": "string",
-                    "default": "13:30",
+                    "default": "11:00",
                     "description": "Daily monitoring start time (HH:MM format, e.g., 13:30 for 1:30 PM ET)",
                     "category": "strategy"
                 },
@@ -588,6 +845,15 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                     "max": 0.50,
                     "step": 0.005,
                     "description": "Target credit amount to search for in spread ($0.01 = 1 cent)",
+                    "category": "strategy"
+                },
+                "buy_price": {
+                    "type": "float",
+                    "default": 0.10,
+                    "min": 0.05,
+                    "max": 9999.50,
+                    "step": 0.01,
+                    "description": "Buy price",
                     "category": "strategy"
                 },
                 "spread_width_call": {
