@@ -22,6 +22,9 @@ from .actions import ActionContext, TradeAction
 from .strategy_state import StrategyState
 from .time_manager import TimeScheduler, MarketType, TradingSession
 
+# Import position manager for automatic position tracking
+from .position_manager import position_manager
+
 logger = logging.getLogger(__name__)
 
 # ============================================================================
@@ -855,12 +858,16 @@ class StrategyBacktestEngine:
             # Update positions with current prices
             self._update_positions()
             
+            # 🆕 AUTOMATIC OPTIONS EXPIRATION: Check for expiring options at 4:00 PM
+            await self._check_for_options_expiration(timestamp, strategy)
+            
             # ARCHITECTURAL FIX: Inject virtual_date into strategy context
             # The strategy will receive this and never need to calculate "what day is it"
             if hasattr(strategy, '_set_virtual_date'):
                 strategy._set_virtual_date(virtual_date)
             
-            # Execute strategy cycle
+            # Execute strategy cycle with proper timestamp injection
+            # The strategy's execute_cycle method will get the timestamp from data_provider.current_time
             await strategy.execute_cycle()
             
             # CRITICAL FIX: Process any trade actions that were queued by the strategy
@@ -1155,6 +1162,17 @@ class StrategyBacktestEngine:
                 
                 # Add to trades list (this will show in UI as grouped order)
                 self.trades.append(grouped_trade)
+                
+                # CRITICAL: Update position manager for the options order
+                try:
+                    position_manager.process_options_order(
+                        legs=legs,
+                        strategy_id=strategy_id,
+                        order_id=composite_order_id
+                    )
+                    logger.info(f"✅ POSITION MANAGER: Updated positions for options order {composite_order_id}")
+                except Exception as e:
+                    logger.error(f"❌ POSITION MANAGER: Failed to update positions: {e}")
                 
                 logger.info(f"🎉 BACKTEST: {len(legs)}-leg options order executed with UI grouping")
                 logger.info(f"   Composite Order ID: {composite_order_id}")
@@ -1615,6 +1633,267 @@ class StrategyBacktestEngine:
                     position.quantity -= quantity
                     position.avg_price = total_value / abs(position.quantity) if position.quantity != 0 else 0
 
+    # ========================================================================
+    # 🆕 AUTOMATIC OPTIONS EXPIRATION SYSTEM
+    # ========================================================================
+    
+    async def _check_for_options_expiration(self, timestamp: datetime, strategy: BaseStrategy):
+        """
+        Check if any options expire at exactly 4:00 PM and create virtual close trades.
+        
+        This mimics real broker behavior where options expire automatically without
+        manual intervention, removing the need for strategies to implement close logic.
+        """
+        try:
+            # Only process at exactly 4:00 PM (16:00)
+            current_time = timestamp.time()
+            if current_time.hour != 16 or current_time.minute != 0:
+                return
+            
+            # Get current date for expiration matching
+            current_date = timestamp.date()
+            
+            # Find all option positions that expire today
+            expiring_positions = []
+            for symbol, position in self.positions.items():
+                if position.quantity != 0 and self._is_option_symbol(symbol):
+                    exp_date = self._extract_expiration_date(symbol)
+                    if exp_date and exp_date == current_date:
+                        expiring_positions.append((symbol, position))
+            
+            if not expiring_positions:
+                return  # No options expiring today
+            
+            logger.info(f"🏁 OPTIONS EXPIRATION: Found {len(expiring_positions)} positions expiring at 4:00 PM on {current_date}")
+            
+            # Process each expiring position
+            total_expiration_pnl = 0.0
+            for symbol, position in expiring_positions:
+                pnl = await self._create_virtual_expiration_close(symbol, position, timestamp, strategy)
+                total_expiration_pnl += pnl
+            
+            if expiring_positions:
+                logger.info(f"✅ OPTIONS EXPIRATION COMPLETE: {len(expiring_positions)} positions closed, Total P&L: ${total_expiration_pnl:.2f}")
+                
+        except Exception as e:
+            logger.error(f"Error in options expiration check: {e}")
+    
+    def _extract_expiration_date(self, option_symbol: str) -> Optional[datetime.date]:
+        """
+        Extract expiration date from option symbol.
+        
+        Example formats:
+        - "SPY   250812P00639000" -> 2025-08-12 (YYMMDD format)
+        - "SPXW  241122C06200000" -> 2024-11-22
+        
+        Returns:
+            datetime.date object or None if parsing fails
+        """
+        try:
+            import re
+            
+            # Option symbols typically have YYMMDD format embedded
+            # Look for 6 consecutive digits that could be a date
+            date_match = re.search(r'(\d{6})', option_symbol)
+            
+            if date_match:
+                date_str = date_match.group(1)
+                
+                # Parse YYMMDD format
+                year_str = date_str[:2]
+                month_str = date_str[2:4]
+                day_str = date_str[4:6]
+                
+                # Convert 2-digit year to 4-digit (assume 2000-2099)
+                year = 2000 + int(year_str)
+                month = int(month_str)
+                day = int(day_str)
+                
+                # Validate date components
+                if 1 <= month <= 12 and 1 <= day <= 31:
+                    # FIXED: Use datetime constructor, not date method
+                    exp_date = datetime(year, month, day).date()
+                    logger.debug(f"Parsed expiration date from {option_symbol}: {exp_date}")
+                    return exp_date
+                else:
+                    logger.warning(f"Invalid date components in {option_symbol}: {year}-{month:02d}-{day:02d}")
+                    return None
+            else:
+                logger.warning(f"No date pattern found in option symbol: {option_symbol}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error parsing expiration date from {option_symbol}: {e}")
+            return None
+    
+    async def _create_virtual_expiration_close(
+        self, 
+        symbol: str, 
+        position: BacktestPosition, 
+        timestamp: datetime,
+        strategy: BaseStrategy
+    ) -> float:
+        """
+        Create virtual close trade for expired option at intrinsic value.
+        
+        Args:
+            symbol: Option symbol expiring
+            position: Current position to close
+            timestamp: Expiration timestamp (4:00 PM)
+            strategy: Strategy instance for logging
+            
+        Returns:
+            P&L from the virtual expiration close
+        """
+        try:
+            # Calculate intrinsic value at expiration
+            intrinsic_value = self._calculate_intrinsic_value(symbol, timestamp)
+            
+            # Calculate intrinsic value at expiration
+            logger.info(f"🏁 EXPIRING: {symbol} Qty: {position.quantity} Avg: ${position.avg_price:.4f}")
+            
+            # Determine closing action (opposite of current position)
+            if position.quantity > 0:
+                # Long position -> Sell to close
+                closing_action = "SELL_TO_CLOSE"
+                closing_quantity = position.quantity
+            else:
+                # Short position -> Buy to close  
+                closing_action = "BUY_TO_CLOSE"
+                closing_quantity = abs(position.quantity)
+            
+            # SIMPLIFIED: Create standard expiration trade and let _execute_trade() handle everything
+            trade_id = f"EXPIRE_{symbol}_{timestamp.timestamp()}"
+            
+            virtual_trade = BacktestTrade(
+                timestamp=timestamp,
+                symbol=symbol,
+                action=closing_action,
+                quantity=closing_quantity,
+                price=intrinsic_value,  # $0.00 for OTM, actual value for ITM
+                order_type="EXPIRATION",
+                trade_id=trade_id,
+                strategy_action="Options Expiration Settlement",
+                commission=0.0  # No commission on expiration
+            )
+            
+            # Execute using standard trade logic - this handles P&L and position updates consistently
+            self._execute_trade(virtual_trade)
+            
+            # Get the calculated P&L from the trade (calculated by _execute_trade)
+            expiration_pnl = virtual_trade.pnl
+            
+            # Update position manager
+            try:
+                position_manager.close_position(symbol, strategy.strategy_id if strategy else "")
+                logger.debug(f"Position manager updated for expired option: {symbol}")
+            except Exception as e:
+                logger.warning(f"Failed to update position manager for expiration: {e}")
+            
+            # Log the expiration result
+            if intrinsic_value > 0:
+                logger.info(f"✅ EXPIRED ITM: {symbol} settled at ${intrinsic_value:.2f}, P&L: ${expiration_pnl:.2f}")
+            else:
+                logger.info(f"✅ EXPIRED OTM: {symbol} expired worthless, P&L: ${expiration_pnl:.2f}")
+            
+            return expiration_pnl
+            
+        except Exception as e:
+            logger.error(f"Error creating virtual expiration close for {symbol}: {e}")
+            return 0.0
+    
+    def _calculate_intrinsic_value(self, option_symbol: str, timestamp: datetime) -> float:
+        """
+        Calculate intrinsic value of option at expiration.
+        
+        Intrinsic value = max(0, underlying_price - strike) for calls
+        Intrinsic value = max(0, strike - underlying_price) for puts
+        
+        Args:
+            option_symbol: Option contract symbol
+            timestamp: Current timestamp for price lookup
+            
+        Returns:
+            Intrinsic value of the option (0 if OTM)
+        """
+        try:
+            # Parse option details from symbol
+            option_details = self._parse_option_symbol(option_symbol)
+            if not option_details:
+                logger.warning(f"Could not parse option symbol: {option_symbol}")
+                return 0.0
+            
+            underlying_symbol = option_details['underlying']
+            strike_price = option_details['strike']
+            option_type = option_details['type']  # 'C' or 'P'
+            
+            # Get current underlying price
+            underlying_price = self.current_prices.get(underlying_symbol)
+            if underlying_price is None:
+                logger.warning(f"No underlying price available for {underlying_symbol}")
+                return 0.0
+            
+            # Calculate intrinsic value
+            if option_type == 'C':  # Call option
+                intrinsic_value = max(0.0, underlying_price - strike_price)
+            else:  # Put option
+                intrinsic_value = max(0.0, strike_price - underlying_price)
+            
+            logger.debug(f"Intrinsic value calculation: {option_symbol} underlying=${underlying_price:.2f} strike=${strike_price:.2f} intrinsic=${intrinsic_value:.2f}")
+            
+            return intrinsic_value
+            
+        except Exception as e:
+            logger.error(f"Error calculating intrinsic value for {option_symbol}: {e}")
+            return 0.0
+    
+    def _parse_option_symbol(self, option_symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Parse option symbol to extract underlying, strike, type, and expiration.
+        
+        Example: "SPY   250812P00639000" -> 
+        {
+            'underlying': 'SPY',
+            'expiration': '250812',
+            'type': 'P',
+            'strike': 639.0
+        }
+        
+        Returns:
+            Dictionary with option details or None if parsing fails
+        """
+        try:
+            import re
+            
+            # Standard option symbol format: SYMBOL + spaces + YYMMDD + C/P + strike (8 digits)
+            # Example: "SPY   250812P00639000"
+            pattern = r'^([A-Z]+)\s*(\d{6})([CP])(\d{8})$'
+            
+            match = re.match(pattern, option_symbol.strip())
+            if match:
+                underlying = match.group(1)
+                expiration = match.group(2)
+                option_type = match.group(3)
+                strike_str = match.group(4)
+                
+                # Parse strike price (usually stored as integer * 1000)
+                # Example: "00639000" -> 639.000
+                strike_price = float(strike_str) / 1000.0
+                
+                return {
+                    'underlying': underlying,
+                    'expiration': expiration,
+                    'type': option_type,
+                    'strike': strike_price
+                }
+            else:
+                logger.warning(f"Option symbol format not recognized: {option_symbol}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error parsing option symbol {option_symbol}: {e}")
+            return None
+
     def _serialize_json_safe(self, data: Any) -> Any:
         """Convert data to JSON-safe format by handling datetime objects and all boolean types"""
         if data is None:
@@ -1663,6 +1942,57 @@ class StrategyBacktestEngine:
                     return str(data)
             except (ValueError, TypeError):
                 return str(data)
+
+    # ========================================================================
+    # Position Manager Integration (for BaseStrategy compatibility)
+    # ========================================================================
+    
+    def has_open_positions(self, strategy_id: str = "", underlying: str = "") -> bool:
+        """
+        Check if there are any open positions.
+        
+        Args:
+            strategy_id: Filter by strategy ID
+            underlying: Filter by underlying symbol
+            
+        Returns:
+            True if any positions exist matching criteria
+        """
+        return position_manager.has_positions(strategy_id=strategy_id, underlying=underlying)
+
+    def get_position_info(self, symbol: str = "", strategy_id: str = "") -> Dict[str, Any]:
+        """
+        Get position information.
+        
+        Args:
+            symbol: Specific symbol to get position for
+            strategy_id: Filter by strategy ID
+            
+        Returns:
+            Position information dictionary
+        """
+        if symbol:
+            # Get specific position
+            position = position_manager.get_position(symbol, strategy_id)
+            combo_position = position_manager.get_combo_position(symbol, strategy_id)
+            
+            if position:
+                return {"type": "single", "position": position.to_dict()}
+            elif combo_position:
+                return {"type": "combo", "position": combo_position.to_dict()}
+            else:
+                return {"type": "none", "position": None}
+        else:
+            # Get all positions
+            return position_manager.get_all_positions(strategy_id=strategy_id)
+
+    def get_position_manager_status(self) -> Dict[str, Any]:
+        """Get position manager status for debugging."""
+        return position_manager.get_status()
+
+    def get_position_manager_debug_info(self) -> Dict[str, Any]:
+        """Get detailed position manager debug information."""
+        return position_manager.get_debug_info()
 
 # ============================================================================
 # Global Backtest Engine Instance

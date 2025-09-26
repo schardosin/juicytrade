@@ -3,6 +3,8 @@ Order Execution Engine for Trading Strategies
 
 This module handles order placement and management for automated trading strategies.
 It provides a unified interface to place orders across different broker APIs.
+
+Enhanced with automatic position tracking via the Position Manager.
 """
 
 from typing import Dict, List, Any, Optional
@@ -26,6 +28,9 @@ except ImportError:
             def place_multi_leg_order(self, order_data):
                 return None
         provider_manager = MockProviderManager()
+
+# Import position manager for automatic position tracking
+from .position_manager import position_manager
 
 logger = logging.getLogger(__name__)
 
@@ -86,7 +91,13 @@ class OrderExecutor:
         Returns:
             Order ID if successful, empty string if failed
         """
-        return self._place_order('market', symbol, quantity, side, reason, strategy_id)
+        order_id = self._place_order('market', symbol, quantity, side, reason, strategy_id)
+        
+        # Automatically update positions if order placed successfully
+        if order_id:
+            self._update_position_from_order(order_id, symbol, quantity, side, 0.0, strategy_id, 'stock')
+        
+        return order_id
 
     def place_limit_order(self, symbol: str, quantity: int, side: str,
                          limit_price: float, reason: str = '', strategy_id: str = '') -> str:
@@ -128,8 +139,9 @@ class OrderExecutor:
         """
         Place an options order with multiple legs (Iron Condor, etc.).
         
-        This method is specifically designed for options strategies like Iron Condors
-        that use OptionsLeg objects from the options_models framework.
+        This method should only be called on real OrderExecutor instances.
+        For backtest mode, the strategy.order_executor is set to the StrategyBacktestEngine
+        which has its own place_options_order method.
 
         Args:
             legs: List of OptionsLeg objects defining the multi-leg order
@@ -144,21 +156,31 @@ class OrderExecutor:
                 logger.error("No legs provided for options order")
                 return ''
 
+            logger.info("🎯 LIVE TRADING: Using OrderExecutor for options order execution")
+            
             # Convert OptionsLeg objects to order format
             order_details = self._convert_options_legs_to_order(legs, order_type)
             
-            # For backtesting, we need to handle this differently than live trading
-            # Check if we're in backtest mode (order_executor is actually the backtest engine)
-            if hasattr(self, 'place_market_order') and hasattr(self, 'current_time'):
-                # We're in backtest mode - execute each leg as separate trades
-                return self._execute_options_order_in_backtest(legs, order_type, strategy_id)
-            else:
-                # Live trading mode - use the multi-leg order system
-                return self.place_multi_leg_order(order_details, strategy_id)
+            # Live trading mode - use the multi-leg order system
+            order_id = self.place_multi_leg_order(order_details, strategy_id)
+            
+            # Automatically update positions if order placed successfully
+            if order_id:
+                self._update_position_from_options_order(order_id, legs, strategy_id)
+            
+            return order_id
 
         except Exception as e:
             logger.error(f"Error placing options order: {e}")
             return ''
+
+    def _backtest_place_options_order(self, legs: List, order_type: str = "market", strategy_id: str = '') -> str:
+        """
+        Fallback method for when we can't call super().place_options_order().
+        This should never be called if the backtest engine is properly set up.
+        """
+        logger.error("❌ CRITICAL: _backtest_place_options_order called - backtest engine not properly inherited")
+        return ''
 
     def _convert_options_legs_to_order(self, legs: List, order_type: str) -> Dict[str, Any]:
         """
@@ -199,72 +221,13 @@ class OrderExecutor:
 
     def _execute_options_order_in_backtest(self, legs: List, order_type: str, strategy_id: str) -> str:
         """
-        Execute options order in backtest mode by placing individual leg trades.
+        Execute options order in backtest mode - this is NOT used anymore.
         
-        This method handles the special case where the order_executor is actually
-        the backtest engine, and we need to execute each leg separately.
-        
-        Args:
-            legs: List of OptionsLeg objects
-            order_type: Order type
-            strategy_id: Strategy ID
-            
-        Returns:
-            Composite order ID representing all legs
+        The correct approach is to check if the order_executor is actually the backtest engine
+        and call its place_options_order method directly.
         """
-        try:
-            executed_trades = []
-            composite_order_id = f"OPTIONS_{len(legs)}LEG_{self.current_time.timestamp()}"
-            
-            logger.info(f"🎯 BACKTEST: Executing {len(legs)}-leg options order")
-            
-            # Execute each leg as a separate trade
-            for i, leg in enumerate(legs):
-                try:
-                    # Map options action to standard trade side
-                    side_mapping = {
-                        'buy': 'BUY',
-                        'sell': 'SELL',
-                        'buy_to_open': 'BUY',
-                        'sell_to_open': 'SELL',
-                        'buy_to_close': 'BUY',
-                        'sell_to_close': 'SELL'
-                    }
-                    
-                    side = side_mapping.get(leg.action.lower(), 'BUY')
-                    symbol = leg.contract.symbol
-                    quantity = leg.quantity
-                    
-                    # Execute the individual leg trade
-                    trade_id = self.place_market_order(
-                        symbol=symbol,
-                        quantity=quantity,
-                        side=side,
-                        reason=f"Options Leg {i+1}/{len(legs)} - {leg.action} {leg.contract.type} {leg.contract.strike_price}"
-                    )
-                    
-                    if trade_id:
-                        executed_trades.append(trade_id)
-                        logger.info(f"✅ BACKTEST: Executed leg {i+1}: {side} {quantity} {symbol}")
-                    else:
-                        logger.error(f"❌ BACKTEST: Failed to execute leg {i+1}: {symbol}")
-                        
-                except Exception as e:
-                    logger.error(f"Error executing options leg {i+1}: {e}")
-            
-            # Return composite order ID if all legs executed successfully
-            if len(executed_trades) == len(legs):
-                logger.info(f"🎉 BACKTEST: All {len(legs)} options legs executed successfully")
-                logger.info(f"   Composite Order ID: {composite_order_id}")
-                logger.info(f"   Individual Trade IDs: {executed_trades}")
-                return composite_order_id
-            else:
-                logger.error(f"❌ BACKTEST: Only {len(executed_trades)}/{len(legs)} legs executed")
-                return ''
-                
-        except Exception as e:
-            logger.error(f"Error executing options order in backtest: {e}")
-            return ''
+        logger.error("❌ _execute_options_order_in_backtest should not be called - using direct delegation instead")
+        return ''
 
     def place_multi_leg_order(self, order_details: Dict[str, Any],
                              strategy_id: str = '') -> str:
@@ -662,6 +625,135 @@ class OrderExecutor:
             'rejected': 'rejected'
         }
         return status_map.get(status.lower(), status)
+
+    def _update_position_from_order(self, order_id: str, symbol: str, quantity: int, 
+                                   side: str, price: float, strategy_id: str, order_type: str):
+        """
+        Update position tracking from order execution.
+        
+        Args:
+            order_id: Order ID
+            symbol: Trading symbol
+            quantity: Order quantity
+            side: Order side ('buy' or 'sell')
+            price: Execution price (0.0 for market orders in backtest)
+            strategy_id: Strategy ID
+            order_type: 'stock' or 'option'
+        """
+        try:
+            # In backtesting, we assume immediate execution at market price
+            # In live trading, this would be called from order fill callbacks
+            execution_price = price if price > 0 else self._get_market_price(symbol)
+            
+            # Update position via position manager
+            position_manager.process_stock_order(
+                symbol=symbol,
+                quantity=quantity,
+                side=side,
+                price=execution_price,
+                strategy_id=strategy_id,
+                order_id=order_id
+            )
+            
+            logger.info(f"Position updated for order {order_id}: {symbol} {side} {quantity} @ ${execution_price}")
+            
+        except Exception as e:
+            logger.error(f"Error updating position for order {order_id}: {e}")
+
+    def _update_position_from_options_order(self, order_id: str, legs: List, strategy_id: str):
+        """
+        Update position tracking from options order execution.
+        
+        Args:
+            order_id: Order ID
+            legs: List of OptionsLeg objects
+            strategy_id: Strategy ID
+        """
+        try:
+            # Update position via position manager
+            position_manager.process_options_order(
+                legs=legs,
+                strategy_id=strategy_id,
+                order_id=order_id
+            )
+            
+            logger.info(f"Options position updated for order {order_id}: {len(legs)} legs")
+            
+        except Exception as e:
+            logger.error(f"Error updating options position for order {order_id}: {e}")
+
+    def _get_market_price(self, symbol: str) -> float:
+        """
+        Get current market price for a symbol.
+        
+        In backtesting, this might use the current bar's close price.
+        In live trading, this would query real-time market data.
+        
+        Args:
+            symbol: Trading symbol
+            
+        Returns:
+            Current market price (fallback to 0.0 if unavailable)
+        """
+        try:
+            # For backtesting, try to get price from current context
+            if hasattr(self, 'current_data') and symbol in self.current_data:
+                return float(self.current_data[symbol].get('close', 0.0))
+            
+            # For live trading, would query market data provider
+            # For now, return 0.0 as placeholder (position manager handles this)
+            return 0.0
+            
+        except Exception as e:
+            logger.error(f"Error getting market price for {symbol}: {e}")
+            return 0.0
+
+    def has_open_positions(self, strategy_id: str = "", underlying: str = "") -> bool:
+        """
+        Check if there are any open positions.
+        
+        Args:
+            strategy_id: Filter by strategy ID
+            underlying: Filter by underlying symbol
+            
+        Returns:
+            True if any positions exist matching criteria
+        """
+        return position_manager.has_positions(strategy_id=strategy_id, underlying=underlying)
+
+    def get_position_info(self, symbol: str = "", strategy_id: str = "") -> Dict[str, Any]:
+        """
+        Get position information.
+        
+        Args:
+            symbol: Specific symbol to get position for
+            strategy_id: Filter by strategy ID
+            
+        Returns:
+            Position information dictionary
+        """
+        if symbol:
+            # Get specific position
+            position = position_manager.get_position(symbol, strategy_id)
+            combo_position = position_manager.get_combo_position(symbol, strategy_id)
+            
+            if position:
+                return {"type": "single", "position": position.to_dict()}
+            elif combo_position:
+                return {"type": "combo", "position": combo_position.to_dict()}
+            else:
+                return {"type": "none", "position": None}
+        else:
+            # Get all positions
+            return position_manager.get_all_positions(strategy_id=strategy_id)
+
+    def get_position_manager_status(self) -> Dict[str, Any]:
+        """Get position manager status for debugging."""
+        return position_manager.get_status()
+
+    def get_position_manager_debug_info(self) -> Dict[str, Any]:
+        """Get detailed position manager debug information."""
+        return position_manager.get_debug_info()
 
     def __str__(self):
         """String representation of the OrderExecutor."""

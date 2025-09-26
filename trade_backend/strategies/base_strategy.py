@@ -564,9 +564,8 @@ class BaseStrategy(ABC):
     
     async def get_positions(self) -> Dict[str, Any]:
         """Get current positions"""
-        if self.order_executor:
-            # This would be implemented based on your order executor interface
-            return {}
+        if self.order_executor and hasattr(self.order_executor, 'get_position_info'):
+            return self.order_executor.get_position_info(strategy_id=self.strategy_id)
         return {}
     
     async def get_account_info(self) -> Dict[str, Any]:
@@ -603,6 +602,168 @@ class BaseStrategy(ABC):
     def get_current_session(self) -> TradingSession:
         """Get current trading session"""
         return self.time_scheduler.get_current_session()
+    
+    # ========================================================================
+    # Position Management Framework Integration
+    # ========================================================================
+    
+    def has_open_positions(self, underlying: str = "") -> bool:
+        """
+        Check if strategy has any open positions.
+        
+        Args:
+            underlying: Filter by underlying symbol (optional)
+            
+        Returns:
+            True if any positions exist
+        """
+        if self.order_executor and hasattr(self.order_executor, 'has_open_positions'):
+            return self.order_executor.has_open_positions(strategy_id=self.strategy_id, underlying=underlying)
+        return False
+    
+    def get_position_for_symbol(self, symbol: str) -> Optional[Dict[str, Any]]:
+        """
+        Get position information for a specific symbol.
+        
+        Args:
+            symbol: Symbol to get position for
+            
+        Returns:
+            Position information or None if no position
+        """
+        if self.order_executor and hasattr(self.order_executor, 'get_position_info'):
+            return self.order_executor.get_position_info(symbol=symbol, strategy_id=self.strategy_id)
+        return None
+    
+    def get_all_positions(self, underlying: str = "") -> Dict[str, Any]:
+        """
+        Get all positions for this strategy.
+        
+        Args:
+            underlying: Filter by underlying symbol (optional)
+            
+        Returns:
+            Dictionary with 'positions' and 'combo_positions' keys
+        """
+        if self.order_executor and hasattr(self.order_executor, 'get_position_info'):
+            return self.order_executor.get_position_info(strategy_id=self.strategy_id)
+        return {"positions": {}, "combo_positions": {}}
+    
+    def get_position_count(self, underlying: str = "") -> int:
+        """
+        Get count of open positions.
+        
+        Args:
+            underlying: Filter by underlying symbol (optional)
+            
+        Returns:
+            Number of open positions
+        """
+        all_positions = self.get_all_positions(underlying)
+        position_count = len(all_positions.get("positions", {}))
+        combo_count = len(all_positions.get("combo_positions", {}))
+        return position_count + combo_count
+    
+    def is_max_positions_reached(self, max_positions: int = None, underlying: str = "") -> bool:
+        """
+        Check if maximum position limit has been reached.
+        
+        Args:
+            max_positions: Maximum positions allowed (if None, uses config)
+            underlying: Filter by underlying symbol (optional)
+            
+        Returns:
+            True if at max positions
+        """
+        if max_positions is None:
+            max_positions = self.config.get("max_positions", 999)
+        
+        current_count = self.get_position_count(underlying)
+        return current_count >= max_positions
+    
+    def can_open_new_position(self, underlying: str = "", required_margin: float = 0.0) -> bool:
+        """
+        Check if strategy can open a new position.
+        
+        Args:
+            underlying: Filter by underlying symbol (optional)
+            required_margin: Required margin for new position (optional)
+            
+        Returns:
+            True if new position can be opened
+        """
+        # Check position limits
+        if self.is_max_positions_reached(underlying=underlying):
+            self.log_info(f"Cannot open new position: at max positions limit")
+            return False
+        
+        # Add other checks here (margin, risk limits, etc.)
+        return True
+    
+    def get_position_summary(self) -> Dict[str, Any]:
+        """
+        Get comprehensive position summary for this strategy.
+        
+        Returns:
+            Dictionary with position statistics and details
+        """
+        all_positions = self.get_all_positions()
+        positions = all_positions.get("positions", {})
+        combo_positions = all_positions.get("combo_positions", {})
+        
+        # Calculate statistics
+        total_positions = len(positions) + len(combo_positions)
+        
+        # Group by underlying
+        by_underlying = {}
+        for symbol, pos in positions.items():
+            underlying = self._extract_underlying_from_symbol(symbol)
+            if underlying not in by_underlying:
+                by_underlying[underlying] = {"single_leg": 0, "multi_leg": 0}
+            by_underlying[underlying]["single_leg"] += 1
+        
+        for symbol, pos in combo_positions.items():
+            # Handle ComboPosition objects vs dictionaries
+            if hasattr(pos, 'underlying_symbol'):
+                underlying = pos.underlying_symbol
+            elif isinstance(pos, dict):
+                underlying = pos.get("underlying_symbol", "UNKNOWN")
+            else:
+                underlying = "UNKNOWN"
+            
+            if underlying not in by_underlying:
+                by_underlying[underlying] = {"single_leg": 0, "multi_leg": 0}
+            by_underlying[underlying]["multi_leg"] += 1
+        
+        return {
+            "strategy_id": self.strategy_id,
+            "total_positions": total_positions,
+            "single_leg_positions": len(positions),
+            "multi_leg_positions": len(combo_positions),
+            "by_underlying": by_underlying,
+            "max_positions": self.config.get("max_positions", "unlimited"),
+            "can_open_new": self.can_open_new_position(),
+            "position_details": {
+                "single_leg": list(positions.keys()),
+                "multi_leg": list(combo_positions.keys())
+            }
+        }
+    
+    def _extract_underlying_from_symbol(self, symbol: str) -> str:
+        """Extract underlying symbol from position symbol"""
+        # For options symbols, extract the underlying
+        if len(symbol) > 6 and ('C' in symbol or 'P' in symbol):
+            # OCC format: AAPL240119C00150000
+            import re
+            match = re.match(r'^([A-Z]+)', symbol)
+            if match:
+                return match.group(1)
+        
+        # For stock symbols or combo symbols
+        if '_COMBO_' in symbol:
+            return symbol.split('_COMBO_')[0]
+        
+        return symbol
     
     # ========================================================================
     # Symbol Registration for Data Loading

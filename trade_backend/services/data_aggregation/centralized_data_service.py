@@ -15,7 +15,7 @@ import pandas as pd
 import duckdb
 
 from ...path_manager import path_manager
-from ...strategies.options_models import OptionsChain, OptionContract
+from ...strategies.options_models import OptionsChain, OptionContract, OptionsSymbolParser
 from .framework_cache import get_framework_cache
 from .query_optimizer import QueryOptimizer
 
@@ -281,6 +281,15 @@ class CentralizedDataService:
             try:
                 contract_symbol = str(row['symbol'])
                 
+                # Parse underlying symbol from the contract symbol using OptionsSymbolParser
+                try:
+                    parsed_symbol = OptionsSymbolParser.parse_symbol(contract_symbol)
+                    underlying_symbol = parsed_symbol['underlying']
+                except Exception as parse_error:
+                    logger.warning(f"Failed to parse symbol {contract_symbol}: {parse_error}")
+                    # Fallback: extract first part of symbol before spaces
+                    underlying_symbol = contract_symbol.split()[0] if ' ' in contract_symbol else contract_symbol
+                
                 # Use bid/ask from the query result directly (much faster than individual lookups)
                 bid = float(row.get('bid_px', 0.0)) if pd.notna(row.get('bid_px')) else 0.0
                 ask = float(row.get('ask_px', 0.0)) if pd.notna(row.get('ask_px')) else 0.0
@@ -294,7 +303,7 @@ class CentralizedDataService:
                     ask=ask,
                     close_price=0.0,  # Not available in CBBO data
                     volume=0,  # Not available in CBBO data
-                    underlying_symbol=row.get('underlying_symbol', '')
+                    underlying_symbol=underlying_symbol  # Now properly parsed from symbol
                 )
                 contracts.append(contract)
 

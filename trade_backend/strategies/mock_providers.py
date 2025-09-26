@@ -89,6 +89,22 @@ class MockOrderExecutor:
     def place_options_order(self, legs: List, order_type: str = "market", strategy_id: str = '') -> str:
         """Mock options order placement - always succeeds with order ID."""
         mock_order_id = f"MOCK_OPTIONS_{len(legs)}LEG_{id(legs)}"
+        
+        # Create position for testing
+        if strategy_id:
+            try:
+                from .position_manager import position_manager
+                
+                # Process order through position manager using the actual OptionsLeg objects
+                position_manager.process_options_order(
+                    legs=legs,  # Pass the actual OptionsLeg objects
+                    strategy_id=strategy_id,
+                    order_id=mock_order_id
+                )
+                
+            except ImportError:
+                pass  # Position manager not available in this context
+        
         return mock_order_id
     
     def place_market_order(self, symbol: str, quantity: int, side: str, reason: str = "") -> str:
