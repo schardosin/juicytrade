@@ -77,11 +77,34 @@ class DBNReader:
         if not self._date_aware_mapping or instrument_id not in self._date_aware_mapping:
             return None
             
-        # Find the correct symbol for this DATE (not exact timestamp)
-        for mapping in self._date_aware_mapping[instrument_id]:
+        # FLEXIBLE MATCHING: Try multiple strategies for options data
+        mappings = self._date_aware_mapping[instrument_id]
+        
+        # Strategy 1: Exact date range match (original logic)
+        for mapping in mappings:
             if mapping['start_date'] <= record_date < mapping['end_date']:
                 return mapping['symbol']
-        return None
+        
+        # Strategy 2: For options, if record_date is before all mappings, use the earliest mapping
+        # This handles cases where we have January data but mappings start in March
+        earliest_mapping = min(mappings, key=lambda m: m['start_date'])
+        if record_date < earliest_mapping['start_date']:
+            logger.debug(f"Using earliest mapping for {instrument_id} on {record_date}: {earliest_mapping['symbol']}")
+            return earliest_mapping['symbol']
+        
+        # Strategy 3: If record_date is after all mappings, use the latest mapping
+        latest_mapping = max(mappings, key=lambda m: m['end_date'])
+        if record_date >= latest_mapping['end_date']:
+            logger.debug(f"Using latest mapping for {instrument_id} on {record_date}: {latest_mapping['symbol']}")
+            return latest_mapping['symbol']
+        
+        # Strategy 4: Find the closest mapping by date
+        closest_mapping = min(mappings, key=lambda m: min(
+            abs((record_date - m['start_date']).days),
+            abs((record_date - m['end_date']).days)
+        ))
+        logger.debug(f"Using closest mapping for {instrument_id} on {record_date}: {closest_mapping['symbol']}")
+        return closest_mapping['symbol']
     
     def extract_metadata(self, file_path: Path) -> DBNMetadata:
         """
@@ -775,6 +798,12 @@ class DBNReader:
         logger.info(f"Streaming records from {file_path} with symbol mapping")
 
         try:
+            # CRITICAL FIX: Clear cache and mappings for each file to prevent cross-file conflicts
+            # This fixes the multi-file import issue where INSTR_ symbols were created
+            if hasattr(self, '_resolve_symbol_for_date'):
+                self._resolve_symbol_for_date.cache_clear()
+            self._date_aware_mapping = {}
+            
             # Load the DBN store
             store = DBNStore.from_file(str(file_path))
             
@@ -848,7 +877,7 @@ class DBNReader:
                     if symbol:
                         setattr(record, 'symbol', symbol)
                     else:
-                        # Fallback to instrument ID
+                        # Fallback to instrument ID for unmapped records
                         setattr(record, 'symbol', f"INSTR_{instrument_id}")
                 else:
                     setattr(record, 'symbol', f"UNKNOWN_{record_count}")

@@ -51,7 +51,7 @@ class ImportManager:
         self.jobs_dir.mkdir(exist_ok=True)
         
         # Initialize components
-        self.dbn_reader = DBNReader()
+        # Note: DBNReader instances are created per-job to prevent cache contamination in concurrent processing
         self.csv_reader = CSVReader()
         self.parquet_writer = ParquetWriter()
         
@@ -1303,7 +1303,10 @@ class ImportManager:
                 timestamp_convention=timestamp_convention
             )
         else:
-            return self.dbn_reader.stream_records(file_path)
+            # CRITICAL FIX: Create new DBNReader instance for each job to prevent 
+            # cache contamination between concurrent threads
+            dbn_reader = DBNReader()
+            return dbn_reader.stream_records(file_path)
 
     def _process_record(self, record, job_info: ImportJobInfo, file_type: ImportFileType):
         """
