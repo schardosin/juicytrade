@@ -148,12 +148,46 @@ class TimeScheduler:
         # Scheduled events
         self.scheduled_events: List[Dict] = []
         self.recurring_events: List[Dict] = []
+
+        # ARCHITECTURAL FIX: Override time for backtesting/testing
+        self._override_time: Optional[datetime] = None
         
         logger.info(f"TimeScheduler initialized for {market_type.value} market")
     
     def get_current_time(self) -> datetime:
-        """Get current time in market timezone"""
+        """Get current time in market timezone (respects override for backtesting)"""
+        if self._override_time is not None:
+            # Return override time with proper timezone
+            if self._override_time.tzinfo is None:
+                # Assume override time is in market timezone if no timezone specified
+                return self._override_time.replace(tzinfo=self.timezone)
+            elif self._override_time.tzinfo != self.timezone:
+                # Convert to market timezone
+                return self._override_time.astimezone(self.timezone)
+            else:
+                return self._override_time
+
+        # Default: return actual current time
         return datetime.now(self.timezone)
+
+    def set_current_time(self, override_time: datetime) -> None:
+        """
+        Set override time for backtesting/testing scenarios.
+
+        Args:
+            override_time: The time to use instead of actual current time
+        """
+        self._override_time = override_time
+        logger.debug(f"TimeScheduler override time set to: {override_time}")
+
+    def clear_current_time(self) -> None:
+        """Clear time override and return to using actual current time"""
+        self._override_time = None
+        logger.debug("TimeScheduler override time cleared")
+
+    def is_time_overridden(self) -> bool:
+        """Check if time is currently overridden for testing/backtesting"""
+        return self._override_time is not None
     
     def get_current_session(self, dt: Optional[datetime] = None) -> TradingSession:
         """Get current trading session"""

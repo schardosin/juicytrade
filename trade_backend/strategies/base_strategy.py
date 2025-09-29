@@ -315,8 +315,8 @@ class BaseStrategy(ABC):
         try:
             self.logger.info("Starting strategy")
             
-            # Initialize strategy
-            await self.initialize_strategy()
+            # Don't initialize again if already initialized (prevents duplicate actions)
+            # Strategy should be initialized before calling start()
             
             # Set execution state
             self.is_running = True
@@ -392,8 +392,12 @@ class BaseStrategy(ABC):
             if hasattr(self.data_provider, 'current_time') and self.data_provider.current_time:
                 # Use backtest engine's current time for proper historical timestamps
                 current_time = self.data_provider.current_time
+                # ARCHITECTURAL FIX: Set the time scheduler's override time for backtesting
+                self.time_scheduler.set_current_time(current_time)
             else:
                 # Fallback to time scheduler for live trading
+                # Clear any override time to use real current time
+                self.time_scheduler.clear_current_time()
                 current_time = self.time_scheduler.get_current_time()
             
             context = ActionContext(

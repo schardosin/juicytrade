@@ -795,21 +795,10 @@ class StrategyBacktestEngine:
         # Start the strategy
         await strategy.start()
         
-        # ARCHITECTURAL FIX: Calculate the virtual date for the backtest
-        # This is the date the strategy thinks it's "living" on
-        # Convert start_date to Eastern Time to get the proper date
+        # ARCHITECTURAL FIX: Virtual date is derived from each timestamp (Eastern Time)
         from zoneinfo import ZoneInfo
         eastern_tz = ZoneInfo("America/New_York")
-        
-        # Convert start_date to Eastern Time and extract date
-        if start_date.tzinfo is None:
-            import pytz
-            start_date_utc = pytz.utc.localize(start_date)
-        else:
-            start_date_utc = start_date
-        
-        eastern_date = start_date_utc.astimezone(eastern_tz).date()
-        virtual_date = eastern_date.strftime('%Y-%m-%d')
+        current_virtual_date = None
         
         # Get all timestamps from market data
         all_timestamps = set()
@@ -861,10 +850,19 @@ class StrategyBacktestEngine:
             # 🆕 AUTOMATIC OPTIONS EXPIRATION: Check for expiring options at 4:00 PM
             await self._check_for_options_expiration(timestamp, strategy)
             
-            # ARCHITECTURAL FIX: Inject virtual_date into strategy context
-            # The strategy will receive this and never need to calculate "what day is it"
+            # ARCHITECTURAL FIX: Calculate virtual_date for current timestamp (Eastern Time)
+            if timestamp.tzinfo is None:
+                # Treat naive timestamps as Eastern Time (data services return ET)
+                timestamp_et = timestamp.replace(tzinfo=eastern_tz)
+            else:
+                timestamp_et = timestamp.astimezone(eastern_tz)
+            
+            current_eastern_date = timestamp_et.date()
+            current_virtual_date = current_eastern_date.strftime('%Y-%m-%d')
+            
+            # Inject virtual_date into strategy context
             if hasattr(strategy, '_set_virtual_date'):
-                strategy._set_virtual_date(virtual_date)
+                strategy._set_virtual_date(current_virtual_date)
             
             # Execute strategy cycle with proper timestamp injection
             # The strategy's execute_cycle method will get the timestamp from data_provider.current_time

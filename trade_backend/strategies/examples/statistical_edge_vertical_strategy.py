@@ -101,7 +101,14 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
         self.set_state("target_expiration", None)   # Monitored expiration
         self.set_state("strikes_monitored", None)   # Strike range info
         
-        # Add time-based trigger
+        # Add time-based triggers
+        # Daily reset at market open to clear state for the new day
+        self.add_time_action(
+            trigger_time="09:30",
+            callback=self.daily_reset_action,
+            name="daily_reset_trigger"
+        )
+        # Monitoring start trigger
         self.add_time_action(
             trigger_time=self.monitoring_start,
             callback=self.start_monitoring,
@@ -169,6 +176,44 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
         self.log_info("1:30 PM - Starting Statistical Edge Vertical monitoring")
         self.set_state("monitoring_active", True)
         self.add_checkpoint("monitoring_started")
+    
+    async def daily_reset_action(self, context: ActionContext):
+        """Daily reset at market open to clear previous day's state and prepare for a new monitoring cycle"""
+        try:
+            current_date = context.virtual_date or context.current_time.strftime('%Y-%m-%d')
+            self.log_info(f"🧹 Daily reset at market open for {current_date} - clearing previous day state")
+            
+            # Stop any prior monitoring and clear execution flags
+            self.set_state("monitoring_active", False)
+            self.set_state("legs_bought", False)
+            self.set_state("position_order_id", None)
+            
+            # Clear monitored legs and related contracts/prices
+            self.set_state("short_leg", None)
+            self.set_state("long_leg", None)
+            self.set_state("short_contract", None)
+            self.set_state("long_contract", None)
+            self.set_state("short_strike", None)
+            self.set_state("long_strike", None)
+            self.set_state("price_vertical", None)
+            self.set_state("strikes_monitored", None)
+            self.set_state("replacement_spread", None)
+            
+            # Clear chain-related state so fresh chain loads for the new date
+            self.set_state("options_chain", None)
+            self.set_state("target_expiration", None)
+            self.set_state("options_chain_date", None)
+            
+            # Underlying price will be refreshed by data processor
+            # Add checkpoint for auditability
+            self.add_checkpoint("daily_reset", {
+                "date": current_date,
+                "timestamp": context.current_time.isoformat()
+            })
+            
+            self.log_info("✅ Daily reset completed - waiting for monitoring_start trigger")
+        except Exception as e:
+            self.log_error(f"Error during daily reset: {e}")
     
     # ========================================================================
     # Rule Methods - Individual boolean functions for the flow engine
@@ -553,8 +598,12 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                         # Get the options chain using the options symbol and underlying price from strategy state
                         current_price = self.get_state("underlying_price")
                         chain = aggregation_service.get_options_chain(
-                            self.options_symbol, target_exp, context.current_time,
-                            strikes_around_atm=20, underlying_price=current_price
+                            symbol=self.options_symbol,
+                            expiration=target_exp,
+                            current_time=context.current_time,
+                            strikes_around_atm=None,  # Load full chain; strategy will filter
+                            underlying_symbol=self.underlying,  # Ensure correct underlying for price lookups
+                            underlying_price=current_price
                         )
                         
                         if chain and hasattr(chain, 'contracts') and chain.contracts:

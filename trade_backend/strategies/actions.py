@@ -189,8 +189,9 @@ class TimeAction(Action):
         super().__init__(name, **kwargs)
         self.trigger_time = self._parse_time(trigger_time)
         self.on_trigger = on_trigger
-        self.triggered = False
-    
+        self.recurring = kwargs.get('recurring', True)  # Default to recurring daily
+        self.last_triggered_date: Optional[str] = None  # Track which date we last triggered
+
     def _parse_time(self, time_input: Union[str, time, datetime]) -> time:
         """Parse various time formats"""
         if isinstance(time_input, str):
@@ -207,10 +208,27 @@ class TimeAction(Action):
     async def execute(self, context: ActionContext) -> ActionResult:
         """Check if trigger time has been reached"""
         current_time = context.current_time.time()
-        
-        if not self.triggered and current_time >= self.trigger_time:
-            self.log(f"Time trigger reached: {self.trigger_time}")
-            self.triggered = True
+        current_date = context.virtual_date or context.current_time.strftime('%Y-%m-%d')
+
+        # Check if we should trigger
+        should_trigger = False
+
+        if self.recurring:
+            # For recurring actions, check if time reached and haven't triggered today
+            should_trigger = (
+                current_time >= self.trigger_time and
+                self.last_triggered_date != current_date
+            )
+        else:
+            # For one-time actions, check if time reached and never triggered
+            should_trigger = (
+                current_time >= self.trigger_time and
+                self.last_triggered_date is None
+            )
+
+        if should_trigger:
+            self.log(f"Time trigger reached: {self.trigger_time} on {current_date}")
+            self.last_triggered_date = current_date
             
             if self.on_trigger:
                 try:
@@ -702,12 +720,21 @@ class ActionExecutor:
                         action.status = ActionStatus.EXECUTING
                         self.execution_stats["successful"] += 1
                         return result
-                    # CRITICAL FIX: For TimeAction, don't mark as completed if just waiting
-                    elif isinstance(action, TimeAction) and result.data and result.data.get("waiting", False):
-                        # Keep TimeAction active while waiting for trigger time
-                        action.status = ActionStatus.EXECUTING
-                        self.execution_stats["successful"] += 1
-                        return result
+                    # For TimeAction, manage waiting and daily recurring triggers
+                    elif isinstance(action, TimeAction):
+                        if result.data and result.data.get("waiting", False):
+                            # Keep TimeAction active while waiting for trigger time
+                            action.status = ActionStatus.EXECUTING
+                            self.execution_stats["successful"] += 1
+                            return result
+                        elif result.data and result.data.get("triggered_at"):
+                            # Trigger occurred; keep recurring actions active for next days
+                            if getattr(action, "recurring", True):
+                                action.status = ActionStatus.EXECUTING
+                                self.execution_stats["successful"] += 1
+                                return result
+                            # One-time actions fall through to completion
+                        # Fall through for non-waiting/non-triggering to normal completion
                     else:
                         # Normal completion for non-continuous actions or when condition is met
                         action.status = ActionStatus.COMPLETED

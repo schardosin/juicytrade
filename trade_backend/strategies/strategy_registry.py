@@ -248,34 +248,34 @@ class StrategyRegistry:
 
             # Preprocess the code to replace relative imports with absolute references
             processed_code = code_to_execute.replace(
-                'from .base_strategy import BaseStrategy',
+                'from ..base_strategy import BaseStrategy',
                 '# BaseStrategy already available in globals'
             ).replace(
-                'from .actions import ActionContext',
+                'from ..actions import ActionContext',
                 '# ActionContext already available in globals'
             ).replace(
-                'from .decision_chain import DecisionChain',
+                'from ..decision_chain import DecisionChain',
                 '# DecisionChain already available in globals'
             ).replace(
-                'from .stateful_rule import StatefulRule',
+                'from ..stateful_rule import StatefulRule',
                 '# StatefulRule already available in globals'
             ).replace(
-                'from .leg_selection import SelectLegsAction',
+                'from ..leg_selection import SelectLegsAction',
                 '# SelectLegsAction already available in globals'
             ).replace(
-                'from .flow_engine import FlowEngine, RuleCondition',
+                'from ..flow_engine import FlowEngine, RuleCondition',
                 '# FlowEngine and RuleCondition already available in globals'
             ).replace(
-                'from .flow_engine import RuleCondition',
+                'from ..flow_engine import RuleCondition',
                 '# RuleCondition already available in globals'
             ).replace(
-                'from .rules import Rules',
+                'from ..rules import Rules',
                 '# Rules already available in globals'
             ).replace(
-                'from .options_models import OptionsChain, OptionsLeg, OptionsOrder',
+                'from ..options_models import OptionsChain, OptionsLeg, OptionsOrder',
                 '# OptionsChain, OptionsLeg, OptionsOrder already available in globals'
             ).replace(
-                'from .options_models import OptionsChain',
+                'from ..options_models import OptionsChain',
                 '# OptionsChain already available in globals'
             )
 

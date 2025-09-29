@@ -232,8 +232,45 @@ class CentralizedDataService:
             query_time = (time.time() - start_time) * 1000
 
             if options_df.empty:
-                logger.warning(f"No options data found for {symbol} exp={expiration}")
-                return None
+                logger.warning(f"No options data found for {symbol} exp={expiration} in 1-minute 'before' window, attempting fallbacks")
+                
+                # Fallback 1: Try inclusive window (target minute to +1 minute)
+                try:
+                    alt_query = QueryOptimizer.build_options_base_query(
+                        symbol=symbol,
+                        expiration=expiration,
+                        timestamp_range=(minute_end, minute_end + timedelta(minutes=1)),
+                        required_fields=required_fields,
+                        timestamp_mode="inclusive"
+                    ).replace('{file_path}', exact_path)
+                    
+                    if strike_range:
+                        alt_query = alt_query.replace("ORDER BY", f"AND {strike_range} ORDER BY")
+                    
+                    options_df = self.conn.execute(alt_query).df()
+                except Exception as e:
+                    logger.debug(f"Inclusive window query failed: {e}")
+                    options_df = pd.DataFrame()
+                
+                # Fallback 2: If still empty, drop timestamp filter and load any contracts for the expiration
+                if options_df.empty:
+                    try:
+                        columns = QueryOptimizer.optimize_column_selection(required_fields)
+                        base_any_query = (
+                            f"SELECT {columns} "
+                            f"FROM read_parquet('{exact_path}') "
+                            f"WHERE expiration = '{expiration}' "
+                            f"AND symbol IS NOT NULL AND strike IS NOT NULL AND option_type IS NOT NULL "
+                            f"ORDER BY option_type, strike"
+                        )
+                        options_df = self.conn.execute(base_any_query).df()
+                    except Exception as e:
+                        logger.debug(f"All-day expiration query failed: {e}")
+                        options_df = pd.DataFrame()
+                
+                if options_df.empty:
+                    logger.warning(f"No options data found for {symbol} exp={expiration} after fallbacks")
+                    return None
 
             logger.debug(f"Query executed in {query_time:.1f}ms, returned {len(options_df)} contracts")
 
