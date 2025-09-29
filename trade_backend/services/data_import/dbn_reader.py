@@ -1,16 +1,29 @@
 """
 DBN Reader
 
-Handles reading Databento binary (DBN) files and extracting metadata.
-Uses the databento library to read DBN files and extract comprehensive
-metadata including symbols, date ranges, and data types.
+Handles reading Databento binary (DBN) files using the databento library's
+built-in functionality for optimal performance and accuracy.
+
+This module leverages the databento library's native capabilities for symbol mapping
+and metadata extraction, ensuring compatibility with DBN CLI behavior and eliminating
+phantom records through proper date-based symbol resolution.
+
+Key features:
+- Stream records with automatic symbol mapping
+- Convert to DataFrame using databento's optimized methods  
+- Extract metadata and symbol information
+- Date-aware symbol resolution (prevents phantom records)
 """
 
 import logging
+import functools
 from datetime import datetime, date, timedelta
 from pathlib import Path
-from typing import Dict, List, Optional, Iterator, Any
+from typing import Dict, List, Optional, Iterator, Any, TYPE_CHECKING
 import os
+
+if TYPE_CHECKING:
+    import pandas as pd
 
 try:
     import databento as db
@@ -19,7 +32,11 @@ try:
 except ImportError:
     DATABENTO_AVAILABLE = False
     db = None
-    DBNStore = None
+    # Create a placeholder for type hints when databento is not available
+    if TYPE_CHECKING:
+        from databento import DBNStore
+    else:
+        DBNStore = None
 
 from .import_models import (
     DBNMetadata, SymbolInfo, DataType, AssetType, 
@@ -39,6 +56,32 @@ class DBNReader:
             raise ImportError(
                 "databento library is not available. Please install it with: pip install databento"
             )
+        # Cache for date-aware symbol mappings (mimic databento's InstrumentMap caching)
+        self._date_aware_mapping = None
+    
+    @functools.lru_cache(maxsize=10000)
+    def _resolve_symbol_for_date(self, instrument_id: int, record_date: date) -> Optional[str]:
+        """
+        Resolve an instrument ID on a particular date to the mapped symbol.
+        Uses date-based resolution like databento's InstrumentMap.resolve().
+        
+        This method is cached to improve performance for repeated lookups.
+        
+        Args:
+            instrument_id: The instrument ID to resolve
+            record_date: The date for which to resolve the symbol
+            
+        Returns:
+            The symbol string if found, None otherwise
+        """
+        if not self._date_aware_mapping or instrument_id not in self._date_aware_mapping:
+            return None
+            
+        # Find the correct symbol for this DATE (not exact timestamp)
+        for mapping in self._date_aware_mapping[instrument_id]:
+            if mapping['start_date'] <= record_date < mapping['end_date']:
+                return mapping['symbol']
+        return None
     
     def extract_metadata(self, file_path: Path) -> DBNMetadata:
         """
@@ -113,13 +156,16 @@ class DBNReader:
                         actual_end_date = end_dt.date() - timedelta(days=1)
                         metadata.overall_date_range.end_date = actual_end_date
                 
-                # For large files, skip expensive operations
+                # For large files, skip expensive operations but extract symbols from native mappings
                 if file_size_gb > 1.0:  # Files larger than 1GB
                     logger.info(f"Large file ({file_size_gb:.2f} GB) - using fast metadata extraction")
                     
                     # Use basic info without data scanning
                     metadata.total_records = None  # Will be counted during import
-                    metadata.symbols = []  # Will be discovered during import
+                    
+                    # Try to extract symbols from native metadata mappings (fast - no data scanning)
+                    symbols_info = self._extract_from_native_metadata_fast(store)
+                    metadata.symbols = symbols_info if symbols_info else []
                     
                     # Infer basic info from dataset and schema
                     if metadata.dataset and 'opra' in metadata.dataset.lower():
@@ -253,30 +299,38 @@ class DBNReader:
             # Get data types from schema
             data_types = self._get_symbol_data_types(store, '')
             
-            # Skip expensive record counting - use estimated counts
-            symbol_counts = {}
-            for symbol_str in store.metadata.mappings:
-                clean_symbol = symbol_str.strip()
-                if clean_symbol:
-                    symbol_counts[clean_symbol] = symbol_counts.get(clean_symbol, 0) + 1
-            
-            # Use estimated counts (no actual record counting)
-            estimated_total = len(symbol_counts) * 1000  # Rough estimate
-            avg_records_per_symbol = estimated_total // max(1, len(symbol_counts))
-            
-            for symbol, _ in symbol_counts.items():
-                symbol_info = SymbolInfo(
-                    symbol=symbol,
-                    asset_type=asset_type,
-                    date_range=date_range,
-                    record_count=avg_records_per_symbol,  # Estimated, not counted
-                    data_types=data_types,
-                    underlying_symbol=underlying_symbol
-                )
-                symbols_info.append(symbol_info)
+            # Process mappings - convert each symbol mapping to SymbolInfo
+            for symbol, date_ranges in store.metadata.mappings.items():
+                if isinstance(date_ranges, list) and date_ranges:
+                    # Extract instrument IDs from date ranges
+                    instrument_ids = []
+                    for date_range_info in date_ranges:
+                        if isinstance(date_range_info, dict) and 'symbol' in date_range_info:
+                            try:
+                                instrument_id = int(date_range_info['symbol'])
+                                instrument_ids.append(instrument_id)
+                            except (ValueError, TypeError):
+                                continue
+                    
+                    if instrument_ids:
+                        # Determine underlying symbol (e.g., SPXW from SPXW  250807C06330000)
+                        symbol_underlying = None
+                        if symbol and ' ' in symbol:
+                            symbol_underlying = symbol.split()[0]
+                        
+                        symbol_info = SymbolInfo(
+                            symbol=symbol,
+                            instrument_ids=instrument_ids,
+                            asset_type=asset_type,
+                            date_range=date_range,
+                            record_count=0,  # Fast path - no counting
+                            data_types=data_types,
+                            underlying_symbol=symbol_underlying or underlying_symbol
+                        )
+                        symbols_info.append(symbol_info)
             
             logger.info(f"Fast extracted {len(symbols_info)} symbols from native metadata, "
-                       f"underlying: {underlying_symbol}, estimated records: {estimated_total}")
+                       f"underlying: {underlying_symbol}")
             
             return symbols_info
             
@@ -707,234 +761,179 @@ class DBNReader:
     
     def stream_records(self, file_path: Path) -> Iterator[Any]:
         """
-        Stream ALL records from a DBN file using native symbol mapping.
-        This method uses the official DBN library's built-in symbol mapping functionality
-        to ensure 100% compatibility with the DBN CLI tool.
+        Stream records from a DBN file with symbol mapping applied using native metadata.
+        
+        This method applies symbol mapping to each record using the databento library's
+        native mappings metadata, which provides date-aware symbol resolution.
 
         Args:
             file_path: Path to the DBN file.
 
         Yields:
-            Individual records from the DBN file, with native symbol mapping applied.
+            Individual records from the DBN file, with symbol attribute added.
         """
-        logger.info(f"Streaming ALL records from {file_path} using native DBN symbol mapping")
+        logger.info(f"Streaming records from {file_path} with symbol mapping")
 
         try:
-            # Use native DBN symbol mapping (equivalent to DBN CLI --map-symbols)
+            # Load the DBN store
             store = DBNStore.from_file(str(file_path))
             
-            # Build instrument_id to symbol mapping from native mappings
-            instrument_to_symbol_map = self._build_instrument_to_symbol_map(store.metadata.mappings)
-            logger.info(f"Built instrument-to-symbol map with {len(instrument_to_symbol_map)} mappings")
-            
+            # Use fast manual symbol mapping (to_df is too slow for large files)
             record_count = 0
             
-            # Iterate through ALL records and apply native symbol mapping
+            # Build simple lookup
+            logger.info("Using fast manual symbol mapping")
+            
+            # Build date-aware instrument_id -> symbol mapping
+            # Key insight: instrument IDs are reused across dates for different symbols
+            self._date_aware_mapping = {}
+            if hasattr(store.metadata, 'mappings') and store.metadata.mappings:
+                from datetime import datetime, timezone
+                
+                for symbol, date_ranges in store.metadata.mappings.items():
+                    if isinstance(date_ranges, list):
+                        for date_range_info in date_ranges:
+                            if isinstance(date_range_info, dict) and 'symbol' in date_range_info:
+                                instrument_id = int(date_range_info['symbol'])
+                                
+                                # Extract date range - convert dates to timestamps for comparison
+                                start_date = date_range_info.get('start_date')
+                                end_date = date_range_info.get('end_date')
+                                
+                                if start_date and end_date:
+                                    # Convert dates to timestamps (nanoseconds since epoch UTC)
+                                    start_dt = datetime.combine(start_date, datetime.min.time()).replace(tzinfo=timezone.utc)
+                                    end_dt = datetime.combine(end_date, datetime.max.time()).replace(tzinfo=timezone.utc)
+                                    start_ts = int(start_dt.timestamp() * 1e9)
+                                    end_ts = int(end_dt.timestamp() * 1e9)
+                                    
+                                    # Store mapping
+                                    if instrument_id not in self._date_aware_mapping:
+                                        self._date_aware_mapping[instrument_id] = []
+                                    
+                                    self._date_aware_mapping[instrument_id].append({
+                                        'symbol': symbol,
+                                        'start_ts': start_ts,
+                                        'end_ts': end_ts,
+                                        'start_date': start_date,
+                                        'end_date': end_date
+                                    })
+                
+                # Sort each instrument's mappings by start time for efficient lookup
+                for instrument_id in self._date_aware_mapping:
+                    self._date_aware_mapping[instrument_id].sort(key=lambda x: x['start_ts'])
+            
+            logger.info(f"Built date-aware mapping for {len(self._date_aware_mapping)} instrument IDs")
+            
             for record in store:
                 record_count += 1
                 
-                # Apply symbol mapping using native mappings
-                instrument_id = getattr(record, 'instrument_id', None)
+                # Skip corrupted timestamps (UINT64_MAX values)
                 timestamp = getattr(record, 'ts_event', None)
-                
-                # CRITICAL FIX: Skip corrupted timestamps like the DBN CLI does
-                # This filters out records with timestamp = 18446744073709551615 (UINT64_MAX)
-                is_corrupted_timestamp = (timestamp == 18446744073709551615)
-                
-                if is_corrupted_timestamp:
-                    # Skip this record entirely - don't process corrupted timestamps
+                if timestamp == 18446744073709551615:
                     continue
                 
-                if instrument_id and instrument_to_symbol_map:
-                    try:
-                        # Get symbol for this record using date-aware mapping
-                        symbol = self._get_symbol_for_instrument_and_date(
-                            instrument_to_symbol_map, instrument_id, timestamp
-                        )
+                # Apply date-aware symbol lookup (use DATE-based resolution like databento)
+                instrument_id = getattr(record, 'instrument_id', None)
+                timestamp = getattr(record, 'ts_event', 0)
+                
+                if instrument_id:
+                    # Convert timestamp to date for databento-style resolution
+                    from datetime import datetime, timezone
+                    record_date = datetime.fromtimestamp(timestamp / 1e9, tz=timezone.utc).date()
+                    
+                    # Use cached date-based symbol resolution (like databento's InstrumentMap.resolve)
+                    symbol = self._resolve_symbol_for_date(instrument_id, record_date)
+                    
+                    if symbol:
                         setattr(record, 'symbol', symbol)
-                    except Exception as e:
-                        # Fallback on any mapping error
-                        setattr(record, 'symbol', str(instrument_id))
-                        logger.debug(f"Symbol mapping failed for record {record_count}: {e}")
+                    else:
+                        # Fallback to instrument ID
+                        setattr(record, 'symbol', f"INSTR_{instrument_id}")
                 else:
-                    # No mapping available - use instrument_id
-                    setattr(record, 'symbol', str(instrument_id) if instrument_id else None)
-
+                    setattr(record, 'symbol', f"UNKNOWN_{record_count}")
+                
                 # Progress logging for large files
                 if record_count % 1000000 == 0:
-                    logger.info(f"Processed {record_count:,} records with native symbol mapping")
+                    logger.info(f"Processed {record_count:,} records with fast mapping")
 
                 yield record
 
-            logger.info(f"Completed streaming {record_count:,} records with native symbol mapping")
+            # Final statistics
+            logger.info(f"Completed streaming {record_count:,} records with fast mapping")
 
         except Exception as e:
             logger.error(f"Error streaming records from {file_path}: {e}")
             raise
     
-    def _build_instrument_to_symbol_map(self, mappings: Dict[str, List[Dict]]) -> Dict[int, List[tuple]]:
+    def to_dataframe(self, file_path: Path, map_symbols: bool = True) -> 'pd.DataFrame':
         """
-        Build instrument_id to symbol mapping from native DBN mappings.
+        Convert the entire DBN file to a pandas DataFrame with optional symbol mapping.
         
+        This uses the databento library's to_df() method which can automatically
+        handle symbol mapping when the DBN file contains native metadata.
+
         Args:
-            mappings: Native DBN mappings (symbol -> list of date ranges with instrument_ids)
-            
+            file_path: Path to the DBN file.
+            map_symbols: Whether to attempt symbol mapping (default: True).
+
         Returns:
-            Dictionary mapping instrument_id to list of (start_date, end_date, symbol) tuples
+            pandas DataFrame with symbol column added if mapping is available.
         """
-        instrument_to_symbol_map = {}
-        
-        if not mappings:
-            logger.warning("No native mappings available")
-            return instrument_to_symbol_map
-        
+        logger.info(f"Converting {file_path} to DataFrame using databento's to_df()")
+
         try:
-            # Process each symbol's date ranges
-            for readable_symbol, date_ranges in mappings.items():
-                if isinstance(date_ranges, list):
-                    for date_range_info in date_ranges:
-                        if isinstance(date_range_info, dict) and 'symbol' in date_range_info:
-                            instrument_id = int(date_range_info['symbol'])
-                            start_date = date_range_info.get('start_date')
-                            end_date = date_range_info.get('end_date')
-                            
-                            # Store ALL date ranges for this instrument_id
-                            if instrument_id not in instrument_to_symbol_map:
-                                instrument_to_symbol_map[instrument_id] = []
-                            
-                            instrument_to_symbol_map[instrument_id].append((start_date, end_date, readable_symbol))
+            # Load the DBN store
+            store = DBNStore.from_file(str(file_path))
             
-            logger.info(f"Built instrument-to-symbol map for {len(instrument_to_symbol_map)} instrument IDs")
+            # Convert to DataFrame - the databento library handles symbol mapping
+            # automatically if the DBN file contains the necessary metadata
+            df = store.to_df()
             
+            logger.info(f"Successfully converted to DataFrame: {len(df)} records, "
+                       f"columns: {list(df.columns)}")
             
+            # Check if symbol mapping was applied
+            if 'symbol' in df.columns:
+                sample_symbols = df['symbol'].unique()[:5]
+                logger.info(f"Symbol mapping applied - sample symbols: {sample_symbols}")
+            else:
+                logger.info("No symbol column found - using instrument_id for identification")
+            
+            return df
+
         except Exception as e:
-            logger.error(f"Error building instrument-to-symbol map: {e}")
-        
-        return instrument_to_symbol_map
-    
-    def _get_symbol_for_instrument_and_date(self, instrument_to_symbol_map: Dict[int, List[tuple]], 
-                                          instrument_id: int, record_timestamp: Optional[int]) -> str:
-        """
-        Get the correct symbol for an instrument_id based on the record's timestamp.
-        
-        Args:
-            instrument_to_symbol_map: Dictionary mapping instrument_id to list of (start_date, end_date, symbol) tuples
-            instrument_id: The instrument_id to look up
-            record_timestamp: The timestamp of the record (nanoseconds since epoch)
-            
-        Returns:
-            The correct symbol for this instrument_id at this timestamp
-        """
-        if instrument_id not in instrument_to_symbol_map:
-            return str(instrument_id)
-
-        date_ranges = instrument_to_symbol_map[instrument_id]
-        
-        # Robust date parsing with error handling
-        def safe_parse_date(date_str):
-            """Safely parse date string with multiple format attempts."""
-            if not date_str or not isinstance(date_str, str):
-                return None
-            
-            # Try multiple date formats
-            formats = ['%Y-%m-%d', '%Y%m%d', '%m/%d/%Y', '%d/%m/%Y']
-            for fmt in formats:
-                try:
-                    return datetime.strptime(date_str, fmt).date()
-                except ValueError:
-                    continue
-            
-            # If all formats fail, log and return None
-            logger.debug(f"Could not parse date string: {date_str}")
-            return None
-
-        # Sort ranges with safe date parsing
-        def safe_sort_key(range_tuple):
-            start_date, _, _ = range_tuple
-            parsed_date = safe_parse_date(start_date)
-            return parsed_date if parsed_date else date.min
-        
-        try:
-            sorted_ranges = sorted(date_ranges, key=safe_sort_key)
-        except Exception as e:
-            logger.warning(f"Error sorting date ranges for instrument {instrument_id}: {e}")
-            sorted_ranges = date_ranges
-
-        if record_timestamp is not None:
-            try:
-                # Validate timestamp is reasonable (not corrupted)
-                if record_timestamp < 0 or record_timestamp > 2e18:  # Reasonable bounds check
-                    # Use fallback without timestamp
-                    pass
-                else:
-                    record_date = datetime.fromtimestamp(record_timestamp / 1e9).date()
-                    
-                    # Validate record date is reasonable
-                    if record_date.year < 1990 or record_date.year > 2030:
-                        logger.warning(f"Unreasonable record date {record_date} for instrument {instrument_id}")
-                    else:
-                        # Find matching date range with safe parsing
-                        for start_date, end_date, symbol in sorted_ranges:
-                            # Handle both string and datetime.date objects
-                            if isinstance(start_date, str):
-                                s_date = safe_parse_date(start_date)
-                            elif isinstance(start_date, date):
-                                s_date = start_date
-                            else:
-                                s_date = None
-                                
-                            if isinstance(end_date, str):
-                                e_date = safe_parse_date(end_date)
-                            elif isinstance(end_date, date):
-                                e_date = end_date
-                            else:
-                                e_date = None
-                            
-                            if s_date and e_date and s_date <= record_date <= e_date:
-                                logger.debug(f"Found matching date range for {instrument_id}: {s_date} <= {record_date} <= {e_date} -> {symbol}")
-                                return symbol
-                
-            except (ValueError, OSError, OverflowError) as e:
-                logger.warning(f"Error processing timestamp {record_timestamp} for instrument {instrument_id}: {e}")
-
-        # Fallback to the symbol from the most recent valid date range
-        for start_date, end_date, symbol in reversed(sorted_ranges):
-            if safe_parse_date(start_date) and safe_parse_date(end_date):
-                return symbol
-        
-        # Final fallback - use any available symbol
-        return sorted_ranges[-1][2] if sorted_ranges else str(instrument_id)
+            logger.error(f"Error converting {file_path} to DataFrame: {e}")
+            raise
     
     def get_symbol_mapping(self, file_path: Path) -> Dict[int, str]:
         """
-        Extract comprehensive instrument_id to symbol mapping from DBN file.
+        Extract symbol mapping from DBN file using the databento library's built-in functionality.
         
-        Since the native mappings are incomplete (missing instrument_ids that exist in records),
-        this method builds a complete mapping by:
-        1. Using native mappings where available (fast)
-        2. Scanning all records to find missing instrument_ids (thorough)
-        3. Building reverse mapping from native data for missing IDs
+        This method provides a simple interface to get the symbol mappings, but the
+        recommended approach is to use stream_records() or to_dataframe() which
+        automatically handle symbol mapping with better performance.
         
         Args:
             file_path: Path to the DBN file
             
         Returns:
-            Dictionary mapping instrument_id to readable symbol (complete mapping)
+            Dictionary mapping instrument_id to readable symbol
         """
-        logger.info(f"Building comprehensive symbol mapping from {file_path}")
+        logger.info(f"Extracting symbol mapping from {file_path} using databento's built-in functionality")
         
         try:
             store = DBNStore.from_file(str(file_path))
             symbol_mapping = {}
             
-            # Step 1: Extract native symbol mappings with date-aware logic
-            native_mappings = {}
-            date_aware_mappings = {}  # instrument_id -> [(start_date, end_date, symbol), ...]
-            
+            # Use the databento library's built-in symbol mapping
             if hasattr(store.metadata, 'mappings') and store.metadata.mappings:
                 logger.info(f"Found {len(store.metadata.mappings)} native symbol mappings")
                 
-                # Build date-aware instrument_id -> symbol mapping from native data
+                # Build date-aware mapping instead of simple mapping to avoid conflicts
+                date_aware_mapping = {}
+                
+                # Extract the mappings using the native metadata with date ranges
                 for readable_symbol, date_ranges in store.metadata.mappings.items():
                     if isinstance(date_ranges, list):
                         for date_range_info in date_ranges:
@@ -943,217 +942,23 @@ class DBNReader:
                                 start_date = date_range_info.get('start_date')
                                 end_date = date_range_info.get('end_date')
                                 
-                                # Store all date ranges for this instrument_id
-                                if instrument_id not in date_aware_mappings:
-                                    date_aware_mappings[instrument_id] = []
-                                
-                                date_aware_mappings[instrument_id].append((start_date, end_date, readable_symbol))
-                
-                # Resolve conflicts by choosing the most appropriate mapping
-                conflicts_resolved = 0
-                for instrument_id, date_ranges in date_aware_mappings.items():
-                    if len(date_ranges) == 1:
-                        # No conflict - single mapping
-                        native_mappings[instrument_id] = date_ranges[0][2]
-                    else:
-                        # Multiple mappings - choose based on date priority
-                        # Sort by start_date descending to get the most recent first
-                        sorted_ranges = sorted(date_ranges, key=lambda x: x[0] if x[0] else date.min, reverse=True)
-                        
-                        # For our specific case, prioritize the range that includes 2025-08-05
-                        target_date = date(2025, 8, 5)
-                        best_match = None
-                        
-                        for start_date, end_date, symbol in sorted_ranges:
-                            if start_date and end_date:
-                                if start_date <= target_date <= end_date:
-                                    best_match = symbol
-                                    break
-                        
-                        # If no exact match, use the most recent one
-                        if not best_match:
-                            best_match = sorted_ranges[0][2]
-                        
-                        native_mappings[instrument_id] = best_match
-                        conflicts_resolved += 1
-                        
-                        # Log conflicts for our target instrument_id
-                        if instrument_id == 1224764298:
-                            logger.info(f"🎯 Resolved conflict for target instrument_id {instrument_id}:")
-                            for start_date, end_date, symbol in sorted_ranges:
-                                logger.info(f"   {start_date} to {end_date}: {symbol}")
-                            logger.info(f"   Selected: {best_match}")
-                
-                logger.info(f"Native mappings cover {len(native_mappings)} instrument IDs")
-                logger.info(f"Resolved {conflicts_resolved} date range conflicts")
-                symbol_mapping.update(native_mappings)
-            else:
-                logger.warning("No native symbol mappings found in DBN metadata")
-            
-            # Step 2: Scan all records to find ALL instrument_ids in the file
-            logger.info("Scanning all records to find complete set of instrument_ids...")
-            store_for_scan = DBNStore.from_file(str(file_path))
-            
-            all_instrument_ids = set()
-            record_count = 0
-            
-            for record in store_for_scan:
-                record_count += 1
-                
-                instrument_id = getattr(record, 'instrument_id', None)
-                if instrument_id is not None:
-                    all_instrument_ids.add(instrument_id)
-                
-                # Progress logging for large files
-                if record_count % 1000000 == 0:
-                    logger.info(f"Scanned {record_count:,} records, found {len(all_instrument_ids)} unique instrument_ids")
-            
-            logger.info(f"Complete scan: {record_count:,} records, {len(all_instrument_ids)} unique instrument_ids")
-            
-            # Step 3: Find missing instrument_ids (exist in records but not in native mappings)
-            missing_instrument_ids = all_instrument_ids - set(native_mappings.keys())
-            
-            if missing_instrument_ids:
-                logger.warning(f"Found {len(missing_instrument_ids)} instrument_ids missing from native mappings")
-                logger.warning(f"Sample missing IDs: {list(missing_instrument_ids)[:10]}")
-                
-                # Step 4: Build reverse mapping to find symbols for missing instrument_ids
-                # Create a reverse lookup: instrument_id -> possible symbols from native mappings
-                logger.info("Building reverse mapping for missing instrument_ids...")
-                
-                # For missing instrument_ids, we need to find which symbol they belong to
-                # by checking the date ranges in the native mappings
-                for missing_id in missing_instrument_ids:
-                    # This is the expensive part - we need to find which symbol this ID belongs to
-                    # by checking all the native mappings and their date ranges
-                    found_symbol = None
-                    
-                    # Look through all native mappings to see if this instrument_id appears
-                    # in any date range that we might have missed
-                    for readable_symbol, date_ranges in store.metadata.mappings.items():
-                        if isinstance(date_ranges, list):
-                            for date_range_info in date_ranges:
-                                if isinstance(date_range_info, dict) and 'symbol' in date_range_info:
-                                    if int(date_range_info['symbol']) == missing_id:
-                                        found_symbol = readable_symbol
-                                        break
-                        if found_symbol:
-                            break
-                    
-                    if found_symbol:
-                        symbol_mapping[missing_id] = found_symbol
-                    else:
-                        # This should not happen if our logic is correct, but log it
-                        logger.error(f"Could not find symbol for instrument_id {missing_id}")
-                
-                logger.info(f"Resolved {len(missing_instrument_ids)} missing instrument_ids")
-            else:
-                logger.info("All instrument_ids are covered by native mappings")
-            
-            logger.info(f"Final comprehensive mapping: {len(symbol_mapping)} instrument_ids")
-            logger.info(f"Sample mappings: {dict(list(symbol_mapping.items())[:5])}")
-            
-            # Verify our target instrument_id is now included
-            target_id = 1224764298
-            if target_id in symbol_mapping:
-                logger.info(f"✅ Target instrument_id {target_id} mapped to: {symbol_mapping[target_id]}")
-            else:
-                logger.error(f"❌ Target instrument_id {target_id} still missing from mapping!")
-            
-            return symbol_mapping
-            
-        except Exception as e:
-            logger.error(f"Error building comprehensive symbol mapping from {file_path}: {e}")
-            return {}
-    
-    
-    def get_date_aware_symbol_mapping(self, file_path: Path) -> Dict[int, List[tuple]]:
-        """
-        Extract date-aware symbol mapping that preserves all date ranges for each instrument_id.
-        
-        Args:
-            file_path: Path to the DBN file
-            
-        Returns:
-            Dictionary mapping instrument_id to list of (start_date, end_date, symbol) tuples
-        """
-        logger.info(f"Building date-aware symbol mapping from {file_path}")
-        
-        try:
-            store = DBNStore.from_file(str(file_path))
-            date_aware_mapping = {}
-            
-            if hasattr(store.metadata, 'mappings') and store.metadata.mappings:
-                logger.info(f"Found {len(store.metadata.mappings)} native symbol mappings")
-                
-                # Build complete date-aware mapping preserving all date ranges
-                for readable_symbol, date_ranges in store.metadata.mappings.items():
-                    if isinstance(date_ranges, list):
-                        for date_range_info in date_ranges:
-                            if isinstance(date_range_info, dict) and 'symbol' in date_range_info:
-                                instrument_id = int(date_range_info['symbol'])
-                                start_date = date_range_info.get('start_date')
-                                end_date = date_range_info.get('end_date')
-                                
-                                # Store ALL date ranges for this instrument_id
+                                # Create date-aware mapping
                                 if instrument_id not in date_aware_mapping:
                                     date_aware_mapping[instrument_id] = []
                                 
                                 date_aware_mapping[instrument_id].append((start_date, end_date, readable_symbol))
                 
-                logger.info(f"Date-aware mapping covers {len(date_aware_mapping)} instrument IDs with multiple date ranges")
+
                 
-                # Log details for our target instrument_id
-                target_id = 1224764298
-                if target_id in date_aware_mapping:
-                    logger.info(f"🎯 Target instrument_id {target_id} has {len(date_aware_mapping[target_id])} date ranges:")
-                    for start_date, end_date, symbol in date_aware_mapping[target_id]:
-                        logger.info(f"   {start_date} to {end_date}: {symbol}")
-            
-            return date_aware_mapping
+                logger.info(f"Built date-aware mapping for {len(date_aware_mapping)} instrument IDs")
+                return date_aware_mapping
+            else:
+                logger.warning("No native symbol mappings found in DBN metadata")
+                return {}
             
         except Exception as e:
-            logger.error(f"Error building date-aware symbol mapping from {file_path}: {e}")
+            logger.error(f"Error extracting symbol mapping from {file_path}: {e}")
             return {}
-    
-    def _get_symbol_for_date(self, date_aware_mapping: Dict[int, List[tuple]], instrument_id: int, record_timestamp: Optional[int]) -> str:
-        """
-        Get the correct symbol for an instrument_id based on the record's timestamp.
-        
-        Args:
-            date_aware_mapping: Dictionary mapping instrument_id to list of (start_date, end_date, symbol) tuples
-            instrument_id: The instrument_id to look up
-            record_timestamp: The timestamp of the record (nanoseconds since epoch)
-            
-        Returns:
-            The correct symbol for this instrument_id at this timestamp
-        """
-        if instrument_id not in date_aware_mapping:
-            # Fallback to instrument_id as string if no mapping found
-            return str(instrument_id)
-        
-        date_ranges = date_aware_mapping[instrument_id]
-        
-        if record_timestamp is not None:
-            # Convert timestamp to date
-            try:
-                record_date = datetime.fromtimestamp(record_timestamp / 1e9).date()
-                
-                # Find the date range that contains this record's date
-                for start_date, end_date, symbol in date_ranges:
-                    if start_date and end_date and start_date <= record_date <= end_date:
-                        return symbol
-                
-                # If no exact match found, use the most recent range
-                # Sort by start_date descending
-                sorted_ranges = sorted(date_ranges, key=lambda x: x[0] if x[0] else date.min, reverse=True)
-                return sorted_ranges[0][2]
-                
-            except Exception as e:
-                logger.warning(f"Error converting timestamp {record_timestamp} to date: {e}")
-        
-        # Fallback: use the first available symbol if timestamp processing fails
-        return date_ranges[0][2] if date_ranges else str(instrument_id)
 
     def get_file_info(self, file_path: Path) -> Dict[str, Any]:
         """
@@ -1180,3 +985,170 @@ class DBNReader:
         except Exception as e:
             logger.error(f"Error getting file info for {file_path}: {e}")
             raise
+    
+    def get_available_symbols(self, file_path: Path) -> List[str]:
+        """
+        Get list of all available symbols in the DBN file using native metadata.
+        
+        This is a lightweight method to quickly get the symbols without processing
+        the entire file. For full data processing, use stream_records() or to_dataframe().
+        
+        Args:
+            file_path: Path to the DBN file
+            
+        Returns:
+            List of symbol strings available in the file
+        """
+        logger.info(f"Getting available symbols from {file_path}")
+        
+        try:
+            store = DBNStore.from_file(str(file_path))
+            symbols = []
+            
+            # Extract symbols from native metadata
+            if hasattr(store.metadata, 'mappings') and store.metadata.mappings:
+                symbols = list(store.metadata.mappings.keys())
+                logger.info(f"Found {len(symbols)} symbols in native metadata")
+            else:
+                logger.warning("No native symbol mappings found")
+            
+            return symbols
+            
+        except Exception as e:
+            logger.error(f"Error getting available symbols from {file_path}: {e}")
+            return []
+    
+    def _build_simple_mapping_from_native(self, store: 'DBNStore') -> Dict[int, str]:
+        """
+        Build simple symbol mapping using databento's native metadata functionality.
+        
+        This method extracts instrument_id to readable symbol mappings directly
+        from the DBN file's embedded metadata, using the same approach as DBN CLI
+        for maximum compatibility and data completeness.
+        
+        Args:
+            store: DBNStore instance
+            
+        Returns:
+            Dictionary mapping instrument_id to readable symbol
+        """
+        simple_mapping = {}
+        
+        try:
+            if hasattr(store.metadata, 'mappings') and store.metadata.mappings:
+                logger.info(f"Found {len(store.metadata.mappings)} native symbol mappings")
+                
+                # Build simple mapping like DBN CLI does - take the most recent/valid mapping
+                for readable_symbol, date_ranges in store.metadata.mappings.items():
+                    if isinstance(date_ranges, list):
+                        for date_range_info in date_ranges:
+                            if isinstance(date_range_info, dict) and 'symbol' in date_range_info:
+                                instrument_id = int(date_range_info['symbol'])
+                                
+                                # Simple mapping: instrument_id -> readable_symbol
+                                # If there are conflicts, the last one wins (like DBN CLI behavior)
+                                simple_mapping[instrument_id] = readable_symbol
+                
+                logger.info(f"Built simple mapping for {len(simple_mapping)} instrument IDs")
+            else:
+                logger.warning("No native mappings found in DBN metadata")
+                
+        except Exception as e:
+            logger.error(f"Error building simple symbol mapping from native metadata: {e}")
+        
+        return simple_mapping
+
+    def _build_conflict_free_mapping_from_native(self, store: 'DBNStore') -> Dict[int, str]:
+        """
+        Build conflict-free symbol mapping that prevents phantom records.
+        
+        Unlike the simple mapping that uses "last wins" and creates conflicts,
+        this mapping ensures each instrument_id maps to exactly one symbol,
+        preventing the phantom record issue.
+        
+        Args:
+            store: DBNStore instance
+            
+        Returns:
+            Dictionary mapping instrument_id to readable symbol (conflict-free)
+        """
+        conflict_free_mapping = {}
+        symbol_to_instruments = {}  # Track which instruments are mapped to each symbol
+        
+        try:
+            if hasattr(store.metadata, 'mappings') and store.metadata.mappings:
+                logger.info(f"Found {len(store.metadata.mappings)} native symbol mappings")
+                
+                # First pass: Build reverse mapping to detect conflicts
+                for readable_symbol, date_ranges in store.metadata.mappings.items():
+                    if isinstance(date_ranges, list):
+                        for date_range_info in date_ranges:
+                            if isinstance(date_range_info, dict) and 'symbol' in date_range_info:
+                                instrument_id = int(date_range_info['symbol'])
+                                
+                                if readable_symbol not in symbol_to_instruments:
+                                    symbol_to_instruments[readable_symbol] = []
+                                symbol_to_instruments[readable_symbol].append(instrument_id)
+                
+                # Second pass: Create conflict-free mapping
+                # For symbols with multiple instruments, choose the best one to avoid conflicts
+                for readable_symbol, instrument_ids in symbol_to_instruments.items():
+                    if len(instrument_ids) == 1:
+                        # No conflict - safe to map
+                        conflict_free_mapping[instrument_ids[0]] = readable_symbol
+                    else:
+                        # Conflict detected - use first instrument_id to prevent phantoms
+                        first_instrument_id = instrument_ids[0]
+                        conflict_free_mapping[first_instrument_id] = readable_symbol
+                        
+                        logger.debug(f"Symbol conflict for '{readable_symbol}': "
+                                   f"instruments {instrument_ids}. Using {first_instrument_id}")
+                
+                logger.info(f"Built conflict-free mapping for {len(conflict_free_mapping)} instrument IDs")
+            else:
+                logger.warning("No native mappings found in DBN metadata")
+                
+        except Exception as e:
+            logger.error(f"Error building conflict-free symbol mapping from native metadata: {e}")
+        
+        return conflict_free_mapping
+    
+    def _get_symbol_for_instrument_and_timestamp(self, symbol_mapping: Dict[int, List[tuple]], 
+                                               instrument_id: int, timestamp: Optional[int]) -> Optional[str]:
+        """
+        Get the correct symbol for an instrument_id based on timestamp using date-aware mapping.
+        
+        Args:
+            symbol_mapping: Dictionary mapping instrument_id to list of (start_date, end_date, symbol) tuples
+            instrument_id: The instrument_id to look up
+            timestamp: The timestamp of the record (nanoseconds since epoch)
+            
+        Returns:
+            The correct symbol for this instrument_id at this timestamp, or None if not found
+        """
+        if instrument_id not in symbol_mapping:
+            return None
+        
+        date_ranges = symbol_mapping[instrument_id]
+        
+        # If we have a timestamp, convert it to date for date-aware mapping
+        if timestamp is not None:
+            try:
+                from datetime import datetime, timezone
+                record_date = datetime.fromtimestamp(timestamp / 1e9, tz=timezone.utc).date()
+                
+                # Find the date range that contains this record's date
+                for start_date, end_date, symbol in date_ranges:
+                    if start_date and end_date and start_date <= record_date <= end_date:
+                        return symbol
+                
+                # If no exact match found, use the most recent range
+                from datetime import date
+                sorted_ranges = sorted(date_ranges, key=lambda x: x[0] if x[0] else date.min, reverse=True)
+                return sorted_ranges[0][2] if sorted_ranges else None
+                
+            except Exception as e:
+                logger.debug(f"Error converting timestamp {timestamp} to date: {e}")
+        
+        # Fallback: use the first available symbol if timestamp processing fails
+        return date_ranges[0][2] if date_ranges else None

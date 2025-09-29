@@ -90,6 +90,7 @@ class SymbolInfo(BaseModel):
     record_count: int
     data_types: List[DataType]
     underlying_symbol: Optional[str] = None  # For options: the underlying stock symbol (e.g., 'SPXW')
+    instrument_ids: Optional[List[int]] = None  # List of instrument IDs that map to this symbol
     
     class Config:
         use_enum_values = True

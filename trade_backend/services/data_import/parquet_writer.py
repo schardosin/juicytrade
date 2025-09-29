@@ -1206,13 +1206,12 @@ class ParquetWriter:
             # Use symbol from native DBN mapping (already populated by DBN reader)
             symbol = getattr(record, 'symbol', None)
             if not symbol:
-                # This should not happen with native mapping, but provide fallback
+                # Use instrument_id as fallback identifier 
                 instrument_id = getattr(record, 'instrument_id', None)
                 if instrument_id:
-                    symbol = f"UNMAPPED_{instrument_id}"
-                    logger.warning(f"No native symbol found for instrument_id {instrument_id}")
+                    symbol = str(instrument_id)
                 else:
-                    logger.warning("Record has no symbol or instrument_id")
+                    logger.debug("Record has no symbol or instrument_id")
                     return None
             
             record_info['symbol'] = symbol
