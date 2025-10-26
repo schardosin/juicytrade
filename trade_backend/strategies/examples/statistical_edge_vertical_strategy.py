@@ -881,7 +881,7 @@ class StatisticalEdgeVerticalStrategy(BaseStrategy):
                     "description": "Underlying symbol for options monitoring (SPX recommended)",
                     "category": "strategy"
                 },
-                "monitoring_start_time": {
+                "monitoring_start": {
                     "type": "string",
                     "default": "11:00",
                     "description": "Daily monitoring start time (HH:MM format, e.g., 13:30 for 1:30 PM ET)",

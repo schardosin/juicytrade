@@ -71,6 +71,17 @@ class BacktestTrade:
             "side": self.action.lower()  # UI expects 'side' field
         }
         
+        # Map action to UI-friendly side codes for UI
+        side_map = {
+            "BUY_TO_OPEN": "bto",
+            "SELL_TO_OPEN": "sto",
+            "BUY_TO_CLOSE": "btc",
+            "SELL_TO_CLOSE": "stc",
+            "BUY": "buy",
+            "SELL": "sell"
+        }
+        result["side"] = side_map.get(self.action.upper(), result["side"])
+        
         # Add legs for grouped display if available
         if self.legs:
             result["legs"] = self.legs
@@ -1004,10 +1015,16 @@ class StrategyBacktestEngine:
         return trade_id
 
     def _is_option_symbol(self, symbol: str) -> bool:
-        """Check if symbol is an option contract symbol"""
-        # Option symbols are typically longer and contain specific patterns
-        # Example: "SPY   250812P00639000" (SPY options)
-        return len(symbol) > 10 and ('C' in symbol[-9:] or 'P' in symbol[-9:])
+        """Check if symbol is an option contract symbol using strict regex."""
+        try:
+            # Strict format: UNDERLYING + spaces + YYMMDD + C/P + 8-digit strike
+            # Examples:
+            #   "SPY   250812P00639000"
+            #   "SPXW  250904C06500000"
+            import re
+            return re.match(r'^([A-Z]+)\s*(\d{6})([CP])(\d{8})$', symbol.strip()) is not None
+        except Exception:
+            return False
 
     def _get_option_contract_price(self, option_symbol: str) -> Optional[float]:
         """
@@ -1137,7 +1154,6 @@ class StrategyBacktestEngine:
                         if underlying_match:
                             underlying_symbol = underlying_match.group(1)
 
-                # Create ONE grouped trade for UI display (like in your image)
                 # For credit spreads, net premium should be negative (we collect money)
                 net_credit = -total_net_premium  # Invert sign for credit display
                 
@@ -1193,17 +1209,28 @@ class StrategyBacktestEngine:
         options_multiplier = 100 if self._is_option_symbol(symbol) else 1
         trade_value = trade.quantity * trade.price * options_multiplier
         
+        # Define action groups
+        buy_actions_all = ["BUY", "BUY_TO_OPEN", "BUY_TO_CLOSE"]
+        sell_actions_all = ["SELL", "SELL_TO_OPEN", "SELL_TO_CLOSE"]
+        buy_open_actions = ["BUY_TO_OPEN"]
+        sell_open_actions = ["SELL_TO_OPEN"]
+        
         # Update capital (subtract for buys, add for sells)
-        if trade.action in ["BUY", "BUY_TO_OPEN"]:
+        if trade.action in buy_actions_all:
+            # BUY, BTO, BTC -> cash outflow
             self.current_capital -= trade_value + trade.commission
-            # For options, buying means paying premium (immediate cash outflow)
-            if self._is_option_symbol(trade.symbol):
-                trade.pnl = -trade_value  # Negative P&L for premium paid
-        else:
+            # For options, only opening buys should immediately reflect premium paid
+            if self._is_option_symbol(trade.symbol) and trade.action in buy_open_actions:
+                trade.pnl = -trade_value  # Negative P&L for premium paid on opening
+        elif trade.action in sell_actions_all:
+            # SELL, STO, STC -> cash inflow
             self.current_capital += trade_value - trade.commission
-            # For options, selling means collecting premium (immediate cash inflow)
-            if self._is_option_symbol(trade.symbol):
-                trade.pnl = trade_value   # Positive P&L for premium collected
+            # For options, only opening sells should immediately reflect premium collected
+            if self._is_option_symbol(trade.symbol) and trade.action in sell_open_actions:
+                trade.pnl = trade_value   # Positive P&L for premium collected on opening
+        else:
+            # Fallback: treat unknown actions conservatively as no-op on capital
+            logger.warning(f"Unknown trade action '{trade.action}' for {symbol}")
         
         # Update positions
         if symbol not in self.positions:
@@ -1218,7 +1245,7 @@ class StrategyBacktestEngine:
         
         position = self.positions[symbol]
         
-        if trade.action in ["BUY", "BUY_TO_OPEN"]:
+        if trade.action in ["BUY", "BUY_TO_OPEN", "BUY_TO_CLOSE"]:
             # Adding to position (long)
             if position.quantity >= 0:
                 # Adding to existing long position or creating new long position
@@ -1247,7 +1274,7 @@ class StrategyBacktestEngine:
                     remaining_quantity = trade.quantity - cover_quantity
                     position.quantity = remaining_quantity
                     position.avg_price = trade.price
-        else:
+        elif trade.action in ["SELL", "SELL_TO_OPEN", "SELL_TO_CLOSE"]:
             # SELL action
             if position.quantity > 0:
                 # Reducing long position
@@ -1635,6 +1662,23 @@ class StrategyBacktestEngine:
     # 🆕 AUTOMATIC OPTIONS EXPIRATION SYSTEM
     # ========================================================================
     
+    def _normalize_underlying_for_option(self, underlying: str) -> str:
+        """
+        Normalize option root to actual underlying symbol for price lookup.
+        Examples:
+        - SPXW -> SPX (weekly options on SPX)
+        - SPXQ -> SPX (quarterly options on SPX)
+        Extend this map for other index/weekly roots if needed.
+        """
+        mappings = {
+            "SPXW": "SPX",
+            "SPXQ": "SPX",
+            # Add other known roots here as needed:
+            # "NDXW": "NDX",
+            # "RUTW": "RUT",
+        }
+        return mappings.get(underlying, underlying)
+    
     async def _check_for_options_expiration(self, timestamp: datetime, strategy: BaseStrategy):
         """
         Check if any options expire at exactly 4:00 PM and create virtual close trades.
@@ -1763,12 +1807,13 @@ class StrategyBacktestEngine:
             # SIMPLIFIED: Create standard expiration trade and let _execute_trade() handle everything
             trade_id = f"EXPIRE_{symbol}_{timestamp.timestamp()}"
             
+            closing_price = intrinsic_value * 100 # Use intrinsic value as price for settlement
             virtual_trade = BacktestTrade(
                 timestamp=timestamp,
                 symbol=symbol,
                 action=closing_action,
                 quantity=closing_quantity,
-                price=intrinsic_value,  # $0.00 for OTM, actual value for ITM
+                price=closing_price,  # Use mid if available, else intrinsic
                 order_type="EXPIRATION",
                 trade_id=trade_id,
                 strategy_action="Options Expiration Settlement",
@@ -1821,14 +1866,23 @@ class StrategyBacktestEngine:
                 logger.warning(f"Could not parse option symbol: {option_symbol}")
                 return 0.0
             
-            underlying_symbol = option_details['underlying']
+            # Normalize underlying root (e.g., SPXW -> SPX) for price lookup
+            underlying_symbol = self._normalize_underlying_for_option(option_details['underlying'])
             strike_price = option_details['strike']
             option_type = option_details['type']  # 'C' or 'P'
             
-            # Get current underlying price
+            # Get current underlying price (prefer current_prices)
             underlying_price = self.current_prices.get(underlying_symbol)
             if underlying_price is None:
-                logger.warning(f"No underlying price available for {underlying_symbol}")
+                # Optional local fallback from cached market data up to timestamp
+                df = self.market_data_cache.get(underlying_symbol)
+                if df is not None and 'timestamp' in df.columns and 'close' in df.columns:
+                    df_before = df[df['timestamp'] <= timestamp]
+                    if not df_before.empty:
+                        underlying_price = float(df_before.iloc[-1]['close'])
+                        self.current_prices[underlying_symbol] = underlying_price
+            if underlying_price is None:
+                logger.warning(f"No underlying price available for {underlying_symbol} (from option root {option_details['underlying']}) at {self.current_time}")
                 return 0.0
             
             # Calculate intrinsic value
