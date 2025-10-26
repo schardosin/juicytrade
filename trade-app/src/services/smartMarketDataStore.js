@@ -1796,8 +1796,6 @@ class SmartMarketDataStore {
         providerIdentity: providerIdentity,
         isLoading: false
       };
-
-      console.log(`📊 Loaded ${baselineBars.length} daily bars for ${symbol}`);
       
     } catch (err) {
       console.error(`❌ Failed to load 6M daily data for ${symbol}:`, err);

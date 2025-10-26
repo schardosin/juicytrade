@@ -209,6 +209,7 @@
 
 <script>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
+import { useRouter, useRoute } from "vue-router";
 import webSocketClient from "../services/webSocketClient";
 import { useMarketData } from "../composables/useMarketData.js";
 import SettingsDialog from "./SettingsDialog.vue";
@@ -219,6 +220,9 @@ export default {
     SettingsDialog,
   },
   setup() {
+    const router = useRouter();
+    const route = useRoute();
+    
     // Use unified market data composable
     const { 
       lookupSymbols, 
@@ -273,7 +277,7 @@ export default {
     const navLinks = [
       { label: "Dashboard", value: "Dashboard" },
       { label: "Trading", value: "Trading" },
-      { label: "Manage", value: "Manage" },
+      { label: "Strategies", value: "Strategies" },
     ];
 
     // User menu items
@@ -427,10 +431,40 @@ export default {
       { key: "streaming_greeks", label: "Streaming Greeks" },
     ];
 
+    // Helper function to determine active link from route
+    const getActiveLinkFromRoute = (currentRoute) => {
+      const path = currentRoute.path;
+      
+      if (path === '/' || path === '/trade') {
+        return 'Trading';
+      } else if (path.startsWith('/strategies')) {
+        return 'Strategies';
+      } else if (path.startsWith('/dashboard')) {
+        return 'Dashboard';
+      }
+      
+      // Default fallback
+      return 'Trading';
+    };
+
     // Methods
     const setActiveLink = (link) => {
       activeLink.value = link;
-      // Here you would typically handle routing
+      
+      // Handle routing based on the selected link
+      switch (link) {
+        case 'Dashboard':
+          // TODO: Navigate to dashboard when implemented
+          break;
+        case 'Trading':
+          router.push('/');
+          break;
+        case 'Strategies':
+          router.push('/strategies');
+          break;
+        default:
+          break;
+      }
     };
 
     const performSearch = async () => {
@@ -674,7 +708,6 @@ export default {
       }
       
       const { status } = event.detail;
-      console.log('📡 TopBar received status update:', status);
       
       // Map worker status to our connection state
       switch (status) {
@@ -743,6 +776,9 @@ export default {
 
     // Lifecycle hooks
     onMounted(() => {
+      // Initialize activeLink based on current route
+      activeLink.value = getActiveLinkFromRoute(route);
+      
       // Initial account display update
       updateAccountDisplay();
       
@@ -763,7 +799,6 @@ export default {
         connectionState.value = 'connected';
         isRecovering.value = false;
         lastDataReceived.value = Date.now();
-        console.log('📡 TopBar mounted - WebSocket already connected');
       } else {
         // If not connected, try to connect
         connectionState.value = 'connecting';
@@ -790,11 +825,21 @@ export default {
           connectionState.value = 'connected';
           isRecovering.value = false;
           lastDataReceived.value = Date.now();
-          console.log('📡 TopBar synced to connected state via watcher');
         } else if (!newStatus && connectionState.value === 'connected') {
           connectionState.value = 'disconnected';
           isRecovering.value = false;
-          console.log('📡 TopBar synced to disconnected state via watcher');
+        }
+      },
+      { immediate: true }
+    );
+
+    // Watch for route changes and update activeLink accordingly
+    watch(
+      () => route.path,
+      (newPath) => {
+        const newActiveLink = getActiveLinkFromRoute(route);
+        if (activeLink.value !== newActiveLink) {
+          activeLink.value = newActiveLink;
         }
       },
       { immediate: true }

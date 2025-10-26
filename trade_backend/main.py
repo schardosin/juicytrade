@@ -1,7 +1,21 @@
+import os
+import debugpy
 import asyncio
 import uvicorn
 import logging
 from contextlib import asynccontextmanager
+
+# Check for debug mode at the very start
+if os.environ.get("DEBUG_STRATEGY"):
+    try:
+        debug_port = 5678
+        debugpy.listen(("0.0.0.0", debug_port))
+        # The logging is configured later, so we use print here
+        print(f"🚀 Strategy Debug Mode is ON. Waiting for debugger to attach on port {debug_port}...")
+        debugpy.wait_for_client()
+        print("✅ Debugger attached!")
+    except Exception as e:
+        print(f"❌ Error starting debugpy: {e}")
 from typing import Dict, List, Optional, Any
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
@@ -30,7 +44,18 @@ from .greeks_manager import greeks_manager
 from .services.ivx_calculator import calculate_ivx_data
 from .services.ivx_cache import ivx_cache
 from .ivx_streaming_manager import IVxStreamingManager
-from datetime import datetime
+from .strategies.api_endpoints import router as strategies_router
+from .strategies.execution_engine import StrategyExecutionEngine
+from .services.data_import.import_manager import import_manager
+from .services.data_import.import_models import (
+    ImportRequest, ImportJobStatus, ImportFilters, DateRange,
+    ImportFileType, CSVFormat, MultiFileImportRequest, ImportQueueStatus
+)
+from .services.data_aggregation import (
+    DataAggregationService, AggregationRequest, AggregatedData, TimeFrame,
+    get_aggregation_service
+)
+from datetime import datetime, date
 
 # Configure logging
 logging.basicConfig(
@@ -63,6 +88,24 @@ async def lifespan(app: FastAPI):
         logger.info("🔄 Starting IVx streaming manager...")
         await ivx_streaming_manager.start()
         logger.info("✅ IVx streaming manager started")
+        
+        # Initialize Strategy Database
+        logger.info("🔄 Initializing Strategy Database...")
+        from .strategies.database import strategy_db_manager
+        db_success = strategy_db_manager.initialize()
+        if db_success:
+            logger.info("✅ Strategy Database initialized")
+        else:
+            logger.error("❌ Strategy Database initialization failed")
+        
+        # Initialize Strategy Execution Engine
+        logger.info("🔄 Initializing Strategy Execution Engine...")
+        strategy_execution_engine = StrategyExecutionEngine()
+        await strategy_execution_engine.initialize()
+        
+        # Make strategy engine available globally
+        app.state.strategy_execution_engine = strategy_execution_engine
+        logger.info("✅ Strategy Execution Engine initialized")
         
     except Exception as e:
         logger.error(f"❌ Failed to initialize streaming: {e}")
@@ -110,6 +153,9 @@ manager.set_ivx_streaming_manager(ivx_streaming_manager)
 from .ivx_streaming_manager import set_global_ivx_streaming_manager
 set_global_ivx_streaming_manager(ivx_streaming_manager)
 
+# === Register Strategy Router ===
+app.include_router(strategies_router)
+
 # === API Endpoints ===
 
 @app.get("/", response_model=ApiResponse)
@@ -136,6 +182,81 @@ async def health_check():
         data=health,
         message="Health check completed"
     )
+
+# === Setup Configuration Endpoints ===
+
+@app.get("/setup/status", response_model=ApiResponse)
+async def get_setup_status():
+    """Check if mandatory routes are configured for the trading platform."""
+    try:
+        # Get current provider configuration
+        config = provider_config_manager.get_config()
+        
+        # Define mandatory services that must be configured
+        mandatory_services = [
+            'trade_account',
+            'options_chain',
+            'historical_data',
+            'symbol_lookup',
+            'streaming_quotes'
+        ]
+        
+        # The config might be directly the service routing object, or nested under service_routing
+        service_routing = config.get('service_routing', config) if isinstance(config, dict) else {}
+        
+        # Check if we have service routing configuration
+        if not service_routing or not isinstance(service_routing, dict):
+            return ApiResponse(
+                success=True,
+                data={
+                    "is_setup_complete": False,
+                    "missing_mandatory_services": mandatory_services,
+                    "configured_services": {},
+                    "has_providers": False
+                },
+                message="No service routing configuration found"
+            )
+        
+        # Check each mandatory service
+        missing_services = []
+        for service in mandatory_services:
+            routed_provider = service_routing.get(service)
+            if not routed_provider or routed_provider == "":
+                missing_services.append(service)
+        
+        is_setup_complete = len(missing_services) == 0
+        has_providers = bool(config.get('provider_instances', []))
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "is_setup_complete": is_setup_complete,
+                "missing_mandatory_services": missing_services,
+                "configured_services": service_routing,
+                "has_providers": has_providers
+            },
+            message="Setup status checked successfully"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error checking setup status: {e}")
+        # If there's an error (like provider config not available), assume setup is incomplete
+        return ApiResponse(
+            success=True,
+            data={
+                "is_setup_complete": False,
+                "missing_mandatory_services": [
+                    'trade_account',
+                    'options_chain', 
+                    'historical_data',
+                    'symbol_lookup',
+                    'streaming_quotes'
+                ],
+                "configured_services": {},
+                "has_providers": False
+            },
+            message=f"Error checking setup status: {str(e)}"
+        )
 
 # === Provider Configuration Endpoints ===
 
@@ -1256,6 +1377,707 @@ async def get_all_watchlist_symbols():
     except Exception as e:
         logger.error(f"Error getting all watchlist symbols: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+# === Data Import Endpoints ===
+
+@app.get("/api/data-import/files", response_model=ApiResponse)
+async def list_import_files():
+    """List available import files (DBN and CSV) with basic information only - fast loading."""
+    try:
+        files_info = []
+        
+        # Ensure directory exists
+        import_manager.dbn_files_dir.mkdir(exist_ok=True)
+        
+        # Get DBN files - basic info only
+        for dbn_file in import_manager.dbn_files_dir.glob("*.dbn"):
+            try:
+                file_stat = dbn_file.stat()
+                file_info = {
+                    'filename': dbn_file.name,
+                    'file_path': str(dbn_file),
+                    'file_size': file_stat.st_size,
+                    'modified_at': datetime.fromtimestamp(file_stat.st_mtime),
+                    'file_type': 'dbn',
+                    'needs_symbol_input': False,
+                    'size_mb': round(file_stat.st_size / (1024 * 1024), 2),
+                    'size_gb': round(file_stat.st_size / (1024 * 1024 * 1024), 2)
+                }
+                files_info.append(file_info)
+            except Exception as e:
+                logger.warning(f"Error processing DBN file {dbn_file}: {e}")
+                continue
+        
+        # Get CSV files - basic info only
+        for csv_file in import_manager.dbn_files_dir.glob("*.csv"):
+            try:
+                file_stat = csv_file.stat()
+                file_info = {
+                    'filename': csv_file.name,
+                    'file_path': str(csv_file),
+                    'file_size': file_stat.st_size,
+                    'modified_at': datetime.fromtimestamp(file_stat.st_mtime),
+                    'file_type': 'csv',
+                    'needs_symbol_input': True,
+                    'size_mb': round(file_stat.st_size / (1024 * 1024), 2),
+                    'size_gb': round(file_stat.st_size / (1024 * 1024 * 1024), 2)
+                }
+                files_info.append(file_info)
+            except Exception as e:
+                logger.warning(f"Error processing CSV file {csv_file}: {e}")
+                continue
+        
+        # Sort by modification time (newest first)
+        files_info.sort(key=lambda x: x['modified_at'], reverse=True)
+        
+        dbn_count = sum(1 for f in files_info if f['file_type'] == 'dbn')
+        csv_count = sum(1 for f in files_info if f['file_type'] == 'csv')
+        
+        return ApiResponse(
+            success=True,
+            data=files_info,
+            message=f"Found {len(files_info)} import files ({dbn_count} DBN, {csv_count} CSV) - basic info only"
+        )
+    except Exception as e:
+        logger.error(f"Error listing import files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-import/files/detailed", response_model=ApiResponse)
+async def list_import_files_detailed():
+    """List available import files (DBN and CSV) with full metadata information - slower but complete."""
+    try:
+        files_info = await import_manager.list_available_files()
+        
+        # Convert to dict format for JSON serialization
+        files_data = []
+        for file_info in files_info:
+            file_dict = file_info.dict()
+            files_data.append(file_dict)
+        
+        return ApiResponse(
+            success=True,
+            data=files_data,
+            message=f"Found {len(files_data)} import files ({sum(1 for f in files_data if f.get('file_type') == 'dbn')} DBN, {sum(1 for f in files_data if f.get('file_type') == 'csv')} CSV) - with metadata"
+        )
+    except Exception as e:
+        logger.error(f"Error listing import files with metadata: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-import/imported-data", response_model=ApiResponse)
+async def get_imported_data(expand: bool = False):
+    """Get list of imported datasets by symbol with optional detailed information."""
+    try:
+        if expand:
+            # Get detailed symbol-level data (slower, includes record counts, file sizes, etc.)
+            symbol_datasets = import_manager.get_symbol_level_data()
+            message = f"Retrieved {len(symbol_datasets)} imported symbol datasets with detailed information"
+        else:
+            # Get basic symbol-level data (faster, just symbol names and basic info)
+            symbol_datasets = import_manager.get_symbol_level_data_basic()
+            message = f"Retrieved {len(symbol_datasets)} imported symbol datasets (basic info only)"
+        
+        return ApiResponse(
+            success=True,
+            data=symbol_datasets,
+            message=message
+        )
+    except Exception as e:
+        logger.error(f"Error getting imported data: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-import/metadata/{filename}", response_model=ApiResponse)
+async def get_file_metadata_api(filename: str, symbol: Optional[str] = None, force_refresh: bool = False):
+    """Get detailed metadata for a specific import file (API endpoint)."""
+    try:
+        # Detect file type
+        file_type = import_manager._detect_file_type(filename)
+        
+        if file_type == ImportFileType.CSV and not symbol:
+            # For CSV files without symbol, return basic structure info
+            file_path = import_manager.dbn_files_dir / filename
+            if not file_path.exists():
+                raise HTTPException(status_code=404, detail=f"File not found: {filename}")
+            
+            # Get CSV structure analysis
+            from .services.data_import.csv_metadata_extractor import csv_metadata_extractor
+            csv_analysis = csv_metadata_extractor.analyze_csv_structure(file_path)
+            
+            # Create a basic metadata response for CSV files
+            basic_metadata = {
+                "filename": filename,
+                "file_path": str(file_path),
+                "file_size": file_path.stat().st_size,
+                "file_type": "csv",
+                "csv_format": csv_analysis.get('csv_format', 'generic'),
+                "csv_headers": csv_analysis.get('headers', []),
+                "csv_sample_data": csv_analysis.get('sample_data', []),
+                "record_count": csv_analysis.get('record_count', 0),
+                "start_date": csv_analysis.get('start_date'),
+                "end_date": csv_analysis.get('end_date'),
+                "needs_symbol_input": True,
+                "message": "CSV file detected. Symbol input will be required for import."
+            }
+            
+            return ApiResponse(
+                success=True,
+                data=basic_metadata,
+                message=f"Retrieved basic structure for CSV file {filename}"
+            )
+        else:
+            # For DBN files or CSV files with symbol, get full metadata
+            metadata = await import_manager.get_file_metadata(filename, symbol, force_refresh)
+            
+            return ApiResponse(
+                success=True,
+                data=metadata.dict(),
+                message=f"Retrieved metadata for {filename}"
+            )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting file metadata for {filename}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/data-import/jobs", response_model=ApiResponse)
+async def start_import_job_api(request: ImportRequest):
+    """Start a new data import job (API endpoint)."""
+    try:
+        job_id = await import_manager.start_import_job(request)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "job_id": job_id,
+                "filename": request.filename,
+                "status": "pending"
+            },
+            message=f"Import job started for {request.filename}"
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error starting import job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-import/jobs/{job_id}/status", response_model=ApiResponse)
+async def get_import_job_status_api(job_id: str):
+    """Get status and progress of an import job (API endpoint)."""
+    try:
+        job_info = await import_manager.get_job_status(job_id)
+        
+        return ApiResponse(
+            success=True,
+            data=job_info.model_dump(),
+            message=f"Retrieved status for job {job_id}"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting job status for {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-import/jobs", response_model=ApiResponse)
+async def list_import_jobs_api(
+    status: Optional[str] = None,
+    limit: int = 50
+):
+    """List import jobs with optional status filtering (API endpoint)."""
+    try:
+        # Convert string status to enum if provided
+        status_filter = None
+        if status:
+            try:
+                status_filter = ImportJobStatus(status.lower())
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+        
+        jobs = await import_manager.list_import_jobs(status_filter, limit)
+        
+        # Convert to dict format
+        jobs_data = [job.model_dump() for job in jobs]
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "jobs": jobs_data,
+                "total_jobs": len(jobs_data),
+                "status_filter": status,
+                "limit": limit
+            },
+            message=f"Retrieved {len(jobs_data)} import jobs"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing import jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/data-import/jobs/{job_id}", response_model=ApiResponse)
+async def cancel_import_job_api(job_id: str):
+    """Cancel a running import job (API endpoint)."""
+    try:
+        cancelled = await import_manager.cancel_import_job(job_id)
+        
+        if cancelled:
+            return ApiResponse(
+                success=True,
+                data={"job_id": job_id, "cancelled": True},
+                message=f"Import job {job_id} cancelled successfully"
+            )
+        else:
+            return ApiResponse(
+                success=False,
+                data={"job_id": job_id, "cancelled": False},
+                message=f"Could not cancel job {job_id} (may not be active)"
+            )
+    except Exception as e:
+        logger.error(f"Error cancelling import job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/data/import/files", response_model=ApiResponse)
+async def list_dbn_files_legacy():
+    """List available DBN files with metadata information (legacy endpoint)."""
+    try:
+        files_info = await import_manager.list_available_files()
+        
+        # Convert to dict format for JSON serialization
+        files_data = []
+        for file_info in files_info:
+            file_dict = file_info.dict()
+            files_data.append(file_dict)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "files": files_data,
+                "total_files": len(files_data)
+            },
+            message=f"Found {len(files_data)} DBN files"
+        )
+    except Exception as e:
+        logger.error(f"Error listing DBN files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/data/import/metadata/{filename}", response_model=ApiResponse)
+async def get_file_metadata(filename: str, force_refresh: bool = False):
+    """Get detailed metadata for a specific DBN file."""
+    try:
+        metadata = await import_manager.get_file_metadata(filename, force_refresh)
+        
+        return ApiResponse(
+            success=True,
+            data=metadata.dict(),
+            message=f"Retrieved metadata for {filename}"
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting file metadata for {filename}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/data/import/start", response_model=ApiResponse)
+async def start_import_job(request: ImportRequest):
+    """Start a new data import job."""
+    try:
+        job_id = await import_manager.start_import_job(request)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "job_id": job_id,
+                "filename": request.filename,
+                "status": "pending"
+            },
+            message=f"Import job started for {request.filename}"
+        )
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error starting import job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/data/import/jobs/{job_id}", response_model=ApiResponse)
+async def get_import_job_status(job_id: str):
+    """Get status and progress of an import job."""
+    try:
+        job_info = await import_manager.get_job_status(job_id)
+        
+        return ApiResponse(
+            success=True,
+            data=job_info.dict(),
+            message=f"Retrieved status for job {job_id}"
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting job status for {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/data/import/jobs", response_model=ApiResponse)
+async def list_import_jobs(
+    status: Optional[str] = None,
+    limit: int = 50
+):
+    """List import jobs with optional status filtering."""
+    try:
+        # Convert string status to enum if provided
+        status_filter = None
+        if status:
+            try:
+                status_filter = ImportJobStatus(status.lower())
+            except ValueError:
+                raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+        
+        jobs = await import_manager.list_import_jobs(status_filter, limit)
+        
+        # Convert to dict format
+        jobs_data = [job.dict() for job in jobs]
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "jobs": jobs_data,
+                "total_jobs": len(jobs_data),
+                "status_filter": status,
+                "limit": limit
+            },
+            message=f"Retrieved {len(jobs_data)} import jobs"
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error listing import jobs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/data/import/jobs/{job_id}", response_model=ApiResponse)
+async def cancel_import_job(job_id: str):
+    """Cancel a running import job."""
+    try:
+        cancelled = await import_manager.cancel_import_job(job_id)
+        
+        if cancelled:
+            return ApiResponse(
+                success=True,
+                data={"job_id": job_id, "cancelled": True},
+                message=f"Import job {job_id} cancelled successfully"
+            )
+        else:
+            return ApiResponse(
+                success=False,
+                data={"job_id": job_id, "cancelled": False},
+                message=f"Could not cancel job {job_id} (may not be active)"
+            )
+    except Exception as e:
+        logger.error(f"Error cancelling import job {job_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/data/import/summary", response_model=ApiResponse)
+async def get_import_summary():
+    """Get summary statistics for import operations."""
+    try:
+        summary = await import_manager.get_import_summary()
+        
+        return ApiResponse(
+            success=True,
+            data=summary.dict(),
+            message="Retrieved import summary statistics"
+        )
+    except Exception as e:
+        logger.error(f"Error getting import summary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/data/storage/stats", response_model=ApiResponse)
+async def get_storage_stats():
+    """Get comprehensive storage statistics for data import system."""
+    try:
+        stats = import_manager.get_storage_stats()
+        
+        return ApiResponse(
+            success=True,
+            data=stats,
+            message="Retrieved storage statistics"
+        )
+    except Exception as e:
+        logger.error(f"Error getting storage stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/api/data-import/imported-data/{symbol}", response_model=ApiResponse)
+async def delete_imported_dataset(symbol: str, asset_type: Optional[str] = None):
+    """Delete imported data for a specific symbol and optionally specific asset type."""
+    try:
+        deleted = import_manager.delete_imported_data(symbol, asset_type)
+        
+        if deleted:
+            if asset_type:
+                message = f"Successfully deleted {asset_type} data for symbol '{symbol}'"
+            else:
+                message = f"Successfully deleted all data for symbol '{symbol}'"
+            
+            return ApiResponse(
+                success=True,
+                data={"symbol": symbol, "asset_type": asset_type, "deleted": True},
+                message=message
+            )
+        else:
+            if asset_type:
+                message = f"No {asset_type} data found for symbol '{symbol}' or deletion failed"
+            else:
+                message = f"No data found for symbol '{symbol}' or deletion failed"
+            
+            return ApiResponse(
+                success=False,
+                data={"symbol": symbol, "asset_type": asset_type, "deleted": False},
+                message=message
+            )
+    except Exception as e:
+        logger.error(f"Error deleting imported data for {symbol} (asset_type: {asset_type}): {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# === Data Import Queue Endpoints ===
+
+@app.post("/api/data-import/queue", response_model=ApiResponse)
+async def add_files_to_import_queue(request: MultiFileImportRequest):
+    """Add multiple files to the import queue for sequential processing."""
+    try:
+        queue_ids = import_manager.import_queue.add_files_to_queue(request)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "queue_ids": queue_ids,
+                "batch_name": request.batch_name,
+                "total_files": len(request.files)
+            },
+            message=f"Added {len(request.files)} files to import queue"
+        )
+    except Exception as e:
+        logger.error(f"Error adding files to import queue: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data-import/queue/status", response_model=ApiResponse)
+async def get_import_queue_status():
+    """Get current status of the import queue."""
+    try:
+        queue_status = import_manager.import_queue.get_queue_status()
+        
+        return ApiResponse(
+            success=True,
+            data=queue_status.model_dump(),
+            message=f"Retrieved queue status - {queue_status.total_items} items, {queue_status.queued_items} queued, {queue_status.completed_items} completed"
+        )
+    except Exception as e:
+        logger.error(f"Error getting import queue status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/data-import/queue/batch", response_model=ApiResponse)
+async def add_batch_to_import_queue(request: dict):
+    """Add multiple files to the import queue as a batch."""
+    try:
+        jobs = request.get('jobs', [])
+        if not jobs:
+            raise HTTPException(status_code=400, detail="No jobs provided in batch")
+        
+        # Process each job in the batch
+        job_ids = []
+        for job_data in jobs:
+            # Convert job data to ImportRequest
+            import_request = ImportRequest(
+                filename=job_data['filename'],
+                job_name=job_data.get('job_name', f"Import {job_data['filename']}"),
+                overwrite_existing=job_data.get('overwrite_existing', False),
+                file_type=job_data.get('file_type'),
+                csv_symbol=job_data.get('csv_symbol'),
+                csv_format=job_data.get('csv_format'),
+                timestamp_convention=job_data.get('timestamp_convention')
+            )
+            
+            # Start the import job
+            job_id = await import_manager.start_import_job(import_request)
+            job_ids.append(job_id)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "job_ids": job_ids,
+                "total_jobs": len(job_ids),
+                "batch_size": len(jobs)
+            },
+            message=f"Successfully added {len(jobs)} files to import queue"
+        )
+    except Exception as e:
+        logger.error(f"Error adding batch to import queue: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/api/data-import/queue/{queue_id}", response_model=ApiResponse)
+async def remove_from_import_queue(queue_id: str):
+    """Remove an item from the import queue."""
+    try:
+        removed = import_manager.import_queue.remove_from_queue(queue_id)
+        
+        if removed:
+            return ApiResponse(
+                success=True,
+                data={"queue_id": queue_id, "removed": True},
+                message=f"Queue item {queue_id} removed successfully"
+            )
+        else:
+            return ApiResponse(
+                success=False,
+                data={"queue_id": queue_id, "removed": False},
+                message=f"Could not remove queue item {queue_id} (not found or currently processing)"
+            )
+    except Exception as e:
+        logger.error(f"Error removing from import queue {queue_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# === Data Aggregation Endpoints ===
+
+@app.get("/api/data/aggregated/{symbol}", response_model=ApiResponse)
+async def get_aggregated_data(
+    symbol: str,
+    timeframe: str = "5min",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    market_hours_only: bool = True,
+    limit: Optional[int] = None
+):
+    """Get aggregated OHLCV data for a symbol with flexible timeframes."""
+    try:
+        # Create aggregation request
+        request = AggregationRequest(
+            symbol=symbol,
+            timeframe=timeframe,
+            start_date=start_date,
+            end_date=end_date,
+            market_hours_only=market_hours_only,
+            limit=limit
+        )
+        
+        # Get aggregation service and process request
+        aggregation_service = get_aggregation_service()
+        result = aggregation_service.get_aggregated_data(request)
+        
+        return ApiResponse(
+            success=True,
+            data=result.dict(),
+            message=f"Retrieved {result.record_count} {result.timeframe} bars for {symbol}"
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting aggregated data for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data/symbols", response_model=ApiResponse)
+async def get_available_symbols():
+    """Get list of available symbols in the aggregated data."""
+    try:
+        aggregation_service = get_aggregation_service()
+        symbols = aggregation_service.get_available_symbols()
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "symbols": symbols,
+                "total_symbols": len(symbols)
+            },
+            message=f"Found {len(symbols)} available symbols"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting available symbols: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data/symbols/{symbol}/date-range", response_model=ApiResponse)
+async def get_symbol_date_range(symbol: str):
+    """Get the available date range for a specific symbol."""
+    try:
+        aggregation_service = get_aggregation_service()
+        date_range = aggregation_service.get_symbol_date_range(symbol)
+        
+        if not date_range:
+            raise HTTPException(status_code=404, detail=f"Symbol '{symbol}' not found")
+        
+        return ApiResponse(
+            success=True,
+            data=date_range,
+            message=f"Retrieved date range for {symbol}"
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting date range for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data/timeframes", response_model=ApiResponse)
+async def get_supported_timeframes():
+    """Get supported timeframes for data aggregation."""
+    try:
+        aggregation_service = get_aggregation_service()
+        timeframes = aggregation_service.get_supported_timeframes()
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "timeframes": timeframes,
+                "total_timeframes": len(timeframes)
+            },
+            message="Retrieved supported timeframes"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting supported timeframes: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/data/market-hours", response_model=ApiResponse)
+async def get_market_hours_info():
+    """Get market hours information."""
+    try:
+        from .services.data_aggregation.market_hours import get_market_hours_filter
+        
+        market_hours_filter = get_market_hours_filter()
+        open_time, close_time = market_hours_filter.get_market_hours_bounds()
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "market_open": open_time.strftime('%H:%M'),
+                "market_close": close_time.strftime('%H:%M'),
+                "timezone": "America/New_York",
+                "description": market_hours_filter.format_market_hours_info(),
+                "trading_days": "Monday-Friday"
+            },
+            message="Retrieved market hours information"
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting market hours info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Legacy endpoint for backward compatibility
+@app.get("/data/aggregated/{symbol}", response_model=ApiResponse)
+async def get_aggregated_data_legacy(
+    symbol: str,
+    timeframe: str = "5min",
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+    market_hours_only: bool = True,
+    limit: Optional[int] = None
+):
+    """Get aggregated OHLCV data for a symbol (legacy endpoint)."""
+    return await get_aggregated_data(
+        symbol=symbol,
+        timeframe=timeframe,
+        start_date=start_date,
+        end_date=end_date,
+        market_hours_only=market_hours_only,
+        limit=limit
+    )
 
 # === WebSocket Endpoint ===
 
