@@ -213,6 +213,7 @@ import { useRouter, useRoute } from "vue-router";
 import webSocketClient from "../services/webSocketClient";
 import { useMarketData } from "../composables/useMarketData.js";
 import SettingsDialog from "./SettingsDialog.vue";
+import authService from "../services/authService.js";
 
 export default {
   name: "TopBar",
@@ -313,8 +314,18 @@ export default {
       {
         label: "Sign Out",
         icon: "pi pi-sign-out",
-        command: () => {
-          console.log("Sign Out clicked");
+        command: async () => {
+          try {
+            const result = await authService.logout();
+            if (result.success) {
+              // Redirect to login page or home page
+              router.push('/login');
+            } else {
+              console.error('Logout failed:', result.error);
+            }
+          } catch (error) {
+            console.error('Logout error:', error);
+          }
         },
       },
     ];

@@ -5,9 +5,21 @@ import PositionsView from "../views/PositionsView.vue";
 import SmartMarketDataTest from "../components/SmartMarketDataTest.vue";
 import SetupView from "../views/SetupView.vue";
 import StrategiesView from "../views/StrategiesView.vue";
+import LoginPage from "../components/auth/LoginPage.vue";
 import { api } from "../services/api.js";
+import authService from "../services/authService.js";
 
 const routes = [
+  {
+    path: "/login",
+    name: "Login",
+    component: LoginPage,
+    meta: {
+      title: "Login - JuicyTrade",
+      requiresAuth: false,
+      requiresSetup: false,
+    },
+  },
   {
     path: "/setup",
     name: "Setup",
@@ -130,15 +142,31 @@ const router = createRouter({
   routes,
 });
 
-// Navigation guard to check setup status
+// Navigation guard to check authentication and setup status
 router.beforeEach(async (to, from, next) => {
-  // Skip setup check for the setup route itself
-  if (to.meta.requiresSetup === false || to.name === 'Setup') {
+  // Skip checks for routes that don't require them
+  if (to.meta.requiresAuth === false || to.meta.requiresSetup === false || 
+      to.name === 'Login' || to.name === 'Setup') {
     next();
     return;
   }
 
   try {
+    // Initialize auth service if not already done
+    if (!authService.isAuthenticated() && authService.getAuthMethod() === 'disabled') {
+      await authService.init();
+    }
+
+    // Check authentication first
+    if (authService.isAuthEnabled() && !authService.isAuthenticated()) {
+      console.log('Authentication required, redirecting to login');
+      next({ 
+        name: 'Login', 
+        query: { next: to.fullPath } 
+      });
+      return;
+    }
+
     // Check if mandatory routes are configured
     const setupStatus = await api.checkSetupStatus();
     
@@ -149,11 +177,11 @@ router.beforeEach(async (to, from, next) => {
       return;
     }
     
-    // Setup is complete, proceeding to the requested route
+    // Both auth and setup are complete, proceeding to the requested route
     next();
   } catch (error) {
-    console.error('Error checking setup status:', error);
-    // If we can't check setup status, allow navigation but log the error
+    console.error('Error in navigation guard:', error);
+    // If we can't check status, allow navigation but log the error
     // This prevents the app from being completely unusable if the API is down
     next();
   }

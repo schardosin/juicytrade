@@ -6,6 +6,9 @@ import router from "./router";
 // Smart Market Data Store
 import smartMarketDataStore from "./services/smartMarketDataStore.js";
 
+// Authentication Service
+import authService from "./services/authService.js";
+
 // PrimeVue components
 import Button from "primevue/button";
 import InputText from "primevue/inputtext";
@@ -43,10 +46,18 @@ app.use(router);
 // Initialize and provide Smart Market Data Store globally
 smartMarketDataStore.initialize();
 
+// Initialize Authentication Service
+authService.init().then(() => {
+  console.log('Authentication service initialized');
+}).catch(error => {
+  console.error('Failed to initialize authentication service:', error);
+});
+
 // Configure all data sources immediately at app startup
 configureDataSources();
 
 app.provide("smartMarketDataStore", smartMarketDataStore);
+app.provide("authService", authService);
 
 /**
  * Configure all data sources with their strategies

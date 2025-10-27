@@ -10,7 +10,8 @@ export default defineConfig({
       "/api": {
         target: process.env.JUICYTRADE_API_BASE_URL || "http://localhost:8008",
         changeOrigin: true,
-        // Don't rewrite the path - keep /api prefix for backend
+        rewrite: (path) => path.replace(/^\/api/, ''),
+        // Strip /api prefix when forwarding to backend
       },
     },
   },

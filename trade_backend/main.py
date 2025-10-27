@@ -22,6 +22,9 @@ from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Back
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
+from .auth.config import auth_config
+from .auth.middleware import AuthenticationMiddleware
+from .auth.endpoints import auth_router
 from .models import (
     StockQuote, OptionContract, Position, Order, ApiResponse,
     SymbolRequest, OrderRequest, MultiLegOrderRequest, SymbolSearchResult, Account,
@@ -141,6 +144,13 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Add authentication middleware (only if enabled)
+if auth_config.is_enabled():
+    logger.info(f"🔐 Authentication enabled: {auth_config.method.value}")
+    app.add_middleware(AuthenticationMiddleware)
+else:
+    logger.info("🔓 Authentication disabled")
+
 # WebSocket connection manager
 manager = ConnectionManager(streaming_manager, shutdown_manager)
 shutdown_manager.set_connection_manager(manager)
@@ -152,6 +162,9 @@ manager.set_ivx_streaming_manager(ivx_streaming_manager)
 # CRITICAL: Set the global ivx_streaming_manager reference BEFORE streaming starts
 from .ivx_streaming_manager import set_global_ivx_streaming_manager
 set_global_ivx_streaming_manager(ivx_streaming_manager)
+
+# === Register Authentication Router ===
+app.include_router(auth_router)
 
 # === Register Strategy Router ===
 app.include_router(strategies_router)
