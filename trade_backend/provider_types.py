@@ -72,14 +72,20 @@ PROVIDER_TYPES: Dict[str, Dict[str, Any]] = {
         },
         "credential_fields": {
             "live": [
-                {"name": "username", "label": "Username", "type": "text", "required": True, "placeholder": "Your TastyTrade Username"},
-                {"name": "password", "label": "Password", "type": "password", "required": True, "placeholder": "Your TastyTrade Password"},
+                {"name": "client_id", "label": "Client ID", "type": "text", "required": False, "placeholder": "Your TastyTrade OAuth2 Client ID"},
+                {"name": "client_secret", "label": "Client Secret", "type": "password", "required": True, "placeholder": "Your TastyTrade OAuth2 Client Secret"},
+                {"name": "refresh_token", "label": "Refresh Token", "type": "password", "required": False, "placeholder": "Your TastyTrade OAuth2 Refresh Token (Create Grant in portal)"},
+                {"name": "authorization_code", "label": "Authorization Code", "type": "text", "required": False, "placeholder": "Optional one-time code for token exchange"},
+                {"name": "redirect_uri", "label": "Redirect URI", "type": "text", "required": False, "placeholder": "Optional redirect URI for auth code exchange"},
                 {"name": "account_id", "label": "Account ID", "type": "text", "required": True, "placeholder": "Your TastyTrade Account ID"},
                 {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://api.tastytrade.com"}
             ],
             "paper": [
-                {"name": "username", "label": "Username", "type": "text", "required": True, "placeholder": "Your TastyTrade Sandbox Username"},
-                {"name": "password", "label": "Password", "type": "password", "required": True, "placeholder": "Your TastyTrade Sandbox Password"},
+                {"name": "client_id", "label": "Client ID", "type": "text", "required": False, "placeholder": "Your TastyTrade Sandbox OAuth2 Client ID"},
+                {"name": "client_secret", "label": "Client Secret", "type": "password", "required": True, "placeholder": "Your TastyTrade Sandbox OAuth2 Client Secret"},
+                {"name": "refresh_token", "label": "Refresh Token", "type": "password", "required": False, "placeholder": "Your TastyTrade Sandbox OAuth2 Refresh Token (Create Grant in portal)"},
+                {"name": "authorization_code", "label": "Authorization Code", "type": "text", "required": False, "placeholder": "Optional one-time code for token exchange"},
+                {"name": "redirect_uri", "label": "Redirect URI", "type": "text", "required": False, "placeholder": "Optional redirect URI for auth code exchange"},
                 {"name": "account_id", "label": "Account ID", "type": "text", "required": True, "placeholder": "Your TastyTrade Sandbox Account ID"},
                 {"name": "base_url", "label": "Base URL", "type": "text", "required": False, "default": "https://api.cert.tastyworks.com"}
             ]
@@ -127,7 +133,7 @@ def apply_defaults(provider_type: str, account_type: str, credentials: Dict[str,
 
 def is_sensitive_field(field_name: str) -> bool:
     """Determine if a credential field contains sensitive information"""
-    sensitive_fields = ['password', 'api_key', 'api_secret']
+    sensitive_fields = ['password', 'api_key', 'api_secret', 'client_secret', 'refresh_token']
     return field_name in sensitive_fields
 
 def get_visible_credentials(instance_data: Dict[str, Any]) -> Dict[str, str]:

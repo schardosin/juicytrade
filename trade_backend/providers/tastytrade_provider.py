@@ -319,16 +319,24 @@ class TastyTradeProvider(BaseProvider):
     """
     TastyTrade provider implementation.
     
-    Uses session-based authentication with 24-hour session tokens.
+    Uses OAuth2 access tokens (15-minute lifetime) obtained via client_id/client_secret with either:
+    - refresh_token (preferred when available), or
+    - authorization_code (one-time exchange that returns a refresh_token)
+    
     For streaming, uses DXLink with separate quote tokens.
     """
     
-    def __init__(self, username: str, password: str, account_id: str, base_url: str):
+    def __init__(self, account_id: str = None, base_url: str = None, client_id: str = None, client_secret: str = None, refresh_token: str = None, authorization_code: str = None, redirect_uri: str = None):
         super().__init__("TastyTrade")
-        self.username = username
-        self.password = password
         self.account_id = account_id
         self.base_url = base_url
+        # OAuth2 client credentials
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.refresh_token = refresh_token
+        self.authorization_code = authorization_code
+        self.redirect_uri = redirect_uri
+        # Session or OAuth2 access token management
         self._session_token = None
         self._session_expires_at = None
         self._quote_token = None
@@ -356,44 +364,68 @@ class TastyTradeProvider(BaseProvider):
         )
         
     async def _create_session(self) -> bool:
-        """Create a new session with TastyTrade API."""
+        """Create or refresh OAuth2 access token with TastyTrade API."""
         try:
-            url = f"{self.base_url}/sessions"
+            url = f"{self.base_url}/oauth/token"
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "User-Agent": "juicytrade/1.0"  # Required by TastyTrade
+                "User-Agent": "juicytrade/1.0"
             }
-            
-            payload = {
-                "login": self.username,
-                "password": self.password,
-                "remember-me": False
-            }
-            
-            async with httpx.AsyncClient(timeout=30.0) as client:
-                response = await client.post(url, headers=headers, json=payload)
-                response.raise_for_status()
-                
-                data = response.json()
-                session_data = data.get("data", {})
-                
-                self._session_token = session_data.get("session-token")
-                session_expiration = session_data.get("session-expiration")
-                
-                if self._session_token and session_expiration:
-                    # Parse expiration time
-                    self._session_expires_at = datetime.fromisoformat(
-                        session_expiration.replace('Z', '+00:00')
-                    )
-                    logger.info("TastyTrade session created successfully")
-                    return True
-                else:
-                    logger.error("Failed to get session token from TastyTrade response")
-                    return False
-                    
+
+            # 1) Use refresh_token if available
+            if self.client_secret and self.refresh_token:
+                payload = {
+                    "grant_type": "refresh_token",
+                    "refresh_token": self.refresh_token,
+                    "client_secret": self.client_secret
+                }
+                if self.client_id:
+                    payload["client_id"] = self.client_id
+
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(url, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+
+            # 2) Otherwise, exchange authorization_code (one-time) to obtain access + refresh tokens
+            elif self.client_secret and self.authorization_code:
+                payload = {
+                    "grant_type": "authorization_code",
+                    "code": self.authorization_code,
+                    "client_secret": self.client_secret
+                }
+                if self.client_id:
+                    payload["client_id"] = self.client_id
+                if self.redirect_uri:
+                    payload["redirect_uri"] = self.redirect_uri
+
+                async with httpx.AsyncClient(timeout=30.0) as client:
+                    response = await client.post(url, headers=headers, json=payload)
+                    response.raise_for_status()
+                    data = response.json()
+            else:
+                logger.error("OAuth2 credentials incomplete: provide refresh_token or authorization_code with client_secret (and optional client_id).")
+                return False
+
+            access_token = data.get("access_token")
+            expires_in = int(data.get("expires_in", 900))  # default 15 minutes
+            new_refresh_token = data.get("refresh_token")
+
+            if access_token:
+                self._session_token = f"Bearer {access_token}"
+                self._session_expires_at = datetime.now() + timedelta(seconds=expires_in)
+                if new_refresh_token:
+                    # Persist in-memory for current runtime
+                    self.refresh_token = new_refresh_token
+                logger.info("TastyTrade OAuth2 access token obtained successfully")
+                return True
+
+            logger.error("Failed to get OAuth2 access token from TastyTrade response")
+            return False
+
         except Exception as e:
-            logger.error(f"Error creating TastyTrade session: {e}")
+            logger.error(f"Error creating TastyTrade OAuth2 session: {e}")
             return False
     
     async def _ensure_valid_session(self) -> bool:
@@ -3449,7 +3481,7 @@ class TastyTradeProvider(BaseProvider):
         except httpx.HTTPStatusError as e:
             if e.response.status_code == 401:
                 logger.error(f"❌ TastyTrade API authentication failed (401): {e.response.text}")
-                return {"success": False, "message": "Authentication failed: Invalid username or password."}
+                return {"success": False, "message": "Authentication failed: invalid OAuth2 credentials or token exchange."}
             else:
                 logger.error(f"❌ HTTP error during TastyTrade credential test: {e}")
                 return {"success": False, "message": f"API error: {e.response.status_code} - {e.response.text}"}

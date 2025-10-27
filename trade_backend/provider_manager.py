@@ -86,10 +86,13 @@ class ProviderManager:
                 )
             elif provider_type == "tastytrade":
                 return TastyTradeProvider(
-                    username=credentials.get('username'),
-                    password=credentials.get('password'),
                     account_id=credentials.get('account_id'),
-                    base_url=credentials.get('base_url')
+                    base_url=credentials.get('base_url'),
+                    client_id=credentials.get('client_id'),
+                    client_secret=credentials.get('client_secret'),
+                    refresh_token=credentials.get('refresh_token'),
+                    authorization_code=credentials.get('authorization_code'),
+                    redirect_uri=credentials.get('redirect_uri')
                 )
             else:
                 logger.error(f"❌ Unknown provider type: {provider_type}")

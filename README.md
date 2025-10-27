@@ -78,8 +78,8 @@ The backend is designed to support multiple brokerage providers, with a clear di
 
 #### 3. **TastyTrade** ⭐ *NEW*
 - **Type**: Options-focused trading platform
-- **Authentication**: Session-based with username/password
-- **Streaming**: DXLink protocol for professional-grade market data
+- **Authentication**: OAuth2 (client_id, client_secret, refresh_token). Access tokens are short-lived (15 minutes) and are automatically refreshed using the refresh_token.
+- **Streaming**: DXLink protocol for professional-grade market data (quote tokens retrieved via OAuth2-authenticated API)
 - **Features**: Advanced options analytics, Greeks streaming, professional trading tools
 
 #### 4. **Public.com**
@@ -380,23 +380,54 @@ curl -X GET "http://localhost:8008/health/streaming" \
 
 ## TastyTrade Integration ⭐ *NEW*
 
-### Authentication & Setup
+### Authentication & Setup (OAuth2-only)
 
-TastyTrade uses session-based authentication with username/password credentials:
+TastyTrade uses OAuth2 for all API access. Username/password sessions are no longer supported. You must register an OAuth application, generate a long-lived refresh_token, and exchange it for short-lived access tokens (15 minutes).
 
+Steps:
+1. Create an OAuth application at my.tastytrade.com → Manage → My Profile → API → OAuth Applications. Save your client_id and client_secret.
+2. Generate a personal grant (“Create Grant”) to obtain a refresh_token (long-lived, does not expire).
+3. The backend will exchange the refresh_token for an access_token via POST {base_url}/oauth/token and automatically refresh it before expiry.
+
+Configuration example:
 ```python
-# TastyTrade provider configuration
+# TastyTrade provider configuration (OAuth2)
 {
   "provider_type": "tastytrade",
   "account_type": "live",  # or "paper"
   "credentials": {
-    "username": "your_username",
-    "password": "your_password",
-    "base_url": "https://api.tastytrade.com",  # or sandbox URL
-    "stream_url": "wss://streamer.tastytrade.com"
+    "client_id": "your_client_id",            # optional for personal grant; include if available
+    "client_secret": "your_client_secret",    # required
+    "refresh_token": "your_refresh_token",    # required
+    "account_id": "your_account_number",
+    "base_url": "https://api.tastytrade.com"  # sandbox: https://api.cert.tastyworks.com
   }
 }
 ```
+
+Access token behavior:
+- Access tokens expire after ~15 minutes. The backend automatically refreshes them using the refresh_token before expiry (proactive refresh window ~5 minutes).
+- If an API call receives 401 due to expiry, the provider clears the token and will immediately refresh on the next call.
+
+### DXLink Streaming Protocol
+
+TastyTrade uses the advanced DXLink protocol for professional-grade market data:
+
+- **Professional Market Data**: Institutional-quality real-time quotes and Greeks
+- **Advanced Options Analytics**: Real-time Greeks streaming (Delta, Gamma, Theta, Vega)
+- **High-Performance Streaming**: Optimized for high-frequency options trading
+- **Symbol Format Conversion**: Automatic conversion between OCC standard and TastyTrade formats
+
+Quote tokens:
+- Retrieved via GET {base_url}/api-quote-tokens using the current OAuth2 Bearer access token.
+- The provider manages quote token retrieval and reconnection logic automatically.
+
+### Key Features
+
+- **Options-Focused Platform**: Designed specifically for sophisticated options trading
+- **Advanced Greeks**: Real-time streaming of all option Greeks with professional accuracy
+- **Professional Analytics**: Comprehensive options analysis tools and metrics
+- **Institutional-Grade Data**: High-quality market data suitable for professional trading
 
 ### DXLink Streaming Protocol
 
