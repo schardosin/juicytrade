@@ -5,8 +5,28 @@ services:
       - "80:80"
     container_name: juicytrade
     restart: unless-stopped
+    env_file:
+      - .env  # Load environment variables from .env file
     environment:
       - PYTHONUNBUFFERED=1
+      # Authentication Configuration (can be overridden by .env file)
+      - AUTH_METHOD=${AUTH_METHOD:-simple}
+      - AUTH_SIMPLE_USERNAME=${AUTH_SIMPLE_USERNAME:-admin}
+      - AUTH_SIMPLE_PASSWORD=${AUTH_SIMPLE_PASSWORD:-admin}
+      - AUTH_JWT_SECRET_KEY=${AUTH_JWT_SECRET_KEY:-juicytrade-default-secret-key-change-in-production}
+      - AUTH_JWT_EXPIRE_MINUTES=${AUTH_JWT_EXPIRE_MINUTES:-1440}
+      - AUTH_JWT_ALGORITHM=${AUTH_JWT_ALGORITHM:-HS256}
+      - AUTH_SESSION_COOKIE_NAME=${AUTH_SESSION_COOKIE_NAME:-juicytrade_session}
+      - AUTH_SESSION_MAX_AGE=${AUTH_SESSION_MAX_AGE:-86400}
+      - AUTH_SECURE_COOKIES=${AUTH_SECURE_COOKIES:-false}
+      - AUTH_ENABLE_CSRF=${AUTH_ENABLE_CSRF:-true}
+      # OAuth Configuration (optional)
+      - AUTH_OAUTH_PROVIDER=${AUTH_OAUTH_PROVIDER:-}
+      - AUTH_OAUTH_CLIENT_ID=${AUTH_OAUTH_CLIENT_ID:-}
+      - AUTH_OAUTH_CLIENT_SECRET=${AUTH_OAUTH_CLIENT_SECRET:-}
+      - AUTH_OAUTH_REDIRECT_URI=${AUTH_OAUTH_REDIRECT_URI:-}
+      # Header-based Authentication (optional)
+      - AUTH_HEADER_NAME=${AUTH_HEADER_NAME:-X-Remote-User}
     volumes:
       - ./data:/app/data  # Map host data directory to container data directory
     healthcheck:
