@@ -143,6 +143,51 @@ export function useMarketData() {
     return await smartMarketDataStore.getData(key, { forceRefresh });
   };
 
+  /**
+   * Get available expiration dates for options (cached)
+   */
+  const getAvailableExpirations = async (symbol, forceRefresh = false) => {
+    // Import API service dynamically to avoid circular dependencies
+    const api = await import('../services/api.js');
+    return await api.default.getAvailableExpirations(symbol);
+  };
+
+  /**
+   * Get basic options chain (cached for 5 minutes)
+   */
+  const getOptionsChainBasic = async (symbol, expiry, underlyingPrice = null, strikeCount = 20, type = null) => {
+    // Import API service dynamically to avoid circular dependencies
+    const api = await import('../services/api.js');
+    return await api.default.getOptionsChainBasic(symbol, expiry, underlyingPrice, strikeCount, type);
+  };
+
+  /**
+   * Get previous close price (cached)
+   */
+  const getPreviousClose = async (symbol, forceRefresh = false) => {
+    // Import API service dynamically to avoid circular dependencies
+    const api = await import('../services/api.js');
+    return await api.default.getPreviousClose(symbol);
+  };
+
+  /**
+   * Get 52-week range (cached for 1 hour)
+   */
+  const get52WeekRange = async (symbol, forceRefresh = false) => {
+    // Import API service dynamically to avoid circular dependencies
+    const api = await import('../services/api.js');
+    return await api.default.get52WeekRange(symbol);
+  };
+
+  /**
+   * Get average volume (cached for 1 hour)
+   */
+  const getAverageVolume = async (symbol, days = 20, forceRefresh = false) => {
+    // Import API service dynamically to avoid circular dependencies
+    const api = await import('../services/api.js');
+    return await api.default.getAverageVolume(symbol, days);
+  };
+
   // ===== PROVIDER CONFIGURATION DATA =====
 
   /**
@@ -231,6 +276,11 @@ export function useMarketData() {
     getHistoricalDailySixMonths,
     lookupSymbols,
     getExpirationDates,
+    getAvailableExpirations,
+    getOptionsChainBasic,
+    getPreviousClose,
+    get52WeekRange,
+    getAverageVolume,
 
     // Provider configuration data
     getAvailableProviders,

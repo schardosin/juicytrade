@@ -964,6 +964,103 @@ async def get_intraday_chart_data(symbol: str, interval: str = "5m"):
         logger.error(f"Error getting intraday chart data: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/symbol/{symbol}/range/52week", response_model=ApiResponse)
+async def get_52_week_range(symbol: str):
+    """Get 52-week high and low for a symbol."""
+    try:
+        from datetime import datetime, timedelta
+        
+        # Get 1 year of daily data
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=365)
+        
+        bars = await provider_manager.get_historical_bars(
+            symbol, "D",
+            start_date.strftime('%Y-%m-%d'),
+            end_date.strftime('%Y-%m-%d'),
+            limit=365
+        )
+        
+        if not bars:
+            return ApiResponse(
+                success=False,
+                data=None,
+                message=f"No historical data available for {symbol}"
+            )
+        
+        # Calculate 52-week high and low
+        high_bar = max(bars, key=lambda x: x.get('high', 0))
+        low_bar = min(bars, key=lambda x: x.get('low', float('inf')))
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "symbol": symbol,
+                "high": high_bar.get('high'),
+                "low": low_bar.get('low'),
+                "high_date": high_bar.get('time'),
+                "low_date": low_bar.get('time'),
+                "period_days": len(bars)
+            },
+            message=f"Retrieved 52-week range for {symbol}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting 52-week range for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/symbol/{symbol}/volume/average", response_model=ApiResponse)
+async def get_average_volume(symbol: str, days: int = 20):
+    """Get average volume for a symbol over specified number of days."""
+    try:
+        from datetime import datetime, timedelta
+        
+        # Get extra days to ensure we have enough trading days
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=days * 2)  # Get double to account for weekends/holidays
+        
+        bars = await provider_manager.get_historical_bars(
+            symbol, "D",
+            start_date.strftime('%Y-%m-%d'),
+            end_date.strftime('%Y-%m-%d'),
+            limit=days * 2
+        )
+        
+        if not bars:
+            return ApiResponse(
+                success=False,
+                data=None,
+                message=f"No historical data available for {symbol}"
+            )
+        
+        # Filter out bars with zero volume and take the most recent 'days' bars
+        volume_bars = [bar for bar in bars if bar.get('volume', 0) > 0]
+        recent_bars = volume_bars[-days:] if len(volume_bars) >= days else volume_bars
+        
+        if not recent_bars:
+            return ApiResponse(
+                success=False,
+                data=None,
+                message=f"No volume data available for {symbol}"
+            )
+        
+        # Calculate average volume
+        total_volume = sum(bar.get('volume', 0) for bar in recent_bars)
+        average_volume = total_volume / len(recent_bars)
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "symbol": symbol,
+                "average_volume": round(average_volume),
+                "period_days": len(recent_bars),
+                "requested_days": days
+            },
+            message=f"Retrieved {len(recent_bars)}-day average volume for {symbol}"
+        )
+    except Exception as e:
+        logger.error(f"Error getting average volume for {symbol}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 # === Account & Portfolio Endpoints ===
 
 @app.get("/positions", response_model=ApiResponse)

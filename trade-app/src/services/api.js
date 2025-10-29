@@ -515,6 +515,30 @@ export const api = {
     }
   },
 
+  // Get 52-week high and low for a symbol
+  async get52WeekRange(symbol) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/symbol/${symbol}/range/52week`);
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching 52-week range:", error);
+      throw error;
+    }
+  },
+
+  // Get average volume for a symbol
+  async getAverageVolume(symbol, days = 20) {
+    try {
+      const response = await axios.get(`${API_BASE_URL}/symbol/${symbol}/volume/average`, {
+        params: { days }
+      });
+      return response.data.data;
+    } catch (error) {
+      console.error("Error fetching average volume:", error);
+      throw error;
+    }
+  },
+
   // Get available providers and their capabilities
   async getAvailableProviders() {
     try {
