@@ -4,7 +4,7 @@
     <div class="left-section">
       <div class="logo-section">
         <div class="logo">
-          <span class="logo-text">juicytrade</span>
+          <img src="/logos/juicytrade-logo.svg" alt="juicytrade" class="logo-svg" />
         </div>
       </div>
 
@@ -944,13 +944,21 @@ export default {
   display: flex;
   align-items: center;
   flex-shrink: 0;
+  margin-right: var(--spacing-sm);
 }
 
-.logo-text {
-  font-size: var(--font-size-xl);
-  font-weight: var(--font-weight-bold);
-  color: var(--color-brand);
-  letter-spacing: -0.5px;
+.logo-svg {
+  height: 35px;
+  width: auto;
+  display: block;
+  transition: var(--transition-normal);
+  margin-left: -8px;
+  margin-right: -18px;
+  object-fit: contain;
+}
+
+.logo-svg:hover {
+  opacity: 0.8;
 }
 
 .nav-section {

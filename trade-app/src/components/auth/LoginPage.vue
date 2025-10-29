@@ -2,7 +2,9 @@
   <div class="login-container">
     <div class="login-card">
       <div class="login-header">
-        <h1 class="login-title">JuicyTrade</h1>
+        <div class="login-logo">
+          <img src="/logos/juicytrade-logo.svg" alt="juicytrade" class="logo-svg" />
+        </div>
         <p class="login-subtitle">Professional Options Trading Platform</p>
         <div class="auth-method-info">
           Authentication: {{ authMethodDisplay }}
@@ -295,15 +297,22 @@ export default {
   margin-bottom: 32px;
 }
 
-.login-title {
-  font-size: 2.5rem;
-  font-weight: 700;
-  color: var(--primary-color);
-  margin: 0 0 8px 0;
-  background: linear-gradient(135deg, var(--primary-color) 0%, #4ade80 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
+.login-logo {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.logo-svg {
+  height: 80px;
+  width: auto;
+  display: block;
+  transition: all 0.2s ease;
+}
+
+.logo-svg:hover {
+  opacity: 0.8;
 }
 
 .login-subtitle {
