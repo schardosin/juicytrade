@@ -165,6 +165,7 @@ class DataRecoveryManager {
   constructor(store) {
     this.store = store;
     this.recoveryStrategies = new Map();
+    this.recoveryHistory = new Map(); // Track recovery success rates
     this.setupRecoveryStrategies();
   }
 
@@ -178,30 +179,134 @@ class DataRecoveryManager {
     this.recoveryStrategies.set('stale_connection', this.recoverFromStaleConnection.bind(this));
   }
 
+  /**
+   * Calculate recovery confidence based on historical success rates and current conditions
+   */
+  calculateRecoveryConfidence(scenario, failedComponents = []) {
+    let confidence = 0.7; // Base confidence
+    
+    // Get historical success rate for this scenario
+    const history = this.recoveryHistory.get(scenario);
+    if (history && history.attempts > 0) {
+      const successRate = history.successes / history.attempts;
+      confidence = (confidence + successRate) / 2; // Average with historical data
+    }
+    
+    // Adjust based on failure type
+    if (scenario === 'websocket_disconnected') {
+      confidence += 0.2; // WebSocket recovery is usually reliable
+    }
+    
+    if (failedComponents.length === 1) {
+      confidence += 0.1; // Single component failures are easier to recover
+    } else if (failedComponents.length > 2) {
+      confidence -= 0.2; // Multiple failures are harder to recover
+    }
+    
+    // Adjust based on recent recovery attempts
+    const recentFailures = this.getRecentFailureCount(scenario);
+    if (recentFailures > 2) {
+      confidence -= 0.3; // Recent failures reduce confidence
+    }
+    
+    return Math.max(0.1, Math.min(1.0, confidence));
+  }
+
+  /**
+   * Get recent failure count for a scenario (last 10 minutes)
+   */
+  getRecentFailureCount(scenario) {
+    const history = this.recoveryHistory.get(scenario);
+    if (!history || !history.recentAttempts) return 0;
+    
+    const tenMinutesAgo = Date.now() - 600000;
+    return history.recentAttempts.filter(attempt => 
+      attempt.timestamp > tenMinutesAgo && !attempt.success
+    ).length;
+  }
+
+  /**
+   * Record recovery attempt result
+   */
+  recordRecoveryAttempt(scenario, success) {
+    let history = this.recoveryHistory.get(scenario);
+    if (!history) {
+      history = {
+        attempts: 0,
+        successes: 0,
+        recentAttempts: []
+      };
+      this.recoveryHistory.set(scenario, history);
+    }
+    
+    history.attempts++;
+    if (success) {
+      history.successes++;
+    }
+    
+    // Track recent attempts (keep last 20)
+    history.recentAttempts.push({
+      timestamp: Date.now(),
+      success
+    });
+    
+    if (history.recentAttempts.length > 20) {
+      history.recentAttempts = history.recentAttempts.slice(-20);
+    }
+  }
+
+  /**
+   * Get recovery statistics for debugging
+   */
+  getRecoveryStats() {
+    const stats = {};
+    for (const [scenario, history] of this.recoveryHistory.entries()) {
+      const successRate = history.attempts > 0 ? history.successes / history.attempts : 0;
+      const recentFailures = this.getRecentFailureCount(scenario);
+      
+      stats[scenario] = {
+        totalAttempts: history.attempts,
+        totalSuccesses: history.successes,
+        successRate: Math.round(successRate * 100) + '%',
+        recentFailures,
+        confidence: this.calculateRecoveryConfidence(scenario, [])
+      };
+    }
+    return stats;
+  }
+
   async executeRecovery(scenario, context = {}) {
     if (this.store.systemState.recoveryInProgress) {
       console.log("🔄 Recovery already in progress, skipping");
-      return;
+      return false;
     }
 
     this.store.systemState.recoveryInProgress = true;
     this.store.systemState.lastRecoveryAttempt = Date.now();
 
+    let success = false;
     try {
       console.log(`🚑 Starting recovery for scenario: ${scenario}`);
       
       const strategy = this.recoveryStrategies.get(scenario);
       if (strategy) {
         await strategy(context);
+        success = true;
         console.log(`✅ Recovery completed for scenario: ${scenario}`);
       } else {
         console.warn(`⚠️ No recovery strategy for scenario: ${scenario}`);
+        success = false;
       }
     } catch (error) {
       console.error(`❌ Recovery failed for scenario ${scenario}:`, error);
+      success = false;
     } finally {
+      // Record the recovery attempt
+      this.recordRecoveryAttempt(scenario, success);
       this.store.systemState.recoveryInProgress = false;
     }
+
+    return success;
   }
 
   async recoverWebSocket(context) {
@@ -249,9 +354,34 @@ class DataRecoveryManager {
   async recoverGreeks(context) {
     console.log("📊 Recovering Greeks data");
     
-    // Force immediate Greeks update
+    // Clear stale Greeks data first
+    const cutoffTime = Date.now() - 60000; // 1 minute ago
+    for (const [symbol, greeksData] of this.store.optionGreeks.entries()) {
+      if (greeksData.timestamp < cutoffTime) {
+        console.log(`📊 Clearing stale Greeks for ${symbol}`);
+        this.store.optionGreeks.delete(symbol);
+      }
+    }
+    
+    // Force immediate Greeks update for all active subscriptions
     if (this.store.activeGreeksSubscriptions.size > 0) {
+      console.log(`📊 Forcing Greeks update for ${this.store.activeGreeksSubscriptions.size} symbols`);
       await this.store.updateGreeksData();
+    }
+    
+    // Also try to refresh WebSocket connection if Greeks are streaming
+    try {
+      const config = await this.store.getData("providers.config");
+      if (config && config.streaming_greeks) {
+        console.log("📊 Greeks are streaming, refreshing WebSocket connection");
+        // Trigger a WebSocket refresh to get fresh streaming Greeks
+        const allSymbols = Array.from(this.store.activeSubscriptions);
+        if (allSymbols.length > 0) {
+          await webSocketClient.replaceAllSubscriptions(allSymbols);
+        }
+      }
+    } catch (error) {
+      console.warn("⚠️ Failed to check Greeks streaming config:", error);
     }
   }
 

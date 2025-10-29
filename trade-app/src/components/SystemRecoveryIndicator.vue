@@ -1,4 +1,5 @@
 <template>
+  <!-- Main recovery indicator (shown after grace period) -->
   <div v-if="showIndicator" class="recovery-indicator" :class="indicatorClass">
     <div class="recovery-content">
       <i class="recovery-icon" :class="iconClass"></i>
@@ -11,6 +12,14 @@
       >
         {{ isRetrying ? 'Retrying...' : 'Retry' }}
       </button>
+    </div>
+  </div>
+
+  <!-- Subtle recovery indicator (shown during grace period) -->
+  <div v-if="showSubtleRecovery" class="subtle-recovery-indicator" :class="subtleIndicatorClass">
+    <div class="subtle-recovery-content">
+      <i class="subtle-recovery-icon" :class="subtleIconClass"></i>
+      <span class="subtle-recovery-message">{{ subtleMessage }}</span>
     </div>
   </div>
 </template>
@@ -28,15 +37,48 @@ export default {
     const showTemporarySuccess = ref(false);
     const lastRetryTime = ref(0);
     const retryCooldown = 10000; // 10 second cooldown between manual retries
+    
+    // Silent recovery configuration
+    const silentRecoveryGracePeriod = 15000; // 15 seconds grace period
+    const silentRecoveryStartTime = ref(null);
+    const inSilentRecovery = ref(false);
+    const recoveryConfidence = ref(0.8); // Default confidence score
+    const recoveryAttempts = ref(0);
+    const maxSilentAttempts = 3;
 
     // Get system health from the smart data store
     const systemHealth = smartMarketDataStore.getSystemHealth();
 
-    // Computed properties for UI state
+    // Enhanced logic for when to show indicator
     const showIndicator = computed(() => {
-      return !systemHealth.value.isHealthy || 
-             systemHealth.value.recoveryInProgress || 
-             showTemporarySuccess.value;
+      // Always show success messages
+      if (showTemporarySuccess.value) return true;
+      
+      // Don't show anything if system is healthy
+      if (systemHealth.value.isHealthy) return false;
+      
+      // If we're in silent recovery period, don't show error to user
+      if (inSilentRecovery.value) {
+        const timeInSilentRecovery = Date.now() - silentRecoveryStartTime.value;
+        if (timeInSilentRecovery < silentRecoveryGracePeriod) {
+          // Still within grace period - show subtle loading instead of error
+          return false; // We'll show a subtle indicator instead
+        }
+      }
+      
+      // Show indicator if recovery is in progress (after grace period)
+      if (systemHealth.value.recoveryInProgress) return true;
+      
+      // Show indicator if system is unhealthy and grace period has expired
+      return !systemHealth.value.isHealthy;
+    });
+
+    // Separate computed for showing subtle recovery indicator
+    const showSubtleRecovery = computed(() => {
+      return inSilentRecovery.value && 
+             !systemHealth.value.isHealthy && 
+             !showTemporarySuccess.value &&
+             (Date.now() - silentRecoveryStartTime.value) < silentRecoveryGracePeriod;
     });
 
     const indicatorClass = computed(() => {
@@ -46,11 +88,19 @@ export default {
       return 'healthy';
     });
 
+    const subtleIndicatorClass = computed(() => {
+      return 'subtle-recovery';
+    });
+
     const iconClass = computed(() => {
       if (showTemporarySuccess.value) return 'fas fa-check-circle';
       if (systemHealth.value.recoveryInProgress) return 'fas fa-sync-alt fa-spin';
       if (!systemHealth.value.isHealthy) return 'fas fa-exclamation-triangle';
       return 'fas fa-wifi';
+    });
+
+    const subtleIconClass = computed(() => {
+      return 'fas fa-sync-alt fa-spin';
     });
 
     const message = computed(() => {
@@ -66,6 +116,10 @@ export default {
       return 'Connected';
     });
 
+    const subtleMessage = computed(() => {
+      return 'Reconnecting...';
+    });
+
     const canRetry = computed(() => {
       const now = Date.now();
       const cooldownRemaining = retryCooldown - (now - lastRetryTime.value);
@@ -73,8 +127,120 @@ export default {
       return !systemHealth.value.isHealthy && 
              !systemHealth.value.recoveryInProgress && 
              !isRetrying.value &&
+             !inSilentRecovery.value &&
              cooldownRemaining <= 0;
     });
+
+    // Calculate recovery confidence based on historical success and current conditions
+    const calculateRecoveryConfidence = () => {
+      let confidence = 0.8; // Base confidence
+      
+      // Reduce confidence based on number of recent attempts
+      if (recoveryAttempts.value > 0) {
+        confidence -= (recoveryAttempts.value * 0.1);
+      }
+      
+      // Increase confidence for WebSocket-only issues (easier to recover)
+      const failedComponents = systemHealth.value.failedComponents;
+      if (failedComponents.length === 1 && failedComponents.includes('websocket')) {
+        confidence += 0.1;
+      }
+      
+      // Decrease confidence for multiple component failures
+      if (failedComponents.length > 2) {
+        confidence -= 0.2;
+      }
+      
+      return Math.max(0.1, Math.min(1.0, confidence));
+    };
+
+    // Start silent recovery when system becomes unhealthy
+    const startSilentRecovery = () => {
+      if (inSilentRecovery.value) return; // Already in silent recovery
+      
+      console.log('🤫 Starting silent recovery period');
+      inSilentRecovery.value = true;
+      silentRecoveryStartTime.value = Date.now();
+      recoveryConfidence.value = calculateRecoveryConfidence();
+      recoveryAttempts.value = 0;
+      
+      // Start aggressive recovery attempts during silent period
+      performSilentRecoveryAttempts();
+    };
+
+    // Perform recovery attempts during silent period
+    const performSilentRecoveryAttempts = async () => {
+      while (inSilentRecovery.value && 
+             recoveryAttempts.value < maxSilentAttempts && 
+             !systemHealth.value.isHealthy) {
+        
+        recoveryAttempts.value++;
+        console.log(`🤫 Silent recovery attempt ${recoveryAttempts.value}/${maxSilentAttempts}`);
+        
+        try {
+          // Try different recovery strategies based on failed components
+          const failedComponents = systemHealth.value.failedComponents;
+          
+          if (failedComponents.includes('websocket')) {
+            await smartMarketDataStore.triggerRecovery('websocket_disconnected');
+          }
+          
+          if (failedComponents.includes('greeks')) {
+            await smartMarketDataStore.triggerRecovery('greeks_stale');
+          }
+          
+          if (failedComponents.includes('api')) {
+            await smartMarketDataStore.triggerRecovery('api_failure');
+          }
+          
+          if (failedComponents.includes('dataFreshness')) {
+            await smartMarketDataStore.triggerRecovery('data_stale');
+          }
+          
+          // If no specific recovery worked, try a comprehensive recovery
+          if (recoveryAttempts.value === maxSilentAttempts && !systemHealth.value.isHealthy) {
+            console.log('🤫 Final attempt: trying comprehensive recovery');
+            await smartMarketDataStore.triggerRecovery('websocket_disconnected');
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            await smartMarketDataStore.triggerRecovery('api_failure');
+          }
+          
+          // Wait between attempts
+          await new Promise(resolve => setTimeout(resolve, 2000));
+          
+        } catch (error) {
+          console.warn(`⚠️ Silent recovery attempt ${recoveryAttempts.value} failed:`, error);
+        }
+      }
+      
+      // Check if we should exit silent recovery
+      setTimeout(() => {
+        checkSilentRecoveryExit();
+      }, 1000);
+    };
+
+    // Check if we should exit silent recovery period
+    const checkSilentRecoveryExit = () => {
+      if (!inSilentRecovery.value) return;
+      
+      const timeInSilentRecovery = Date.now() - silentRecoveryStartTime.value;
+      
+      if (systemHealth.value.isHealthy) {
+        // Recovery successful!
+        console.log('✅ Silent recovery successful');
+        inSilentRecovery.value = false;
+        showSuccessMessage();
+      } else if (timeInSilentRecovery >= silentRecoveryGracePeriod || 
+                 recoveryAttempts.value >= maxSilentAttempts) {
+        // Grace period expired or max attempts reached
+        console.log('⏰ Silent recovery period ended, showing error to user');
+        inSilentRecovery.value = false;
+      }
+    };
+
+    // Watch for system health changes to trigger silent recovery
+    const unwatchHealth = smartMarketDataStore.getSystemHealth();
+    let previousHealthy = unwatchHealth.value.isHealthy;
 
     // Recovery event handlers
     const handleWebSocketRecovery = (event) => {
@@ -125,23 +291,50 @@ export default {
       // Listen for WebSocket recovery events
       window.addEventListener('websocket-recovered', handleWebSocketRecovery);
       
-      // Don't perform initial health check - let the health monitor handle it
-      // The health monitor already waits for initial connection and has proper delays
+      // Watch for health changes to trigger silent recovery
+      const healthWatcher = setInterval(() => {
+        const currentHealthy = systemHealth.value.isHealthy;
+        
+        // If system just became unhealthy, start silent recovery
+        if (previousHealthy && !currentHealthy && !inSilentRecovery.value) {
+          startSilentRecovery();
+        }
+        
+        // If we're in silent recovery, check if we should exit
+        if (inSilentRecovery.value) {
+          checkSilentRecoveryExit();
+        }
+        
+        previousHealthy = currentHealthy;
+      }, 1000); // Check every second
+      
+      // Store watcher reference for cleanup
+      window.healthWatcher = healthWatcher;
     });
 
     onUnmounted(() => {
       window.removeEventListener('websocket-recovered', handleWebSocketRecovery);
+      if (window.healthWatcher) {
+        clearInterval(window.healthWatcher);
+        delete window.healthWatcher;
+      }
     });
 
     return {
       showIndicator,
+      showSubtleRecovery,
       indicatorClass,
+      subtleIndicatorClass,
       iconClass,
+      subtleIconClass,
       message,
+      subtleMessage,
       canRetry,
       isRetrying,
       retryConnection,
-      systemHealth
+      systemHealth,
+      inSilentRecovery,
+      recoveryConfidence
     };
   }
 };
@@ -221,6 +414,46 @@ export default {
   cursor: not-allowed;
 }
 
+/* Subtle recovery indicator styles */
+.subtle-recovery-indicator {
+  position: fixed;
+  top: 70px; /* Below the top bar */
+  right: 20px;
+  z-index: 999; /* Slightly lower than main indicator */
+  padding: 8px 12px;
+  border-radius: 6px;
+  background: rgba(59, 130, 246, 0.1); /* Very subtle blue background */
+  border: 1px solid rgba(59, 130, 246, 0.2);
+  backdrop-filter: blur(8px);
+  min-width: 200px;
+  animation: subtleFadeIn 0.2s ease-out;
+}
+
+.subtle-recovery-indicator.subtle-recovery {
+  background: rgba(59, 130, 246, 0.1);
+  color: rgba(59, 130, 246, 0.9);
+  border-color: rgba(59, 130, 246, 0.2);
+}
+
+.subtle-recovery-content {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.subtle-recovery-icon {
+  font-size: 12px;
+  flex-shrink: 0;
+  opacity: 0.7;
+}
+
+.subtle-recovery-message {
+  flex: 1;
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.8;
+}
+
 @keyframes slideIn {
   from {
     transform: translateX(100%);
@@ -228,6 +461,17 @@ export default {
   }
   to {
     transform: translateX(0);
+    opacity: 1;
+  }
+}
+
+@keyframes subtleFadeIn {
+  from {
+    transform: translateY(-10px);
+    opacity: 0;
+  }
+  to {
+    transform: translateY(0);
     opacity: 1;
   }
 }
@@ -258,6 +502,25 @@ export default {
   
   .retry-button {
     padding: 4px 8px;
+    font-size: 11px;
+  }
+
+  .subtle-recovery-indicator {
+    right: 10px;
+    left: 10px;
+    min-width: auto;
+    top: 60px;
+  }
+  
+  .subtle-recovery-content {
+    gap: 6px;
+  }
+  
+  .subtle-recovery-message {
+    font-size: 11px;
+  }
+  
+  .subtle-recovery-icon {
     font-size: 11px;
   }
 }
