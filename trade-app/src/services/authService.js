@@ -103,6 +103,19 @@ class AuthService {
    */
   async logout() {
     try {
+      // CRITICAL FIX: Immediately disconnect WebSocket BEFORE invalidating token
+      // This prevents the WebSocket from continuing to try to reconnect with invalid credentials
+      console.log("🔌 Proactively disconnecting WebSocket before logout...");
+      try {
+        // Import webSocketClient dynamically to avoid circular dependency
+        const webSocketClientModule = await import('./webSocketClient.js');
+        webSocketClientModule.default.disconnect();
+        console.log("✅ WebSocket disconnected successfully during logout");
+      } catch (wsError) {
+        console.warn("⚠️ Failed to disconnect WebSocket during logout:", wsError);
+        // Continue with logout even if WebSocket disconnect fails
+      }
+
       const response = await fetch(`${this.baseURL}/auth/logout`, {
         method: 'POST',
         credentials: 'include',  // Include cookies

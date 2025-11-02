@@ -28,6 +28,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import smartMarketDataStore from '../services/smartMarketDataStore.js';
 import webSocketClient from '../services/webSocketClient.js';
+import authService from '../services/authService.js';
 
 export default {
   name: 'SystemRecoveryIndicator',
@@ -51,6 +52,9 @@ export default {
 
     // Enhanced logic for when to show indicator
     const showIndicator = computed(() => {
+      // Don't show any indicators if user is not authenticated
+      if (!authService.isAuthenticated()) return false;
+      
       // Always show success messages
       if (showTemporarySuccess.value) return true;
       
@@ -156,6 +160,12 @@ export default {
 
     // Start silent recovery when system becomes unhealthy
     const startSilentRecovery = () => {
+      // Don't start recovery if user is not authenticated
+      if (!authService.isAuthenticated()) {
+        console.log('🔒 Skipping silent recovery - user not authenticated');
+        return;
+      }
+      
       if (inSilentRecovery.value) return; // Already in silent recovery
       
       console.log('🤫 Starting silent recovery period');
@@ -329,8 +339,8 @@ export default {
       const healthWatcher = setInterval(() => {
         const currentHealthy = systemHealth.value.isHealthy;
         
-        // If system just became unhealthy, start silent recovery
-        if (previousHealthy && !currentHealthy && !inSilentRecovery.value) {
+        // If system just became unhealthy, start silent recovery (only if authenticated)
+        if (previousHealthy && !currentHealthy && !inSilentRecovery.value && authService.isAuthenticated()) {
           startSilentRecovery();
         }
         

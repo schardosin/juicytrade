@@ -4,9 +4,10 @@ import {
   watch,
   onScopeDispose,
   getCurrentScope,
+  nextTick,
 } from "vue";
 import webSocketClient from "./webSocketClient.js";
-import api from "./api.js";
+import api, { setServicesStoppingState } from "./api.js";
 import MarketHoursUtil from "../utils/marketHours.js";
 import authService from "./authService.js";
 
@@ -30,11 +31,17 @@ class DataHealthMonitor {
     
     // Start periodic health checks
     this.healthTimer = setInterval(() => {
-      this.performHealthChecks();
+      // Only perform health checks if user is authenticated
+      if (!authService.isAuthEnabled() || authService.isAuthenticated()) {
+        this.performHealthChecks();
+      }
     }, this.healthCheckInterval);
     // Wait a bit before first health check to allow initial connection to stabilize
     setTimeout(() => {
-      this.performHealthChecks();
+      // Only perform initial health check if user is authenticated
+      if (!authService.isAuthEnabled() || authService.isAuthenticated()) {
+        this.performHealthChecks();
+      }
     }, 5000); // 5 second delay for initial health check
   }
 
@@ -46,6 +53,11 @@ class DataHealthMonitor {
   }
 
   async performHealthChecks() {
+    // Don't perform health checks when services are stopping
+    if (this.isServicesStopping) {
+      return;
+    }
+    
     // Don't try to connect during health checks - just check current status
     // Connection attempts should be handled by recovery, not health checks
 
@@ -81,8 +93,9 @@ class DataHealthMonitor {
         this.store.systemState.failedComponents.add(failure.name);
       });
 
-      // If WebSocket is unhealthy, trigger recovery
-      if (failedChecks.some(f => f.name === 'websocket')) {
+      // If WebSocket is unhealthy, trigger recovery (only if authenticated)
+      if (failedChecks.some(f => f.name === 'websocket') && 
+          (!authService.isAuthEnabled() || authService.isAuthenticated())) {
         console.log('🚑 WebSocket health check failed, triggering recovery');
         setTimeout(() => {
           this.store.recoveryManager.executeRecovery('websocket_disconnected');
@@ -273,6 +286,12 @@ class DataRecoveryManager {
   }
 
   async executeRecovery(scenario, context = {}) {
+    // Don't attempt recovery when services are stopping or user not authenticated
+    if (this.isServicesStopping || (authService.isAuthEnabled() && !authService.isAuthenticated())) {
+      console.log(`🚫 Skipping recovery for ${scenario} - services stopping or user not authenticated`);
+      return false;
+    }
+    
     if (this.store.systemState.recoveryInProgress) {
       console.log("🔄 Recovery already in progress, skipping");
       return false;
@@ -589,6 +608,9 @@ class SmartMarketDataStore {
     // Authentication state tracking
     this.isAuthenticated = false;
     this.authStateListeners = [];
+    
+    // Service state tracking
+    this.isServicesStopping = false;
 
     // Set up authentication state monitoring
     this.setupAuthenticationIntegration();
@@ -618,7 +640,10 @@ class SmartMarketDataStore {
     // Listen for WebSocket recovery events
     window.addEventListener('websocket-recovered', (event) => {
       console.log('🎉 WebSocket recovery detected, performing data refresh');
-      this.performHealthCheck();
+      // Only perform health check if user is authenticated
+      if (!authService.isAuthEnabled() || authService.isAuthenticated()) {
+        this.performHealthCheck();
+      }
     });
 
     // Listen for page visibility changes (sleep/wake detection)
@@ -636,12 +661,18 @@ class SmartMarketDataStore {
         if (hiddenDuration > 30000) {
           console.log('😴 Detected potential system sleep/wake cycle, performing health check');
           setTimeout(() => {
-            this.performHealthCheck();
+            // Only perform health check if user is authenticated
+            if (!authService.isAuthEnabled() || authService.isAuthenticated()) {
+              this.performHealthCheck();
+            }
           }, 2000); // Longer delay for system to stabilize after wake
         } else {
           // Short absence, just check connection health
           setTimeout(() => {
-            this.performHealthCheck();
+            // Only perform health check if user is authenticated
+            if (!authService.isAuthEnabled() || authService.isAuthenticated()) {
+              this.performHealthCheck();
+            }
           }, 1000);
         }
         pageHiddenTime = null;
@@ -663,7 +694,10 @@ class SmartMarketDataStore {
     // Listen for focus/blur events as additional sleep detection
     window.addEventListener('focus', () => {
       setTimeout(() => {
-        this.performHealthCheck();
+        // Only perform health check if user is authenticated
+        if (!authService.isAuthEnabled() || authService.isAuthenticated()) {
+          this.performHealthCheck();
+        }
       }, 500);
     });
   }
@@ -692,7 +726,10 @@ class SmartMarketDataStore {
    * Manually trigger health check
    */
   async performHealthCheck() {
-    return await this.healthMonitor.performHealthChecks();
+    // Only perform health check if user is authenticated
+    if (!authService.isAuthEnabled() || authService.isAuthenticated()) {
+      return await this.healthMonitor.performHealthChecks();
+    }
   }
 
   /**
@@ -751,6 +788,11 @@ class SmartMarketDataStore {
 
     // Create reactive price reference that tracks access
     const reactivePrice = computed(() => {
+      // Return early if services are stopping
+      if (this.isServicesStopping) {
+        return null;
+      }
+      
       // Update access timestamp every time this computed is evaluated
       this.lastAccess.set(symbol, Date.now());
       return this.stockPrices.get(symbol) || null;
@@ -771,6 +813,11 @@ class SmartMarketDataStore {
 
     // Create reactive price reference that tracks access
     const reactivePrice = computed(() => {
+      // Return early if services are stopping
+      if (this.isServicesStopping) {
+        return null;
+      }
+      
       // Update access timestamp every time this computed is evaluated
       this.lastAccess.set(symbol, Date.now());
       return this.optionPrices.get(symbol) || null;
@@ -791,6 +838,11 @@ class SmartMarketDataStore {
 
     // Create reactive Greeks reference that tracks access
     const reactiveGreeks = computed(() => {
+      // Return early if services are stopping
+      if (this.isServicesStopping) {
+        return null;
+      }
+      
       // Update access timestamp every time this computed is evaluated
       this.lastGreeksAccess.set(symbol, Date.now());
       return this.optionGreeks.get(symbol) || null;
@@ -817,6 +869,11 @@ class SmartMarketDataStore {
 
     // Return reactive computed that uses streaming IVx data
     return computed(() => {
+      // Return early if services are stopping
+      if (this.isServicesStopping) {
+        return null;
+      }
+      
       const symbol = getSymbolValue();
       
       if (!symbol) {
@@ -854,11 +911,19 @@ class SmartMarketDataStore {
   getPreviousClose(symbol) {
     if (!symbol) return computed(() => null);
 
-    // Ensure we have the previous close data
-    this.ensurePreviousClose(symbol);
+    // Don't ensure data when services are stopping
+    if (!this.isServicesStopping) {
+      // Ensure we have the previous close data
+      this.ensurePreviousClose(symbol);
+    }
 
     // Create reactive price reference
     const reactivePreviousClose = computed(() => {
+      // Return early if services are stopping
+      if (this.isServicesStopping) {
+        return null;
+      }
+      
       return this.previousClosePrices.get(symbol) || null;
     });
 
@@ -869,6 +934,11 @@ class SmartMarketDataStore {
    * Ensure subscription for a symbol
    */
   ensureSubscription(symbol) {
+    // Don't create subscriptions when services are stopping
+    if (this.isServicesStopping) {
+      return;
+    }
+    
     // Handle computed refs and extract actual string value
     let actualSymbol = symbol;
     if (typeof symbol === 'function') {
@@ -920,6 +990,11 @@ class SmartMarketDataStore {
    */
   async ensurePreviousClose(symbol) {
     if (!symbol) return;
+    
+    // Don't fetch data when services are stopping
+    if (this.isServicesStopping) {
+      return;
+    }
 
     // If not cached, fetch it
     if (!this.previousClosePrices.has(symbol)) {
@@ -960,6 +1035,11 @@ class SmartMarketDataStore {
    * Schedule debounced backend subscription update
    */
   scheduleBackendUpdate() {
+    // Don't schedule updates when services are stopping
+    if (this.isServicesStopping) {
+      return;
+    }
+    
     if (this.updateTimer) {
       clearTimeout(this.updateTimer);
     }
@@ -973,9 +1053,13 @@ class SmartMarketDataStore {
    * Update backend WebSocket subscriptions
    */
   async updateBackendSubscriptions() {
-    // Don't attempt WebSocket operations if not authenticated
-    if (!this.isAuthenticated) {
-      console.log("🔒 Skipping WebSocket subscription update - user not authenticated");
+    // Don't attempt WebSocket operations if services are stopping or not authenticated
+    if (this.isServicesStopping || !this.isAuthenticated) {
+      if (this.isServicesStopping) {
+        console.log("🔒 Skipping WebSocket subscription update - services are stopping");
+      } else {
+        console.log("🔒 Skipping WebSocket subscription update - user not authenticated");
+      }
       return;
     }
 
@@ -1028,6 +1112,11 @@ class SmartMarketDataStore {
    * Only makes API calls if streaming Greeks are not available
    */
   async updateGreeksData() {
+    // Don't update Greeks data when services are stopping
+    if (this.isServicesStopping) {
+      return;
+    }
+    
     const symbols = Array.from(this.activeGreeksSubscriptions);
     
     if (symbols.length === 0) {
@@ -1102,7 +1191,10 @@ class SmartMarketDataStore {
   startGreeksPeriodicUpdates() {
     // Set up periodic updates every 60 seconds
     this.greeksUpdateTimer = setInterval(() => {
-      this.updateGreeksData();
+      // Don't update Greeks when services are stopping
+      if (!this.isServicesStopping) {
+        this.updateGreeksData();
+      }
     }, 60000);
   }
 
@@ -1112,7 +1204,10 @@ class SmartMarketDataStore {
    */
   startKeepaliveTimer() {
     setInterval(() => {
-      this.sendKeepalive();
+      // Don't send keepalive when services are stopping
+      if (!this.isServicesStopping) {
+        this.sendKeepalive();
+      }
     }, this.keepaliveInterval);
   }
 
@@ -1120,6 +1215,11 @@ class SmartMarketDataStore {
    * Send keep-alive message for all actively registered symbols
    */
   async sendKeepalive() {
+    // Don't send keepalive when services are stopping
+    if (this.isServicesStopping) {
+      return;
+    }
+    
     // Use component registration system for precise keep-alive
     const activeSymbols = Array.from(this.symbolUsageCount.keys());
     
@@ -1456,6 +1556,11 @@ class SmartMarketDataStore {
    */
   getReactiveData(key) {
     return computed(() => {
+      // Return early if services are stopping to prevent any data access
+      if (this.isServicesStopping) {
+        return null;
+      }
+      
       // Track access for on-demand strategies
       this.trackDataAccess(key);
       return this.data.get(key);
@@ -1468,6 +1573,11 @@ class SmartMarketDataStore {
    */
   getFilteredPositions(symbol) {
     return computed(() => {
+      // Return early if services are stopping to prevent any data access
+      if (this.isServicesStopping) {
+        return null;
+      }
+      
       // Track access for positions data
       this.trackDataAccess('positions');
       
@@ -1569,6 +1679,18 @@ class SmartMarketDataStore {
    * Get data with options (for on-demand and one-time strategies)
    */
   async getData(key, options = {}) {
+    // CRITICAL FIX: Don't fetch data when services are stopping (during logout)
+    if (this.isServicesStopping) {
+      console.log(`🚫 Blocking getData for ${key} - services are stopping`);
+      throw new Error(`Data fetch blocked - services are stopping`);
+    }
+    
+    // Don't fetch data if not authenticated (additional safety check)
+    if (authService.isAuthEnabled() && !authService.isAuthenticated()) {
+      console.log(`🔒 Blocking getData for ${key} - user not authenticated`);
+      throw new Error(`Data fetch blocked - user not authenticated`);
+    }
+
     let config = this.strategies.get(key);
 
     // If exact key not found, try wildcard patterns
@@ -1673,7 +1795,10 @@ class SmartMarketDataStore {
 
     // Set up periodic updates
     const timer = setInterval(() => {
-      fetchData();
+      // Don't fetch data when services are stopping
+      if (!this.isServicesStopping) {
+        fetchData();
+      }
     }, config.interval);
     this.timers.set(key, timer);
   }
@@ -1708,6 +1833,18 @@ class SmartMarketDataStore {
    * Fetch on-demand data with TTL caching
    */
   async fetchOnDemandData(key, config, forceRefresh = false) {
+    // CRITICAL FIX: Don't fetch data when services are stopping (during logout)
+    if (this.isServicesStopping) {
+      console.log(`🚫 Blocking data fetch for ${key} - services are stopping`);
+      throw new Error(`Data fetch blocked - services are stopping`);
+    }
+    
+    // Don't fetch data if not authenticated (additional safety check)
+    if (authService.isAuthEnabled() && !authService.isAuthenticated()) {
+      console.log(`🔒 Blocking data fetch for ${key} - user not authenticated`);
+      throw new Error(`Data fetch blocked - user not authenticated`);
+    }
+
     const cached = this.cache.get(key);
 
     // Check cache validity
@@ -1769,6 +1906,11 @@ class SmartMarketDataStore {
    * Track access for on-demand strategies
    */
   trackDataAccess(key) {
+    // Don't track or fetch data when services are stopping
+    if (this.isServicesStopping) {
+      return;
+    }
+    
     let config = this.strategies.get(key);
 
     // If exact key not found, try wildcard patterns
@@ -1802,6 +1944,11 @@ class SmartMarketDataStore {
    * Subscribe to a symbol
    */
   async subscribeToSymbol(symbol) {
+    // Don't create subscriptions when services are stopping
+    if (this.isServicesStopping) {
+      return;
+    }
+    
     this.activeSubscriptions.add(symbol);
 
     // For stock symbols, proactively load daily 6M data in background
@@ -2131,7 +2278,7 @@ class SmartMarketDataStore {
    */
   setupAuthenticationIntegration() {
     // Listen for authentication state changes
-    const authStateListener = (authState) => {
+    const authStateListener = async (authState) => {
       const wasAuthenticated = this.isAuthenticated;
       this.isAuthenticated = authState.authenticated;
 
@@ -2144,7 +2291,7 @@ class SmartMarketDataStore {
       } else if (!this.isAuthenticated && wasAuthenticated) {
         // User just logged out - stop services
         console.log("🛑 User logged out, stopping services");
-        this.stopServices();
+        await this.stopServices();
       }
     };
 
@@ -2200,6 +2347,12 @@ class SmartMarketDataStore {
     }
 
     console.log("🚀 Starting SmartMarketDataStore services");
+    
+    // Set service state flags
+    this.isServicesStopping = false;
+    
+    // Reset the global API blocking flag synchronously
+    setServicesStoppingState(false);
 
     // Initialize WebSocket integration
     this.initialize();
@@ -2231,33 +2384,19 @@ class SmartMarketDataStore {
   /**
    * Stop all services (called when user logs out)
    */
-  stopServices() {
+  async stopServices() {
     console.log("🛑 Stopping SmartMarketDataStore services");
+
+    // CRITICAL FIX: Set stopping flag FIRST to prevent new data fetching
+    this.isServicesStopping = true;
+    
+    // Also set the global API blocking flag synchronously
+    setServicesStoppingState(true);
 
     // Disconnect WebSocket
     webSocketClient.disconnect();
 
-    // Clear all subscriptions and data
-    this.activeSubscriptions.clear();
-    this.activeGreeksSubscriptions.clear();
-    this.lastAccess.clear();
-    this.lastGreeksAccess.clear();
-    
-    // Clear all reactive data
-    this.stockPrices.clear();
-    this.optionPrices.clear();
-    this.optionGreeks.clear();
-    this.ivxDataBySymbol.clear();
-    this.previousClosePrices.clear();
-    this.data.clear();
-    this.cache.clear();
-    this.loading.clear();
-    this.errors.clear();
-
-    // Clear current symbol data
-    this.clearCurrentSymbolDaily6M();
-
-    // Clear all timers
+    // Clear all timers FIRST to prevent any new data requests
     if (this.updateTimer) {
       clearTimeout(this.updateTimer);
       this.updateTimer = null;
@@ -2280,6 +2419,29 @@ class SmartMarketDataStore {
       this.healthMonitor.stop();
     }
 
+    // Clear all subscriptions and data
+    this.activeSubscriptions.clear();
+    this.activeGreeksSubscriptions.clear();
+    this.lastAccess.clear();
+    this.lastGreeksAccess.clear();
+    
+    // Wait for next tick to ensure blocking flags are in effect before clearing reactive data
+    await nextTick();
+    
+    // Clear all reactive data (this might trigger Vue reactivity, but we've blocked fetching)
+    this.stockPrices.clear();
+    this.optionPrices.clear();
+    this.optionGreeks.clear();
+    this.ivxDataBySymbol.clear();
+    this.previousClosePrices.clear();
+    this.data.clear();
+    this.cache.clear();
+    this.loading.clear();
+    this.errors.clear();
+
+    // Clear current symbol data
+    this.clearCurrentSymbolDaily6M();
+
     // Clear component registrations
     this.symbolUsageCount.clear();
     this.componentRegistrations.clear();
@@ -2288,6 +2450,14 @@ class SmartMarketDataStore {
     this.isInitialized = false;
 
     console.log("✅ SmartMarketDataStore services stopped");
+    
+    // Reset stopping flag after cleanup is complete
+    setTimeout(() => {
+      this.isServicesStopping = false;
+      
+      // Also reset the global API blocking flag synchronously  
+      setServicesStoppingState(false);
+    }, 1000); // Allow 1 second for any pending operations to complete
   }
 
   /**
@@ -2338,7 +2508,7 @@ class SmartMarketDataStore {
    * Check if services are running (for debugging)
    */
   isServicesRunning() {
-    return this.isInitialized && this.isAuthenticated;
+    return this.isInitialized && this.isAuthenticated && !this.isServicesStopping;
   }
 
   /**

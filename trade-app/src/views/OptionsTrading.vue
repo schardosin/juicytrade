@@ -134,6 +134,7 @@ import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { useTradeNavigation } from "../composables/useTradeNavigation.js";
 import api from "../services/api";
+import authService from "../services/authService";
 // webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
 // import webSocketClient from "../services/webSocketClient";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
@@ -291,6 +292,12 @@ export default {
     // Methods
     const fetchSymbolData = async (symbol) => {
       try {
+        // Don't fetch data if user is not authenticated
+        if (!authService.isAuthenticated()) {
+          console.log('🔒 Skipping symbol data fetch - user not authenticated');
+          return;
+        }
+        
         // Only fetch price via API if we don't have live data already
         if (!isLivePrice.value || currentPrice.value === 0) {
           const price = await api.getUnderlyingPrice(symbol);
@@ -308,6 +315,12 @@ export default {
 
     const fetchExpirationDates = async (symbol) => {
       try {
+        // Don't fetch data if user is not authenticated
+        if (!authService.isAuthenticated()) {
+          console.log('🔒 Skipping expiration dates fetch - user not authenticated');
+          return;
+        }
+        
         optionsChainLoading.value = true;
         optionsChainError.value = null;
 
@@ -729,6 +742,12 @@ export default {
 
     // Lifecycle hooks
     onMounted(async () => {
+      // Check if user is authenticated before making any API calls
+      if (!authService.isAuthenticated()) {
+        console.log('🔒 Skipping OptionsTrading data fetch - user not authenticated');
+        return;
+      }
+      
       // The SmartMarketDataStore is already connected via main.js.
       // We just need to fetch the initial data for the default symbol.
       await fetchSymbolData(currentSymbol.value);
@@ -743,6 +762,12 @@ export default {
       // Listen for system recovery events to refresh data
       const handleSystemRecovery = async (event) => {
         try {
+          // Only refresh data if user is authenticated
+          if (!authService.isAuthenticated()) {
+            console.log('🔒 Skipping system recovery data refresh - user not authenticated');
+            return;
+          }
+          
           // Refresh all critical data after recovery
           await fetchSymbolData(currentSymbol.value);
           await fetchExpirationDates(currentSymbol.value);

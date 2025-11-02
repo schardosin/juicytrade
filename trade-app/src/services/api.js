@@ -114,9 +114,26 @@ const apiClient = axios.create({
   withCredentials: true // Ensure cookies (session) are sent with all API requests
 });
 
+// Global state for service management
+let servicesAreStopping = false;
+
+// Function to set the stopping state (called from smartMarketDataStore)
+export const setServicesStoppingState = (stopping) => {
+  servicesAreStopping = stopping;
+};
+
 // Request interceptor for logging and monitoring
 apiClient.interceptors.request.use(
   (config) => {
+    // CRITICAL FIX: Block API requests when services are stopping (during logout)
+    if (servicesAreStopping) {
+      console.log(`🚫 Blocking API request to ${config.url} - services are stopping`);
+      const error = new Error(`API request blocked - services are stopping`);
+      error.config = config;
+      error.name = 'ServiceStoppingError';
+      return Promise.reject(error);
+    }
+    
     config.metadata = { startTime: Date.now() };
     return config;
   },

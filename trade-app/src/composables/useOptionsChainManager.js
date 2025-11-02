@@ -1,6 +1,8 @@
 import { ref, computed, watch, nextTick } from "vue";
 import api from "../services/api";
 import webSocketClient from "../services/webSocketClient";
+import { smartMarketDataStore } from "../services/smartMarketDataStore";
+import authService from "../services/authService";
 
 // Load persisted strike count from localStorage
 const loadPersistedStrikeCount = () => {
@@ -231,6 +233,17 @@ export function useOptionsChainManager(
    * Update websocket subscriptions based on expanded expirations
    */
   const updateSubscriptions = async () => {
+    // CRITICAL FIX: Don't update subscriptions if services are stopping or user not authenticated
+    if (smartMarketDataStore.isServicesStopping) {
+      console.log("🚫 Skipping subscription update - services are stopping");
+      return;
+    }
+    
+    if (authService.isAuthEnabled() && !authService.isAuthenticated()) {
+      console.log("🔒 Skipping subscription update - user not authenticated");
+      return;
+    }
+
     const newSymbols = allSubscribedSymbols.value;
 
     // The first symbol should be the underlying

@@ -87,13 +87,15 @@ function connect(url) {
     clearConnectionTimers();
     
     // Check if this is an authentication-related closure
-    const isAuthFailure = event.code === 1008 || event.code === 1011 || event.code === 403;
+    const isAuthFailure = event.code === 1008 || event.code === 1011 || event.code === 403 || event.code === 4001;
     
     if (!isManuallyDisconnected) {
       updateConnectionState(CONNECTION_STATES.DISCONNECTED);
       
       if (isAuthFailure) {
         console.log("🔒 WebSocket closed due to authentication failure - stopping reconnection attempts");
+        // Set manual disconnect flag to prevent any further reconnection attempts
+        isManuallyDisconnected = true;
         // Don't attempt to reconnect on authentication failures
         postMessage({ 
           type: 'status', 
@@ -203,6 +205,12 @@ function triggerRecovery() {
 }
 
 function scheduleReconnect(url) {
+  // Additional safety check - don't reconnect if manually disconnected
+  if (isManuallyDisconnected) {
+    console.log("🚫 Reconnection attempt blocked - manual disconnect in effect");
+    return;
+  }
+
   if (reconnectAttempts >= maxReconnectAttempts) {
     console.error(`❌ Max reconnection attempts (${maxReconnectAttempts}) reached`);
     updateConnectionState(CONNECTION_STATES.DISCONNECTED);
@@ -215,8 +223,11 @@ function scheduleReconnect(url) {
   console.log(`🔄 Scheduling reconnection attempt ${reconnectAttempts}/${maxReconnectAttempts} in ${delay}ms`);
   
   setTimeout(() => {
+    // Double-check before attempting reconnection
     if (!isManuallyDisconnected) {
       connect(url);
+    } else {
+      console.log("🚫 Reconnection attempt aborted - manual disconnect detected");
     }
   }, delay);
 }

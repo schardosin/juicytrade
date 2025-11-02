@@ -31,6 +31,7 @@ class WebSocketStreamingClient {
     this.isConnected = ref(false); // Make this reactive
     this.subscribedSymbols = new Set();
     this.connectionPromise = null;
+    this.isDisconnecting = false; // Flag to prevent connections during disconnect
 
     this.initializeWorker();
   }
@@ -65,6 +66,29 @@ class WebSocketStreamingClient {
   handleStatusUpdate(status) {
     const wasConnected = this.isConnected.value;
     this.isConnected.value = (status === 'connected');
+    
+    // Handle authentication failures specially
+    if (status === 'auth_failed') {
+      console.log("🔒 WebSocket authentication failed - forcing disconnect");
+      this.isConnected.value = false;
+      
+      // Set disconnecting flag to prevent reconnection attempts
+      this.isDisconnecting = true;
+      
+      // Force disconnect to clean up everything
+      this.disconnect();
+      
+      // Emit auth failure event for UI handling
+      window.dispatchEvent(new CustomEvent('websocket-auth-failed', {
+        detail: {
+          status: status,
+          timestamp: Date.now(),
+          message: 'WebSocket authentication failed'
+        }
+      }));
+      
+      return;
+    }
     
     // Emit detailed status event for UI components
     window.dispatchEvent(new CustomEvent('websocket-status-change', {
@@ -107,6 +131,12 @@ class WebSocketStreamingClient {
   }
 
   async connect() {
+    // Check if we're in the process of disconnecting
+    if (this.isDisconnecting) {
+      console.log("🚫 Connection attempt blocked - currently disconnecting");
+      return Promise.reject(new Error("Connection blocked - currently disconnecting"));
+    }
+
     if (this.connectionPromise) {
       return this.connectionPromise;
     }
@@ -514,6 +544,9 @@ class WebSocketStreamingClient {
   disconnect() {
     console.log("🔌 Disconnecting WebSocket client...");
     
+    // Set a flag to prevent any new connection attempts
+    this.isDisconnecting = true;
+    
     // Clean up connection promise
     if (this.rejectConnection) {
       this.rejectConnection(new Error("Connection manually disconnected"));
@@ -551,7 +584,12 @@ class WebSocketStreamingClient {
     // Clear all state
     this.isConnected.value = false;
     this.connectionPromise = null;
-    this.subscribedSymbols.clear();    
+    this.subscribedSymbols.clear();
+    
+    // Reset disconnecting flag after a short delay to allow for new connections later
+    setTimeout(() => {
+      this.isDisconnecting = false;
+    }, 1000);
   }
 }
 
