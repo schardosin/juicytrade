@@ -159,6 +159,9 @@ export default {
       try {
         isInitializing.value = true;
         
+        // Token detection is now handled globally in main.js
+        // No need to check for auth_token here anymore
+        
         // Initialize auth service
         await authService.init();
         
@@ -174,8 +177,26 @@ export default {
           return;
         }
         
+        // Check if we just returned from OAuth (detect by checking if auth status changed)
+        // This handles the case where OAuth completed but frontend hasn't detected it yet
+        if (authConfig.value.method === 'oauth' && !authService.isAuthenticated()) {
+          // Force refresh auth status in case OAuth just completed
+          setTimeout(async () => {
+            try {
+              await authService.init();
+              
+              if (authService.isAuthenticated()) {
+                const next = new URLSearchParams(window.location.search).get('next') || '/';
+                router.push(next);
+              }
+            } catch (error) {
+              console.error('Auth status refresh failed:', error);
+            }
+          }, 500); // Small delay to allow cookie to be set
+        }
+        
       } catch (error) {
-        console.error('Failed to initialize authentication:', error);
+        console.error('🔐 LoginPage: Failed to initialize authentication:', error);
         errorMessage.value = 'Failed to initialize authentication system';
       } finally {
         isInitializing.value = false;

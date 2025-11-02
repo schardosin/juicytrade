@@ -2,7 +2,7 @@
 Authentication middleware for juicytrade.
 """
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Callable, Dict, Any
 import jwt
 from fastapi import Request, Response, HTTPException, status
@@ -35,7 +35,9 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             "/auth/logout",
             "/auth/oauth/authorize",
             "/auth/oauth/callback",
-            "/auth/status"
+            "/auth/config",
+            "/auth/status",
+            "/ws"
         ]
         
         # Validate configuration on startup
@@ -54,6 +56,12 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
         
         # Check if path is exempt from authentication
         if self._is_exempt_path(request.url.path):
+            return await call_next(request)
+        
+        # Special handling for WebSocket upgrade requests
+        # Let them pass through to the WebSocket endpoint where proper WebSocket auth is handled
+        if (request.url.path == "/ws" and 
+            request.headers.get("upgrade", "").lower() == "websocket"):
             return await call_next(request)
         
         # Perform authentication based on configured method
@@ -77,7 +85,8 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
     
     def _is_exempt_path(self, path: str) -> bool:
         """Check if path is exempt from authentication."""
-        return any(path.startswith(exempt) for exempt in self.exempt_paths)
+        # Fix: Only match exact path or path with trailing slash, not prefix
+        return any(path == exempt or path == (exempt + "/") for exempt in self.exempt_paths)
     
     async def _authenticate_request(self, request: Request) -> Optional[User]:
         """Authenticate request based on configured method."""
@@ -113,7 +122,18 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             try:
                 encoded_credentials = auth_header.split(" ", 1)[1]
                 credentials = base64.b64decode(encoded_credentials).decode("utf-8")
-                username, password = credentials.split(":", 1)
+                
+                # Safe credential parsing - handle malformed credentials
+                if ':' not in credentials:
+                    logger.warning(f"Basic auth credentials missing colon separator: '{credentials}'")
+                    return None
+                
+                credential_parts = credentials.split(":", 1)
+                if len(credential_parts) != 2:
+                    logger.warning(f"Basic auth credentials malformed - got {len(credential_parts)} parts: {credential_parts}")
+                    return None
+                
+                username, password = credential_parts
                 
                 if (username == auth_config.simple_username and 
                     password == auth_config.simple_password):
@@ -121,7 +141,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
                         username=username,
                         email=None,
                         full_name=username,
-                        last_login=datetime.utcnow()
+                        last_login=datetime.now(timezone.utc)
                     )
             except Exception as e:
                 logger.warning(f"Invalid Basic auth credentials: {e}")
@@ -152,16 +172,16 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             )
             
             username = payload.get("sub")
-            expires_at = datetime.fromtimestamp(payload.get("exp", 0))
+            expires_at = datetime.fromtimestamp(payload.get("exp", 0), tz=timezone.utc)
             
-            if not username or expires_at < datetime.utcnow():
+            if not username or expires_at < datetime.now(timezone.utc):
                 return None
             
             return User(
                 username=username,
                 email=payload.get("email"),
                 full_name=payload.get("name"),
-                last_login=datetime.utcnow(),
+                last_login=datetime.now(timezone.utc),
                 metadata=payload.get("metadata")
             )
             
@@ -184,7 +204,7 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             username=username,
             email=email,
             full_name=full_name or username,
-            last_login=datetime.utcnow()
+            last_login=datetime.now(timezone.utc)
         )
     
     async def _authenticate_oauth(self, request: Request) -> Optional[User]:
@@ -208,16 +228,16 @@ class AuthenticationMiddleware(BaseHTTPMiddleware):
             )
             
             username = payload.get("sub")
-            expires_at = datetime.fromtimestamp(payload.get("exp", 0))
+            expires_at = datetime.fromtimestamp(payload.get("exp", 0), tz=timezone.utc)
             
-            if not username or expires_at < datetime.utcnow():
+            if not username or expires_at < datetime.now(timezone.utc):
                 return None
             
             return User(
                 username=username,
                 email=payload.get("email"),
                 full_name=payload.get("name"),
-                last_login=datetime.utcnow(),
+                last_login=datetime.now(timezone.utc),
                 metadata=payload.get("metadata")
             )
             
@@ -249,14 +269,14 @@ def create_access_token(user: User, expires_delta: Optional[timedelta] = None) -
     """Create JWT access token for user."""
     
     if expires_delta:
-        expire = datetime.utcnow() + expires_delta
+        expire = datetime.now(timezone.utc) + expires_delta
     else:
-        expire = datetime.utcnow() + timedelta(minutes=auth_config.jwt_expire_minutes)
+        expire = datetime.now(timezone.utc) + timedelta(minutes=auth_config.jwt_expire_minutes)
     
     payload = {
         "sub": user.username,
         "exp": expire,
-        "iat": datetime.utcnow(),
+        "iat": datetime.now(timezone.utc),
         "email": user.email,
         "name": user.full_name,
         "metadata": user.metadata

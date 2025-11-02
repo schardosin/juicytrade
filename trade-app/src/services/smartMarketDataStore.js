@@ -8,6 +8,7 @@ import {
 import webSocketClient from "./webSocketClient.js";
 import api from "./api.js";
 import MarketHoursUtil from "../utils/marketHours.js";
+import authService from "./authService.js";
 
 /**
  * Data Health Monitor - Monitors the health of all data sources
@@ -21,12 +22,8 @@ class DataHealthMonitor {
   }
 
   async start() {
-    // Wait for the initial WebSocket connection before starting health checks
-    try {
-      await webSocketClient.connect();
-    } catch (error) {
-      console.warn("⚠️ Initial WebSocket connection failed, will retry via health monitoring");
-    }
+    // Don't try to connect here - let the authentication-aware system handle connections
+    // Health monitoring should only check existing connections, not create them
     
     // Skip data freshness checks during off-market hours
     const marketStatus = MarketHoursUtil.getMarketStatus();
@@ -571,26 +568,16 @@ class SmartMarketDataStore {
       lastRecoveryAttempt: null
     });
 
-    // Start keep-alive system
-    this.startKeepaliveTimer();
+    // Authentication state tracking
+    this.isAuthenticated = false;
+    this.authStateListeners = [];
 
-    // Start Greeks periodic updates
-    this.startGreeksPeriodicUpdates();
+    // Set up authentication state monitoring
+    this.setupAuthenticationIntegration();
 
-    // Register provider configuration data sources
-    this.setupProviderDataSources();
-
-    // Register positions data source
-    this.setupPositionsDataSource();
-
-    // IVx data is now handled via streaming WebSocket messages
-    // No periodic setup needed
-
-    // Start health monitoring
-    this.startHealthMonitoring();
-
-    // Listen for system recovery events
-    this.setupRecoveryListeners();
+    // Only start services if authentication is enabled and user is authenticated
+    // This prevents connections when not logged in
+    this.initializeConditionally();
 
     // Expose for debugging
     window.smartMarketDataStore = this;
@@ -968,6 +955,12 @@ class SmartMarketDataStore {
    * Update backend WebSocket subscriptions
    */
   async updateBackendSubscriptions() {
+    // Don't attempt WebSocket operations if not authenticated
+    if (!this.isAuthenticated) {
+      console.log("🔒 Skipping WebSocket subscription update - user not authenticated");
+      return;
+    }
+
     const allSymbols = Array.from(this.activeSubscriptions);
 
     try {
@@ -1231,12 +1224,17 @@ class SmartMarketDataStore {
       this.handleIvxUpdate(data);
     });
 
-
-    // Connect to WebSocket
-    try {
-      await webSocketClient.connect();
-    } catch (error) {
-      console.error("❌ Failed to connect to WebSocket via worker:", error);
+    // Only connect to WebSocket if authenticated
+    // The webSocketClient.connect() method already has authentication checks,
+    // but we should avoid calling it at all when not authenticated
+    if (this.isAuthenticated) {
+      try {
+        await webSocketClient.connect();
+      } catch (error) {
+        console.error("❌ Failed to connect to WebSocket via worker:", error);
+      }
+    } else {
+      console.log("🔒 Skipping WebSocket connection setup - user not authenticated");
     }
   }
 
@@ -1789,7 +1787,8 @@ class SmartMarketDataStore {
     this.activeSubscriptions.add(symbol);
 
     // For stock symbols, proactively load daily 6M data in background
-    if (symbol.length <= 10) { // Stock symbol
+    // Only if services are running (which means auth is properly initialized and user is authenticated)
+    if (symbol.length <= 10 && this.isServicesRunning()) { // Stock symbol
       this.ensureCurrentSymbolDaily6M(symbol).catch(err => {
         console.warn(`⚠️ Background daily 6M load failed for ${symbol}:`, err.message);
       });
@@ -1896,6 +1895,12 @@ class SmartMarketDataStore {
    */
   async loadCurrentSymbolDaily6M(symbol) {
     if (!symbol) return;
+
+    // Don't load data if not authenticated
+    if (authService.isAuthEnabled() && !authService.isAuthenticated()) {
+      console.log("🔒 Skipping daily 6M data load - user not authenticated");
+      return;
+    }
 
     // Clear previous data
     this.currentSymbolDaily6M = {
@@ -2100,6 +2105,222 @@ class SmartMarketDataStore {
     } finally {
       this.setLoading(key, false);
     }
+  }
+
+  /**
+   * Set up authentication integration
+   * Monitors auth state and controls service initialization
+   */
+  setupAuthenticationIntegration() {
+    // Listen for authentication state changes
+    const authStateListener = (authState) => {
+      const wasAuthenticated = this.isAuthenticated;
+      this.isAuthenticated = authState.authenticated;
+
+      console.log(`🔐 Auth state changed: ${wasAuthenticated} -> ${this.isAuthenticated}`);
+
+      if (this.isAuthenticated && !wasAuthenticated) {
+        // User just logged in - start services
+        console.log("🚀 User authenticated, starting services");
+        this.startServices();
+      } else if (!this.isAuthenticated && wasAuthenticated) {
+        // User just logged out - stop services
+        console.log("🛑 User logged out, stopping services");
+        this.stopServices();
+      }
+    };
+
+    // Add listener to auth service
+    authService.addListener(authStateListener);
+    this.authStateListeners.push(authStateListener);
+  }
+
+  /**
+   * Initialize services conditionally based on authentication
+   */
+  async initializeConditionally() {
+    try {
+      // Initialize auth service first
+      const authInitSuccess = await authService.init();
+      
+      // Only proceed if auth service initialized successfully
+      if (!authInitSuccess) {
+        console.log("🔐 Authentication service failed to initialize, services will not start");
+        return;
+      }
+      
+      // Check if auth is enabled and user is authenticated
+      if (authService.isAuthEnabled()) {
+        this.isAuthenticated = authService.isAuthenticated();
+        
+        if (this.isAuthenticated) {
+          console.log("🔐 User is authenticated, starting services");
+          this.startServices();
+        } else {
+          console.log("🔐 User not authenticated, services will start after login");
+        }
+      } else {
+        // Auth is disabled, start services immediately
+        console.log("🔐 Authentication disabled, starting services");
+        this.isAuthenticated = true; // Treat as authenticated when auth is disabled
+        this.startServices();
+      }
+    } catch (error) {
+      console.error("❌ Failed to initialize authentication integration:", error);
+      // Do not start services if authentication initialization fails
+      console.log("🔐 Authentication initialization failed, services will not start");
+    }
+  }
+
+  /**
+   * Start all services (called when authenticated or auth disabled)
+   */
+  startServices() {
+    if (this.isInitialized) {
+      console.log("⚠️ Services already initialized");
+      return;
+    }
+
+    console.log("🚀 Starting SmartMarketDataStore services");
+
+    // Initialize WebSocket integration
+    this.initialize();
+
+    // Start keep-alive system
+    this.startKeepaliveTimer();
+
+    // Start Greeks periodic updates
+    this.startGreeksPeriodicUpdates();
+
+    // Register provider configuration data sources
+    this.setupProviderDataSources();
+
+    // Register positions data source
+    this.setupPositionsDataSource();
+
+    // Configure additional data sources (moved from main.js)
+    this.configureAdditionalDataSources();
+
+    // Start health monitoring
+    this.startHealthMonitoring();
+
+    // Listen for system recovery events
+    this.setupRecoveryListeners();
+
+    console.log("✅ SmartMarketDataStore services started");
+  }
+
+  /**
+   * Stop all services (called when user logs out)
+   */
+  stopServices() {
+    console.log("🛑 Stopping SmartMarketDataStore services");
+
+    // Disconnect WebSocket
+    webSocketClient.disconnect();
+
+    // Clear all subscriptions and data
+    this.activeSubscriptions.clear();
+    this.activeGreeksSubscriptions.clear();
+    this.lastAccess.clear();
+    this.lastGreeksAccess.clear();
+    
+    // Clear all reactive data
+    this.stockPrices.clear();
+    this.optionPrices.clear();
+    this.optionGreeks.clear();
+    this.ivxDataBySymbol.clear();
+    this.previousClosePrices.clear();
+    this.data.clear();
+    this.cache.clear();
+    this.loading.clear();
+    this.errors.clear();
+
+    // Clear current symbol data
+    this.clearCurrentSymbolDaily6M();
+
+    // Clear all timers
+    if (this.updateTimer) {
+      clearTimeout(this.updateTimer);
+      this.updateTimer = null;
+    }
+    if (this.greeksUpdateTimer) {
+      clearInterval(this.greeksUpdateTimer);
+      this.greeksUpdateTimer = null;
+    }
+    if (this.greeksImmediateUpdateTimer) {
+      clearTimeout(this.greeksImmediateUpdateTimer);
+      this.greeksImmediateUpdateTimer = null;
+    }
+
+    // Clear periodic timers
+    this.timers.forEach((timer) => clearInterval(timer));
+    this.timers.clear();
+
+    // Stop health monitoring
+    if (this.healthMonitor) {
+      this.healthMonitor.stop();
+    }
+
+    // Clear component registrations
+    this.symbolUsageCount.clear();
+    this.componentRegistrations.clear();
+
+    // Reset initialization flag
+    this.isInitialized = false;
+
+    console.log("✅ SmartMarketDataStore services stopped");
+  }
+
+  /**
+   * Configure additional data sources (moved from main.js)
+   * Called when services start to ensure data sources are configured only when authenticated
+   */
+  configureAdditionalDataSources() {
+    // Auto-updating data (Periodic strategy)
+    this.registerDataSource("balance", {
+      strategy: "periodic",
+      method: "getAccount",
+      interval: 60000, // 1 minute
+    });
+
+    // Static data (One-time strategy)
+    this.registerDataSource("accountInfo", {
+      strategy: "once",
+      method: "getAccount",
+    });
+
+    // On-demand data (Cached strategy)
+    this.registerDataSource("optionsChain.*", {
+      strategy: "on-demand",
+      method: "getOptionsChain",
+      ttl: 300000, // 5 minutes
+    });
+
+    this.registerDataSource("historicalData.*", {
+      strategy: "on-demand",
+      method: "getHistoricalData",
+      ttl: 300000, // 5 minutes
+    });
+
+    this.registerDataSource("symbolLookup.*", {
+      strategy: "on-demand",
+      method: "lookupSymbols",
+      ttl: 600000, // 10 minutes
+    });
+
+    this.registerDataSource("expirationDates.*", {
+      strategy: "on-demand",
+      method: "getAvailableExpirations",
+      ttl: 3600000, // 1 hour
+    });
+  }
+
+  /**
+   * Check if services are running (for debugging)
+   */
+  isServicesRunning() {
+    return this.isInitialized && this.isAuthenticated;
   }
 
   /**

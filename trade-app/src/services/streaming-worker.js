@@ -86,9 +86,23 @@ function connect(url) {
     console.log(`🔌 WebSocket connection closed (code: ${event.code}, reason: ${event.reason})`);
     clearConnectionTimers();
     
+    // Check if this is an authentication-related closure
+    const isAuthFailure = event.code === 1008 || event.code === 1011 || event.code === 403;
+    
     if (!isManuallyDisconnected) {
       updateConnectionState(CONNECTION_STATES.DISCONNECTED);
-      scheduleReconnect(url);
+      
+      if (isAuthFailure) {
+        console.log("🔒 WebSocket closed due to authentication failure - stopping reconnection attempts");
+        // Don't attempt to reconnect on authentication failures
+        postMessage({ 
+          type: 'status', 
+          message: 'auth_failed',
+          detail: { code: event.code, reason: event.reason }
+        });
+      } else {
+        scheduleReconnect(url);
+      }
     }
   };
 

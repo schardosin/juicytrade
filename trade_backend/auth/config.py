@@ -100,6 +100,10 @@ class AuthConfig(BaseModel):
         default=False,
         description="Use secure cookies (HTTPS only)"
     )
+    cookie_domain: Optional[str] = Field(
+        default=None,
+        description="Cookie domain for session cookies"
+    )
     
     @classmethod
     def from_env(cls) -> "AuthConfig":
@@ -119,7 +123,8 @@ class AuthConfig(BaseModel):
             session_cookie_name=os.getenv("AUTH_SESSION_COOKIE_NAME", "juicytrade_session"),
             session_max_age=int(os.getenv("AUTH_SESSION_MAX_AGE", "86400")),
             enable_csrf_protection=os.getenv("AUTH_ENABLE_CSRF", "true").lower() == "true",
-            secure_cookies=os.getenv("AUTH_SECURE_COOKIES", "false").lower() == "true"
+            secure_cookies=os.getenv("AUTH_SECURE_COOKIES", "false").lower() == "true",
+            cookie_domain=os.getenv("AUTH_COOKIE_DOMAIN")
         )
     
     def is_enabled(self) -> bool:

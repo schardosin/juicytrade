@@ -811,12 +811,8 @@ export default {
         isRecovering.value = false;
         lastDataReceived.value = Date.now();
       } else {
-        // If not connected, try to connect
-        connectionState.value = 'connecting';
-        webSocketClient.connect().catch(error => {
-          console.error('❌ Failed to connect WebSocket:', error);
-          connectionState.value = 'disconnected';
-        });
+        // Don't try to connect here - let the SmartMarketDataStore handle authentication-aware connection
+        connectionState.value = 'disconnected';
       }
     });
 
