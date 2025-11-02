@@ -89,6 +89,13 @@ This document outlines the unified data management architecture for the Vue.js t
 - Automatic subscription management based on component lifecycle
 - Centralized error handling and loading states
 
+### 4. **Authentication-Aware Architecture**
+
+- **Service State Protection**: All data services check authentication before operations
+- **Reactive Authentication**: Vue computed properties block when user not authenticated
+- **Logout Protection**: Comprehensive system shutdown during logout process
+- **WebSocket Authentication**: Connection management respects user authentication state
+
 ## Architecture Overview
 
 ```
@@ -205,6 +212,338 @@ This document outlines the unified data management architecture for the Vue.js t
 │                 │                 │   Support       │                         │
 └─────────────────┴─────────────────┴─────────────────┴─────────────────────────┘
 ```
+
+## Authentication Architecture ⭐ *CRITICAL SYSTEM*
+
+### Overview
+
+The application implements a comprehensive authentication architecture that protects all data services and provides seamless logout functionality. The system prevents zombie connections, ensures clean authentication state transitions, and maintains security across all data flows.
+
+### Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                        Authentication Architecture                               │
+├─────────────────────────────────────────────────────────────────────────────────┤
+│                                                                                 │
+│  ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────────────┐      │
+│  │ Authentication  │    │ SmartMarketData │    │ Vue Reactivity          │      │
+│  │ Service         │    │ Protection      │    │ Guards                  │      │
+│  │                 │    │                 │    │                         │      │
+│  │ • OAuth Flow    │    │ • Service Stop  │    │ • Computed Property     │      │
+│  │ • Token Mgmt    │    │   Flags         │    │   Blocking              │      │
+│  │ • Multi-Method  │    │ • API Blocking  │    │ • Lifecycle Protection  │      │
+│  │ • User State    │    │ • Recovery Stop │    │ • Component Guards      │      │
+│  │ • Logout Flow   │    │ • Health Stop   │    │ • Data Access Blocking  │      │
+│  └─────────────────┘    └─────────────────┘    └─────────────────────────┘      │
+│           │                       │                         │                   │
+│           ▼                       ▼                         ▼                   │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                    AuthService Integration                              │    │
+│  │                                                                         │    │
+│  │  // Multi-method authentication support                                 │    │
+│  │  authMethods: {                                                         │    │
+│  │    oauth: { enabled: true, clientId: "...", redirectUri: "..." },       │    │
+│  │    simple: { enabled: true, username: "admin", password: "pass" },      │    │
+│  │    token: { enabled: true, bearerToken: "xyz123" },                     │    │
+│  │    header: { enabled: true, headerName: "X-Auth", headerValue: "..." }, │    │
+│  │    disabled: { enabled: false }                                         │    │
+│  │  },                                                                     │    │
+│  │                                                                         │    │
+│  │  // User state management                                               │    │
+│  │  user: reactive({                                                       │    │
+│  │    isAuthenticated: false,                                              │    │
+│  │    username: null,                                                      │    │
+│  │    roles: [],                                                           │    │
+│  │    permissions: []                                                      │    │
+│  │  }),                                                                    │    │
+│  │                                                                         │    │
+│  │  // Logout flow with system coordination                                │    │
+│  │  async logout() {                                                       │    │
+│  │    this.user.isAuthenticated = false;                                   │    │
+│  │    smartMarketDataStore.stopAllServices();                             │    │
+│  │    await webSocketClient.disconnect();                                  │    │
+│  │    this.user.username = null;                                           │    │
+│  │  }                                                                      │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                    │                                            │
+│                                    ▼                                            │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                    SmartMarketDataStore Authentication Protection        │    │
+│  │                                                                         │    │
+│  │  // Service stopping flags for logout protection                        │    │
+│  │  data() {                                                               │    │
+│  │    return {                                                             │    │
+│  │      isServicesStopping: false,  // Master flag for logout             │    │
+│  │      isRecoveryStopping: false,  // Recovery system protection         │    │
+│  │      isHealthStopping: false     // Health monitoring protection       │    │
+│  │    };                                                                   │    │
+│  │  },                                                                     │    │
+│  │                                                                         │    │
+│  │  // Authentication-aware computed properties                            │    │
+│  │  computed: {                                                            │    │
+│  │    serviceEnabled() {                                                   │    │
+│  │      if (this.isServicesStopping) return false;                         │    │
+│  │      if (!authService.user.isAuthenticated) return false;               │    │
+│  │      return true;                                                       │    │
+│  │    },                                                                   │    │
+│  │                                                                         │    │
+│  │    balance() {                                                          │    │
+│  │      if (!this.serviceEnabled) return { value: 0 };                     │    │
+│  │      return this.accountData.balance || { value: 0 };                   │    │
+│  │    },                                                                   │    │
+│  │                                                                         │    │
+│  │    positions() {                                                        │    │
+│  │      if (!this.serviceEnabled) return [];                               │    │
+│  │      return this.accountData.positions || [];                           │    │
+│  │    }                                                                    │    │
+│  │  },                                                                     │    │
+│  │                                                                         │    │
+│  │  // Coordinated service shutdown                                        │    │
+│  │  stopAllServices() {                                                    │    │
+│  │    this.isServicesStopping = true;                                      │    │
+│  │    this.isRecoveryStopping = true;                                      │    │
+│  │    this.isHealthStopping = true;                                        │    │
+│  │    this.clearAllIntervals();                                            │    │
+│  │    this.clearAllData();                                                 │    │
+│  │  }                                                                      │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                    │                                            │
+│                                    ▼                                            │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                    Component Authentication Guards                       │    │
+│  │                                                                         │    │
+│  │  // Vue component lifecycle protection                                  │    │
+│  │  export default {                                                       │    │
+│  │    async onMounted() {                                                  │    │
+│  │      if (!authService.user.isAuthenticated) {                           │    │
+│  │        console.log("User not authenticated, skipping data fetch");      │    │
+│  │        return;                                                          │    │
+│  │      }                                                                  │    │
+│  │      await this.fetchComponentData();                                   │    │
+│  │    },                                                                   │    │
+│  │                                                                         │    │
+│  │    methods: {                                                           │    │
+│  │      async fetchData() {                                                │    │
+│  │        if (!authService.user.isAuthenticated) {                         │    │
+│  │          return; // Silent authentication check                        │    │
+│  │        }                                                                │    │
+│  │        // ... data fetching logic ...                                  │    │
+│  │      }                                                                  │    │
+│  │    }                                                                    │    │
+│  │  };                                                                     │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                    │                                            │
+│                                    ▼                                            │
+│  ┌─────────────────────────────────────────────────────────────────────────┐    │
+│  │                    UI Authentication Integration                         │    │
+│  │                                                                         │    │
+│  │  // SystemRecoveryIndicator.vue - Authentication-aware display          │    │
+│  │  const showIndicator = computed(() => {                                 │    │
+│  │    if (!authService.user.isAuthenticated) return false;                 │    │
+│  │    if (smartMarketDataStore.isRecoveryStopping) return false;           │    │
+│  │    return smartMarketDataStore.needsRecovery;                           │    │
+│  │  });                                                                    │    │
+│  │                                                                         │    │
+│  │  const startSilentRecovery = () => {                                    │    │
+│  │    if (!authService.user.isAuthenticated) return;                       │    │
+│  │    if (smartMarketDataStore.isRecoveryStopping) return;                 │    │
+│  │    smartMarketDataStore.recoverConnectionIssues();                      │    │
+│  │  };                                                                     │    │
+│  └─────────────────────────────────────────────────────────────────────────┘    │
+│                                                                                 │
+└─────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Key Features
+
+#### 1. **Multi-Method Authentication**
+```javascript
+// Flexible authentication system supporting multiple methods
+export const authMethods = {
+  oauth: {
+    enabled: true,
+    clientId: "juicytrade-oauth-client",
+    clientSecret: "oauth-secret-key",
+    redirectUri: "http://localhost:3000/auth/callback",
+    scope: "read:profile read:trades write:orders",
+    authorizationUrl: "https://oauth.provider.com/authorize",
+    tokenUrl: "https://oauth.provider.com/token"
+  },
+  simple: {
+    enabled: true,
+    username: "admin",
+    password: "secure_password_123"
+  },
+  token: {
+    enabled: true,
+    bearerToken: "your-api-bearer-token-here"
+  },
+  header: {
+    enabled: true,
+    headerName: "X-API-Key",
+    headerValue: "your-custom-api-key"
+  },
+  disabled: {
+    enabled: false
+  }
+};
+```
+
+#### 2. **Authentication-Aware Data Services**
+```javascript
+// SmartMarketDataStore blocks operations when not authenticated
+computed: {
+  serviceEnabled() {
+    if (this.isServicesStopping) return false;
+    if (!authService.user.isAuthenticated) return false;
+    return true;
+  },
+
+  balance() {
+    if (!this.serviceEnabled) return { value: 0 };
+    return this.accountData.balance || { value: 0 };
+  },
+
+  positions() {
+    if (!this.serviceEnabled) return [];
+    return this.accountData.positions || [];
+  }
+}
+```
+
+#### 3. **Coordinated Logout Protection**
+```javascript
+// Comprehensive system shutdown during logout
+async logout() {
+  console.log("🚪 Starting logout process...");
+  
+  // 1. Mark user as unauthenticated immediately
+  this.user.isAuthenticated = false;
+  
+  // 2. Stop all reactive data services
+  smartMarketDataStore.stopAllServices();
+  
+  // 3. Disconnect WebSocket connections
+  await webSocketClient.disconnect();
+  
+  // 4. Clear user data
+  this.user.username = null;
+  this.user.roles = [];
+  this.user.permissions = [];
+  
+  console.log("✅ Logout completed successfully");
+}
+```
+
+#### 4. **Component Lifecycle Protection**
+```javascript
+// Components check authentication before data operations
+export default {
+  async onMounted() {
+    if (!authService.user.isAuthenticated) {
+      console.log("User not authenticated, skipping data fetch");
+      return;
+    }
+    
+    // Proceed with authenticated operations
+    await this.fetchSymbolData();
+    await this.fetchExpirationDates();
+  },
+
+  methods: {
+    async fetchSymbolData() {
+      if (!authService.user.isAuthenticated) {
+        return; // Silent authentication check
+      }
+      // ... data fetching logic ...
+    }
+  }
+};
+```
+
+#### 5. **UI Authentication Integration**
+```javascript
+// SystemRecoveryIndicator respects authentication state
+const showIndicator = computed(() => {
+  if (!authService.user.isAuthenticated) return false;
+  if (smartMarketDataStore.isRecoveryStopping) return false;
+  return smartMarketDataStore.needsRecovery;
+});
+
+const startSilentRecovery = () => {
+  if (!authService.user.isAuthenticated) return;
+  if (smartMarketDataStore.isRecoveryStopping) return;
+  smartMarketDataStore.recoverConnectionIssues();
+};
+```
+
+### Authentication Flow Integration
+
+#### **Login Process**
+1. **User Authentication**: OAuth/Token/Simple/Header methods
+2. **Service Activation**: Data services become available
+3. **WebSocket Connection**: Authenticated streaming begins
+4. **Component Rendering**: UI components fetch authenticated data
+
+#### **Logout Process**
+1. **Authentication Revocation**: User marked as unauthenticated
+2. **Service Shutdown**: All reactive services stop immediately
+3. **WebSocket Disconnect**: Streaming connections terminated
+4. **UI Cleanup**: Components stop operations and clear data
+5. **State Reset**: All user-specific data cleared
+
+#### **Authentication Checking**
+- **Real-time Reactive**: Vue computed properties check authentication
+- **API Interceptors**: HTTP requests blocked when not authenticated
+- **Component Guards**: Lifecycle hooks validate authentication
+- **WebSocket Protection**: Streaming respects authentication state
+
+### Security Features
+
+#### 1. **Proactive Security**
+- **Pre-operation Checks**: Authentication validated before any operation
+- **Reactive Blocking**: Vue reactivity prevents unauthorized data access
+- **Silent Failures**: Unauthenticated operations fail silently (no errors)
+- **State Protection**: User data cleared immediately on logout
+
+#### 2. **Multi-Layer Protection**
+- **Service Layer**: SmartMarketDataStore authentication checks
+- **Component Layer**: Vue lifecycle authentication guards
+- **UI Layer**: Conditional rendering based on authentication
+- **Network Layer**: WebSocket and API authentication integration
+
+#### 3. **Clean State Management**
+- **Immediate Blocking**: Services stop instantly on logout
+- **Data Clearing**: All cached data cleared on authentication change
+- **Connection Cleanup**: WebSocket connections properly terminated
+- **Memory Safety**: No authentication data persistence after logout
+
+### Benefits
+
+#### 1. **Security**
+- **No Unauthorized Access**: All data operations require authentication
+- **Clean Logout**: Complete system shutdown prevents data leakage
+- **Multi-Method Support**: Flexible authentication for different environments
+- **Reactive Protection**: Vue system blocks unauthorized operations
+
+#### 2. **User Experience**
+- **Silent Authentication**: No error popups during logout
+- **Clean Transitions**: Smooth authentication state changes
+- **Consistent Behavior**: All components respect authentication uniformly
+- **No Zombie Operations**: Complete operation cessation during logout
+
+#### 3. **Developer Experience**
+- **Consistent Patterns**: Same authentication checks across all components
+- **Clear Separation**: Authentication logic centralized in authService
+- **Easy Integration**: Simple authentication checks in components
+- **Comprehensive Protection**: Framework-level authentication coverage
+
+#### 4. **Production Reliability**
+- **Race Condition Free**: Coordinated shutdown prevents timing issues
+- **Memory Efficient**: Complete cleanup on authentication changes
+- **Error Free**: No console warnings during logout process
+- **Scalable Architecture**: Authentication system scales with application
 
 ## Multi-Provider Architecture
 
