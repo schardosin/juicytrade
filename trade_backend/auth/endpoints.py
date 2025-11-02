@@ -406,10 +406,53 @@ async def oauth_callback(
             
             user_info = user_response.json()
             
+            # Get user email for authorization check
+            user_email = user_info.get("email")
+            
+            # Check if user is authorized
+            if not auth_config.is_user_authorized(user_email):
+                logger.warning(f"Unauthorized OAuth login attempt: {user_email}")
+                
+                # Return a proper HTML error page instead of JSON
+                error_html = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Access Denied - JuicyTrade</title>
+                    <meta charset="utf-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <style>
+                        body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; text-align: center; }}
+                        .container {{ max-width: 500px; margin: 0 auto; background: white; 
+                                     padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                        .error-icon {{ font-size: 4rem; color: #dc3545; margin-bottom: 20px; }}
+                        h1 {{ color: #dc3545; margin-bottom: 20px; }}
+                        p {{ color: #666; line-height: 1.6; margin-bottom: 20px; }}
+                        .email {{ background: #f8f9fa; padding: 10px; border-radius: 4px; 
+                                 font-family: monospace; color: #495057; }}
+                        .back-btn {{ display: inline-block; margin-top: 20px; padding: 12px 24px; 
+                                    background: #6c757d; color: white; text-decoration: none; 
+                                    border-radius: 4px; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="error-icon">🚫</div>
+                        <h1>Access Denied</h1>
+                        <p>Your account is not authorized to access this trading platform.</p>
+                        <div class="email">{user_email}</div>
+                        <p>If you believe this is an error, please contact the system administrator.</p>
+                        <a href="/login" class="back-btn">Back to Login</a>
+                    </div>
+                </body>
+                </html>
+                """
+                return HTMLResponse(content=error_html, status_code=403)
+            
             # Create user object
             user = User(
                 username=user_info.get("login") or user_info.get("email") or str(user_info.get("id")),
-                email=user_info.get("email"),
+                email=user_email,
                 full_name=user_info.get("name"),
                 last_login=datetime.now(timezone.utc),
                 metadata={
@@ -417,6 +460,8 @@ async def oauth_callback(
                     "oauth_user_id": str(user_info.get("id"))
                 }
             )
+            
+            logger.info(f"Authorized OAuth login: {user_email}")
             
             # Create session token
             session_token = create_access_token(user)
