@@ -414,8 +414,10 @@ class DataRecoveryManager {
     // Trigger immediate health check
     await this.store.healthMonitor.performHealthChecks();
     
-    // Notify UI components about recovery completion
-    this.notifyUIRecovery('system_wakeup');
+    // Only notify UI if recovery fails (system wakeup is usually a critical recovery)
+    if (!this.store.systemState.isHealthy) {
+      this.notifyUIRecovery('system_wakeup', true);
+    }
   }
 
   async recoverFromWebSocketRecovery(context) {
@@ -437,8 +439,9 @@ class DataRecoveryManager {
     this.store.systemState.isHealthy = true;
     this.store.systemState.failedComponents.clear();
     
-    // Notify UI components
-    this.notifyUIRecovery('websocket_recovery');
+    // Don't notify UI for successful automatic recovery - let silent recovery handle UI
+    // UI will only be notified if silent recovery fails
+    console.log("✅ WebSocket recovery completed silently");
   }
 
   async recoverFromStaleConnection(context) {
@@ -473,13 +476,28 @@ class DataRecoveryManager {
 
   /**
    * Notify UI components about recovery events
+   * Only notifies UI when recovery fails after silent period, not on successful recovery
    */
-  notifyUIRecovery(recoveryType) {
-    window.dispatchEvent(new CustomEvent('websocket-recovered', {
+  notifyUIRecovery(recoveryType, shouldShowUI = false) {
+    // Only dispatch UI notification events if explicitly requested
+    // This prevents automatic UI notifications during successful silent recovery
+    if (shouldShowUI) {
+      window.dispatchEvent(new CustomEvent('websocket-recovered', {
+        detail: {
+          timestamp: Date.now(),
+          recoveryType: recoveryType,
+          subscriptions: Array.from(this.store.activeSubscriptions)
+        }
+      }));
+    }
+    
+    // Always dispatch internal recovery event for system components to handle
+    window.dispatchEvent(new CustomEvent('system-recovery-internal', {
       detail: {
         timestamp: Date.now(),
         recoveryType: recoveryType,
-        subscriptions: Array.from(this.store.activeSubscriptions)
+        subscriptions: Array.from(this.store.activeSubscriptions),
+        showUI: shouldShowUI
       }
     }));
   }

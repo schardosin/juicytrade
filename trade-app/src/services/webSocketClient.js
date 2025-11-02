@@ -407,21 +407,16 @@ class WebSocketStreamingClient {
       // Clear stale data when recovery happens
       this.clearStaleData();
       
-      // Trigger recovery in the store
+      // Trigger recovery in the store - this will handle silent recovery internally
       smartMarketDataStore.triggerRecovery('websocket_recovery', {
         recoveryType,
         detail,
         timestamp: Date.now()
       });
       
-      // Dispatch custom event for UI components
-      window.dispatchEvent(new CustomEvent('websocket-recovery', {
-        detail: {
-          recoveryType,
-          detail,
-          timestamp: Date.now()
-        }
-      }));
+      // Don't dispatch UI recovery events here - let the SmartMarketDataStore 
+      // decide whether to show UI notifications based on silent recovery logic
+      console.log('✅ Recovery event handled, silent recovery logic will determine UI notifications');
     }).catch(error => {
       console.error('❌ Failed to handle recovery event:', error);
     });

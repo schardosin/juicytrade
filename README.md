@@ -20,10 +20,271 @@ The backend is designed to support multiple brokerage providers, with a clear di
 - **Provider Configuration (`provider_config.py`)**: Manages the routing of different operations (e.g., `stock_quotes`, `orders`, `positions`, `expiration_dates`, `next_market_date`) to specific providers. This configuration is stored in `provider_config.json` and can be updated via the API.
 - **Streaming Manager (`streaming_manager.py`)**: Manages real-time data streaming from multiple providers concurrently, aggregating the data into a single feed for the frontend.
 
+## Authentication System
+
+Juicy Trade features a comprehensive, flexible authentication system that supports multiple authentication methods to secure your trading platform. The system is designed to be configurable and production-ready with proper security measures.
+
+### Supported Authentication Methods
+
+#### 1. **OAuth Authentication** (Recommended for Production)
+- **Google OAuth**: Secure authentication using Google accounts
+- **GitHub OAuth**: Authentication via GitHub accounts  
+- **Microsoft OAuth**: Authentication using Microsoft/Azure accounts
+- **User Authorization**: Configurable email/domain whitelisting for access control
+- **Secure Cookies**: HTTPS-compatible session management
+
+#### 2. **Simple Authentication**
+- **Username/Password**: Basic authentication with configurable credentials
+- **Session Management**: JWT-based session tokens
+- **Development Friendly**: Easy setup for development environments
+
+#### 3. **Token-Based Authentication**
+- **API Token**: Bearer token authentication for API access
+- **JWT Integration**: Secure token validation and management
+
+#### 4. **Header-Based Authentication**
+- **Reverse Proxy**: Integration with reverse proxy authentication
+- **Enterprise Ready**: Compatible with enterprise SSO solutions
+
+#### 5. **Disabled Authentication**
+- **Development Mode**: No authentication required (development only)
+- **Quick Setup**: Immediate access for testing and development
+
+### Authentication Configuration
+
+#### Environment Variables
+
+Configure authentication using environment variables in your `.env` file or Docker environment:
+
+```bash
+# Authentication Method (required)
+AUTH_METHOD=oauth  # Options: oauth, simple, token, header, disabled
+
+# OAuth Configuration (for AUTH_METHOD=oauth)
+AUTH_OAUTH_PROVIDER=google  # Options: google, github, microsoft
+AUTH_OAUTH_CLIENT_ID=your_oauth_client_id
+AUTH_OAUTH_CLIENT_SECRET=your_oauth_client_secret
+AUTH_OAUTH_REDIRECT_URI=https://yourdomain.com/auth/oauth/callback
+
+# User Authorization (CRITICAL for production security)
+AUTH_OAUTH_ALLOWED_EMAILS=admin@yourcompany.com,trader@yourcompany.com
+AUTH_OAUTH_ALLOWED_DOMAINS=yourcompany.com,yourdomain.com
+
+# Simple Authentication (for AUTH_METHOD=simple)
+AUTH_SIMPLE_USERNAME=admin
+AUTH_SIMPLE_PASSWORD=your_secure_password
+
+# JWT Configuration
+AUTH_JWT_SECRET_KEY=your_jwt_secret_key_change_in_production
+AUTH_JWT_EXPIRE_MINUTES=1440  # 24 hours
+AUTH_JWT_ALGORITHM=HS256
+
+# Session Configuration
+AUTH_SESSION_COOKIE_NAME=juicytrade_session
+AUTH_SESSION_MAX_AGE=86400  # 24 hours
+
+# Security Settings
+AUTH_SECURE_COOKIES=true   # Enable for HTTPS (production)
+AUTH_COOKIE_DOMAIN=yourdomain.com  # Set for production
+AUTH_ENABLE_CSRF=false     # Disable for API-first applications
+```
+
+#### OAuth Setup Guide
+
+**1. Google OAuth Setup:**
+```bash
+# 1. Go to Google Cloud Console (console.cloud.google.com)
+# 2. Create a new project or select existing
+# 3. Enable Google+ API
+# 4. Create OAuth 2.0 credentials
+# 5. Add authorized redirect URI: https://yourdomain.com/auth/oauth/callback
+
+AUTH_METHOD=oauth
+AUTH_OAUTH_PROVIDER=google
+AUTH_OAUTH_CLIENT_ID=your_google_client_id
+AUTH_OAUTH_CLIENT_SECRET=your_google_client_secret
+AUTH_OAUTH_REDIRECT_URI=https://yourdomain.com/auth/oauth/callback
+```
+
+**2. GitHub OAuth Setup:**
+```bash
+# 1. Go to GitHub Settings → Developer settings → OAuth Apps
+# 2. Create a new OAuth App
+# 3. Set Authorization callback URL: https://yourdomain.com/auth/oauth/callback
+
+AUTH_METHOD=oauth
+AUTH_OAUTH_PROVIDER=github
+AUTH_OAUTH_CLIENT_ID=your_github_client_id
+AUTH_OAUTH_CLIENT_SECRET=your_github_client_secret
+AUTH_OAUTH_REDIRECT_URI=https://yourdomain.com/auth/oauth/callback
+```
+
+#### User Authorization (CRITICAL Security Feature)
+
+**⚠️ IMPORTANT**: For production deployments, you MUST configure user authorization to prevent unauthorized access:
+
+**Option 1: Specific Email Addresses**
+```bash
+AUTH_OAUTH_ALLOWED_EMAILS=john@company.com,jane@company.com,admin@company.com
+```
+
+**Option 2: Domain-Based Authorization**
+```bash
+AUTH_OAUTH_ALLOWED_DOMAINS=yourcompany.com,yourdomain.com
+```
+
+**Option 3: Combined Authorization (Most Flexible)**
+```bash
+AUTH_OAUTH_ALLOWED_EMAILS=external.consultant@gmail.com,contractor@freelance.com
+AUTH_OAUTH_ALLOWED_DOMAINS=yourcompany.com
+```
+
+**Security Behavior:**
+- **Authorized Users**: Can access the trading platform normally
+- **Unauthorized Users**: Receive a clear "Access Denied" page with their email displayed
+- **No Configuration**: If no restrictions are set, ANY user with the OAuth provider can access (NOT recommended for production)
+- **Logging**: All unauthorized access attempts are logged with email addresses for security monitoring
+
+### Production Deployment
+
+#### Docker Configuration Example
+
+```yaml
+# docker-compose-prod.yml
+services:
+  juicytrade:
+    image: your-registry/juicytrade:latest
+    environment:
+      # Authentication Configuration
+      - AUTH_METHOD=oauth
+      - AUTH_OAUTH_PROVIDER=google
+      - AUTH_OAUTH_CLIENT_ID=${AUTH_OAUTH_CLIENT_ID}
+      - AUTH_OAUTH_CLIENT_SECRET=${AUTH_OAUTH_CLIENT_SECRET}
+      - AUTH_OAUTH_REDIRECT_URI=https://yourdomain.com/auth/oauth/callback
+      
+      # CRITICAL: User Authorization
+      - AUTH_OAUTH_ALLOWED_EMAILS=${AUTH_OAUTH_ALLOWED_EMAILS}
+      - AUTH_OAUTH_ALLOWED_DOMAINS=${AUTH_OAUTH_ALLOWED_DOMAINS}
+      
+      # Security Settings
+      - AUTH_JWT_SECRET_KEY=${AUTH_JWT_SECRET_KEY}
+      - AUTH_SECURE_COOKIES=true
+      - AUTH_COOKIE_DOMAIN=yourdomain.com
+      - AUTH_ENABLE_CSRF=false
+```
+
+#### Nginx Configuration
+
+The authentication system requires proper nginx routing for OAuth callbacks:
+
+```nginx
+# Proxy authentication requests to backend
+location /auth/ {
+    proxy_pass http://backend:8008/auth/;
+    proxy_set_header Host $host;
+    proxy_set_header X-Real-IP $remote_addr;
+    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Forwarded-Host $host;
+}
+```
+
+### Authentication API Endpoints
+
+The authentication system provides several API endpoints:
+
+#### Get Authentication Status
+```bash
+GET /auth/status
+```
+Returns current authentication status and user information.
+
+#### Get Authentication Configuration  
+```bash
+GET /auth/config
+```
+Returns public authentication configuration (method, provider, etc.).
+
+#### Login (Simple/Token Authentication)
+```bash
+POST /auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "password"
+}
+```
+
+#### Logout
+```bash
+POST /auth/logout
+```
+Clears session and logs out the current user.
+
+#### OAuth Authorization Flow
+```bash
+GET /auth/oauth/authorize?next=/dashboard
+```
+Initiates OAuth flow with optional redirect destination.
+
+#### Get Current User
+```bash
+GET /auth/user
+```
+Returns detailed information about the currently authenticated user.
+
+### Security Features
+
+#### Session Management
+- **JWT Tokens**: Secure, stateless session management
+- **Configurable Expiration**: Customizable session duration
+- **Secure Cookies**: HTTPS-compatible cookie settings
+- **Domain Restriction**: Proper cookie domain configuration for production
+
+#### OAuth Security
+- **State Parameter**: CSRF protection for OAuth flows
+- **Secure Redirects**: Validated redirect URLs
+- **Token Validation**: Proper OAuth token exchange and validation
+- **User Authorization**: Email/domain-based access control
+
+#### Production Security
+- **HTTPS Enforcement**: Secure cookie settings for production
+- **Domain Validation**: Proper cookie domain configuration
+- **Access Logging**: Comprehensive logging of authentication events
+- **Error Handling**: Secure error messages that don't leak sensitive information
+
+### Development vs Production
+
+#### Development Configuration
+```bash
+# Quick setup for development
+AUTH_METHOD=disabled  # No authentication required
+# OR
+AUTH_METHOD=simple
+AUTH_SIMPLE_USERNAME=admin
+AUTH_SIMPLE_PASSWORD=admin123
+```
+
+#### Production Configuration
+```bash
+# Secure production setup
+AUTH_METHOD=oauth
+AUTH_OAUTH_PROVIDER=google
+AUTH_OAUTH_CLIENT_ID=production_client_id
+AUTH_OAUTH_CLIENT_SECRET=production_client_secret
+AUTH_OAUTH_REDIRECT_URI=https://yourdomain.com/auth/oauth/callback
+AUTH_OAUTH_ALLOWED_EMAILS=admin@yourcompany.com
+AUTH_JWT_SECRET_KEY=your_production_jwt_secret
+AUTH_SECURE_COOKIES=true
+AUTH_COOKIE_DOMAIN=yourdomain.com
+```
+
 ## Features
 
 - **Multi-Provider Support**: The backend supports multiple brokerage providers, with a base provider interface that can be extended to support new providers.
 - **Live & Paper Trading**: Separate configurations for live and paper trading accounts, allowing for flexible testing and trading strategies.
+- **Comprehensive Authentication System**: Flexible authentication supporting OAuth (Google, GitHub, Microsoft), simple username/password, token-based, and enterprise SSO integration with configurable user authorization and production-ready security features.
 - **Sleep-Resistant WebSocket Architecture**: Advanced Web Worker-based real-time streaming that continues operating when browser loses focus or computer sleeps, with automatic recovery from network issues and system wake events.
 - **Connection Limit Protection**: Robust connection management with automatic cleanup of stale WebSocket connections, preventing "connection limit exceeded" errors after sleep/wake cycles. Features exponential backoff retry logic and proactive connection validation.
 - **Zombie Worker Prevention** ⭐ *CRITICAL*: Comprehensive Web Worker lifecycle management system that prevents background workers from persisting after browser close, eliminating performance degradation and resource conflicts through immediate cleanup on page unload.
