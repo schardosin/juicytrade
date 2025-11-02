@@ -4,7 +4,7 @@ Authentication endpoints for juicytrade.
 import logging
 import secrets
 import urllib.parse
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional, Dict, Any
 from fastapi import APIRouter, Request, Response, HTTPException, status, Depends, Form
 from fastapi.responses import RedirectResponse, JSONResponse, HTMLResponse
@@ -44,14 +44,14 @@ async def get_auth_status(request: Request):
                 )
                 
                 username = payload.get("sub")
-                expires_at = datetime.fromtimestamp(payload.get("exp", 0))
+                expires_at = datetime.fromtimestamp(payload.get("exp", 0), tz=timezone.utc)
                 
-                if username and expires_at > datetime.utcnow():
+                if username and expires_at > datetime.now(timezone.utc):
                     user = User(
                         username=username,
                         email=payload.get("email"),
                         full_name=payload.get("name"),
-                        last_login=datetime.utcnow(),
+                        last_login=datetime.now(timezone.utc),
                         metadata=payload.get("metadata")
                     )
                     authenticated = True
@@ -70,7 +70,7 @@ async def get_auth_status(request: Request):
             method=auth_config.method.value,
             user=user,
             expires_at=None  # Could be extracted from JWT if needed
-        ).dict(),
+        ).model_dump(),
         message="Authentication status retrieved"
     )
 
@@ -84,7 +84,8 @@ async def get_auth_config():
             "method": auth_config.method.value,
             "enabled": auth_config.is_enabled(),
             "oauth_provider": auth_config.oauth_provider.value if auth_config.oauth_provider else None,
-            "supports_methods": ["simple", "oauth", "token", "header", "disabled"]
+            "supports_methods": ["simple", "oauth", "token", "header", "disabled"],
+            "session_cookie_name": auth_config.session_cookie_name
         },
         message="Authentication configuration retrieved"
     )
@@ -117,7 +118,7 @@ async def login(
                 username=username,
                 email=None,
                 full_name=username,
-                last_login=datetime.utcnow()
+                last_login=datetime.now(timezone.utc)
             )
     
     elif auth_config.method == AuthMethod.TOKEN:
@@ -129,7 +130,7 @@ async def login(
                 username=username,
                 email=None,
                 full_name=username,
-                last_login=datetime.utcnow()
+                last_login=datetime.now(timezone.utc)
             )
     
     if not user:
@@ -142,15 +143,23 @@ async def login(
     access_token = create_access_token(user)
     expires_in = auth_config.jwt_expire_minutes * 60
     
-    # Set session cookie
-    response.set_cookie(
-        key=auth_config.session_cookie_name,
-        value=access_token,
-        max_age=expires_in,
-        httponly=True,
-        secure=auth_config.secure_cookies,
-        samesite="lax"
-    )
+    # Set session cookie with proper domain configuration
+    cookie_kwargs = {
+        "key": auth_config.session_cookie_name,
+        "value": access_token,
+        "max_age": expires_in,
+        "httponly": False,  # Allow JavaScript access for cross-port compatibility
+        "secure": auth_config.secure_cookies,
+        "samesite": "lax",
+        "path": "/"
+    }
+    
+    # Set domain if configured (for production), otherwise no domain restriction
+    if auth_config.cookie_domain:
+        cookie_kwargs["domain"] = auth_config.cookie_domain
+    # No else clause - if no domain is configured, don't set domain restriction
+    
+    response.set_cookie(**cookie_kwargs)
     
     return ApiResponse(
         success=True,
@@ -161,7 +170,7 @@ async def login(
             token_type="bearer",
             expires_in=expires_in,
             user=user
-        ).dict(),
+        ).model_dump(),
         message="Login successful"
     )
 
@@ -170,20 +179,32 @@ async def login(
 async def logout(request: Request, response: Response):
     """Logout endpoint."""
     
-    # Clear session cookie
-    response.delete_cookie(
-        key=auth_config.session_cookie_name,
-        httponly=True,
-        secure=auth_config.secure_cookies,
-        samesite="lax"
-    )
+    # Clear all OAuth states to prevent issues with subsequent logins
+    global oauth_states
+    oauth_states.clear()
+    
+    # Clear session cookie with proper domain configuration
+    cookie_kwargs = {
+        "key": auth_config.session_cookie_name,
+        "httponly": True,
+        "secure": auth_config.secure_cookies,
+        "samesite": "lax",
+        "path": "/"
+    }
+    
+    # Set domain if configured (for production), otherwise no domain restriction
+    if auth_config.cookie_domain:
+        cookie_kwargs["domain"] = auth_config.cookie_domain
+    # No else clause - if no domain is configured, don't set domain restriction
+    
+    response.delete_cookie(**cookie_kwargs)
     
     return ApiResponse(
         success=True,
         data=LogoutResponse(
             success=True,
             message="Logout successful"
-        ).dict(),
+        ).model_dump(),
         message="Logout successful"
     )
 
@@ -294,13 +315,18 @@ async def oauth_authorize(request: Request, next: Optional[str] = None):
     # Store state and redirect info
     oauth_states[state] = {
         "provider": auth_config.oauth_provider.value,
-        "created_at": datetime.utcnow(),
+        "created_at": datetime.now(timezone.utc),
         "next": next
     }
     
     # Clean old states (older than 10 minutes)
-    cutoff = datetime.utcnow() - timedelta(minutes=10)
-    oauth_states.clear()  # Simple cleanup for demo
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=10)
+    expired_states = [
+        state_key for state_key, state_data in oauth_states.items()
+        if state_data.get("created_at", datetime.min.replace(tzinfo=timezone.utc)) < cutoff
+    ]
+    for expired_state in expired_states:
+        oauth_states.pop(expired_state, None)
     
     # Build authorization URL
     params = {
@@ -327,9 +353,11 @@ async def oauth_callback(
     """Handle OAuth callback."""
     
     if error:
+        logger.error(f"OAuth error: {error}")
         raise HTTPException(status_code=400, detail=f"OAuth error: {error}")
     
     if not code or not state:
+        logger.error(f"Missing OAuth parameters")
         raise HTTPException(status_code=400, detail="Missing code or state parameter")
     
     # Validate state
@@ -378,34 +406,103 @@ async def oauth_callback(
             
             user_info = user_response.json()
             
+            # Get user email for authorization check
+            user_email = user_info.get("email")
+            
+            # Check if user is authorized
+            if not auth_config.is_user_authorized(user_email):
+                logger.warning(f"Unauthorized OAuth login attempt: {user_email}")
+                
+                # Return a proper HTML error page instead of JSON
+                error_html = f"""
+                <!DOCTYPE html>
+                <html>
+                <head>
+                    <title>Access Denied - JuicyTrade</title>
+                    <meta charset="utf-8">
+                    <meta name="viewport" content="width=device-width, initial-scale=1">
+                    <style>
+                        body {{ font-family: Arial, sans-serif; margin: 40px; background: #f5f5f5; text-align: center; }}
+                        .container {{ max-width: 500px; margin: 0 auto; background: white; 
+                                     padding: 40px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+                        .error-icon {{ font-size: 4rem; color: #dc3545; margin-bottom: 20px; }}
+                        h1 {{ color: #dc3545; margin-bottom: 20px; }}
+                        p {{ color: #666; line-height: 1.6; margin-bottom: 20px; }}
+                        .email {{ background: #f8f9fa; padding: 10px; border-radius: 4px; 
+                                 font-family: monospace; color: #495057; }}
+                        .back-btn {{ display: inline-block; margin-top: 20px; padding: 12px 24px; 
+                                    background: #6c757d; color: white; text-decoration: none; 
+                                    border-radius: 4px; }}
+                    </style>
+                </head>
+                <body>
+                    <div class="container">
+                        <div class="error-icon">🚫</div>
+                        <h1>Access Denied</h1>
+                        <p>Your account is not authorized to access this trading platform.</p>
+                        <div class="email">{user_email}</div>
+                        <p>If you believe this is an error, please contact the system administrator.</p>
+                        <a href="/login" class="back-btn">Back to Login</a>
+                    </div>
+                </body>
+                </html>
+                """
+                return HTMLResponse(content=error_html, status_code=403)
+            
             # Create user object
             user = User(
                 username=user_info.get("login") or user_info.get("email") or str(user_info.get("id")),
-                email=user_info.get("email"),
+                email=user_email,
                 full_name=user_info.get("name"),
-                last_login=datetime.utcnow(),
+                last_login=datetime.now(timezone.utc),
                 metadata={
                     "oauth_provider": provider,
                     "oauth_user_id": str(user_info.get("id"))
                 }
             )
             
+            logger.info(f"Authorized OAuth login: {user_email}")
+            
             # Create session token
             session_token = create_access_token(user)
             expires_in = auth_config.jwt_expire_minutes * 60
             
-            # Set session cookie
-            response.set_cookie(
-                key=auth_config.session_cookie_name,
-                value=session_token,
-                max_age=expires_in,
-                httponly=True,
-                secure=auth_config.secure_cookies,
-                samesite="lax"
-            )
+            # Set session cookie with proper domain configuration
+            cookie_kwargs = {
+                "key": auth_config.session_cookie_name,
+                "value": session_token,
+                "max_age": expires_in,
+                "httponly": False,  # Allow JavaScript access for frontend auth detection
+                "secure": auth_config.secure_cookies,
+                "samesite": "lax",  # Back to "lax" since "none" requires secure=true
+                "path": "/"
+            }
+            
+            # Set domain if configured (for production), otherwise no domain restriction
+            if auth_config.cookie_domain:
+                cookie_kwargs["domain"] = auth_config.cookie_domain
+            # No else clause - if no domain is configured, don't set domain restriction
+            
+            response.set_cookie(**cookie_kwargs)
+            
+            # For development, also redirect with token in URL as fallback
+            # Clean the next_url of any existing auth_token parameters
+            # Handle case where next_url might be None
+            if next_url and '?' in next_url:
+                base_url, params = next_url.split('?', 1)
+                # Remove any existing auth_token parameters
+                param_pairs = [p for p in params.split('&') if not p.startswith('auth_token=')]
+                if param_pairs:
+                    clean_next_url = f"{base_url}?{'&'.join(param_pairs)}"
+                else:
+                    clean_next_url = base_url
+            else:
+                clean_next_url = next_url or "/"  # Default to "/" if next_url is None
+            
+            redirect_url = f"{clean_next_url}{'&' if '?' in clean_next_url else '?'}auth_token={session_token}"
             
             # Redirect to original destination
-            return RedirectResponse(url=next_url, status_code=302)
+            return RedirectResponse(url=redirect_url, status_code=302)
     
     except httpx.HTTPError as e:
         logger.error(f"OAuth callback error: {e}")
@@ -428,6 +525,6 @@ async def get_current_user_info(request: Request):
     
     return ApiResponse(
         success=True,
-        data=user.dict(),
+        data=user.model_dump(),
         message="User information retrieved"
     )

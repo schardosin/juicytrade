@@ -31,6 +31,7 @@ class WebSocketStreamingClient {
     this.isConnected = ref(false); // Make this reactive
     this.subscribedSymbols = new Set();
     this.connectionPromise = null;
+    this.isDisconnecting = false; // Flag to prevent connections during disconnect
 
     this.initializeWorker();
   }
@@ -65,6 +66,29 @@ class WebSocketStreamingClient {
   handleStatusUpdate(status) {
     const wasConnected = this.isConnected.value;
     this.isConnected.value = (status === 'connected');
+    
+    // Handle authentication failures specially
+    if (status === 'auth_failed') {
+      console.log("🔒 WebSocket authentication failed - forcing disconnect");
+      this.isConnected.value = false;
+      
+      // Set disconnecting flag to prevent reconnection attempts
+      this.isDisconnecting = true;
+      
+      // Force disconnect to clean up everything
+      this.disconnect();
+      
+      // Emit auth failure event for UI handling
+      window.dispatchEvent(new CustomEvent('websocket-auth-failed', {
+        detail: {
+          status: status,
+          timestamp: Date.now(),
+          message: 'WebSocket authentication failed'
+        }
+      }));
+      
+      return;
+    }
     
     // Emit detailed status event for UI components
     window.dispatchEvent(new CustomEvent('websocket-status-change', {
@@ -106,7 +130,13 @@ class WebSocketStreamingClient {
     }
   }
 
-  connect() {
+  async connect() {
+    // Check if we're in the process of disconnecting
+    if (this.isDisconnecting) {
+      console.log("🚫 Connection attempt blocked - currently disconnecting");
+      return Promise.reject(new Error("Connection blocked - currently disconnecting"));
+    }
+
     if (this.connectionPromise) {
       return this.connectionPromise;
     }
@@ -116,13 +146,33 @@ class WebSocketStreamingClient {
       return Promise.resolve();
     }
 
+    // CRITICAL: Check authentication BEFORE attempting any connection
+    try {
+      // Import authService dynamically to avoid circular dependency
+      const { default: authService } = await import('./authService.js');
+      
+      // Check if authentication is enabled
+      if (authService.isAuthEnabled()) {
+        // Check if user is authenticated
+        if (!authService.isAuthenticated()) {
+          console.log("🔒 User not authenticated, WebSocket connection will be rejected");
+          const error = new Error("User not authenticated - WebSocket connection not allowed");
+          throw error;
+        }
+      }
+    } catch (error) {
+      console.error("❌ Authentication check failed:", error);
+      // Don't even attempt connection if authentication fails
+      return Promise.reject(error);
+    }
+
     // Ensure worker exists before attempting connection
     if (!this.worker) {
       console.log("🔄 Worker not found, reinitializing...");
       this.initializeWorker();
     }
 
-    this.connectionPromise = new Promise((resolve, reject) => {
+    this.connectionPromise = new Promise(async (resolve, reject) => {
       this.resolveConnection = resolve;
       this.rejectConnection = reject;
       
@@ -141,7 +191,20 @@ class WebSocketStreamingClient {
       this.connectionTimeout = timeout;
 
       try {
-        this.worker.postMessage({ command: 'connect', url: `${this.baseUrl}/ws` });
+        // Get authentication credentials (this will also check auth again)
+        const authCredentials = await this.getAuthenticationCredentials();
+        
+        // Build WebSocket URL with authentication
+        let wsUrl = `${this.baseUrl}/ws`;
+        if (authCredentials.token) {
+          wsUrl += `?token=${encodeURIComponent(authCredentials.token)}`;
+        }
+
+        this.worker.postMessage({ 
+          command: 'connect', 
+          url: wsUrl,
+          headers: authCredentials.headers
+        });
       } catch (error) {
         clearTimeout(timeout);
         console.error("❌ Failed to send connect message to worker:", error);
@@ -155,6 +218,78 @@ class WebSocketStreamingClient {
     });
 
     return this.connectionPromise;
+  }
+
+  /**
+   * Get authentication credentials for WebSocket connection
+   */
+  async getAuthenticationCredentials() {
+    try {
+      // Import authService dynamically to avoid circular dependency
+      const { default: authService } = await import('./authService.js');
+      
+      // Check if authentication is enabled
+      if (!authService.isAuthEnabled()) {
+        return { token: null, headers: {} };
+      }
+
+      // Check if user is authenticated
+      if (!authService.isAuthenticated()) {
+        console.log("🔒 User not authenticated, WebSocket connection will be rejected");
+        throw new Error("User not authenticated - WebSocket connection not allowed");
+      }
+
+      // Get session cookie name from auth config
+      let sessionCookieName = 'juicytrade_session'; // Default fallback
+      try {
+        const authConfig = await authService.getAuthConfig();
+        if (authConfig && authConfig.session_cookie_name) {
+          sessionCookieName = authConfig.session_cookie_name;
+        }
+      } catch (error) {
+        console.warn('⚠️ Could not get auth config, using default session cookie name');
+      }
+
+      // Try to get session token from cookies
+      const cookies = document.cookie.split(';');
+      let sessionToken = null;
+      
+      for (const cookie of cookies) {
+        const [name, value] = cookie.trim().split('=');
+        if (name === sessionCookieName) {
+          sessionToken = value;
+          break;
+        }
+      }
+
+      if (sessionToken) {
+        console.log("🔐 Using session cookie for WebSocket authentication");
+        console.log(`🔐 Session cookie name: ${sessionCookieName}, token length: ${sessionToken.length}`);
+        return { 
+          token: sessionToken, 
+          headers: {} 
+        };
+      }
+
+      // Debug: log all cookies to see what's available
+      console.log("🔍 All cookies:", document.cookie);
+      console.log("🔍 Looking for cookie:", sessionCookieName);
+
+      // Fallback: try to get user info and create basic auth
+      const user = authService.getUser();
+      if (user && user.username) {
+        console.log("🔐 Using basic auth for WebSocket authentication");
+        // For simple auth, we could use basic auth, but session cookie is preferred
+        return { token: null, headers: {} };
+      }
+
+      console.warn("⚠️ No authentication credentials available for WebSocket");
+      return { token: null, headers: {} };
+
+    } catch (error) {
+      console.error("❌ Error getting authentication credentials:", error);
+      return { token: null, headers: {} };
+    }
   }
 
   async subscribe(symbols) {
@@ -302,21 +437,16 @@ class WebSocketStreamingClient {
       // Clear stale data when recovery happens
       this.clearStaleData();
       
-      // Trigger recovery in the store
+      // Trigger recovery in the store - this will handle silent recovery internally
       smartMarketDataStore.triggerRecovery('websocket_recovery', {
         recoveryType,
         detail,
         timestamp: Date.now()
       });
       
-      // Dispatch custom event for UI components
-      window.dispatchEvent(new CustomEvent('websocket-recovery', {
-        detail: {
-          recoveryType,
-          detail,
-          timestamp: Date.now()
-        }
-      }));
+      // Don't dispatch UI recovery events here - let the SmartMarketDataStore 
+      // decide whether to show UI notifications based on silent recovery logic
+      console.log('✅ Recovery event handled, silent recovery logic will determine UI notifications');
     }).catch(error => {
       console.error('❌ Failed to handle recovery event:', error);
     });
@@ -414,6 +544,9 @@ class WebSocketStreamingClient {
   disconnect() {
     console.log("🔌 Disconnecting WebSocket client...");
     
+    // Set a flag to prevent any new connection attempts
+    this.isDisconnecting = true;
+    
     // Clean up connection promise
     if (this.rejectConnection) {
       this.rejectConnection(new Error("Connection manually disconnected"));
@@ -451,7 +584,12 @@ class WebSocketStreamingClient {
     // Clear all state
     this.isConnected.value = false;
     this.connectionPromise = null;
-    this.subscribedSymbols.clear();    
+    this.subscribedSymbols.clear();
+    
+    // Reset disconnecting flag after a short delay to allow for new connections later
+    setTimeout(() => {
+      this.isDisconnecting = false;
+    }, 1000);
   }
 }
 

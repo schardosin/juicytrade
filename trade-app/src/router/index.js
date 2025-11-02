@@ -167,14 +167,18 @@ router.beforeEach(async (to, from, next) => {
       return;
     }
 
-    // Check if mandatory routes are configured
-    const setupStatus = await api.checkSetupStatus();
-    
-    if (!setupStatus.is_setup_complete) {
-      // Redirect to setup if mandatory routes are not configured
-      console.log('Setup incomplete, redirecting to setup wizard. Missing services:', setupStatus.missing_mandatory_services);
-      next({ name: 'Setup' });
-      return;
+    // Only check setup status if user is authenticated (or auth is disabled)
+    // This prevents API calls before authentication is complete
+    if (!authService.isAuthEnabled() || authService.isAuthenticated()) {
+      // Check if mandatory routes are configured
+      const setupStatus = await api.checkSetupStatus();
+      
+      if (!setupStatus.is_setup_complete) {
+        // Redirect to setup if mandatory routes are not configured
+        console.log('Setup incomplete, redirecting to setup wizard. Missing services:', setupStatus.missing_mandatory_services);
+        next({ name: 'Setup' });
+        return;
+      }
     }
     
     // Both auth and setup are complete, proceeding to the requested route

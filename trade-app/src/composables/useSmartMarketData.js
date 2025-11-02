@@ -16,8 +16,8 @@ import smartMarketDataStore from "../services/smartMarketDataStore.js";
  * ```
  */
 export function useSmartMarketData() {
-  // Ensure store is initialized (safe to call multiple times)
-  smartMarketDataStore.initialize();
+  // Note: Store initialization is now handled by authentication-aware system
+  // No need to call initialize() here - it will be called when user is authenticated
 
   /**
    * Get reactive stock price for a symbol

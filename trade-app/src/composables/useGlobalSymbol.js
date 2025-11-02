@@ -2,6 +2,7 @@ import { ref, reactive, computed, watch } from "vue";
 import { useSmartMarketData } from "./useSmartMarketData.js";
 import { useMarketData } from "./useMarketData.js";
 import smartMarketDataStore from "../services/smartMarketDataStore.js";
+import authService from "../services/authService.js";
 
 // Load persisted symbol data from localStorage
 const loadPersistedSymbolData = () => {
@@ -43,34 +44,49 @@ const globalSymbolState = reactive(loadPersistedSymbolData());
 // Smart market data integration - automatically update global state with live prices
 const { getStockPrice } = useSmartMarketData();
 
-// Get live price for current symbol
-const liveStockPrice = computed(() => {
-  if (!globalSymbolState.currentSymbol) return null;
-  return getStockPrice(globalSymbolState.currentSymbol);
-});
+// Get live price for current symbol - but only create the computed if auth allows it
+let liveStockPrice = null;
 
-// Watch for live price updates and automatically update global state
-watch(
-  liveStockPrice,
-  (newPriceRef) => {
-    if (newPriceRef?.value?.price) {
-      const oldPrice = globalSymbolState.currentPrice;
-      const newPrice = newPriceRef.value.price;
+// Only create the computed property if authentication is disabled or user is authenticated
+// This prevents any API calls when authentication is required but not available
+const shouldCreateLivePrice = () => {
+  try {
+    return !authService.isAuthEnabled() || authService.isAuthenticated();
+  } catch (error) {
+    // If authService is not initialized yet, don't create the computed
+    return false;
+  }
+};
 
-      // Update current price
-      globalSymbolState.currentPrice = newPrice;
-      globalSymbolState.isLivePrice = true;
+if (shouldCreateLivePrice()) {
+  liveStockPrice = computed(() => {
+    if (!globalSymbolState.currentSymbol) return null;
+    return getStockPrice(globalSymbolState.currentSymbol);
+  });
 
-      // Calculate price change if we have a previous price
-      if (oldPrice !== null && oldPrice !== 0) {
-        globalSymbolState.priceChange = newPrice - oldPrice;
-        globalSymbolState.priceChangePercent =
-          (globalSymbolState.priceChange / oldPrice) * 100;
+  // Watch for live price updates and automatically update global state
+  watch(
+    liveStockPrice,
+    (newPriceRef) => {
+      if (newPriceRef?.value?.price) {
+        const oldPrice = globalSymbolState.currentPrice;
+        const newPrice = newPriceRef.value.price;
+
+        // Update current price
+        globalSymbolState.currentPrice = newPrice;
+        globalSymbolState.isLivePrice = true;
+
+        // Calculate price change if we have a previous price
+        if (oldPrice !== null && oldPrice !== 0) {
+          globalSymbolState.priceChange = newPrice - oldPrice;
+          globalSymbolState.priceChangePercent =
+            (globalSymbolState.priceChange / oldPrice) * 100;
+        }
       }
-    }
-  },
-  { deep: true, immediate: true }
-);
+    },
+    { deep: true, immediate: false }
+  );
+}
 
 // Save symbol data to localStorage (only symbol info, not price data)
 const persistSymbolData = () => {
@@ -93,15 +109,20 @@ export function useGlobalSymbol(options = {}) {
   const { onSymbolChange } = options;
   // Load positions for the initial/default symbol on first use
   const initializePositions = async () => {
-    try {
-      await smartMarketDataStore.refreshPositions();
-    } catch (error) {
-      console.error(`❌ Failed to load initial positions for ${globalSymbolState.currentSymbol}:`, error);
+    // Only initialize if authentication allows it
+    if (!authService.isAuthEnabled() || authService.isAuthenticated()) {
+      try {
+        await smartMarketDataStore.refreshPositions();
+      } catch (error) {
+        console.error(`❌ Failed to load initial positions for ${globalSymbolState.currentSymbol}:`, error);
+      }
     }
   };
 
   // Initialize positions for the current symbol (only once per app load)
-  if (!globalSymbolState._positionsInitialized) {
+  // Only if authentication is disabled or user is authenticated
+  if (!globalSymbolState._positionsInitialized && 
+      (!authService.isAuthEnabled() || authService.isAuthenticated())) {
     globalSymbolState._positionsInitialized = true;
     // Use setTimeout to avoid blocking the composable setup
     setTimeout(initializePositions, 0);
@@ -123,10 +144,14 @@ export function useGlobalSymbol(options = {}) {
     globalSymbolState.isLivePrice = false;
     globalSymbolState.marketStatus = "Market Closed";
 
-    // 🆕 IMMEDIATELY load positions for new symbol (only if symbol actually changed)
+    // 🆕 IMMEDIATELY load positions and IVx data for new symbol (only if symbol actually changed)
     if (oldSymbol !== newSymbol) {
       try {
         await smartMarketDataStore.refreshPositions();
+        
+        // 🆕 Ensure IVx subscription for the new symbol
+        // This will trigger IVx data loading immediately when symbol changes
+        await smartMarketDataStore.ensureIvxSubscription(newSymbol);
       } catch (error) {
         console.error(`❌ Failed to load positions for ${newSymbol}:`, error);
       }

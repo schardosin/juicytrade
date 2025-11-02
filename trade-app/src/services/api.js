@@ -110,12 +110,30 @@ const apiClient = axios.create({
   timeout: 15000, // 15 second timeout
   headers: {
     'Content-Type': 'application/json',
-  }
+  },
+  withCredentials: true // Ensure cookies (session) are sent with all API requests
 });
+
+// Global state for service management
+let servicesAreStopping = false;
+
+// Function to set the stopping state (called from smartMarketDataStore)
+export const setServicesStoppingState = (stopping) => {
+  servicesAreStopping = stopping;
+};
 
 // Request interceptor for logging and monitoring
 apiClient.interceptors.request.use(
   (config) => {
+    // CRITICAL FIX: Block API requests when services are stopping (during logout)
+    if (servicesAreStopping) {
+      console.log(`🚫 Blocking API request to ${config.url} - services are stopping`);
+      const error = new Error(`API request blocked - services are stopping`);
+      error.config = config;
+      error.name = 'ServiceStoppingError';
+      return Promise.reject(error);
+    }
+    
     config.metadata = { startTime: Date.now() };
     return config;
   },
@@ -142,7 +160,7 @@ export const api = {
   // Get next market date
   async getNextMarketDate() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/next_market_date`);
+      const response = await apiClient.get(`${API_BASE_URL}/next_market_date`);
       return response.data.data.next_market_date;
     } catch (error) {
       console.error("Error fetching next market date:", error);
@@ -153,7 +171,7 @@ export const api = {
   // Get underlying stock price
   async getUnderlyingPrice(symbol) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/prices/stocks`, {
+      const response = await apiClient.get(`${API_BASE_URL}/prices/stocks`, {
         params: { symbols: symbol },
       });
       const data = response.data.data;
@@ -214,7 +232,7 @@ export const api = {
   // Get expiration dates for a symbol (legacy method)
   async getExpirationDates(symbol) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/expiration_dates`, {
+      const response = await apiClient.get(`${API_BASE_URL}/expiration_dates`, {
         params: { symbol },
       });
       return response.data.data;
@@ -274,7 +292,7 @@ export const api = {
       const symbols = Array.isArray(symbolsArray)
         ? symbolsArray.join(",")
         : symbolsArray;
-      const response = await axios.get(`${API_BASE_URL}/options_greeks`, {
+      const response = await apiClient.get(`${API_BASE_URL}/options_greeks`, {
         params: { symbols },
       });
       return response.data.data;
@@ -296,7 +314,7 @@ export const api = {
         strikes_only: options.strikesOnly || false,
       };
 
-      const response = await axios.get(`${API_BASE_URL}/options_chain_smart`, {
+      const response = await apiClient.get(`${API_BASE_URL}/options_chain_smart`, {
         params,
       });
       return response.data.data;
@@ -312,7 +330,7 @@ export const api = {
       return {};
     }
     try {
-      const response = await axios.get(`${API_BASE_URL}/prices/options`, {
+      const response = await apiClient.get(`${API_BASE_URL}/prices/options`, {
         params: { symbols: symbols.join(",") },
       });
       return response.data.data;
@@ -373,7 +391,7 @@ export const api = {
   // Get current open positions
   async getPositions() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/positions`);
+      const response = await apiClient.get(`${API_BASE_URL}/positions`);
       return response.data.data;
     } catch (error) {
       console.error("Error fetching positions:", error);
@@ -398,7 +416,7 @@ export const api = {
   // Symbol lookup
   async lookupSymbols(query) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/symbols/lookup`, {
+      const response = await apiClient.get(`${API_BASE_URL}/symbols/lookup`, {
         params: { q: query },
       });
       return response.data.data.symbols;
@@ -411,7 +429,7 @@ export const api = {
   // Get current subscription status
   async getSubscriptionStatus() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/subscriptions/status`);
+      const response = await apiClient.get(`${API_BASE_URL}/subscriptions/status`);
       return response.data.data;
     } catch (error) {
       console.error("Error getting subscription status:", error);
@@ -422,7 +440,7 @@ export const api = {
   // Get account information including balance and buying power
   async getAccount() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/account`);
+      const response = await apiClient.get(`${API_BASE_URL}/account`);
       return response.data.data;
     } catch (error) {
       console.error("Error fetching account information:", error);
@@ -433,7 +451,7 @@ export const api = {
   // Get orders with optional status filter
   async getOrders(status = "all") {
     try {
-      const response = await axios.get(`${API_BASE_URL}/orders`, {
+      const response = await apiClient.get(`${API_BASE_URL}/orders`, {
         params: { status },
       });
       return response.data.data;
@@ -446,7 +464,7 @@ export const api = {
   // Cancel an order
   async cancelOrder(orderId) {
     try {
-      const response = await axios.delete(`${API_BASE_URL}/orders/${orderId}`);
+      const response = await apiClient.delete(`${API_BASE_URL}/orders/${orderId}`);
       return response.data;
     } catch (error) {
       console.error("Error cancelling order:", error);
@@ -464,7 +482,7 @@ export const api = {
         end_date: options.end_date,
       };
 
-      const response = await axios.get(
+      const response = await apiClient.get(
         `${API_BASE_URL}/chart/historical/${symbol}`,
         {
           params,
@@ -500,7 +518,7 @@ export const api = {
       previousDay.setDate(today.getDate() - 1);
       const endDate = previousDay.toISOString().split('T')[0];
       
-      const response = await axios.get(`${API_BASE_URL}/chart/historical/${symbol}`, {
+      const response = await apiClient.get(`${API_BASE_URL}/chart/historical/${symbol}`, {
         params: {
           timeframe: 'D',
           limit: 1,
@@ -518,7 +536,7 @@ export const api = {
   // Get 52-week high and low for a symbol
   async get52WeekRange(symbol) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/symbol/${symbol}/range/52week`);
+      const response = await apiClient.get(`${API_BASE_URL}/symbol/${symbol}/range/52week`);
       return response.data.data;
     } catch (error) {
       console.error("Error fetching 52-week range:", error);
@@ -529,7 +547,7 @@ export const api = {
   // Get average volume for a symbol
   async getAverageVolume(symbol, days = 20) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/symbol/${symbol}/volume/average`, {
+      const response = await apiClient.get(`${API_BASE_URL}/symbol/${symbol}/volume/average`, {
         params: { days }
       });
       return response.data.data;
@@ -542,7 +560,7 @@ export const api = {
   // Get available providers and their capabilities
   async getAvailableProviders() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/providers/available`);
+      const response = await apiClient.get(`${API_BASE_URL}/providers/available`);
       return response.data.data;
     } catch (error) {
       console.error("Error fetching available providers:", error);
@@ -553,7 +571,7 @@ export const api = {
   // Get current provider configuration
   async getProviderConfig() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/providers/config`);
+      const response = await apiClient.get(`${API_BASE_URL}/providers/config`);
       return response.data.data;
     } catch (error) {
       console.error("Error fetching provider configuration:", error);
@@ -789,7 +807,7 @@ export const api = {
   // Check if mandatory routes are configured
   async checkSetupStatus() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/setup/status`);
+      const response = await apiClient.get(`${API_BASE_URL}/setup/status`);
       return response.data.data;
     } catch (error) {
       console.error("Error checking setup status:", error);

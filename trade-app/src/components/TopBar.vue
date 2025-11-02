@@ -750,22 +750,45 @@ export default {
     const handleRecoveryEvent = (event) => {
       console.log('🚑 Recovery event received:', event.detail);
       
-      // Check if this is a recovery completion event
-      if (event.detail && event.detail.recoveryType === 'websocket_recovery') {
-        // Recovery completed successfully - transition to connected
-        connectionState.value = 'connected';
-        isRecovering.value = false;
-        lastDataReceived.value = Date.now();
-      } else {
-        // Recovery started
-        isRecovering.value = true;
-        connectionState.value = 'recovering';
-        
-        // Update last data received time from recovery detail if available
-        if (event.detail && event.detail.lastDataReceived) {
-          lastDataReceived.value = event.detail.lastDataReceived;
+      // Only update UI state if this recovery should be shown to user
+      if (event.detail && event.detail.showUI !== false) {
+        // Check if this is a recovery completion event
+        if (event.detail.recoveryType === 'websocket_recovery') {
+          // Recovery completed successfully - transition to connected
+          connectionState.value = 'connected';
+          isRecovering.value = false;
+          lastDataReceived.value = Date.now();
+        } else {
+          // Recovery started
+          isRecovering.value = true;
+          connectionState.value = 'recovering';
+          
+          // Update last data received time from recovery detail if available
+          if (event.detail.lastDataReceived) {
+            lastDataReceived.value = event.detail.lastDataReceived;
+          }
         }
       }
+      // For silent recovery (showUI === false), don't update UI state
+      // Let the silent recovery mechanism handle the UI transitions
+    };
+
+    const handleInternalRecovery = (event) => {
+      // Handle internal recovery events that may or may not need UI updates
+      const detail = event.detail;
+      
+      // Only update connection state if this should be shown to user
+      if (detail.showUI) {
+        if (detail.recoveryType === 'websocket_recovery') {
+          connectionState.value = 'connected';
+          isRecovering.value = false;
+          lastDataReceived.value = Date.now();
+        } else {
+          isRecovering.value = true;
+          connectionState.value = 'recovering';
+        }
+      }
+      // For silent recovery, don't update connection state in TopBar
     };
 
     const handleDataReceived = () => {
@@ -796,6 +819,7 @@ export default {
       // Set up enhanced connection status listeners
       window.addEventListener('websocket-recovery', handleRecoveryEvent);
       window.addEventListener('websocket-recovered', handleRecoveryEvent);
+      window.addEventListener('system-recovery-internal', handleInternalRecovery);
       
       // Set up WebSocket status listener
       setupWebSocketStatusListener();
@@ -811,12 +835,8 @@ export default {
         isRecovering.value = false;
         lastDataReceived.value = Date.now();
       } else {
-        // If not connected, try to connect
-        connectionState.value = 'connecting';
-        webSocketClient.connect().catch(error => {
-          console.error('❌ Failed to connect WebSocket:', error);
-          connectionState.value = 'disconnected';
-        });
+        // Don't try to connect here - let the SmartMarketDataStore handle authentication-aware connection
+        connectionState.value = 'disconnected';
       }
     });
 
@@ -866,6 +886,7 @@ export default {
       // Clean up event listeners
       window.removeEventListener('websocket-recovery', handleRecoveryEvent);
       window.removeEventListener('websocket-recovered', handleRecoveryEvent);
+      window.removeEventListener('system-recovery-internal', handleInternalRecovery);
       window.removeEventListener('websocket-status-change', handleConnectionStatusUpdate);
     });
 

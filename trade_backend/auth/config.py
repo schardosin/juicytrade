@@ -100,6 +100,20 @@ class AuthConfig(BaseModel):
         default=False,
         description="Use secure cookies (HTTPS only)"
     )
+    cookie_domain: Optional[str] = Field(
+        default=None,
+        description="Cookie domain for session cookies"
+    )
+    
+    # User authorization settings
+    oauth_allowed_emails: Optional[str] = Field(
+        default=None,
+        description="Comma-separated list of allowed email addresses for OAuth"
+    )
+    oauth_allowed_domains: Optional[str] = Field(
+        default=None,
+        description="Comma-separated list of allowed email domains for OAuth"
+    )
     
     @classmethod
     def from_env(cls) -> "AuthConfig":
@@ -119,7 +133,10 @@ class AuthConfig(BaseModel):
             session_cookie_name=os.getenv("AUTH_SESSION_COOKIE_NAME", "juicytrade_session"),
             session_max_age=int(os.getenv("AUTH_SESSION_MAX_AGE", "86400")),
             enable_csrf_protection=os.getenv("AUTH_ENABLE_CSRF", "true").lower() == "true",
-            secure_cookies=os.getenv("AUTH_SECURE_COOKIES", "false").lower() == "true"
+            secure_cookies=os.getenv("AUTH_SECURE_COOKIES", "false").lower() == "true",
+            cookie_domain=os.getenv("AUTH_COOKIE_DOMAIN"),
+            oauth_allowed_emails=os.getenv("AUTH_OAUTH_ALLOWED_EMAILS"),
+            oauth_allowed_domains=os.getenv("AUTH_OAUTH_ALLOWED_DOMAINS")
         )
     
     def is_enabled(self) -> bool:
@@ -182,6 +199,33 @@ class AuthConfig(BaseModel):
         }
         
         return oauth_configs.get(self.oauth_provider)
+    
+    def is_user_authorized(self, email: str) -> bool:
+        """Check if a user email is authorized for OAuth access."""
+        if not email:
+            return False
+        
+        email = email.lower().strip()
+        
+        # Check allowed emails list
+        if self.oauth_allowed_emails:
+            allowed_emails = [e.lower().strip() for e in self.oauth_allowed_emails.split(',') if e.strip()]
+            if email in allowed_emails:
+                return True
+        
+        # Check allowed domains list
+        if self.oauth_allowed_domains:
+            email_domain = email.split('@')[-1] if '@' in email else ''
+            allowed_domains = [d.lower().strip() for d in self.oauth_allowed_domains.split(',') if d.strip()]
+            if email_domain in allowed_domains:
+                return True
+        
+        # If no restrictions are configured, allow all users (backward compatibility)
+        if not self.oauth_allowed_emails and not self.oauth_allowed_domains:
+            return True
+        
+        # User is not authorized
+        return False
 
 
 # Global auth config instance

@@ -18,12 +18,12 @@ if os.environ.get("DEBUG_STRATEGY"):
         print(f"❌ Error starting debugpy: {e}")
 from typing import Dict, List, Optional, Any
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import settings
 from .auth.config import auth_config
-from .auth.middleware import AuthenticationMiddleware
+from .auth.middleware import AuthenticationMiddleware, require_auth
 from .auth.endpoints import auth_router
 from .models import (
     StockQuote, OptionContract, Position, Order, ApiResponse,
@@ -58,7 +58,7 @@ from .services.data_aggregation import (
     DataAggregationService, AggregationRequest, AggregatedData, TimeFrame,
     get_aggregation_service
 )
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 # Configure logging
 logging.basicConfig(
@@ -135,14 +135,19 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Add CORS middleware with environment-based configuration
+cors_origins = os.getenv("CORS_ALLOW_ORIGINS", "http://localhost:3001")
+allowed_origins = [origin.strip() for origin in cors_origins.split(",") if origin.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+logger.info(f"🌐 CORS configured with allowed origins: {allowed_origins}")
 
 # Add authentication middleware (only if enabled)
 if auth_config.is_enabled():
@@ -619,14 +624,14 @@ async def get_stock_prices(symbols: Optional[str] = None):
             symbol_list = [s.strip() for s in symbols.split(',')]
             if len(symbol_list) == 1:
                 quote = await provider_manager.get_stock_quote(symbol_list[0])
-                data = {symbol_list[0]: quote.dict() if quote else None}
+                data = {symbol_list[0]: quote.model_dump() if quote else None}
             else:
                 # This part needs to be adapted for the manager if we want multi-symbol quotes
                 # For now, we'll just loop, but a batch method in the manager would be better.
                 data = {}
                 for symbol in symbol_list:
                     quote = await provider_manager.get_stock_quote(symbol)
-                    data[symbol] = quote.dict() if quote else None
+                    data[symbol] = quote.model_dump() if quote else None
         else:
             data = {}
         
@@ -674,7 +679,7 @@ async def get_options_chain_basic(
         # Convert to dict format and remove price data for performance
         contracts_data = []
         for contract in contracts:
-            contract_dict = contract.dict()
+            contract_dict = contract.model_dump()
             # Remove price-related fields - UI gets these from streaming
             price_fields = ['price', 'bid', 'ask', 'last', 'mark', 'bid_size', 'ask_size', 'volume', 'open_interest']
             for field in price_fields:
@@ -804,7 +809,7 @@ async def get_full_options_chain(symbol: str, expiry: str):
     """Get complete options chain (calls and puts) for a symbol and expiration."""
     try:
         contracts = await provider_manager.get_options_chain(symbol, expiry)
-        contracts_data = [contract.dict() for contract in contracts]
+        contracts_data = [contract.model_dump() for contract in contracts]
         
         return ApiResponse(
             success=True,
@@ -898,7 +903,7 @@ async def lookup_symbols(q: str):
         results = await provider_manager.lookup_symbols(q)
         return ApiResponse(
             success=True,
-            data={"symbols": [result.dict() for result in results]},
+            data={"symbols": [result.model_dump() for result in results]},
             message=f"Found {len(results)} symbols matching '{q}'"
         )
     except Exception as e:
@@ -1064,8 +1069,11 @@ async def get_average_volume(symbol: str, days: int = 20):
 # === Account & Portfolio Endpoints ===
 
 @app.get("/positions", response_model=ApiResponse)
-async def get_positions():
+async def get_positions(request: Request):
     """Get enhanced positions with hierarchical grouping (Symbol -> Strategies -> Legs)."""
+    # Require authentication for sensitive position data
+    if auth_config.is_enabled():
+        require_auth(request)
     try:
         # Try to get enhanced hierarchical positions first
         try:
@@ -1141,7 +1149,7 @@ async def get_account():
         if account:
             return ApiResponse(
                 success=True,
-                data=account.dict(),
+                data=account.model_dump(),
                 message="Retrieved account information"
             )
         else:
@@ -2189,11 +2197,187 @@ async def get_aggregated_data_legacy(
         limit=limit
     )
 
+# === WebSocket Authentication Function ===
+
+async def authenticate_websocket(websocket: WebSocket) -> bool:
+    """
+    Authenticate WebSocket connection using various methods.
+    Returns True if authenticated, False otherwise.
+    """
+    try:
+        # Method 1: Check for JWT token in query parameters
+        query_params = dict(websocket.query_params)
+        token = query_params.get('token')
+        
+        if token:
+            # Validate JWT token
+            try:
+                import jwt
+                payload = jwt.decode(
+                    token,
+                    auth_config.jwt_secret_key,
+                    algorithms=[auth_config.jwt_algorithm]
+                )
+                
+                username = payload.get("sub")
+                expires_at = datetime.fromtimestamp(payload.get("exp", 0), tz=timezone.utc)
+                
+                if username and expires_at > datetime.now(timezone.utc):
+                    logger.info(f"🔐 WebSocket authenticated via JWT token for user: {username}")
+                    return True
+                    
+            except jwt.InvalidTokenError as e:
+                logger.warning(f"🔒 Invalid JWT token in WebSocket connection: {e}")
+        
+        # Method 2: Check for session cookie in headers
+        cookie_header = None
+        try:
+            # Use proper Starlette Headers API for direct access
+            cookie_header = websocket.headers.get('cookie')
+        except Exception as e:
+            logger.debug(f"🔒 Error accessing cookie header directly: {e}")
+            # Fallback: try to get cookie from the headers dict
+            try:
+                headers_dict = dict(websocket.headers)
+                cookie_header = headers_dict.get('cookie')
+            except Exception as e2:
+                logger.debug(f"🔒 Fallback cookie access also failed: {e2}")
+        
+        if cookie_header:
+            # Parse cookies safely
+            cookies = {}
+            try:
+                for cookie_str in cookie_header.split(';'):
+                    cookie_str = cookie_str.strip()
+                    if '=' in cookie_str:
+                        try:
+                            # Split only on the first '=' to handle cookies with '=' in values
+                            parts = cookie_str.split('=', 1)
+                            if len(parts) == 2:
+                                key, val = parts
+                                cookies[key.strip()] = val.strip()
+                        except (ValueError, IndexError) as e:
+                            # Skip malformed cookies
+                            logger.debug(f"🔒 Skipping malformed cookie: {cookie_str} - {e}")
+                            continue
+            except Exception as e:
+                logger.warning(f"🔒 Error parsing cookies: {e}")
+                cookies = {}
+            
+            session_token = cookies.get(auth_config.session_cookie_name)
+            if session_token:
+                try:
+                    import jwt
+                    payload = jwt.decode(
+                        session_token,
+                        auth_config.jwt_secret_key,
+                        algorithms=[auth_config.jwt_algorithm]
+                    )
+                    
+                    username = payload.get("sub")
+                    expires_at = datetime.fromtimestamp(payload.get("exp", 0))
+                    current_time = datetime.now(timezone.utc)
+                    
+                    if username and expires_at > current_time:
+                        logger.info(f"🔐 WebSocket authenticated via session cookie for user: {username}")
+                        return True
+                        
+                except jwt.InvalidTokenError as e:
+                    logger.warning(f"🔒 Invalid session token in WebSocket connection: {e}")
+                except Exception as e:
+                    logger.warning(f"🔒 Error validating session token: {e}")
+        
+        # Method 3: Check for Authorization header
+        auth_header = None
+        try:
+            # Use proper Starlette Headers API for direct access
+            auth_header = websocket.headers.get('authorization')
+        except Exception as e:
+            logger.debug(f"🔒 Error accessing authorization header: {e}")
+            # Fallback: try to get authorization from the headers dict
+            try:
+                headers_dict = dict(websocket.headers)
+                auth_header = headers_dict.get('authorization')
+            except Exception as e2:
+                logger.debug(f"🔒 Fallback authorization access also failed: {e2}")
+        
+        if auth_header:
+            if auth_header.startswith("Bearer "):
+                token = auth_header.split(" ", 1)[1]
+                try:
+                    import jwt
+                    payload = jwt.decode(
+                        token,
+                        auth_config.jwt_secret_key,
+                        algorithms=[auth_config.jwt_algorithm]
+                    )
+                    
+                    username = payload.get("sub")
+                    expires_at = datetime.fromtimestamp(payload.get("exp", 0))
+                    
+                    if username and expires_at > datetime.now(timezone.utc):
+                        logger.info(f"🔐 WebSocket authenticated via Authorization header for user: {username}")
+                        return True
+                        
+                except jwt.InvalidTokenError as e:
+                    logger.warning(f"🔒 Invalid Bearer token in WebSocket connection: {e}")
+            
+            elif auth_header.startswith("Basic ") and auth_config.method.value == "simple":
+                # Basic authentication for simple auth method
+                import base64
+                try:
+                    encoded_credentials = auth_header.split(" ", 1)[1]
+                    credentials = base64.b64decode(encoded_credentials).decode("utf-8")
+                    
+                    # Safe credential parsing - handle malformed credentials
+                    if ':' not in credentials:
+                        logger.warning(f"🔒 Basic auth credentials missing colon separator")
+                        return False
+                    
+                    credential_parts = credentials.split(":", 1)
+                    if len(credential_parts) != 2:
+                        logger.warning(f"🔒 Basic auth credentials malformed")
+                        return False
+                    
+                    username, password = credential_parts
+                    
+                    if (username == auth_config.simple_username and 
+                        password == auth_config.simple_password):
+                        logger.info(f"🔐 WebSocket authenticated via Basic auth for user: {username}")
+                        return True
+                    else:
+                        logger.warning(f"🔒 Basic auth credentials don't match")
+                        
+                except Exception as e:
+                    logger.error(f"🔒 Exception in Basic auth processing: {e}")
+        
+        logger.warning("🔒 WebSocket connection failed authentication - no valid credentials found")
+        return False
+        
+    except Exception as e:
+        logger.error(f"❌ WebSocket authentication error: {e}")
+        return False
+
 # === WebSocket Endpoint ===
 
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint with better error handling and shutdown awareness."""
+    """WebSocket endpoint with authentication protection and better error handling."""
+    
+    # Authenticate WebSocket connection if authentication is enabled
+    if auth_config.is_enabled():
+        try:
+            # Check for authentication via query parameters or headers
+            authenticated = await authenticate_websocket(websocket)
+            if not authenticated:
+                logger.warning("🔒 Unauthenticated WebSocket connection attempt rejected")
+                await websocket.close(code=1008, reason="Authentication required")
+                return
+        except Exception as e:
+            logger.error(f"❌ WebSocket authentication error: {e}")
+            await websocket.close(code=1011, reason="Authentication failed")
+            return
+    
     await manager.connect(websocket)
     try:
         while not shutdown_manager.is_shutting_down():

@@ -43,18 +43,41 @@ const app = createApp(App);
 app.use(PrimeVue);
 app.use(router);
 
-// Initialize and provide Smart Market Data Store globally
-smartMarketDataStore.initialize();
+// Global OAuth token detection (for development proxy issues)
+function handleOAuthTokenFromURL() {
+  const urlParams = new URLSearchParams(window.location.search);
+  const authToken = urlParams.get('auth_token');
+  
+  if (authToken) {
+    // Set the token as a cookie manually
+    document.cookie = `juicytrade_session=${authToken}; path=/; max-age=86400; samesite=lax`;
+    
+    // Remove token from URL
+    urlParams.delete('auth_token');
+    const newUrl = window.location.pathname + (urlParams.toString() ? '?' + urlParams.toString() : '');
+    window.history.replaceState({}, '', newUrl);
+    
+    return true; // Token was found and processed
+  }
+  
+  return false; // No token found
+}
 
-// Initialize Authentication Service
+// Handle OAuth token before initializing auth service
+const tokenProcessed = handleOAuthTokenFromURL();
+
+// Initialize Authentication Service first, then conditionally initialize store
 authService.init().then(() => {
   console.log('Authentication service initialized');
+  
+  // SmartMarketDataStore will initialize itself based on auth state
+  // No need to call initialize() here - it handles auth-aware initialization internally
 }).catch(error => {
   console.error('Failed to initialize authentication service:', error);
 });
 
-// Configure all data sources immediately at app startup
-configureDataSources();
+// Note: configureDataSources() is now called from within SmartMarketDataStore.startServices()
+// when the user is authenticated, not immediately at app startup
 
 app.provide("smartMarketDataStore", smartMarketDataStore);
 app.provide("authService", authService);

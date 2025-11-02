@@ -58,6 +58,7 @@ class AuthService {
     const response = await fetch(`${this.baseURL}/auth/status`, {
       credentials: 'include'  // Include cookies
     });
+    
     const result = await response.json();
     
     if (!result.success) {
@@ -102,6 +103,19 @@ class AuthService {
    */
   async logout() {
     try {
+      // CRITICAL FIX: Immediately disconnect WebSocket BEFORE invalidating token
+      // This prevents the WebSocket from continuing to try to reconnect with invalid credentials
+      console.log("🔌 Proactively disconnecting WebSocket before logout...");
+      try {
+        // Import webSocketClient dynamically to avoid circular dependency
+        const webSocketClientModule = await import('./webSocketClient.js');
+        webSocketClientModule.default.disconnect();
+        console.log("✅ WebSocket disconnected successfully during logout");
+      } catch (wsError) {
+        console.warn("⚠️ Failed to disconnect WebSocket during logout:", wsError);
+        // Continue with logout even if WebSocket disconnect fails
+      }
+
       const response = await fetch(`${this.baseURL}/auth/logout`, {
         method: 'POST',
         credentials: 'include',  // Include cookies
@@ -109,17 +123,33 @@ class AuthService {
 
       const result = await response.json();
       
+      // Always clear local state, even if backend call fails
+      this.authenticated = false;
+      this.user = null;
+      
+      // Also manually clear the cookie as a fallback
+      document.cookie = 'juicytrade_session=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; samesite=lax';
+      
+      this.notifyListeners();
+      
       if (result.success) {
-        this.authenticated = false;
-        this.user = null;
-        this.notifyListeners();
         return { success: true };
       } else {
-        return { success: false, error: result.message };
+        console.warn('Backend logout failed, but local state cleared:', result.message);
+        return { success: true }; // Still return success since we cleared local state
       }
     } catch (error) {
       console.error('Logout error:', error);
-      return { success: false, error: 'Logout failed' };
+      
+      // Even if the request fails, clear local state
+      this.authenticated = false;
+      this.user = null;
+      
+      // Manually clear the cookie
+      document.cookie = 'juicytrade_session=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT; samesite=lax';
+      
+      this.notifyListeners();
+      return { success: true }; // Return success since we cleared local state
     }
   }
 

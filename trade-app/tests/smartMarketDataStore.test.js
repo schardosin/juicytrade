@@ -11,6 +11,7 @@ vi.mock('../src/services/webSocketClient.js', () => ({
     sendKeepalive: vi.fn().mockResolvedValue(true),
     onPriceUpdate: vi.fn(),
     onGreeksUpdate: vi.fn(),
+    onIvxUpdate: vi.fn(),
     onSubscriptionConfirmed: vi.fn(),
     onPositionsUpdate: vi.fn(),
     getConnectionStatus: vi.fn(() => ({ isConnected: { value: true } })),
@@ -65,6 +66,13 @@ vi.mock('../src/services/api.js', () => ({
         }
       ]
     }),
+    getAccount: vi.fn().mockResolvedValue({
+      account_number: '123456789',
+      buying_power: 50000.00,
+      cash: 25000.00,
+      day_trade_buying_power: 100000.00,
+      equity: 75000.00
+    }),
     getOrders: vi.fn().mockResolvedValue({
       orders: [
         {
@@ -113,6 +121,18 @@ vi.mock('../src/utils/marketHours.js', () => ({
       nextOpen: null,
       nextClose: Date.now() + 3600000
     }))
+  }
+}));
+
+// Mock authentication service
+vi.mock('../src/services/authService.js', () => ({
+  default: {
+    init: vi.fn().mockResolvedValue(true),
+    isAuthenticated: vi.fn().mockReturnValue(false),
+    isAuthEnabled: vi.fn().mockReturnValue(false),
+    getAuthMethod: vi.fn().mockReturnValue('disabled'),
+    addListener: vi.fn().mockReturnValue(() => {}),
+    notifyListeners: vi.fn()
   }
 }));
 

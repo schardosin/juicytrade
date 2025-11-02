@@ -28,6 +28,7 @@
 import { ref, computed, onMounted, onUnmounted } from 'vue';
 import smartMarketDataStore from '../services/smartMarketDataStore.js';
 import webSocketClient from '../services/webSocketClient.js';
+import authService from '../services/authService.js';
 
 export default {
   name: 'SystemRecoveryIndicator',
@@ -51,6 +52,9 @@ export default {
 
     // Enhanced logic for when to show indicator
     const showIndicator = computed(() => {
+      // Don't show any indicators if user is not authenticated
+      if (!authService.isAuthenticated()) return false;
+      
       // Always show success messages
       if (showTemporarySuccess.value) return true;
       
@@ -156,6 +160,12 @@ export default {
 
     // Start silent recovery when system becomes unhealthy
     const startSilentRecovery = () => {
+      // Don't start recovery if user is not authenticated
+      if (!authService.isAuthenticated()) {
+        console.log('🔒 Skipping silent recovery - user not authenticated');
+        return;
+      }
+      
       if (inSilentRecovery.value) return; // Already in silent recovery
       
       console.log('🤫 Starting silent recovery period');
@@ -229,12 +239,15 @@ export default {
         // Recovery successful!
         console.log('✅ Silent recovery successful');
         inSilentRecovery.value = false;
-        showSuccessMessage();
+        // Don't show success message for silent recovery - it should be invisible to user
       } else if (timeInSilentRecovery >= silentRecoveryGracePeriod || 
                  recoveryAttempts.value >= maxSilentAttempts) {
-        // Grace period expired or max attempts reached
+        // Grace period expired or max attempts reached - now show error to user
         console.log('⏰ Silent recovery period ended, showing error to user');
         inSilentRecovery.value = false;
+        
+        // Now the showIndicator computed will show the error since we're out of silent recovery
+        // and system is still unhealthy
       }
     };
 
@@ -246,7 +259,31 @@ export default {
     const handleWebSocketRecovery = (event) => {
       console.log('🎉 WebSocket recovery event received:', event.detail);
       lastRecoveryEvent.value = event.detail;
-      showSuccessMessage();
+      
+      // Only show success message if explicitly requested or recovery was visible to user
+      if (event.detail.showUI || !inSilentRecovery.value) {
+        showSuccessMessage();
+      } else {
+        // Silent recovery succeeded - just update internal state
+        console.log('✅ Silent recovery completed successfully');
+        inSilentRecovery.value = false;
+      }
+    };
+
+    const handleInternalRecovery = (event) => {
+      const detail = event.detail;
+      lastRecoveryEvent.value = detail;
+      
+      if (detail.showUI) {
+        // This is a recovery that should be shown to the user
+        if (systemHealth.value.isHealthy) {
+          showSuccessMessage();
+        }
+      } else if (systemHealth.value.isHealthy && inSilentRecovery.value) {
+        // Silent recovery succeeded
+        console.log('✅ Silent recovery completed successfully');
+        inSilentRecovery.value = false;
+      }
     };
 
     const showSuccessMessage = () => {
@@ -277,7 +314,11 @@ export default {
         await smartMarketDataStore.performHealthCheck();
         
         console.log('✅ Manual retry completed');
-        showSuccessMessage();
+        
+        // Always show success message for manual retry since user initiated it
+        if (systemHealth.value.isHealthy) {
+          showSuccessMessage();
+        }
         
       } catch (error) {
         console.error('❌ Manual retry failed:', error);
@@ -288,15 +329,18 @@ export default {
 
     // Lifecycle hooks
     onMounted(() => {
-      // Listen for WebSocket recovery events
+      // Listen for WebSocket recovery events (shown to user)
       window.addEventListener('websocket-recovered', handleWebSocketRecovery);
+      
+      // Listen for internal recovery events (may or may not be shown to user)
+      window.addEventListener('system-recovery-internal', handleInternalRecovery);
       
       // Watch for health changes to trigger silent recovery
       const healthWatcher = setInterval(() => {
         const currentHealthy = systemHealth.value.isHealthy;
         
-        // If system just became unhealthy, start silent recovery
-        if (previousHealthy && !currentHealthy && !inSilentRecovery.value) {
+        // If system just became unhealthy, start silent recovery (only if authenticated)
+        if (previousHealthy && !currentHealthy && !inSilentRecovery.value && authService.isAuthenticated()) {
           startSilentRecovery();
         }
         
@@ -314,6 +358,7 @@ export default {
 
     onUnmounted(() => {
       window.removeEventListener('websocket-recovered', handleWebSocketRecovery);
+      window.removeEventListener('system-recovery-internal', handleInternalRecovery);
       if (window.healthWatcher) {
         clearInterval(window.healthWatcher);
         delete window.healthWatcher;
