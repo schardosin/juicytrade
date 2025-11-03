@@ -1,9 +1,10 @@
 <template>
-  <div class="symbol-header">
+  <div class="symbol-header" :class="{ 'mobile-layout': isMobile }">
     <div class="symbol-info">
       <div class="symbol-details">
         <h2 class="symbol-name">{{ currentSymbol }}</h2>
-        <div class="symbol-meta">
+        <!-- Hide company name and exchange on mobile -->
+        <div v-if="!isMobile" class="symbol-meta">
           <span class="company-name">{{ companyName }}</span>
           <span class="exchange">{{ exchange }}</span>
         </div>
@@ -20,7 +21,8 @@
             }}{{ priceChangePercent?.toFixed(2) || "--" }}%)
           </span>
         </div>
-        <div class="market-status">
+        <!-- Hide market status on mobile to save space -->
+        <div v-if="!isMobile" class="market-status">
           <span class="status-indicator" :class="marketStatusClass"></span>
           <span class="status-text">{{ marketStatus }}</span>
         </div>
@@ -29,11 +31,11 @@
 
     <!-- Trade Mode Selector -->
     <div v-if="showTradeMode" class="trade-mode-selector">
-      <div class="mode-tabs">
+      <div class="mode-tabs" :class="{ 'mobile-tabs': isMobile }">
         <button
           v-for="mode in tradeModes"
           :key="mode.value"
-          :class="['mode-tab', { active: selectedTradeMode === mode.value }]"
+          :class="['mode-tab', { active: selectedTradeMode === mode.value, 'mobile-tab': isMobile }]"
           @click="$emit('trade-mode-changed', mode.value)"
         >
           {{ mode.label }}
@@ -47,6 +49,7 @@
 import { computed, watch, onMounted, onUnmounted } from "vue";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
+import { useMobileDetection } from "../composables/useMobileDetection.js";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
 export default {
@@ -110,6 +113,9 @@ export default {
   emits: ["trade-mode-changed"],
   setup(props) {
     const { fetchSymbolDetails } = useGlobalSymbol();
+    
+    // Mobile detection
+    const { isMobile, isTablet, isDesktop } = useMobileDetection();
 
     // Watch for symbol changes to fetch details if needed
     watch(
@@ -254,6 +260,11 @@ export default {
     );
 
     return {
+      // Mobile detection
+      isMobile,
+      isTablet,
+      isDesktop,
+
       // Effective values (live or fallback)
       currentPrice: effectivePrice,
       priceChange: effectivePriceChange,
@@ -413,5 +424,179 @@ export default {
 .mode-tab.active {
   background-color: var(--color-brand);
   color: var(--text-primary);
+}
+
+/* Mobile Layout Styles */
+.symbol-header.mobile-layout {
+  flex-direction: column;
+  align-items: stretch;
+  padding: var(--spacing-md) var(--spacing-lg);
+  gap: var(--spacing-sm);
+}
+
+.symbol-header.mobile-layout .symbol-info {
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.symbol-header.mobile-layout .symbol-details {
+  flex-shrink: 0;
+}
+
+.symbol-header.mobile-layout .symbol-details h2 {
+  font-size: var(--font-size-xl);
+  margin-bottom: 0;
+}
+
+.symbol-header.mobile-layout .price-info {
+  align-items: flex-end;
+  gap: 0;
+  flex-shrink: 0;
+}
+
+.symbol-header.mobile-layout .current-price {
+  gap: var(--spacing-xs);
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+}
+
+.symbol-header.mobile-layout .price {
+  font-size: var(--font-size-lg);
+}
+
+.symbol-header.mobile-layout .change,
+.symbol-header.mobile-layout .change-percent {
+  font-size: var(--font-size-base);
+}
+
+/* Mobile Trade Mode Selector */
+.symbol-header.mobile-layout .trade-mode-selector {
+  width: 100%;
+  justify-content: center;
+  margin-top: var(--spacing-xs);
+}
+
+.mode-tabs.mobile-tabs {
+  width: 100%;
+  background-color: transparent;
+  border-radius: 0;
+  gap: 1px;
+  border-bottom: 1px solid var(--border-secondary);
+}
+
+.mode-tab.mobile-tab {
+  flex: 1;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  background-color: transparent;
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  transition: var(--transition-normal);
+  min-height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.mode-tab.mobile-tab:hover {
+  background-color: var(--bg-tertiary);
+  border-bottom-color: var(--border-tertiary);
+}
+
+.mode-tab.mobile-tab.active {
+  background-color: transparent;
+  color: var(--color-brand);
+  border-bottom-color: var(--color-brand);
+  font-weight: var(--font-weight-semibold);
+}
+
+/* Responsive adjustments */
+@media (max-width: 768px) {
+  .symbol-header {
+    flex-direction: column;
+    align-items: stretch;
+    padding: var(--spacing-md) var(--spacing-lg);
+    gap: var(--spacing-sm);
+  }
+
+  .symbol-info {
+    justify-content: space-between;
+    align-items: center;
+    gap: var(--spacing-md);
+  }
+
+  .symbol-details {
+    flex-shrink: 0;
+  }
+
+  .symbol-details h2 {
+    font-size: var(--font-size-xl);
+  }
+
+  .price-info {
+    align-items: flex-end;
+    flex-shrink: 0;
+  }
+
+  .current-price {
+    gap: var(--spacing-xs);
+    flex-wrap: nowrap;
+    justify-content: flex-end;
+  }
+
+  .price {
+    font-size: var(--font-size-lg);
+  }
+
+  .change,
+  .change-percent {
+    font-size: var(--font-size-base);
+  }
+
+  .trade-mode-selector {
+    width: 100%;
+    justify-content: center;
+    margin-top: var(--spacing-xs);
+  }
+
+  .mode-tabs {
+    width: 100%;
+    background-color: transparent;
+    border-radius: 0;
+    gap: 1px;
+    border-bottom: 1px solid var(--border-secondary);
+  }
+
+  .mode-tab {
+    flex: 1;
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+    background-color: transparent;
+    border-bottom: 2px solid transparent;
+    border-radius: 0;
+    min-height: 32px;
+  }
+
+  .mode-tab:hover {
+    background-color: var(--bg-tertiary);
+    border-bottom-color: var(--border-tertiary);
+  }
+
+  .mode-tab.active {
+    background-color: transparent;
+    color: var(--color-brand);
+    border-bottom-color: var(--color-brand);
+    font-weight: var(--font-weight-semibold);
+  }
+}
+
+/* Touch-friendly adjustments */
+@media (hover: none) and (pointer: coarse) {
+  .mode-tab.mobile-tab {
+    min-height: 44px;
+    padding: var(--spacing-sm);
+  }
 }
 </style>

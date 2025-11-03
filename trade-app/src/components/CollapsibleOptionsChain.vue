@@ -103,10 +103,10 @@
               v-if="expiration.hasLoaded && expiration.optionsData.length > 0"
             >
               <!-- Options Chain Header -->
-              <div class="options-header">
+              <div class="options-header" :class="{ 'mobile-layout': isMobile }">
                 <div class="calls-header">
                   <div class="header-cell">Delta</div>
-                  <div class="header-cell">Theta</div>
+                  <div v-if="!isMobile" class="header-cell">Theta</div>
                   <div class="header-cell">Bid</div>
                   <div class="header-cell">Ask</div>
                 </div>
@@ -114,7 +114,7 @@
                 <div class="puts-header">
                   <div class="header-cell">Bid</div>
                   <div class="header-cell">Ask</div>
-                  <div class="header-cell">Theta</div>
+                  <div v-if="!isMobile" class="header-cell">Theta</div>
                   <div class="header-cell">Delta</div>
                 </div>
               </div>
@@ -132,13 +132,13 @@
                     <div
                       v-if="getCallOption(expiration, strike)"
                       class="option-data"
-                      :class="getCallSelectionClass(expiration, strike)"
+                      :class="[getCallSelectionClass(expiration, strike), { 'mobile-layout': isMobile }]"
                       @click="selectCallOption(expiration, strike)"
                     >
                       <div class="greek-cell">
                         {{ getCallDelta(expiration, strike) }}
                       </div>
-                      <div class="greek-cell">
+                      <div v-if="!isMobile" class="greek-cell">
                         {{ getCallTheta(expiration, strike) }}
                       </div>
                       <div
@@ -158,9 +158,9 @@
                         {{ formatPrice(getCallAsk(expiration, strike)) }}
                       </div>
                     </div>
-                    <div v-else class="option-data empty">
+                    <div v-else class="option-data empty" :class="{ 'mobile-layout': isMobile }">
                       <div class="greek-cell">-</div>
-                      <div class="greek-cell">-</div>
+                      <div v-if="!isMobile" class="greek-cell">-</div>
                       <div class="price-cell">-</div>
                       <div class="price-cell">-</div>
                     </div>
@@ -192,7 +192,7 @@
                     <div
                       v-if="getPutOption(expiration, strike)"
                       class="option-data"
-                      :class="getPutSelectionClass(expiration, strike)"
+                      :class="[getPutSelectionClass(expiration, strike), { 'mobile-layout': isMobile }]"
                       @click="selectPutOption(expiration, strike)"
                     >
                       <div
@@ -209,17 +209,17 @@
                       >
                         {{ formatPrice(getPutAsk(expiration, strike)) }}
                       </div>
-                      <div class="greek-cell">
+                      <div v-if="!isMobile" class="greek-cell">
                         {{ getPutTheta(expiration, strike) }}
                       </div>
                       <div class="greek-cell">
                         {{ getPutDelta(expiration, strike) }}
                       </div>
                     </div>
-                    <div v-else class="option-data empty">
+                    <div v-else class="option-data empty" :class="{ 'mobile-layout': isMobile }">
                       <div class="price-cell">-</div>
                       <div class="price-cell">-</div>
-                      <div class="greek-cell">-</div>
+                      <div v-if="!isMobile" class="greek-cell">-</div>
                       <div class="greek-cell">-</div>
                     </div>
                   </div>
@@ -254,6 +254,7 @@
 import { ref, computed, reactive, watch, onMounted, onUnmounted } from "vue";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
+import { useMobileDetection } from "../composables/useMobileDetection.js";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
 export default {
@@ -309,6 +310,9 @@ export default {
       removeLeg, 
       getSelectionClass 
     } = useSelectedLegs();
+    
+    // Mobile detection
+    const { isMobile, isTablet, isDesktop } = useMobileDetection();
 
     // Reactive state - sync with parent's current strike count
     const strikeCount = ref(props.currentStrikeCount || 20);
@@ -744,6 +748,11 @@ export default {
     });
 
     return {
+      // Mobile detection
+      isMobile,
+      isTablet,
+      isDesktop,
+
       // State
       expirationGroups,
       strikeCount,
@@ -1071,6 +1080,12 @@ export default {
   padding: var(--spacing-md) var(--spacing-lg);
 }
 
+/* Mobile layout adjustments for headers */
+.options-header.mobile-layout .calls-header,
+.options-header.mobile-layout .puts-header {
+  grid-template-columns: 1fr 1fr 1fr;
+}
+
 .puts-header {
   text-align: right;
 }
@@ -1169,6 +1184,11 @@ export default {
   width: 100%;
   cursor: pointer;
   transition: background-color 0.1s ease;
+}
+
+/* Mobile layout adjustments for option data */
+.option-data.mobile-layout {
+  grid-template-columns: 1fr 1fr 1fr;
 }
 
 .option-data:hover:not(.empty) {
