@@ -2,16 +2,16 @@
   <!-- Compact Bottom Trading Panel -->
   <div v-if="visible" class="bottom-panel slide-up">
     <!-- Top Stats Row -->
-    <div class="stats-row">
+    <div class="stats-row" :class="{ 'mobile-layout': isMobile }">
       <div class="stat-group">
         <span class="stat-label">POP</span>
         <span class="stat-value">{{ stats.pop }}%</span>
       </div>
-      <div class="stat-group">
+      <div v-if="!isMobile" class="stat-group">
         <span class="stat-label">EXT</span>
         <span class="stat-value">{{ stats.ext }}</span>
       </div>
-      <div class="stat-group">
+      <div v-if="!isMobile" class="stat-group">
         <span class="stat-label">P50</span>
         <span class="stat-value">{{ stats.p50 || "-" }}</span>
       </div>
@@ -19,7 +19,7 @@
         <span class="stat-label">Delta</span>
         <span class="stat-value">{{ stats.delta }}</span>
       </div>
-      <div class="stat-group">
+      <div v-if="!isMobile" class="stat-group">
         <span class="stat-label">Theta</span>
         <span class="stat-value negative">{{ stats.theta }}</span>
       </div>
@@ -31,12 +31,16 @@
         <span class="stat-label">Max Loss</span>
         <span class="stat-value negative">{{ stats.maxLoss }}</span>
       </div>
-      <div class="stat-group">
+      <div v-if="!isMobile" class="stat-group">
         <span class="stat-label">BP Eff.</span>
         <span class="stat-value"
           >{{ stats.bpEff }} <span class="unit">db</span></span
         >
       </div>
+      <!-- Mobile Close Button -->
+      <button v-if="isMobile" class="mobile-close-btn" @click="handleCancel" title="Close trading panel">
+        <i class="pi pi-times"></i>
+      </button>
     </div>
 
     <!-- Controls Row -->
@@ -78,9 +82,9 @@
     </div>
 
     <!-- Main Content Row -->
-    <div class="content-row">
+    <div class="content-row" :class="{ 'mobile-layout': isMobile }">
       <!-- Order Details -->
-      <div class="order-section">
+      <div class="order-section" :class="{ 'mobile-layout': isMobile }">
         <div class="section-header">
           <div class="section-title">Order Details</div>
           <div class="symbol-display">{{ symbol }}</div>
@@ -90,7 +94,7 @@
             v-for="(leg, index) in orderLegs"
             :key="index"
             class="order-leg"
-            :class="{ selected: internalSelectedLegs.includes(leg.symbol) }"
+            :class="{ selected: internalSelectedLegs.includes(leg.symbol), 'mobile-layout': isMobile }"
             @click="toggleLegSelection(leg.symbol)"
           >
             <span class="leg-qty">{{ leg.quantity }}</span>
@@ -106,9 +110,9 @@
       </div>
 
       <!-- Trading Controls -->
-      <div class="trading-section">
+      <div class="trading-section" :class="{ 'mobile-layout': isMobile }">
         <!-- Price Controls Row -->
-        <div class="price-controls-row">
+        <div class="price-controls-row" :class="{ 'mobile-layout': isMobile }">
           <div class="limit-price-section">
             <span class="price-label">Limit Price</span>
             <div class="price-input-group">
@@ -140,7 +144,62 @@
               <button class="price-btn" @click="incrementPrice">+</button>
             </div>
           </div>
+          
+          <!-- Mobile: Price Oscillator beside Limit Price -->
+          <div v-if="isMobile" class="mobile-price-oscillator">
+            <span class="price-label">Price</span>
+            <div class="dual-progress-bar">
+              <!-- Left Progress Bar -->
+              <div class="progress-bar left">
+                <div
+                  class="progress-fill-left"
+                  :class="parseFloat(midPrice) >= 0 ? 'credit' : 'debit'"
+                  :style="{ width: leftProgressPercent + '%' }"
+                ></div>
+              </div>
+              <!-- Center Indicator -->
+              <div class="center-indicator">
+                <span
+                  class="price-text"
+                  :class="
+                    parseFloat(midPrice) >= 0
+                      ? 'highlight-credit'
+                      : 'highlight-debit'
+                  "
+                  >{{ Math.abs(parseFloat(midPrice)).toFixed(2) }}
+                  {{ parseFloat(midPrice) >= 0 ? "cr" : "db" }}</span
+                >
+              </div>
+              <!-- Right Progress Bar -->
+              <div class="progress-bar right">
+                <div
+                  class="progress-fill-right"
+                  :class="parseFloat(midPrice) >= 0 ? 'credit' : 'debit'"
+                  :style="{ width: rightProgressPercent + '%' }"
+                ></div>
+              </div>
+            </div>
+          </div>
 
+          <div v-if="!isMobile" class="order-type-section">
+            <span class="config-label">Order Type</span>
+            <select v-model="selectedOrderType" class="config-select">
+              <option value="limit">Limit</option>
+              <option value="market">Market</option>
+            </select>
+          </div>
+
+          <div v-if="!isMobile" class="time-force-section">
+            <span class="config-label">Time in Force</span>
+            <select v-model="selectedTimeInForce" class="config-select">
+              <option value="day">Day</option>
+              <option value="gtc">GTC</option>
+            </select>
+          </div>
+        </div>
+
+        <!-- Mobile Order Config Row with Review Button -->
+        <div v-if="isMobile" class="mobile-config-row">
           <div class="order-type-section">
             <span class="config-label">Order Type</span>
             <select v-model="selectedOrderType" class="config-select">
@@ -156,10 +215,21 @@
               <option value="gtc">GTC</option>
             </select>
           </div>
+          
+          <!-- Mobile: Review Button beside Order Config -->
+          <div class="mobile-review-section">
+            <button
+              class="review-btn mobile-layout"
+              @click="handleReviewSend"
+              :disabled="!canSubmit"
+            >
+              Review
+            </button>
+          </div>
         </div>
 
-        <!-- Progress Bar Row with Review Button -->
-        <div class="progress-row">
+        <!-- Desktop Progress Bar Row with Review Button -->
+        <div v-if="!isMobile" class="progress-row">
           <div class="bid-section">
             <span class="price-label">BID (NAT)</span>
             <div class="price-display">
@@ -243,6 +313,7 @@ import {
 } from "../services/optionsCalculator.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
+import { useMobileDetection } from "../composables/useMobileDetection.js";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
 export default {
@@ -274,6 +345,9 @@ export default {
       clearAll,
       replaceLeg,
     } = useSelectedLegs();
+
+    // Mobile detection
+    const { isMobile, isTablet, isDesktop } = useMobileDetection();
 
     // Component registration system
     const componentId = `BottomTradingPanel-${Math.random().toString(36).substr(2, 9)}`;
@@ -906,6 +980,11 @@ export default {
     });
 
     return {
+      // Mobile detection
+      isMobile,
+      isTablet,
+      isDesktop,
+      
       limitPrice,
       selectedOrderType,
       selectedTimeInForce,
@@ -937,7 +1016,7 @@ export default {
 
 <style scoped>
 .bottom-panel {
-  position: relative;
+  position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
@@ -949,10 +1028,59 @@ export default {
   transform: translateY(100%);
   transition: var(--transition-slow);
   margin-bottom: var(--spacing-xs);
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
 .bottom-panel.slide-up {
   transform: translateY(0);
+}
+
+/* Mobile specific positioning */
+@media (max-width: 768px) {
+  .bottom-panel {
+    position: fixed;
+    bottom: 0;
+    left: 0;
+    right: 0;
+    max-height: 60vh;
+    min-height: 200px;
+    margin-bottom: 0;
+    border-radius: 12px 12px 0 0;
+    /* Ensure proper mobile viewport handling */
+    bottom: env(safe-area-inset-bottom, 0);
+    /* Add smooth scrolling for mobile */
+    -webkit-overflow-scrolling: touch;
+    /* Prevent zoom on input focus */
+    touch-action: manipulation;
+  }
+  
+  /* Ensure content is scrollable on mobile */
+  .bottom-panel .content-row {
+    min-height: auto;
+    flex-shrink: 0;
+  }
+  
+  /* Make sure the panel doesn't get cut off by mobile keyboards */
+  .bottom-panel.slide-up {
+    transform: translateY(0);
+    /* Account for mobile keyboard */
+    bottom: max(env(safe-area-inset-bottom, 0), 0px);
+  }
+}
+
+/* Additional mobile viewport fixes */
+@media (max-width: 768px) and (max-height: 700px) {
+  .bottom-panel {
+    max-height: 50vh;
+  }
+}
+
+/* For very small screens */
+@media (max-width: 480px) {
+  .bottom-panel {
+    max-height: 55vh;
+  }
 }
 
 /* Stats Row - Very Compact */
@@ -1646,6 +1774,207 @@ export default {
   border-radius: 1px;
 }
 
+/* Mobile Close Button */
+.mobile-close-btn {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  transition: var(--transition-normal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
+}
+
+.mobile-close-btn:hover {
+  background-color: var(--bg-quaternary);
+  color: var(--text-primary);
+}
+
+.mobile-close-btn i {
+  font-size: 16px;
+}
+
+/* Mobile Config Row */
+.mobile-config-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+  align-items: flex-end;
+}
+
+.mobile-config-row .order-type-section,
+.mobile-config-row .time-force-section {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Mobile Price Oscillator */
+.mobile-price-oscillator {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  flex: 1;
+  min-width: 0;
+  align-items: flex-start;
+}
+
+.mobile-price-oscillator .price-label {
+  font-size: 9px;
+}
+
+.mobile-price-oscillator .dual-progress-bar {
+  height: 26px;
+}
+
+.mobile-price-oscillator .progress-bar {
+  height: 3px;
+}
+
+.mobile-price-oscillator .center-indicator {
+  padding: 0 6px;
+}
+
+.mobile-price-oscillator .price-text {
+  font-size: 10px;
+}
+
+.mobile-price-oscillator .price-text.highlight-credit,
+.mobile-price-oscillator .price-text.highlight-debit {
+  font-size: 11px;
+}
+
+.mobile-price-oscillator .center-indicator::before {
+  width: 1px;
+  height: 6px;
+  transform: translate(-50%, 2px);
+}
+
+/* Mobile Review Section */
+.mobile-review-section {
+  display: flex;
+  align-items: flex-end;
+  min-width: 80px;
+}
+
+.mobile-review-section .review-btn {
+  width: 100%;
+  min-width: 80px;
+  padding: 8px 12px;
+  font-size: 11px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+/* Mobile Layout Modifications */
+.stats-row.mobile-layout {
+  padding: 8px var(--spacing-md);
+  gap: 8px;
+  align-items: center;
+}
+
+.stats-row.mobile-layout .stat-group {
+  min-width: 0;
+  flex: 1;
+}
+
+.stats-row.mobile-layout .stat-label {
+  font-size: 8px;
+}
+
+.stats-row.mobile-layout .stat-value {
+  font-size: 11px;
+}
+
+.content-row.mobile-layout {
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding: var(--spacing-md);
+}
+
+.order-section.mobile-layout {
+  max-width: none;
+}
+
+.order-section.mobile-layout .section-header {
+  margin-bottom: 6px;
+}
+
+.order-section.mobile-layout .section-title {
+  font-size: 11px;
+}
+
+.order-section.mobile-layout .symbol-display {
+  font-size: 14px;
+}
+
+.order-leg.mobile-layout {
+  grid-template-columns: 25px 45px 45px 18px 35px 50px;
+  gap: 6px;
+  padding: 4px 6px;
+  font-size: 10px;
+}
+
+.trading-section.mobile-layout {
+  gap: 8px;
+}
+
+.price-controls-row.mobile-layout {
+  gap: 12px;
+}
+
+.price-controls-row.mobile-layout .limit-price-section {
+  gap: 6px;
+}
+
+.price-controls-row.mobile-layout .price-label {
+  font-size: 10px;
+}
+
+.price-controls-row.mobile-layout .price-input {
+  font-size: 12px;
+  padding: 4px 8px;
+  min-width: 60px;
+}
+
+.price-controls-row.mobile-layout .price-btn {
+  width: 24px;
+  height: 24px;
+  font-size: 10px;
+}
+
+.progress-row.mobile-layout {
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.progress-row.mobile-layout .progress-section {
+  gap: 4px;
+}
+
+.progress-row.mobile-layout .price-label {
+  font-size: 9px;
+}
+
+.progress-row.mobile-layout .price-text {
+  font-size: 10px;
+}
+
+.progress-row.mobile-layout .price-text.highlight-credit,
+.progress-row.mobile-layout .price-text.highlight-debit {
+  font-size: 12px;
+}
+
+.review-btn.mobile-layout {
+  padding: 8px 16px;
+  font-size: 12px;
+  letter-spacing: 0.3px;
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .content-row {
@@ -1670,6 +1999,31 @@ export default {
   .price-bar {
     flex-wrap: wrap;
     gap: 12px;
+  }
+
+  /* Additional mobile optimizations */
+  .bottom-panel {
+    margin-bottom: 0;
+  }
+
+  .controls-row {
+    padding: var(--spacing-xs) var(--spacing-md);
+  }
+
+  .control-group {
+    gap: 4px;
+  }
+
+  .control-label {
+    font-size: 10px;
+  }
+
+  .control-buttons {
+    height: 28px;
+  }
+
+  .ctrl-btn {
+    font-size: 12px;
   }
 }
 </style>

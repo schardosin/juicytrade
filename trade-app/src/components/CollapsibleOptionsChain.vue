@@ -1072,6 +1072,11 @@ export default {
   z-index: 1;
 }
 
+/* Mobile layout adjustments for options header */
+.options-header.mobile-layout {
+  grid-template-columns: 1fr 70px 1fr;
+}
+
 .calls-header,
 .puts-header {
   display: grid;
@@ -1118,6 +1123,13 @@ export default {
   grid-template-columns: 1fr 100px 1fr;
   border-bottom: 1px solid var(--border-primary);
   transition: var(--transition-normal);
+}
+
+/* Mobile layout adjustments for option rows */
+@media (max-width: 768px) {
+  .option-row {
+    grid-template-columns: 1fr 70px 1fr;
+  }
 }
 
 .option-row:hover {
@@ -1331,6 +1343,43 @@ export default {
   .price-cell {
     font-size: var(--font-size-sm);
     padding: 2px;
+  }
+}
+
+/* Mobile specific adjustments */
+@media (max-width: 768px) {
+  .calls-header,
+  .puts-header {
+    padding: var(--spacing-sm) var(--spacing-sm);
+    gap: 4px;
+  }
+
+  .option-data {
+    padding: var(--spacing-sm) var(--spacing-sm);
+    gap: 4px;
+  }
+
+  .strike-cell {
+    padding: var(--spacing-sm) var(--spacing-xs);
+  }
+
+  .strike-price {
+    font-size: var(--font-size-sm);
+  }
+
+  .greek-cell,
+  .price-cell {
+    font-size: var(--font-size-xs);
+    padding: 1px;
+  }
+
+  .header-cell {
+    font-size: var(--font-size-xs);
+  }
+
+  .strike-header {
+    padding: var(--spacing-sm) var(--spacing-xs);
+    font-size: var(--font-size-sm);
   }
 }
 </style>
