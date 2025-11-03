@@ -1,14 +1,25 @@
 <template>
-  <div class="top-bar">
-    <!-- Left Section: Logo + Navigation -->
+  <div class="top-bar" :class="{ 'mobile-layout': isMobile }">
+    <!-- Left Section: Mobile Hamburger + Logo + Desktop Navigation -->
     <div class="left-section">
-      <div class="logo-section">
+      <!-- Mobile Hamburger Button -->
+      <button
+        v-if="isMobile"
+        class="mobile-nav-toggle"
+        @click="$emit('toggle-mobile-nav')"
+        aria-label="Open navigation menu"
+      >
+        <i class="pi pi-bars"></i>
+      </button>
+
+      <div v-if="!isMobile" class="logo-section">
         <div class="logo">
           <img src="/logos/juicytrade-logo.svg" alt="juicytrade" class="logo-svg" />
         </div>
       </div>
 
-      <div class="nav-section">
+      <!-- Desktop Navigation (hidden on mobile) -->
+      <div v-if="!isMobile" class="nav-section">
         <div class="nav-links">
           <button
             v-for="link in navLinks"
@@ -24,7 +35,8 @@
 
     <!-- Center Section: Search -->
     <div class="center-section">
-      <div class="search-container">
+      <!-- Desktop Search -->
+      <div v-if="!isMobile" class="search-container">
         <i class="pi pi-search search-icon"></i>
         <InputText
           ref="searchInput"
@@ -84,7 +96,24 @@
           </div>
         </div>
       </div>
+
+      <!-- Mobile Search Icon -->
+      <button
+        v-if="isMobile"
+        class="mobile-search-button"
+        @click="openMobileSearch"
+        aria-label="Open search"
+      >
+        <i class="pi pi-search"></i>
+      </button>
     </div>
+
+    <!-- Mobile Search Overlay -->
+    <MobileSearchOverlay
+      :visible="showMobileSearch"
+      @close="closeMobileSearch"
+      @symbol-selected="onMobileSymbolSelected"
+    />
 
     <!-- Right Section: Account Info + Controls -->
     <div class="right-section">
@@ -212,17 +241,23 @@ import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
 import webSocketClient from "../services/webSocketClient";
 import { useMarketData } from "../composables/useMarketData.js";
+import { useMobileDetection } from "../composables/useMobileDetection.js";
 import SettingsDialog from "./SettingsDialog.vue";
+import MobileSearchOverlay from "./MobileSearchOverlay.vue";
 import authService from "../services/authService.js";
 
 export default {
   name: "TopBar",
   components: {
     SettingsDialog,
+    MobileSearchOverlay,
   },
   setup() {
     const router = useRouter();
     const route = useRoute();
+    
+    // Mobile detection
+    const { isMobile, isTablet, isDesktop } = useMobileDetection();
     
     // Use unified market data composable
     const { 
@@ -256,6 +291,9 @@ export default {
     
     // Provider configuration data - now using smart data system
     const showProviderTooltip = ref(false);
+    
+    // Mobile search overlay
+    const showMobileSearch = ref(false);
 
     // Get reactive data from smart data system
     const reactiveBalance = getBalance();
@@ -802,6 +840,27 @@ export default {
       }
     };
 
+    // Mobile search methods
+    const openMobileSearch = () => {
+      showMobileSearch.value = true;
+    };
+
+    const closeMobileSearch = () => {
+      showMobileSearch.value = false;
+    };
+
+    const onMobileSymbolSelected = (symbol) => {
+      // Update the search query to show the selected symbol
+      searchQuery.value = symbol.symbol;
+      
+      // Emit the same symbol selection event as desktop search
+      window.dispatchEvent(
+        new CustomEvent("symbol-selected", {
+          detail: symbol,
+        })
+      );
+    };
+
     // Set up WebSocket status listener
     const setupWebSocketStatusListener = () => {
       // Listen to the new websocket-status-change event from WebSocketClient
@@ -891,6 +950,11 @@ export default {
     });
 
     return {
+      // Mobile detection
+      isMobile,
+      isTablet,
+      isDesktop,
+
       // Reactive data
       searchInput,
       searchQuery,
@@ -924,6 +988,9 @@ export default {
       tradeAccountType,
       tradeAccountTypeClass,
 
+      // Mobile search overlay
+      showMobileSearch,
+
       // Methods
       setActiveLink,
       performSearch,
@@ -937,6 +1004,9 @@ export default {
       getTypeClass,
       getTypeLabel,
       formatProviderName,
+      openMobileSearch,
+      closeMobileSearch,
+      onMobileSymbolSelected,
     };
   },
 };
@@ -1582,5 +1652,139 @@ export default {
 
 .tooltip-content::-webkit-scrollbar-thumb:hover {
   background: var(--border-tertiary);
+}
+
+/* Mobile hamburger button integrated into TopBar */
+.mobile-nav-toggle {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition-normal);
+  margin-right: var(--spacing-sm);
+}
+
+.mobile-nav-toggle:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.mobile-nav-toggle:active {
+  transform: scale(0.95);
+}
+
+.mobile-nav-toggle i {
+  font-size: 18px;
+}
+
+/* Mobile search button */
+.mobile-search-button {
+  background: none;
+  border: none;
+  color: var(--text-primary);
+  width: 44px;
+  height: 44px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition-normal);
+  flex: 1;
+  max-width: 44px;
+}
+
+.mobile-search-button:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.mobile-search-button:active {
+  transform: scale(0.95);
+}
+
+.mobile-search-button i {
+  font-size: 20px;
+}
+
+/* Mobile layout adjustments */
+.top-bar.mobile-layout {
+  padding: 0 var(--spacing-md);
+}
+
+.top-bar.mobile-layout .left-section {
+  gap: var(--spacing-sm);
+}
+
+.top-bar.mobile-layout .logo-svg {
+  height: 30px;
+  margin-left: 0;
+  margin-right: 0;
+}
+
+.top-bar.mobile-layout .center-section {
+  max-width: none;
+  flex: 1;
+  margin: 0 var(--spacing-sm);
+}
+
+.top-bar.mobile-layout .search-input {
+  font-size: 16px !important; /* Prevent zoom on iOS */
+}
+
+/* Hide complex elements on mobile */
+@media (max-width: 768px) {
+  .account-section {
+    display: none;
+  }
+  
+  .status-section {
+    display: none;
+  }
+  
+  .trade-account-section {
+    display: none;
+  }
+  
+  /* Simplify right section on mobile */
+  .right-section {
+    gap: var(--spacing-sm);
+    min-width: auto;
+  }
+  
+  .user-controls {
+    gap: var(--spacing-xs);
+  }
+  
+  .user-button,
+  .settings-button {
+    width: 40px !important;
+    height: 40px !important;
+  }
+}
+
+/* Touch-friendly adjustments */
+@media (hover: none) and (pointer: coarse) {
+  .mobile-nav-toggle {
+    min-height: 48px;
+    min-width: 48px;
+  }
+  
+  .user-button,
+  .settings-button {
+    min-width: 48px !important;
+    min-height: 48px !important;
+  }
+  
+  .search-result-item {
+    min-height: 48px;
+    padding: var(--spacing-md);
+  }
 }
 </style>

@@ -1,15 +1,23 @@
 <template>
   <div class="options-trading-container">
     <!-- Top Bar -->
-    <TopBar />
+    <TopBar @toggle-mobile-nav="showMobileNav = true" />
+
+    <!-- Mobile Navigation Drawer -->
+    <MobileNavDrawer
+      v-if="isMobile"
+      :visible="showMobileNav"
+      @close="showMobileNav = false"
+      @navigate="onMobileNavigation"
+    />
 
     <!-- Main Layout -->
     <div class="main-layout">
-      <!-- Left Navigation -->
-      <SideNav />
+      <!-- Desktop Left Navigation -->
+      <SideNav v-if="!isMobile" />
 
       <!-- Content Area -->
-      <div class="content-area">
+      <div class="content-area" :class="{ 'mobile-layout': isMobile }">
         <!-- Symbol Header -->
         <SymbolHeader
           :currentSymbol="currentSymbol"
@@ -119,6 +127,7 @@ import { ref, computed, onMounted, onUnmounted, watch, nextTick } from "vue";
 import { DateTime } from "luxon";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
+import MobileNavDrawer from "../components/MobileNavDrawer.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
 import CollapsibleOptionsChain from "../components/CollapsibleOptionsChain.vue";
 import PayoffChart from "../components/PayoffChart.vue";
@@ -133,6 +142,7 @@ import { useOptionsChainManager } from "../composables/useOptionsChainManager";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { useTradeNavigation } from "../composables/useTradeNavigation.js";
+import { useMobileDetection } from "../composables/useMobileDetection.js";
 import api from "../services/api";
 import authService from "../services/authService";
 // webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
@@ -144,6 +154,7 @@ export default {
   components: {
     TopBar,
     SideNav,
+    MobileNavDrawer,
     SymbolHeader,
     CollapsibleOptionsChain,
     PayoffChart,
@@ -156,6 +167,12 @@ export default {
   setup() {
     // Component refs
     const sharesTradingPanelRef = ref(null);
+    
+    // Mobile detection
+    const { isMobile, isTablet, isDesktop } = useMobileDetection();
+    
+    // Mobile navigation state
+    const showMobileNav = ref(false);
     
     const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
@@ -735,6 +752,13 @@ export default {
       }
     };
 
+    // Mobile navigation handler
+    const onMobileNavigation = (navItem) => {
+      console.log("Mobile navigation:", navItem);
+      // Navigation is handled by the MobileNavDrawer component
+      // The drawer will close automatically after navigation
+    };
+
     // Window resize handler for responsive chart
     const handleWindowResize = () => {
       windowHeight.value = window.innerHeight;
@@ -949,6 +973,12 @@ export default {
       showBottomPanel,
       showSharesPanel,
 
+      // Mobile detection
+      isMobile,
+      isTablet,
+      isDesktop,
+      showMobileNav,
+
       // Options Manager
       optionsManager,
 
@@ -983,6 +1013,7 @@ export default {
       onPriceAdjusted,
       adjustedNetCredit,
       additionalQuoteData,
+      onMobileNavigation,
 
       // New props for CollapsibleOptionsChain
       optionsDataByExpiration,
@@ -1356,6 +1387,84 @@ export default {
 
 .summary-item .value.debit {
   color: #ff4444;
+}
+
+
+/* Mobile layout adjustments */
+.content-area.mobile-layout {
+  padding-left: 0;
+  margin-left: 0;
+}
+
+.content-area.mobile-layout .options-chain-wrapper {
+  padding: 8px 12px;
+}
+
+.content-area.mobile-layout .shares-section {
+  padding: 8px 12px;
+}
+
+/* Hide right panel on mobile - will be replaced with tabs */
+@media (max-width: 768px) {
+  .main-layout {
+    flex-direction: column;
+  }
+  
+  .content-area {
+    margin-right: 0 !important;
+  }
+  
+  /* Hide desktop right panel on mobile */
+  .right-panel {
+    display: none;
+  }
+  
+  /* Adjust options chain for mobile */
+  .options-chain-wrapper {
+    padding: 8px !important;
+  }
+  
+  /* Mobile-optimized trading panels */
+  .options-section,
+  .shares-section {
+    padding: 8px;
+  }
+  
+  /* Ensure mobile nav toggle is always visible */
+  .mobile-nav-toggle {
+    display: flex !important;
+  }
+}
+
+/* Tablet adjustments */
+@media (max-width: 1024px) and (min-width: 769px) {
+  .content-area {
+    margin-right: 0;
+  }
+  
+  .right-panel {
+    width: 400px;
+  }
+  
+  .options-chain-wrapper {
+    padding: 12px 16px;
+  }
+}
+
+/* Touch-friendly adjustments */
+@media (hover: none) and (pointer: coarse) {
+  .mobile-nav-toggle {
+    min-height: 48px;
+    min-width: 48px;
+  }
+  
+  /* Increase touch targets for mobile */
+  .nav-item,
+  .tab-item,
+  .option-data,
+  .price-cell {
+    min-height: 44px;
+  }
 }
 
 /* Dark theme overrides for PrimeVue components */
