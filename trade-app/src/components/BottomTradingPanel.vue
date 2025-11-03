@@ -1016,10 +1016,7 @@ export default {
 
 <style scoped>
 .bottom-panel {
-  position: fixed;
-  bottom: 0;
-  left: 0;
-  right: 0;
+  position: relative;
   background-color: var(--bg-secondary);
   border-top: 1px solid var(--border-primary);
   color: var(--text-primary);

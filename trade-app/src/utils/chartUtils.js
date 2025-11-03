@@ -821,15 +821,13 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
         const bottomPixel = chartArea.bottom;
         const zeroPosition =
           (bottomPixel - zeroPixel) / (bottomPixel - topPixel);
+        
+        // CRITICAL FIX: Ensure zeroPosition is finite before using in gradient
+        const safeZeroPosition = isFinite(zeroPosition) ? Math.max(0, Math.min(1, zeroPosition)) : 0.5;
+        
         gradient.addColorStop(0, "rgba(244, 67, 54, 0.3)");
-        gradient.addColorStop(
-          Math.max(0, Math.min(1, zeroPosition)),
-          "rgba(244, 67, 54, 0.1)"
-        );
-        gradient.addColorStop(
-          Math.max(0, Math.min(1, zeroPosition)),
-          "rgba(76, 175, 80, 0.1)"
-        );
+        gradient.addColorStop(safeZeroPosition, "rgba(244, 67, 54, 0.1)");
+        gradient.addColorStop(safeZeroPosition, "rgba(76, 175, 80, 0.1)");
         gradient.addColorStop(1, "rgba(76, 175, 80, 0.3)");
         return gradient;
       },

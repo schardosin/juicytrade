@@ -588,14 +588,33 @@ export default {
       }
 
       try {
-        // Only destroy if chart exists
+        // CRITICAL FIX: Always destroy existing chart before creating new one
         if (chart.value) {
-          chart.value.destroy();
+          try {
+            chart.value.destroy();
+          } catch (e) {
+            console.warn("Error destroying existing chart:", e);
+          }
           chart.value = null;
         }
 
-        // Create new chart
+        // CRITICAL FIX: Ensure canvas is clean before creating new chart
         const ctx = chartCanvas.value.getContext("2d");
+        if (!ctx) {
+          console.error("Could not get canvas context");
+          return;
+        }
+
+        // Clear any existing Chart.js instances on this canvas
+        const existingChart = Chart.getChart(chartCanvas.value);
+        if (existingChart) {
+          try {
+            existingChart.destroy();
+          } catch (e) {
+            console.warn("Error destroying existing Chart.js instance:", e);
+          }
+        }
+
         const config = createMultiLegChartConfig(
           props.chartData,
           props.underlyingPrice

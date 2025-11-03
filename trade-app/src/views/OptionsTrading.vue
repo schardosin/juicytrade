@@ -119,6 +119,33 @@
       @review-send="onSharesReviewAndSend"
       @clear-trade="onSharesClearTrade"
     />
+
+    <!-- Mobile Bottom Button Bar (only on mobile) -->
+    <MobileBottomButtonBar
+      v-if="isMobile"
+      :activeSection="showMobileOverlay ? activeMobileSection : null"
+      @section-selected="onMobileSectionSelected"
+    />
+
+    <!-- Mobile Full Screen Overlay (only on mobile) -->
+    <MobileFullScreenOverlay
+      v-if="isMobile"
+      :visible="showMobileOverlay"
+      :activeSection="activeMobileSection"
+      :currentSymbol="currentSymbol"
+      :currentPrice="currentPrice"
+      :priceChange="priceChange"
+      :isLivePrice="isLivePrice"
+      :chartData="chartData"
+      :additionalQuoteData="additionalQuoteData"
+      :allPositions="allMobilePositions"
+      :checkedPositions="mobileCheckedPositions"
+      :isAllSelected="isMobileAllSelected"
+      :isIndeterminate="isMobileIndeterminate"
+      @close="closeMobileOverlay"
+      @toggle-position-check="onMobileTogglePositionCheck"
+      @toggle-select-all="onMobileToggleSelectAll"
+    />
   </div>
 </template>
 
@@ -128,6 +155,8 @@ import { DateTime } from "luxon";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import MobileNavDrawer from "../components/MobileNavDrawer.vue";
+import MobileBottomButtonBar from "../components/MobileBottomButtonBar.vue";
+import MobileFullScreenOverlay from "../components/MobileFullScreenOverlay.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
 import CollapsibleOptionsChain from "../components/CollapsibleOptionsChain.vue";
 import PayoffChart from "../components/PayoffChart.vue";
@@ -155,6 +184,8 @@ export default {
     TopBar,
     SideNav,
     MobileNavDrawer,
+    MobileBottomButtonBar,
+    MobileFullScreenOverlay,
     SymbolHeader,
     CollapsibleOptionsChain,
     PayoffChart,
@@ -173,6 +204,11 @@ export default {
     
     // Mobile navigation state
     const showMobileNav = ref(false);
+    
+    // Mobile overlay state
+    const showMobileOverlay = ref(false);
+    const activeMobileSection = ref('overview');
+    const mobileCheckedPositions = ref(new Set());
     
     const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
@@ -305,6 +341,215 @@ export default {
       // If options are selected, show analysis section, otherwise null (let user choose)
       return selectedLegs.value.length > 0 || activePositions.value.length > 0 ? "analysis" : null;
     });
+
+    // Get positions data using the same method as desktop RightPanel
+    const { getPositionsForSymbol } = useMarketData();
+    
+    // Mobile computed properties - exact same logic as desktop RightPanel
+    const allMobilePositions = computed(() => {
+      const positions = [];
+      const existingSymbols = new Set();
+      const symbolGroup = getSymbolGroup(currentSymbol.value);
+
+      // Get existing positions using the same method as desktop RightPanel
+      const positionsComputed = getPositionsForSymbol(currentSymbol.value);
+      const positionsData = positionsComputed.value;
+      
+      // Add existing positions for the current symbol group
+      if (positionsData?.positions && Array.isArray(positionsData.positions)) {
+        positionsData.positions.forEach((position) => {
+          if (symbolGroup.includes(position.underlying_symbol)) {
+            // CRITICAL FIX: Parse option symbol to get missing details for existing positions
+            const parsedOption = parseOptionSymbol(position.symbol);
+            
+            // Look up current market price from options chain data for existing positions
+            const chainOption = optionsManager.flattenedData.value.find(
+              (opt) => opt.symbol === position.symbol
+            );
+
+            // Use entry price as fallback if current price is 0
+            let currentPrice = position.current_price || position.avg_entry_price || 0;
+            let unrealizedPL = position.unrealized_pl || 0;
+
+            // If we don't have current P&L but have entry price, estimate it
+            if (unrealizedPL === 0 && position.avg_entry_price && position.avg_entry_price > 0) {
+              // For now, assume current price equals entry price (no P&L change)
+              currentPrice = position.avg_entry_price;
+              unrealizedPL = 0; // No change assumed
+            }
+
+            // Update current price and P&L if we have chain data
+            if (chainOption && position.avg_entry_price && chainOption.bid && chainOption.ask) {
+              // Use mid price for current market value
+              currentPrice = (chainOption.bid + chainOption.ask) / 2;
+
+              // Recalculate P&L with current market price
+              const qty = position.qty;
+              if (qty > 0) {
+                // Long position: (current_price - entry_price) * qty * 100
+                unrealizedPL = (currentPrice - position.avg_entry_price) * qty * 100;
+              } else {
+                // Short position: (entry_price - current_price) * |qty| * 100
+                unrealizedPL = (position.avg_entry_price - currentPrice) * Math.abs(qty) * 100;
+              }
+            }
+
+            const positionData = {
+              ...position,
+              id: `existing:${position.symbol || position.id}`,
+              symbol: position.symbol,
+              asset_class: position.asset_class || "us_option",
+              underlying_symbol: position.underlying_symbol,
+              qty: position.qty,
+              // CRITICAL FIX: Use parsed option data to fill missing fields
+              strike_price: parsedOption?.strike_price || position.strike_price || 0,
+              option_type: parsedOption?.option_type || position.option_type || "call",
+              expiry_date: parsedOption?.expiry_date || position.expiry_date || "",
+              current_price: currentPrice,
+              avg_entry_price: position.avg_entry_price || 
+                (position.cost_basis ? Math.abs(position.cost_basis / (position.qty * 100)) : 0),
+              unrealized_pl: unrealizedPL,
+              isExisting: true,
+              isSelected: false,
+            };
+
+            positions.push(positionData);
+            existingSymbols.add(position.symbol);
+          }
+        });
+      }
+
+      // Add selected legs from centralized store as new positions (same as desktop RightPanel)
+      selectedLegs.value.forEach((leg, index) => {
+        positions.push({
+          id: `selected:${leg.symbol}:${index}`,
+          symbol: leg.symbol,
+          asset_class: "us_option",
+          qty: leg.side === "buy" ? leg.quantity : -leg.quantity,
+          strike_price: leg.strike_price,
+          option_type: leg.type,
+          expiry_date: leg.expiry,
+          current_price: leg.current_price || ((leg.bid + leg.ask) / 2) || 0,
+          avg_entry_price: leg.avg_entry_price,
+          unrealized_pl: 0,
+          isExisting: false,
+          isSelected: true, // This is key - newly selected legs should be marked as selected
+        });
+      });
+
+      return positions;
+    });
+
+    const isMobileAllSelected = computed(() => {
+      if (allMobilePositions.value.length === 0) return false;
+      return allMobilePositions.value.every((pos) =>
+        mobileCheckedPositions.value.has(pos.id)
+      );
+    });
+
+    const isMobileIndeterminate = computed(() => {
+      if (allMobilePositions.value.length === 0) return false;
+      const checkedCount = allMobilePositions.value.filter((pos) =>
+        mobileCheckedPositions.value.has(pos.id)
+      ).length;
+      return checkedCount > 0 && checkedCount < allMobilePositions.value.length;
+    });
+
+    // Helper function to get symbol group (handles SPX/SPXW grouping)
+    const getSymbolGroup = (symbol) => {
+      if (symbol === "SPX" || symbol === "SPXW") {
+        return ["SPX", "SPXW"];
+      }
+      return [symbol];
+    };
+
+    // Helper function to parse option symbol for details (same as desktop RightPanel)
+    const parseOptionSymbol = (optionSymbol) => {
+      try {
+        // Handle multiple option symbol formats
+        // Format 1: SPY250714C00624000 (SYMBOL + YYMMDD + C/P + STRIKE with 8 digits)
+        let match = optionSymbol.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
+        if (match) {
+          const [, underlying, dateStr, type, strikeStr] = match;
+
+          // Parse date: YYMMDD -> YYYY-MM-DD
+          const year = 2000 + parseInt(dateStr.substring(0, 2));
+          const month = dateStr.substring(2, 4);
+          const day = dateStr.substring(4, 6);
+          const expiry = `${year}-${month}-${day}`;
+
+          // Parse strike: 8 digits with 3 decimal places (e.g., 00624000 = 624.000)
+          const strike = parseInt(strikeStr) / 1000;
+
+          return {
+            underlying_symbol: underlying,
+            option_type: type === "C" ? "call" : "put",
+            strike_price: strike,
+            expiry_date: expiry,
+          };
+        }
+
+        // Format 2: SPY_250714_C_624 (SYMBOL_YYMMDD_C/P_STRIKE)
+        match = optionSymbol.match(/^([A-Z]+)_(\d{6})_([CP])_(\d+(?:\.\d+)?)$/);
+        if (match) {
+          const [, underlying, dateStr, type, strikeStr] = match;
+
+          // Parse date: YYMMDD -> YYYY-MM-DD
+          const year = 2000 + parseInt(dateStr.substring(0, 2));
+          const month = dateStr.substring(2, 4);
+          const day = dateStr.substring(4, 6);
+          const expiry = `${year}-${month}-${day}`;
+
+          const strike = parseFloat(strikeStr);
+
+          return {
+            underlying_symbol: underlying,
+            option_type: type === "C" ? "call" : "put",
+            strike_price: strike,
+            expiry_date: expiry,
+          };
+        }
+
+        // Format 3: Try to extract from any format with underscores or other separators
+        // Look for patterns like SYMBOL_anything_C/P_STRIKE or similar
+        const parts = optionSymbol.split(/[_\-]/);
+        if (parts.length >= 3) {
+          const underlying = parts[0];
+          let type = null;
+          let strike = null;
+
+          // Find C or P in the parts
+          for (let i = 1; i < parts.length; i++) {
+            if (parts[i] === "C" || parts[i] === "P") {
+              type = parts[i] === "C" ? "call" : "put";
+              // Look for strike in the next part
+              if (i + 1 < parts.length) {
+                const strikeCandidate = parseFloat(parts[i + 1]);
+                if (!isNaN(strikeCandidate)) {
+                  strike = strikeCandidate;
+                }
+              }
+              break;
+            }
+          }
+
+          if (type && strike) {
+            return {
+              underlying_symbol: underlying,
+              option_type: type,
+              strike_price: strike,
+              expiry_date: null, // Will be filled from position data if available
+            };
+          }
+        }
+
+        console.warn(`Could not parse option symbol: ${optionSymbol}`);
+        return null;
+      } catch (error) {
+        console.error("Error parsing option symbol:", optionSymbol, error);
+        return null;
+      }
+    };
 
     // Methods
     const fetchSymbolData = async (symbol) => {
@@ -723,40 +968,54 @@ export default {
       });
     };
 
-    const parseOptionSymbol = (symbol) => {
-      try {
-        const match = symbol.match(/^([A-Z]+)(\d{6})([CP])(\d{8})$/);
-        if (!match) return null;
-
-        const [, underlying, dateStr, type, strikeStr] = match;
-
-        const year = 2000 + parseInt(dateStr.substring(0, 2));
-        const month = dateStr.substring(2, 4);
-        const day = dateStr.substring(4, 6);
-        const expiry = `${year}-${month.padStart(2, "0")}-${day.padStart(
-          2,
-          "0"
-        )}`;
-
-        const strike = parseInt(strikeStr) / 1000;
-
-        return {
-          underlying,
-          expiry,
-          type: type === "C" ? "call" : "put",
-          strike,
-        };
-      } catch (error) {
-        console.error("Error parsing option symbol:", symbol, error);
-        return null;
-      }
-    };
 
     // Mobile navigation handler
     const onMobileNavigation = (navItem) => {
       console.log("Mobile navigation:", navItem);
       // Navigation is handled by the MobileNavDrawer component
       // The drawer will close automatically after navigation
+    };
+
+    // Mobile overlay methods
+    const onMobileSectionSelected = (sectionKey) => {
+      activeMobileSection.value = sectionKey;
+      showMobileOverlay.value = true;
+    };
+
+    const closeMobileOverlay = () => {
+      showMobileOverlay.value = false;
+    };
+
+    const onMobileTogglePositionCheck = (positionId) => {
+      if (mobileCheckedPositions.value.has(positionId)) {
+        mobileCheckedPositions.value.delete(positionId);
+      } else {
+        mobileCheckedPositions.value.add(positionId);
+      }
+      // CRITICAL FIX: Use the same event-driven pattern as desktop RightPanel
+      // This ensures mobile and desktop use identical chart update logic
+      const checkedPositionsList = allMobilePositions.value.filter((pos) =>
+        mobileCheckedPositions.value.has(pos.id)
+      );
+      onPositionsChanged(checkedPositionsList);
+    };
+
+    const onMobileToggleSelectAll = () => {
+      if (isMobileAllSelected.value) {
+        // Uncheck all
+        mobileCheckedPositions.value.clear();
+      } else {
+        // Check all
+        allMobilePositions.value.forEach((pos) => {
+          mobileCheckedPositions.value.add(pos.id);
+        });
+      }
+      // CRITICAL FIX: Use the same event-driven pattern as desktop RightPanel
+      // This ensures mobile and desktop use identical chart update logic
+      const checkedPositionsList = allMobilePositions.value.filter((pos) =>
+        mobileCheckedPositions.value.has(pos.id)
+      );
+      onPositionsChanged(checkedPositionsList);
     };
 
     // Window resize handler for responsive chart
@@ -922,6 +1181,58 @@ export default {
       }
     });
 
+    // Watch for changes in allMobilePositions and auto-check newly selected positions
+    // This mimics the desktop RightPanel behavior
+    watch(
+      allMobilePositions,
+      (newPositions, oldPositions) => {
+        if (!newPositions || newPositions.length === 0) {
+          mobileCheckedPositions.value.clear();
+          return;
+        }
+
+        // Create sets for efficient comparison
+        const oldIds = new Set((oldPositions || []).map(pos => pos.id));
+        const newIds = new Set(newPositions.map(pos => pos.id));
+
+        let hasNewPositions = false;
+        let hasRemovedPositions = false;
+
+        // Check for new positions and auto-select them if they're marked as selected
+        newPositions.forEach((pos) => {
+          if (!oldIds.has(pos.id) && pos.isSelected && !pos.isExisting) {
+            mobileCheckedPositions.value.add(pos.id);
+            hasNewPositions = true;
+          }
+        });
+
+        // Remove positions that no longer exist
+        (oldPositions || []).forEach((pos) => {
+          if (!newIds.has(pos.id) && mobileCheckedPositions.value.has(pos.id)) {
+            mobileCheckedPositions.value.delete(pos.id);
+            hasRemovedPositions = true;
+          }
+        });
+
+        // Also ensure all selected positions are checked (for consistency)
+        newPositions.forEach((pos) => {
+          if (pos.isSelected && !pos.isExisting) {
+            mobileCheckedPositions.value.add(pos.id);
+            hasNewPositions = true;
+          }
+        });
+
+        // Update chart if there were changes
+        if (hasNewPositions || hasRemovedPositions) {
+          const checkedPositionsList = newPositions.filter((pos) =>
+            mobileCheckedPositions.value.has(pos.id)
+          );
+          updateChartData(checkedPositionsList);
+        }
+      },
+      { deep: true, immediate: true }
+    );
+
 
     // Watch for time and update marketStatus accordingly (use US/Eastern time)
     function updateMarketStatusNow() {
@@ -978,6 +1289,20 @@ export default {
       isTablet,
       isDesktop,
       showMobileNav,
+
+      // Mobile overlay state
+      showMobileOverlay,
+      activeMobileSection,
+      mobileCheckedPositions,
+      allMobilePositions,
+      isMobileAllSelected,
+      isMobileIndeterminate,
+
+      // Mobile methods
+      onMobileSectionSelected,
+      closeMobileOverlay,
+      onMobileTogglePositionCheck,
+      onMobileToggleSelectAll,
 
       // Options Manager
       optionsManager,
