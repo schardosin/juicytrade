@@ -1037,15 +1037,13 @@ export default {
 @media (max-width: 768px) {
   .bottom-panel {
     position: fixed;
-    bottom: 0;
+    bottom: 80px; /* Position above the mobile bottom button bar */
     left: 0;
     right: 0;
     max-height: 60vh;
     min-height: 200px;
     margin-bottom: 0;
     border-radius: 12px 12px 0 0;
-    /* Ensure proper mobile viewport handling */
-    bottom: env(safe-area-inset-bottom, 0);
     /* Add smooth scrolling for mobile */
     -webkit-overflow-scrolling: touch;
     /* Prevent zoom on input focus */
@@ -1061,8 +1059,8 @@ export default {
   /* Make sure the panel doesn't get cut off by mobile keyboards */
   .bottom-panel.slide-up {
     transform: translateY(0);
-    /* Account for mobile keyboard */
-    bottom: max(env(safe-area-inset-bottom, 0), 0px);
+    /* Position above the mobile bottom button bar (approximately 80px height) */
+    bottom: 80px;
   }
 }
 
