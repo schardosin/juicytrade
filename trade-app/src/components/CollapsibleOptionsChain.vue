@@ -77,6 +77,23 @@
             <span v-if="getIvxForExpiration(expiration.date)?.ivx_percent" class="iv-label">
               IVx: {{ formatIvxPercent(getIvxForExpiration(expiration.date).ivx_percent) }}% (≈${{ formatIvxMove(getIvxForExpiration(expiration.date).expected_move_dollars) }})
             </span>
+            <div v-else-if="ivxData?.status === 'error'" class="iv-error">
+              <span class="iv-label">IVx:</span>
+              <i class="pi pi-exclamation-triangle"></i>
+              <span class="error-text">Failed</span>
+              <button 
+                class="retry-button" 
+                @click="retryIvxCalculation"
+                title="Retry IVx calculation"
+              >
+                <i class="pi pi-refresh"></i>
+              </button>
+            </div>
+            <div v-else-if="isIvxLoading" class="iv-loading">
+              <span class="iv-label">IVx:</span>
+              <div class="mini-spinner"></div>
+              <span class="loading-text">{{ getIvxLoadingText() }}</span>
+            </div>
             <div v-else class="iv-loading">
               <span class="iv-label">IVx:</span>
               <div class="mini-spinner"></div>
@@ -405,6 +422,29 @@ export default {
       return expandedSet.value.size > 0;
     });
 
+    // IVx loading state computed
+    const isIvxLoading = computed(() => {
+      if (!props.ivxData) return true;
+      return props.ivxData.isLoading || props.ivxData.status === 'loading';
+    });
+
+    // Get IVx loading progress text
+    const getIvxLoadingText = () => {
+      if (!props.ivxData) return 'Starting...';
+      if (props.ivxData.progress && props.ivxData.progress.total > 0) {
+        const { completed, total } = props.ivxData.progress;
+        return `${completed}/${total}`;
+      }
+      return 'Calculating...';
+    };
+
+    // Retry IVx calculation
+    const retryIvxCalculation = () => {
+      if (props.symbol) {
+        smartMarketDataStore.retryIvxCalculation(props.symbol);
+      }
+    };
+
     // Methods
     const toggleExpiration = (expiration) => {
       const uniqueKey = expiration.uniqueKey;
@@ -634,7 +674,8 @@ export default {
       // IVx data is organized by symbol, then by expiration dates
       // props.ivxData should contain the expirations array for the current symbol
       if (props.ivxData.expirations && Array.isArray(props.ivxData.expirations)) {
-        return props.ivxData.expirations.find(exp => exp.expiration_date === date);
+        const result = props.ivxData.expirations.find(exp => exp.expiration_date === date);
+        return result;
       }
       
       return null;
@@ -739,6 +780,23 @@ export default {
       if (newSymbol !== oldSymbol) {
         // Unregister all current symbols
         cleanupComponentRegistrations();
+        
+        // 🆕 Start IVx loading for the symbol
+        // Always ensure subscription to handle cases where data might be stale
+        if (newSymbol) {
+          const existingData = smartMarketDataStore.ivxDataBySymbol.get(newSymbol);
+          
+          if (!existingData) {
+            smartMarketDataStore.ensureIvxSubscription(newSymbol);
+          } else if (existingData.status === 'error' || existingData.status === 'loading') {
+            smartMarketDataStore.retryIvxCalculation(newSymbol);
+          } else if (existingData.expirations?.length === 0) {
+            console.log(`� CollapsibleOptionsChain: Retrying IVx for ${newSymbol} (no expirations)`);
+            smartMarketDataStore.retryIvxCalculation(newSymbol);
+          } else {
+            smartMarketDataStore.retryIvxCalculation(newSymbol);
+          }
+        }
       }
     }, { immediate: true });
 
@@ -759,6 +817,7 @@ export default {
 
       // Computed
       hasExpandedExpirations,
+      isIvxLoading,
 
       // Methods
       toggleExpiration,
@@ -785,6 +844,8 @@ export default {
       getIvxForExpiration,
       formatIvxPercent,
       formatIvxMove,
+      getIvxLoadingText,
+      retryIvxCalculation,
     };
   },
 };
@@ -1028,6 +1089,55 @@ export default {
   gap: var(--spacing-xs);
 }
 
+.iv-error {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+}
+
+.error-text {
+  font-size: var(--font-size-xs);
+  color: var(--color-danger);
+  font-style: italic;
+}
+
+.iv-error .pi {
+  color: var(--color-danger);
+  font-size: var(--font-size-xs);
+}
+
+.retry-button {
+  background: none;
+  border: none;
+  color: var(--color-info);
+  cursor: pointer;
+  padding: 2px;
+  border-radius: var(--radius-xs);
+  transition: var(--transition-normal);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.retry-button:hover {
+  background-color: rgba(59, 130, 246, 0.1);
+  transform: scale(1.1);
+}
+
+.retry-button:active {
+  transform: scale(0.95);
+}
+
+.retry-button .pi {
+  font-size: var(--font-size-xs);
+}
+
+.loading-text {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
 .expiration-loading {
   display: flex;
   align-items: center;
@@ -1112,10 +1222,6 @@ export default {
   font-size: var(--font-size-sm);
   font-weight: var(--font-weight-semibold);
   color: var(--text-tertiary);
-}
-
-.options-rows {
-  /* Remove inner scroll - let outer scroll handle everything */
 }
 
 .option-row {

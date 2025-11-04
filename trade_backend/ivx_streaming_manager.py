@@ -82,6 +82,9 @@ class IVxStreamingManager:
             for i, ivx_data in enumerate(cached_data):
                 await self._broadcast_partial_ivx_data(symbol, ivx_data, i+1, len(cached_data))
             
+            # Send completion status for cached data
+            await self._broadcast_ivx_completion(symbol)
+            
             # Schedule automatic refresh when cache expires
             await self._schedule_cache_refresh(symbol)
             return
@@ -99,13 +102,17 @@ class IVxStreamingManager:
             # Get the appropriate provider
             provider = await self._get_provider_for_symbol(symbol)
             if not provider:
-                logger.error(f"No provider available for IVx calculation for {symbol}")
+                error_msg = f"No provider available for IVx calculation for {symbol}"
+                logger.error(error_msg)
+                await self._broadcast_ivx_error(symbol, error_msg)
                 return
             
             # Get underlying price
             underlying_price = await self._get_underlying_price(symbol, provider)
             if not underlying_price:
-                logger.error(f"Could not get underlying price for {symbol}")
+                error_msg = f"Could not get underlying price for {symbol}"
+                logger.error(error_msg)
+                await self._broadcast_ivx_error(symbol, error_msg)
                 return
             
             # Use provider-specific IVx calculation method with streaming support
@@ -127,26 +134,35 @@ class IVxStreamingManager:
                         timeout=120.0  # 2 minute timeout for streaming method
                     )
                 except asyncio.TimeoutError:
-                    logger.error(f"⏰ IVx streaming calculation timeout for {symbol} after 120 seconds")
+                    error_msg = f"IVx streaming calculation timeout for {symbol} after 120 seconds"
+                    logger.error(f"⏰ {error_msg}")
+                    await self._broadcast_ivx_error(symbol, error_msg)
                     return
                 except Exception as e:
-                    logger.error(f"❌ Provider-specific IVx streaming calculation failed for {symbol}: {e}")
+                    error_msg = f"Provider-specific IVx streaming calculation failed for {symbol}: {e}"
+                    logger.error(f"❌ {error_msg}")
+                    await self._broadcast_ivx_error(symbol, error_msg)
                     return
                 
                 if ivx_results:
                     # Cache the complete results
                     ivx_cache.set(symbol, ivx_results)
                     logger.info(f"✅ Completed streaming IVx calculation for {symbol}: {len(ivx_results)} expirations")
+                    await self._broadcast_ivx_completion(symbol)
                 else:
-                    logger.warning(f"⚠️ Provider-specific IVx streaming calculation returned no results for {symbol}")
+                    error_msg = f"Provider-specific IVx streaming calculation returned no results for {symbol}"
+                    logger.warning(f"⚠️ {error_msg}")
+                    await self._broadcast_ivx_error(symbol, error_msg)
                     
             else:
-                logger.warning(f"⚠️ Provider {provider.name} does not have a streaming IVx calculation method, falling back to default.")
-                # Fallback to a generic, non-provider-specific calculation if no method is available.
-                # This part can be enhanced with a default implementation if needed.
+                error_msg = f"Provider {provider.name} does not have a streaming IVx calculation method"
+                logger.warning(f"⚠️ {error_msg}")
+                await self._broadcast_ivx_error(symbol, error_msg)
             
         except Exception as e:
-            logger.error(f"❌ Error in provider-specific IVx calculation for {symbol}: {e}")
+            error_msg = f"Error in provider-specific IVx calculation for {symbol}: {e}"
+            logger.error(f"❌ {error_msg}")
+            await self._broadcast_ivx_error(symbol, error_msg)
     
     async def _get_provider_for_symbol(self, symbol: str):
         """Get the appropriate provider for a symbol."""
@@ -235,6 +251,29 @@ class IVxStreamingManager:
                 "total": total,
                 "percentage": (completed / total) * 100
             }
+        }
+        
+        await self._send_to_subscribed_clients(symbol, message)
+    
+    async def _broadcast_ivx_error(self, symbol: str, error_message: str):
+        """Broadcast IVx error status to subscribed clients."""
+        message = {
+            "type": "ivx_status",
+            "symbol": symbol,
+            "status": "error",
+            "error": error_message,
+            "timestamp": datetime.now().isoformat()
+        }
+        
+        await self._send_to_subscribed_clients(symbol, message)
+    
+    async def _broadcast_ivx_completion(self, symbol: str):
+        """Broadcast IVx completion status to subscribed clients."""
+        message = {
+            "type": "ivx_status",
+            "symbol": symbol,
+            "status": "completed",
+            "timestamp": datetime.now().isoformat()
         }
         
         await self._send_to_subscribed_clients(symbol, message)

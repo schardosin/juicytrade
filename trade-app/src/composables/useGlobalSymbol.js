@@ -144,17 +144,23 @@ export function useGlobalSymbol(options = {}) {
     globalSymbolState.isLivePrice = false;
     globalSymbolState.marketStatus = "Market Closed";
 
-    // 🆕 IMMEDIATELY load positions and IVx data for new symbol (only if symbol actually changed)
+    // 🆕 Load data for new symbol (only if symbol actually changed)
     if (oldSymbol !== newSymbol) {
-      try {
-        await smartMarketDataStore.refreshPositions();
-        
-        // 🆕 Ensure IVx subscription for the new symbol
-        // This will trigger IVx data loading immediately when symbol changes
-        await smartMarketDataStore.ensureIvxSubscription(newSymbol);
-      } catch (error) {
+      // Start both operations asynchronously and don't wait for them
+      // This ensures the symbol change UI is immediate and responsive
+      
+      // Load positions in background
+      smartMarketDataStore.refreshPositions().then(() => {
+        console.log(`✅ Successfully loaded positions for ${newSymbol}`);
+      }).catch(error => {
         console.error(`❌ Failed to load positions for ${newSymbol}:`, error);
-      }
+      });
+      
+      // Load IVx in background
+      console.log(`🔄 Starting background IVx loading for new symbol: ${newSymbol}`);
+      smartMarketDataStore.ensureIvxSubscription(newSymbol);
+      
+      console.log(`🚀 Successfully initiated background data loading for ${newSymbol}`);
     }
 
     // Persist the symbol data to localStorage
@@ -223,11 +229,13 @@ export function useGlobalSymbol(options = {}) {
       
       try {
         // Update global symbol state (this triggers all the existing logic)
-        await updateSymbol(symbolData);
+        updateSymbol(symbolData); // Remove await for immediate response
         
-        // Call view-specific callback if provided
+        // Call view-specific callback if provided (also non-blocking now)
         if (onSymbolChange) {
-          await onSymbolChange(symbolData);
+          onSymbolChange(symbolData).catch(error => {
+            console.error('❌ Error in onSymbolChange callback:', error);
+          });
         }
       } catch (error) {
         console.error('❌ Error handling symbol selection:', error);

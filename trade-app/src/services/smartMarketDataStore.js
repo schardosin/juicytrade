@@ -50,6 +50,19 @@ class DataHealthMonitor {
       clearInterval(this.healthTimer);
       this.healthTimer = null;
     }
+    
+    // Clear IVx call tracking and timeouts (safely handle undefined)
+    if (this.recentIvxCalls) {
+      this.recentIvxCalls.clear();
+    }
+    
+    // Clear all IVx timeouts (safely handle undefined)
+    if (this.ivxTimeouts) {
+      for (const timeoutId of this.ivxTimeouts.values()) {
+        clearTimeout(timeoutId);
+      }
+      this.ivxTimeouts.clear();
+    }
   }
 
   async performHealthChecks() {
@@ -551,6 +564,14 @@ class SmartMarketDataStore {
 
     // IVx Data
     this.ivxDataBySymbol = reactive(new Map());
+    
+    // Track recent IVx subscription calls to prevent spamming
+    this.recentIvxCalls = new Map(); // symbol -> timestamp
+    this.ivxCallCooldown = 5000; // 5 seconds cooldown between calls for same symbol
+    
+    // Track IVx timeouts
+    this.ivxTimeouts = new Map(); // symbol -> timeout ID
+    this.ivxTimeout = 30000; // 30 seconds timeout for IVx calculations
 
     // Reactive data stores - REST API data
     this.data = reactive(new Map()); // General data store for all REST API data
@@ -889,16 +910,34 @@ class SmartMarketDataStore {
       if (!symbolIvxData) {
         return { 
           isLoading: true, 
+          status: 'loading',
           expirations: [], 
-          symbol: symbol 
+          symbol: symbol,
+          progress: { completed: 0, total: 0 },
+          error: null
+        };
+      }
+
+      // Check for error status
+      if (symbolIvxData.status === 'error') {
+        return {
+          isLoading: false,
+          status: 'error',
+          expirations: [],
+          symbol: symbol,
+          progress: symbolIvxData.progress || { completed: 0, total: 0 },
+          error: symbolIvxData.error || 'IVx calculation failed',
+          lastUpdated: symbolIvxData.lastUpdated
         };
       }
 
       return {
-        isLoading: false,
+        isLoading: symbolIvxData.status === 'loading' || symbolIvxData.status === 'calculating',
+        status: symbolIvxData.status || 'loading',
         expirations: symbolIvxData.expirations || [],
-        progress: symbolIvxData.progress,
+        progress: symbolIvxData.progress || { completed: 0, total: 0 },
         symbol: symbol,
+        error: symbolIvxData.error || null,
         lastUpdated: symbolIvxData.lastUpdated
       };
     });
@@ -980,9 +1019,87 @@ class SmartMarketDataStore {
   ensureIvxSubscription(symbol) {
     if (!symbol) return;
 
-    // For streaming IVx, we just need to ensure the symbol is in activeSubscriptions
-    // The backend will automatically start IVx calculations when a symbol is subscribed
+    // CRITICAL: Check if services are properly running
+    if (!this.isServicesRunning()) {
+      console.warn(`⚠️ IVx subscription blocked for ${symbol} - services not running. Auth: ${this.isAuthenticated}, Init: ${this.isInitialized}, Stopping: ${this.isServicesStopping}`);
+      return;
+    }
+
+    // Clean up old entries to prevent memory leak
+    const now = Date.now();
+    for (const [sym, timestamp] of this.recentIvxCalls.entries()) {
+      if (now - timestamp > this.ivxCallCooldown * 2) { // Keep for double the cooldown
+        this.recentIvxCalls.delete(sym);
+      }
+    }
+
+    // Check for recent calls to prevent spamming
+    const lastCall = this.recentIvxCalls.get(symbol);
+    if (lastCall && (now - lastCall) < this.ivxCallCooldown) {
+      return;
+    }
+
+    // Record this call
+    this.recentIvxCalls.set(symbol, now);
+
+    // Initialize IVx data structure immediately to show loading state
+    if (!this.ivxDataBySymbol.has(symbol)) {
+      const initialData = {
+        expirations: [],
+        status: 'loading',
+        lastUpdated: Date.now(),
+        progress: { completed: 0, total: 0 }
+      };
+      this.ivxDataBySymbol.set(symbol, initialData);
+      
+      // Set up timeout to detect failed calculations
+      const timeoutId = setTimeout(() => {
+        const symbolData = this.ivxDataBySymbol.get(symbol);
+        if (symbolData && (symbolData.status === 'loading' || symbolData.status === 'calculating')) {
+          console.warn(`⏰ IVx calculation timeout for ${symbol} (${this.ivxTimeout / 1000}s)`);
+          symbolData.status = 'error';
+          symbolData.error = 'IVx calculation timeout - this may be due to underlying price issues';
+          symbolData.lastUpdated = Date.now();
+          this.ivxDataBySymbol.set(symbol, { ...symbolData });
+        }
+        this.ivxTimeouts.delete(symbol);
+      }, this.ivxTimeout);
+      
+      this.ivxTimeouts.set(symbol, timeoutId);
+    }
+
+    // Ensure general subscription for price data and IVx
+    // This will use the existing debounced update mechanism
     this.ensureSubscription(symbol);
+  }
+
+  /**
+   * Retry IVx calculation for a symbol (clears error state and retries)
+   */
+  retryIvxCalculation(symbol) {
+    if (!symbol) return;
+
+    // Clear any existing timeout
+    const timeoutId = this.ivxTimeouts.get(symbol);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      this.ivxTimeouts.delete(symbol);
+    }
+
+    // Reset status to loading
+    const symbolData = this.ivxDataBySymbol.get(symbol);
+    if (symbolData) {
+      symbolData.status = 'loading';
+      symbolData.error = null;
+      symbolData.lastUpdated = Date.now();
+      this.ivxDataBySymbol.set(symbol, { ...symbolData });
+    }
+
+    // Clear recent call tracking to allow immediate retry
+    this.recentIvxCalls.delete(symbol);
+
+    // Retry the subscription
+    this.ensureIvxSubscription(symbol);
   }
 
   /**
@@ -1055,11 +1172,6 @@ class SmartMarketDataStore {
   async updateBackendSubscriptions() {
     // Don't attempt WebSocket operations if services are stopping or not authenticated
     if (this.isServicesStopping || !this.isAuthenticated) {
-      if (this.isServicesStopping) {
-        console.log("🔒 Skipping WebSocket subscription update - services are stopping");
-      } else {
-        console.log("🔒 Skipping WebSocket subscription update - user not authenticated");
-      }
       return;
     }
 
@@ -1319,6 +1431,8 @@ class SmartMarketDataStore {
    * Set up WebSocket integration to receive price updates
    */
   async setupWebSocketIntegration() {
+    console.log(`🔌 Setting up WebSocket integration (auth: ${this.isAuthenticated})`);
+    
     // The new webSocketClient connects automatically via the worker
     // We just need to set up the listeners
     
@@ -1339,7 +1453,19 @@ class SmartMarketDataStore {
     });
 
     webSocketClient.onIvxUpdate((data) => {
+      if (!data) {
+        console.warn('⚠️ Received empty IVx update data');
+        return;
+      }
       this.handleIvxUpdate(data);
+    });
+
+    webSocketClient.onIvxStatus((data) => {
+      if (!data) {
+        console.warn('⚠️ Received empty IVx status data');
+        return;
+      }
+      this.handleIvxStatus(data);
     });
 
     // Only connect to WebSocket if authenticated
@@ -1347,7 +1473,9 @@ class SmartMarketDataStore {
     // but we should avoid calling it at all when not authenticated
     if (this.isAuthenticated) {
       try {
+        console.log(`🔌 Attempting WebSocket connection...`);
         await webSocketClient.connect();
+        console.log(`✅ WebSocket connection established`);
       } catch (error) {
         console.error("❌ Failed to connect to WebSocket via worker:", error);
       }
@@ -1447,6 +1575,12 @@ class SmartMarketDataStore {
    * Handle incoming IVx updates from WebSocket - streaming partial data
    */
   handleIvxUpdate(data) {
+    // Validate incoming data
+    if (!data || typeof data !== 'object') {
+      console.warn('⚠️ Invalid IVx update data:', data);
+      return;
+    }
+
     // Extract symbol from the WebSocket message (it's at the top level, not in data.symbol)
     const symbol = data.symbol;
     if (!symbol) {
@@ -1459,11 +1593,45 @@ class SmartMarketDataStore {
     if (!symbolIvxData) {
       symbolIvxData = {
         expirations: [],
-        status: 'calculating',
+        status: 'loading', // loading -> calculating -> completed
         lastUpdated: Date.now(),
         progress: { completed: 0, total: 0 }
       };
       this.ivxDataBySymbol.set(symbol, symbolIvxData);
+    }
+
+    // Handle error status from backend
+    if (data.error || data.status === 'error') {
+      console.error(`❌ IVx calculation failed for ${symbol}:`, data.error || 'Unknown error');
+      symbolIvxData.status = 'error';
+      symbolIvxData.error = data.error || 'IVx calculation failed';
+      symbolIvxData.lastUpdated = Date.now();
+      
+      // Clear timeout since we got a response
+      const timeoutId = this.ivxTimeouts.get(symbol);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        this.ivxTimeouts.delete(symbol);
+      }
+      
+      this.ivxDataBySymbol.set(symbol, { ...symbolIvxData });
+      return;
+    }
+
+    // Handle completion status
+    if (data.status === 'completed') {
+      symbolIvxData.status = 'completed';
+      symbolIvxData.lastUpdated = Date.now();
+      
+      // Clear timeout since calculation completed
+      const timeoutId = this.ivxTimeouts.get(symbol);
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        this.ivxTimeouts.delete(symbol);
+      }
+      
+      this.ivxDataBySymbol.set(symbol, { ...symbolIvxData });
+      return;
     }
 
     // Handle partial IVx data update
@@ -1471,6 +1639,11 @@ class SmartMarketDataStore {
       const { expiration_date, ivx_percent, expected_move_dollars } = data.data;
       
       if (expiration_date && ivx_percent !== undefined) {
+        // Mark as actively calculating when we start receiving data
+        if (symbolIvxData.status === 'loading') {
+          symbolIvxData.status = 'calculating';
+        }
+        
         // Find existing expiration or add new one
         const existingIndex = symbolIvxData.expirations.findIndex(
           exp => exp.expiration_date === expiration_date
@@ -1501,6 +1674,77 @@ class SmartMarketDataStore {
     // Update progress if provided
     if (data.progress) {
       symbolIvxData.progress = data.progress;
+      
+      // Update status based on progress
+      if (data.progress.completed >= data.progress.total && data.progress.total > 0) {
+        // Only mark as completed if we actually have the expected data
+        if (symbolIvxData.expirations.length >= data.progress.completed) {
+          symbolIvxData.status = 'completed';
+        } else {
+          symbolIvxData.status = 'calculating'; // Keep calculating status
+        }
+      } else if (data.progress.completed > 0) {
+        symbolIvxData.status = 'calculating';
+      }
+    }
+
+    // Update timestamp
+    symbolIvxData.lastUpdated = Date.now();
+    
+    // Trigger reactivity update
+    this.ivxDataBySymbol.set(symbol, { ...symbolIvxData });
+  }
+
+  /**
+   * Handle IVx status updates (errors, completion, etc.)
+   */
+  handleIvxStatus(data) {
+    const symbol = data.symbol;
+    if (!symbol) {
+      console.warn('⚠️ IVx status update missing symbol:', data);
+      return;
+    }
+
+    // Get or create symbol's IVx data structure
+    let symbolIvxData = this.ivxDataBySymbol.get(symbol);
+    if (!symbolIvxData) {
+      symbolIvxData = {
+        expirations: [],
+        status: 'loading',
+        lastUpdated: Date.now(),
+        progress: { completed: 0, total: 0 }
+      };
+      this.ivxDataBySymbol.set(symbol, symbolIvxData);
+    }
+
+    // Handle status update
+    if (data.status) {
+      symbolIvxData.status = data.status;
+      
+      if (data.status === 'error') {
+        symbolIvxData.error = data.error || data.message || 'IVx calculation failed';
+        console.error(`❌ IVx error for ${symbol}:`, symbolIvxData.error);
+      } else if (data.status === 'completed') {
+        symbolIvxData.error = null;
+      }
+      
+      // Clear timeout for completed or error states
+      if (data.status === 'completed' || data.status === 'error') {
+        const timeoutId = this.ivxTimeouts.get(symbol);
+        if (timeoutId) {
+          clearTimeout(timeoutId);
+          this.ivxTimeouts.delete(symbol);
+        }
+      }
+    }
+
+    // Handle error message
+    if (data.error || data.message) {
+      symbolIvxData.error = data.error || data.message;
+      if (!data.status) {
+        symbolIvxData.status = 'error';
+      }
+      console.error(`❌ IVx error for ${symbol}:`, symbolIvxData.error);
     }
 
     // Update timestamp
@@ -1516,6 +1760,47 @@ class SmartMarketDataStore {
    */
   isOptionSymbol(symbol) {
     return symbol && symbol.length > 10 && /\d{6}[CP]\d{8}/.test(symbol);
+  }
+
+  /**
+   * Force trigger IVx subscription for a symbol (used after auth/service recovery)
+   */
+  forceTriggerIvxSubscription(symbol) {
+    if (!symbol) return;
+    
+    if (!this.isServicesRunning()) {
+      console.warn(`⚠️ Cannot force trigger IVx for ${symbol} - services not running`);
+      return;
+    }
+
+    // Clear recent call tracking to allow immediate trigger
+    this.recentIvxCalls.delete(symbol);
+    
+    // Clear any existing timeout
+    const timeoutId = this.ivxTimeouts.get(symbol);
+    if (timeoutId) {
+      clearTimeout(timeoutId);
+      this.ivxTimeouts.delete(symbol);
+    }
+
+    // Reset or create IVx data
+    const initialData = {
+      expirations: [],
+      status: 'loading',
+      lastUpdated: Date.now(),
+      progress: { completed: 0, total: 0 }
+    };
+    this.ivxDataBySymbol.set(symbol, initialData);
+
+    // Trigger subscription
+    this.ensureIvxSubscription(symbol);
+  }
+
+  /**
+   * Get all symbols that currently have IVx subscriptions
+   */
+  getCurrentIvxSymbols() {
+    return Array.from(this.ivxDataBySymbol.keys());
   }
 
   /**
@@ -2282,15 +2567,11 @@ class SmartMarketDataStore {
       const wasAuthenticated = this.isAuthenticated;
       this.isAuthenticated = authState.authenticated;
 
-      console.log(`🔐 Auth state changed: ${wasAuthenticated} -> ${this.isAuthenticated}`);
-
       if (this.isAuthenticated && !wasAuthenticated) {
         // User just logged in - start services
-        console.log("🚀 User authenticated, starting services");
         this.startServices();
       } else if (!this.isAuthenticated && wasAuthenticated) {
         // User just logged out - stop services
-        console.log("🛑 User logged out, stopping services");
         await this.stopServices();
       }
     };
@@ -2379,6 +2660,38 @@ class SmartMarketDataStore {
     this.setupRecoveryListeners();
 
     console.log("✅ SmartMarketDataStore services started");
+    
+    // CRITICAL: Update backend subscriptions for any symbols that were added before authentication
+    if (this.activeSubscriptions.size > 0) {
+      this.scheduleBackendUpdate();
+    }
+    
+    // CRITICAL: After services are started, retry any pending IVx subscriptions
+    // This handles the case where components tried to subscribe before WebSocket was ready
+    setTimeout(() => {
+      this.retryPendingIvxSubscriptions();
+    }, 2000); // Wait 2 seconds for WebSocket to be fully connected
+  }
+
+  /**
+   * Retry any pending IVx subscriptions after services are fully started
+   */
+  retryPendingIvxSubscriptions() {
+    if (!this.isServicesRunning()) {
+      return;
+    }
+
+    // Look for any IVx data that is still in 'loading' state and retry
+    let retriedCount = 0;
+    for (const [symbol, data] of this.ivxDataBySymbol.entries()) {
+      if (data.status === 'loading' && Date.now() - data.lastUpdated > 5000) {
+        this.retryIvxCalculation(symbol);
+        retriedCount++;
+      } else if (data.status === 'error') {
+        this.retryIvxCalculation(symbol);
+        retriedCount++;
+      }
+    }
   }
 
   /**
@@ -2432,12 +2745,19 @@ class SmartMarketDataStore {
     this.stockPrices.clear();
     this.optionPrices.clear();
     this.optionGreeks.clear();
-    this.ivxDataBySymbol.clear();
+    this.ivxDataBySymbol.clear(); // Clear IVx data so we get fresh data on restart
     this.previousClosePrices.clear();
     this.data.clear();
     this.cache.clear();
     this.loading.clear();
     this.errors.clear();
+
+    // Clear IVx call tracking and timeouts
+    this.recentIvxCalls.clear();
+    for (const timeoutId of this.ivxTimeouts.values()) {
+      clearTimeout(timeoutId);
+    }
+    this.ivxTimeouts.clear();
 
     // Clear current symbol data
     this.clearCurrentSymbolDaily6M();

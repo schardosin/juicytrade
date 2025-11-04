@@ -52,7 +52,8 @@ export function useOptionsChainManager(
   const subscribedSymbols = ref(new Set());
 
   // Loading and error states
-  const loading = ref(false);
+  const loading = ref(false); // Only true when the entire component should be blocked
+  const expirationDatesLoading = ref(false); // Separate loading state for expiration dates
   const error = ref(null);
 
   // Available expiration dates
@@ -125,26 +126,43 @@ export function useOptionsChainManager(
    * Load expiration dates for the current symbol
    */
   const loadExpirationDates = async () => {
-    if (!symbol.value) return;
+    if (!symbol.value) {
+      return;
+    }
+
+    // CRITICAL: Check if services are running before making API calls
+    if (smartMarketDataStore.isServicesStopping) {
+      console.warn(`⚠️ Options Manager: Skipping expiration dates load for ${symbol.value} - services stopping`);
+      return;
+    }
+
+    if (authService.isAuthEnabled() && !authService.isAuthenticated()) {
+      console.warn(`🔒 Options Manager: Skipping expiration dates load for ${symbol.value} - not authenticated`);
+      return;
+    }
+
+    console.log(`📅 Options Manager: Loading expiration dates for ${symbol.value} (auth: ${authService.isAuthenticated()}, services running: ${smartMarketDataStore.isServicesRunning()})`);
 
     try {
-      loading.value = true;
+      expirationDatesLoading.value = true; // Use separate loading state
       error.value = null;
 
       const dates = await api.getAvailableExpirations(symbol.value);
       
       if (dates && dates.length > 0) {
         expirationDates.value = dates;
+        console.log(`✅ Options Manager: Successfully loaded ${dates.length} expiration dates for ${symbol.value}`);
       } else {
         expirationDates.value = [];
         error.value = "No expiration dates available";
+        console.warn(`⚠️ Options Manager: No expiration dates available for ${symbol.value}`);
       }
     } catch (err) {
-      console.error("Error loading expiration dates:", err);
+      console.error(`❌ Options Manager: Error loading expiration dates for ${symbol.value}:`, err);
       error.value = "Failed to load expiration dates";
       expirationDates.value = [];
     } finally {
-      loading.value = false;
+      expirationDatesLoading.value = false;
     }
   };
 
@@ -315,6 +333,7 @@ export function useOptionsChainManager(
     subscribedSymbols.value.clear();
     expirationDates.value = [];
     error.value = null;
+    
     // After clearing data, wait for the next DOM update cycle before updating subscriptions.
     // This ensures that computed properties like `allSubscribedSymbols` have been recalculated.
     nextTick(() => {
@@ -425,19 +444,31 @@ export function useOptionsChainManager(
 
     // ===== Watchers =====
   
-    // Watch for symbol changes
+    // Watch for symbol changes - NON-BLOCKING VERSION
     watch(
     symbol,
-    async (newSymbol, oldSymbol) => {
-      if (newSymbol !== oldSymbol) {
+    (newSymbol, oldSymbol) => {
+      if (newSymbol !== oldSymbol && newSymbol) {
         clearAllData();
-        if (newSymbol) {
-          await loadExpirationDates();
-        }
+        // Load expiration dates asynchronously in next tick to avoid blocking
+        nextTick(() => {
+          loadExpirationDates().catch(error => {
+            console.error(`Failed to load expiration dates for ${newSymbol}:`, error);
+          });
+        });
       }
-    },
-    { immediate: true }
+    }
+    // Remove immediate: true to avoid blocking on component creation
   );
+
+  // Load initial data for the current symbol if it exists
+  if (symbol.value) {
+    nextTick(() => {
+      loadExpirationDates().catch(error => {
+        console.error(`Failed to load initial expiration dates for ${symbol.value}:`, error);
+      });
+    });
+  }
 
   // ===== Public API =====
 
@@ -448,6 +479,7 @@ export function useOptionsChainManager(
     expandedExpirations,
     expirationDates,
     loading,
+    expirationDatesLoading, // Expose separate loading state
     error,
     strikeCount, // Expose current strike count
 

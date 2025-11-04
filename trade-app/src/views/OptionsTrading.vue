@@ -43,7 +43,7 @@
               :underlyingPrice="currentPrice"
               :expirationDates="optionsManager.expirationDates.value"
               :optionsDataByExpiration="optionsManager.dataByExpiration.value"
-              :loading="optionsManager.loading.value"
+              :loading="shouldShowLoading"
               :error="optionsManager.error.value"
               :expandedExpirations="optionsManager.expandedExpirations.value"
               :currentStrikeCount="optionsManager.strikeCount.value"
@@ -213,10 +213,26 @@ export default {
     const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
     const { getIvxData } = useMarketData();
-    const ivxData = getIvxData(
+    const rawIvxData = getIvxData(
       computed(() => globalSymbolState.currentSymbol),
       computed(() => globalSymbolState.currentPrice)
     );
+    
+    // Create defensive IVx data with fallbacks
+    const ivxData = computed(() => {
+      const data = rawIvxData.value;
+      if (!data) {
+        return {
+          isLoading: true,
+          status: 'loading',
+          expirations: [],
+          progress: { completed: 0, total: 0 },
+          symbol: globalSymbolState.currentSymbol,
+          error: null
+        };
+      }
+      return data;
+    });
 
     const {
       showOrderConfirmation,
@@ -242,21 +258,24 @@ export default {
           // Clear existing data
           clearAllSelections();
           optionsChainData.value = [];
-          optionsDataByExpiration.value = {}; // Clear CollapsibleOptionsChain data
+          optionsDataByExpiration.value = {}; // Clear CollapsibleOptionsChain data (legacy)
           expirationDates.value = [];
           selectedExpiry.value = null;
 
-          // Fetch new data for the selected symbol
-          try {
-            await fetchSymbolData(symbolData.symbol);
-            await fetchExpirationDates(symbolData.symbol);
-
-            if (selectedExpiry.value) {
-              onExpiryChange();
+          // CRITICAL: Manually clear the options manager state completely
+          optionsManager.clearAllData(); // This should clear everything including expirationDates
+          
+          // CRITICAL: Update the symbol ref to trigger the watcher
+          symbolRef.value = symbolData.symbol;
+          
+          // The symbol watcher should now trigger automatically, but also trigger manually as backup
+          nextTick(() => {
+            if (optionsManager.loadExpirationDates) {
+              optionsManager.loadExpirationDates().catch(error => {
+                console.error(`Failed to load expiration dates for ${symbolData.symbol}:`, error);
+              });
             }
-          } catch (error) {
-            console.error("Error loading data for new symbol:", error);
-          }
+          });
         }
       });
 
@@ -267,9 +286,22 @@ export default {
     const hasExplicitPositionSelection = ref(false); // Track if user has made checkbox selections
 
     // Use centralized options chain manager
+    // Create symbol and price refs that are properly reactive to globalSymbolState
+    const symbolRef = ref(globalSymbolState.currentSymbol);
+    const priceRef = ref(globalSymbolState.currentPrice);
+    
+    // Watch for global symbol changes and update the refs
+    watch(() => globalSymbolState.currentSymbol, (newSymbol) => {
+      symbolRef.value = newSymbol;
+    });
+    
+    watch(() => globalSymbolState.currentPrice, (newPrice) => {
+      priceRef.value = newPrice;
+    });
+    
     const optionsManager = useOptionsChainManager(
-      computed(() => globalSymbolState.currentSymbol),
-      computed(() => globalSymbolState.currentPrice),
+      symbolRef,  // Use reactive ref
+      priceRef,   // Use reactive ref
       20 // default strike count
     );
 
@@ -315,6 +347,14 @@ export default {
       negative: priceChange.value < 0,
       neutral: priceChange.value === 0,
     }));
+
+    // Smart loading state - only show loading when we have no expiration dates to display
+    // This prevents blocking the UI while expiration dates are loading
+    const shouldShowLoading = computed(() => {
+      // Show loading only if we're loading expiration dates AND we have no expirations to show
+      return optionsManager.expirationDatesLoading.value && 
+             optionsManager.expirationDates.value.length === 0;
+    });
 
     const marketStatusClass = computed(() => ({
       open: marketStatus.value === "Market Open",
@@ -1023,6 +1063,38 @@ export default {
       windowHeight.value = window.innerHeight;
     };
 
+    // Listen for system recovery events to refresh data
+    const handleSystemRecovery = async (event) => {
+      try {
+        // Only refresh data if user is authenticated
+        if (!authService.isAuthenticated()) {
+          console.log('🔒 Skipping system recovery data refresh - user not authenticated');
+          return;
+        }
+        
+        console.log('🎉 System recovery detected, refreshing options data');
+        
+        // Refresh all critical data after recovery
+        await fetchSymbolData(currentSymbol.value);
+        await fetchExpirationDates(currentSymbol.value);
+        
+        // If we had a selected expiry, refresh its options chain
+        if (selectedExpiry.value) {
+        }
+        
+        // Refresh options manager data
+        await optionsManager.refreshAllData();
+        
+        // CRITICAL: Force trigger IVx subscription after recovery
+        if (smartMarketDataStore.isServicesRunning()) {
+          console.log(`🔄 Force triggering IVx for ${currentSymbol.value} after recovery`);
+          smartMarketDataStore.forceTriggerIvxSubscription(currentSymbol.value);
+        }
+      } catch (error) {
+        console.error('❌ Error refreshing OptionsTrading data after recovery:', error);
+      }
+    };
+
     // Lifecycle hooks
     onMounted(async () => {
       // Check if user is authenticated before making any API calls
@@ -1042,31 +1114,45 @@ export default {
       // Set up centralized symbol selection listener
       const cleanup = setupSymbolSelectionListener();
 
-      // Listen for system recovery events to refresh data
-      const handleSystemRecovery = async (event) => {
-        try {
-          // Only refresh data if user is authenticated
-          if (!authService.isAuthenticated()) {
-            console.log('🔒 Skipping system recovery data refresh - user not authenticated');
-            return;
+      window.addEventListener("websocket-recovered", handleSystemRecovery);
+      
+      // CRITICAL: Listen for when services become available and force trigger IVx
+      const checkServicesAndTriggerIvx = () => {
+        if (smartMarketDataStore.isServicesRunning() && currentSymbol.value) {
+          const existingIvxData = smartMarketDataStore.ivxDataBySymbol.get(currentSymbol.value);
+          
+          // Only trigger if we don't have IVx data or if it's in a bad state
+          if (!existingIvxData || existingIvxData.status === 'loading' || existingIvxData.status === 'error' || 
+              (existingIvxData.expirations && existingIvxData.expirations.length === 0)) {
+            console.log(`🔄 Services now running, force triggering IVx for ${currentSymbol.value} (current status: ${existingIvxData?.status || 'none'})`);
+            smartMarketDataStore.forceTriggerIvxSubscription(currentSymbol.value);
+            return true; // Indicate we triggered
+          } else {
+            console.log(`✅ IVx already in good state for ${currentSymbol.value} (status: ${existingIvxData.status}, expirations: ${existingIvxData.expirations?.length || 0})`);
+            return false; // Indicate no trigger needed
           }
-          
-          // Refresh all critical data after recovery
-          await fetchSymbolData(currentSymbol.value);
-          await fetchExpirationDates(currentSymbol.value);
-          
-          // If we had a selected expiry, refresh its options chain
-          if (selectedExpiry.value) {
-          }
-          
-          // Refresh options manager data
-          await optionsManager.refreshAllData();
-        } catch (error) {
-          console.error('❌ Error refreshing OptionsTrading data after recovery:', error);
         }
+        return false;
       };
 
-      window.addEventListener("websocket-recovered", handleSystemRecovery);
+      // Check immediately in case services are already running
+      checkServicesAndTriggerIvx();
+
+      // Also check periodically for the first few seconds after mount, but stop when successful
+      let checkCount = 0;
+      const maxChecks = 10; // Stop after 10 seconds
+      const serviceCheckInterval = setInterval(() => {
+        checkCount++;
+        const triggered = checkServicesAndTriggerIvx();
+        
+        // Stop checking if we successfully triggered or exceeded max checks
+        if (triggered || checkCount >= maxChecks) {
+          clearInterval(serviceCheckInterval);
+          if (checkCount >= maxChecks) {
+            console.log(`⏰ Stopped IVx checking after ${maxChecks} attempts`);
+          }
+        }
+      }, 1000);
       
       // Add window resize listener for responsive chart
       window.addEventListener('resize', handleWindowResize);
@@ -1310,6 +1396,7 @@ export default {
       // Computed
       priceChangeClass,
       marketStatusClass,
+      shouldShowLoading,
       estimatedCost,
       rightPanelSection,
       livePrice,
