@@ -1351,35 +1351,211 @@ export default {
   .calls-header,
   .puts-header {
     padding: var(--spacing-sm) var(--spacing-sm);
-    gap: 4px;
+    gap: 6px; /* Increased from 4px */
   }
 
   .option-data {
     padding: var(--spacing-sm) var(--spacing-sm);
-    gap: 4px;
+    gap: 6px; /* Increased from 4px */
   }
 
   .strike-cell {
-    padding: var(--spacing-sm) var(--spacing-xs);
+    padding: var(--spacing-sm) var(--spacing-sm); /* Increased padding */
   }
 
   .strike-price {
-    font-size: var(--font-size-sm);
+    font-size: var(--font-size-md); /* Increased from sm */
+    font-weight: var(--font-weight-bold);
   }
 
   .greek-cell,
   .price-cell {
+    font-size: var(--font-size-sm); /* Increased from xs */
+    padding: 4px; /* Increased from 1px */
+    font-weight: var(--font-weight-medium);
+  }
+
+  .price-cell {
+    font-weight: var(--font-weight-semibold); /* Make prices more prominent */
+    min-height: 32px; /* Ensure adequate touch target */
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .header-cell {
+    font-size: var(--font-size-sm); /* Increased from xs */
+    font-weight: var(--font-weight-semibold);
+  }
+
+  .strike-header {
+    padding: var(--spacing-sm) var(--spacing-sm); /* Increased padding */
+    font-size: var(--font-size-md); /* Increased from sm */
+    font-weight: var(--font-weight-bold);
+  }
+
+  /* Increase strike column width slightly for better readability */
+  .option-row {
+    grid-template-columns: 1fr 80px 1fr; /* Increased from 70px */
+  }
+
+  .options-header.mobile-layout {
+    grid-template-columns: 1fr 80px 1fr; /* Match the row layout */
+  }
+
+  /* Improve touch targets and spacing */
+  .option-data.mobile-layout {
+    min-height: 44px; /* Better touch target */
+    align-items: center;
+  }
+
+  /* Make ITM labels more visible on mobile */
+  .itm-label {
     font-size: var(--font-size-xs);
+    padding: 3px 8px; /* Slightly larger padding */
+    font-weight: var(--font-weight-bold);
+  }
+
+  /* Improve expiration header readability on mobile */
+  .date-label {
+    font-size: var(--font-size-md); /* Keep readable size */
+    font-weight: var(--font-weight-bold);
+  }
+
+  .days-label {
+    font-size: var(--font-size-sm); /* Slightly larger */
+    font-weight: var(--font-weight-semibold);
+    padding: 4px 10px; /* More padding */
+  }
+
+  .iv-label {
+    font-size: var(--font-size-sm); /* Slightly larger */
+  }
+}
+
+/* Extra small phones - optimize for very narrow screens */
+@media (max-width: 480px) {
+  /* Reduce strike column width for very small screens */
+  .option-row {
+    grid-template-columns: 1fr 70px 1fr; /* Back to 70px for small phones */
+  }
+
+  .options-header.mobile-layout {
+    grid-template-columns: 1fr 70px 1fr; /* Match the row layout */
+  }
+
+  /* Reduce padding and gaps for small screens */
+  .calls-header,
+  .puts-header {
+    padding: var(--spacing-xs) var(--spacing-xs);
+    gap: 4px; /* Smaller gap for tight spaces */
+  }
+
+  .option-data {
+    padding: var(--spacing-xs) var(--spacing-xs);
+    gap: 4px; /* Smaller gap for tight spaces */
+  }
+
+  .strike-cell {
+    padding: var(--spacing-xs) var(--spacing-xs); /* Reduced padding */
+  }
+
+  .strike-header {
+    padding: var(--spacing-xs) var(--spacing-xs); /* Reduced padding */
+    font-size: var(--font-size-sm); /* Slightly smaller for very small screens */
+  }
+
+  /* Adjust font sizes for very small screens */
+  .strike-price {
+    font-size: var(--font-size-sm); /* Slightly smaller */
+  }
+
+  .greek-cell,
+  .price-cell {
+    font-size: var(--font-size-xs); /* Smaller for tight spaces */
+    padding: 2px; /* Reduced padding */
+  }
+
+  .header-cell {
+    font-size: var(--font-size-xs); /* Smaller headers */
+  }
+
+  /* Reduce touch target slightly for very small screens */
+  .price-cell {
+    min-height: 28px; /* Smaller but still touch-friendly */
+  }
+
+  .option-data.mobile-layout {
+    min-height: 36px; /* Smaller but still usable */
+  }
+
+  /* Adjust ITM labels for small screens */
+  .itm-label {
+    font-size: 9px; /* Smaller font */
+    padding: 2px 6px; /* Smaller padding */
+  }
+
+  /* Adjust expiration header for small screens */
+  .date-label {
+    font-size: var(--font-size-sm); /* Smaller */
+  }
+
+  .days-label {
+    font-size: var(--font-size-xs); /* Smaller */
+    padding: 3px 8px; /* Smaller padding */
+  }
+
+  .iv-label {
+    font-size: var(--font-size-xs); /* Smaller */
+  }
+}
+
+/* Very small phones - further optimization */
+@media (max-width: 360px) {
+  /* Further reduce strike column for very narrow screens */
+  .option-row {
+    grid-template-columns: 1fr 60px 1fr; /* Even smaller for very narrow screens */
+  }
+
+  .options-header.mobile-layout {
+    grid-template-columns: 1fr 60px 1fr; /* Match the row layout */
+  }
+
+  /* Minimal padding for very small screens */
+  .calls-header,
+  .puts-header,
+  .option-data {
+    padding: 2px;
+    gap: 2px;
+  }
+
+  .strike-cell,
+  .strike-header {
+    padding: 2px;
+  }
+
+  /* Compact font sizes */
+  .strike-price {
+    font-size: 12px; /* Fixed small size */
+  }
+
+  .greek-cell,
+  .price-cell {
+    font-size: 10px; /* Very small but readable */
     padding: 1px;
   }
 
   .header-cell {
-    font-size: var(--font-size-xs);
+    font-size: 9px; /* Very small headers */
   }
 
-  .strike-header {
-    padding: var(--spacing-sm) var(--spacing-xs);
-    font-size: var(--font-size-sm);
+  /* Minimal touch targets */
+  .price-cell {
+    min-height: 24px;
+  }
+
+  .option-data.mobile-layout {
+    min-height: 32px;
   }
 }
 </style>
