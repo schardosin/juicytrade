@@ -212,29 +212,7 @@ export default {
     
     const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
-    const { getIvxData } = useMarketData();
-    const rawIvxData = getIvxData(
-      computed(() => globalSymbolState.currentSymbol),
-      computed(() => globalSymbolState.currentPrice)
-    );
-    
-    // Create defensive IVx data with fallbacks
-    const ivxData = computed(() => {
-      const data = rawIvxData.value;
-      if (!data) {
-        return {
-          isLoading: true,
-          status: 'loading',
-          expirations: [],
-          progress: { completed: 0, total: 0 },
-          symbol: globalSymbolState.currentSymbol,
-          error: null
-        };
-      }
-      return data;
-    });
-
-    const {
+    const { getIvxData } = useMarketData();    const {
       showOrderConfirmation,
       showOrderResult,
       orderData,
@@ -304,6 +282,32 @@ export default {
       priceRef,   // Use reactive ref
       20 // default strike count
     );
+
+    // Get IVx data for current symbol (after globalSymbolState is initialized)
+    console.log('🔍 OptionsTrading: Setting up rawIvxData for symbol:', globalSymbolState.currentSymbol);
+    const rawIvxData = getIvxData(
+      computed(() => {
+        console.log('🔍 OptionsTrading: rawIvxData computed symbol changed to:', globalSymbolState.currentSymbol);
+        return globalSymbolState.currentSymbol;
+      })
+    );
+
+    // Create defensive IVx data with fallbacks
+    const ivxData = computed(() => {
+      const data = rawIvxData.value;
+      console.log('🔍 OptionsTrading ivxData computed running, rawIvxData.value:', data);
+      if (!data) {
+        return {
+          isLoading: true,
+          status: 'loading',
+          expirations: [],
+          progress: { completed: 0, total: 0 },
+          symbol: globalSymbolState.currentSymbol,
+          error: null
+        };
+      }
+      return data;
+    });
 
     // Local reactive data (non-symbol related)
     const selectedExpiry = ref(null);
@@ -1085,10 +1089,10 @@ export default {
         // Refresh options manager data
         await optionsManager.refreshAllData();
         
-        // CRITICAL: Force trigger IVx subscription after recovery
-        if (smartMarketDataStore.isServicesRunning()) {
-          console.log(`🔄 Force triggering IVx for ${currentSymbol.value} after recovery`);
-          smartMarketDataStore.forceTriggerIvxSubscription(currentSymbol.value);
+        // With API approach, clear cache to force fresh data on next access
+        if (smartMarketDataStore.isServicesRunning() && currentSymbol.value) {
+          console.log(`🔄 Clearing IVx cache for ${currentSymbol.value} after recovery`);
+          smartMarketDataStore.clearCacheData(`ivxData.${currentSymbol.value}`);
         }
       } catch (error) {
         console.error('❌ Error refreshing OptionsTrading data after recovery:', error);
@@ -1117,22 +1121,10 @@ export default {
       window.addEventListener("websocket-recovered", handleSystemRecovery);
       
       // CRITICAL: Listen for when services become available and force trigger IVx
+      // With API approach, IVx data is automatically fetched when needed
+      // No manual triggering required
       const checkServicesAndTriggerIvx = () => {
-        if (smartMarketDataStore.isServicesRunning() && currentSymbol.value) {
-          const existingIvxData = smartMarketDataStore.ivxDataBySymbol.get(currentSymbol.value);
-          
-          // Only trigger if we don't have IVx data or if it's in a bad state
-          if (!existingIvxData || existingIvxData.status === 'loading' || existingIvxData.status === 'error' || 
-              (existingIvxData.expirations && existingIvxData.expirations.length === 0)) {
-            console.log(`🔄 Services now running, force triggering IVx for ${currentSymbol.value} (current status: ${existingIvxData?.status || 'none'})`);
-            smartMarketDataStore.forceTriggerIvxSubscription(currentSymbol.value);
-            return true; // Indicate we triggered
-          } else {
-            console.log(`✅ IVx already in good state for ${currentSymbol.value} (status: ${existingIvxData.status}, expirations: ${existingIvxData.expirations?.length || 0})`);
-            return false; // Indicate no trigger needed
-          }
-        }
-        return false;
+        return true; // Always return true as API handles fetching automatically
       };
 
       // Check immediately in case services are already running

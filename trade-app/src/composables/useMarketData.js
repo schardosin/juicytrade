@@ -43,10 +43,12 @@ export function useMarketData() {
   };
 
   /**
-   * Get reactive IVx data for a symbol
+   * Get reactive IVx data for a symbol - NEW API-based approach
+   * Uses TTL caching for optimal performance
    */
-  const getIvxData = (symbol, underlyingPrice) => {
-    return smartMarketDataStore.getIvxData(symbol, underlyingPrice);
+  const getIvxData = (symbol) => {
+    console.log('🔍 useMarketData.getIvxData called with symbol:', symbol);
+    return smartMarketDataStore.getIvxData(symbol);
   };
 
   // ===== PERIODIC DATA (Auto-refreshing) =====

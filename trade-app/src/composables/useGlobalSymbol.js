@@ -156,9 +156,8 @@ export function useGlobalSymbol(options = {}) {
         console.error(`❌ Failed to load positions for ${newSymbol}:`, error);
       });
       
-      // Load IVx in background
-      console.log(`🔄 Starting background IVx loading for new symbol: ${newSymbol}`);
-      smartMarketDataStore.ensureIvxSubscription(newSymbol);
+      // With API approach, IVx data is automatically fetched when components request it
+      console.log(`🔄 IVx will be loaded automatically when components request it for: ${newSymbol}`);
       
       console.log(`🚀 Successfully initiated background data loading for ${newSymbol}`);
     }

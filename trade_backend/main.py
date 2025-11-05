@@ -3,6 +3,7 @@ import debugpy
 import asyncio
 import uvicorn
 import logging
+import time
 from contextlib import asynccontextmanager
 
 # Check for debug mode at the very start
@@ -87,10 +88,10 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("⚠️ Streaming manager connection failed - continuing with limited functionality")
         
-        # Start IVx streaming manager
-        logger.info("🔄 Starting IVx streaming manager...")
-        await ivx_streaming_manager.start()
-        logger.info("✅ IVx streaming manager started")
+        # DISABLED: IVx streaming manager (using API-based approach instead)
+        logger.info("🔄 IVx streaming manager disabled - using API-based IVx calculation")
+        # await ivx_streaming_manager.start()
+        # logger.info("✅ IVx streaming manager started")
         
         # Initialize Strategy Database
         logger.info("🔄 Initializing Strategy Database...")
@@ -119,11 +120,11 @@ async def lifespan(app: FastAPI):
     # Shutdown - this will be handled by the shutdown manager
     logger.info("🛑 Application lifespan shutdown - cleanup will be handled by shutdown manager")
     
-    # Stop IVx streaming manager
+    # DISABLED: IVx streaming manager shutdown (using API-based approach instead)
     try:
-        logger.info("🛑 Stopping IVx streaming manager...")
-        await ivx_streaming_manager.stop()
-        logger.info("✅ IVx streaming manager stopped")
+        logger.info("🛑 IVx streaming manager disabled - no shutdown needed")
+        # await ivx_streaming_manager.stop()
+        # logger.info("✅ IVx streaming manager stopped")
     except Exception as e:
         logger.error(f"❌ Error stopping IVx streaming manager: {e}")
 
@@ -894,6 +895,280 @@ async def get_ivx_cache_status():
         )
     except Exception as e:
         logger.error(f"Error getting IVX cache status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/ivx/{symbol}", response_model=ApiResponse)
+async def get_ivx_data(symbol: str):
+    """Get IVx data for a symbol across all available expirations."""
+    try:
+        logger.info(f"📊 API request for IVx data for {symbol}")
+        
+        # Check cache first
+        cached_data = ivx_cache.get(symbol)
+        if cached_data:
+            logger.info(f"📦 Returning cached IVx data for {symbol} ({len(cached_data)} expirations)")
+            return ApiResponse(
+                success=True,
+                data={
+                    "symbol": symbol,
+                    "expirations": cached_data,
+                    "cached": True,
+                    "calculation_time": None
+                },
+                message=f"Retrieved cached IVx data for {symbol} ({len(cached_data)} expirations)"
+            )
+        
+        # Calculate fresh data
+        logger.info(f"🔄 Calculating fresh IVx data for {symbol}")
+        start_time = time.time()
+        
+        # Get the options provider (same as streaming version)
+        provider = provider_manager._get_provider("options_chain")
+        if not provider:
+            return ApiResponse(
+                success=False,
+                data={"symbol": symbol, "expirations": [], "error": "No options provider available"},
+                message=f"No options provider available for {symbol}"
+            )
+        
+        # Get all available expirations
+        expiration_dates = await provider.get_expiration_dates(symbol)
+        if not expiration_dates:
+            return ApiResponse(
+                success=False,
+                data={"symbol": symbol, "expirations": [], "error": "No expiration dates available"},
+                message=f"No expiration dates available for {symbol}"
+            )
+        
+        # Get underlying price (with fallback for indices like SPX)
+        logger.info(f"🔍 Getting stock quote for {symbol}")
+        quote = await provider.get_stock_quote(symbol)
+        logger.info(f"🔍 Quote result: {quote}")
+        
+        underlying_price = None
+        if quote is not None:
+            # Try to get price from last, then bid/ask midpoint, then individual bid or ask
+            if quote.last is not None:
+                underlying_price = quote.last
+                logger.info(f"📈 Using last price for {symbol}: ${underlying_price}")
+            elif quote.bid is not None and quote.ask is not None:
+                underlying_price = (quote.bid + quote.ask) / 2
+                logger.info(f"📈 Using bid/ask midpoint for {symbol}: ${underlying_price} (bid: ${quote.bid}, ask: ${quote.ask})")
+            elif quote.bid is not None:
+                underlying_price = quote.bid
+                logger.info(f"📈 Using bid price for {symbol}: ${underlying_price}")
+            elif quote.ask is not None:
+                underlying_price = quote.ask
+                logger.info(f"📈 Using ask price for {symbol}: ${underlying_price}")
+        
+        # Fallback for indices like SPX where direct quotes might fail
+        if underlying_price is None:
+            logger.warning(f"⚠️ Direct quote failed for {symbol}, trying fallback via options chain")
+            try:
+                # Get the first expiration to find underlying price from options chain
+                first_expiry = expiration_dates[0]['date'] if expiration_dates else None
+                if first_expiry:
+                    # Use the expiration symbol for options chain lookup
+                    first_exp_symbol = expiration_dates[0].get('symbol', symbol)
+                    logger.info(f"� Trying options chain fallback for {symbol} using expiry {first_expiry} and symbol {first_exp_symbol}")
+                    
+                    fallback_options = await provider.get_options_chain_basic(
+                        symbol=first_exp_symbol,
+                        expiry=first_expiry,
+                        strike_count=5,
+                        underlying_symbol=symbol
+                    )
+                    
+                    if fallback_options and len(fallback_options) > 0:
+                        # Some providers include underlying price in options response
+                        if hasattr(fallback_options[0], 'underlying_price') and fallback_options[0].underlying_price:
+                            underlying_price = fallback_options[0].underlying_price
+                            logger.info(f"📈 Using underlying price from options chain for {symbol}: ${underlying_price}")
+                        else:
+                            # Estimate from ATM strikes - find middle strike as approximation
+                            strikes = sorted([opt.strike_price for opt in fallback_options])
+                            if strikes:
+                                underlying_price = strikes[len(strikes) // 2]  # Use middle strike as approximation
+                                logger.info(f"📈 Estimated underlying price from strikes for {symbol}: ${underlying_price}")
+            except Exception as e:
+                logger.error(f"❌ Options chain fallback failed for {symbol}: {e}")
+        
+        if underlying_price is None:
+            logger.error(f"❌ No valid price available for {symbol}: quote={quote}")
+            return ApiResponse(
+                success=False,
+                data={"symbol": symbol, "expirations": [], "error": "No valid price available"},
+                message=f"No valid price available for {symbol}"
+            )
+        
+        # Calculate IVx for each expiration (PARALLEL PROCESSING - same as streaming)
+        ivx_results = []
+        logger.info(f"🔄 Processing {len(expiration_dates)} expiration dates for {symbol}")
+        
+        # Use the same parallel processing approach as streaming
+        import asyncio
+        
+        # Worker function to process a single expiration (extracted from streaming logic)
+        async def process_single_expiration(expiration_date):
+            try:
+                # Extract date string and other info from expiration dict if needed
+                if isinstance(expiration_date, dict):
+                    date_str = expiration_date.get('date')
+                    exp_type = expiration_date.get('type')
+                    date_str_symbol = expiration_date.get('symbol', symbol)
+                    if not date_str:
+                        logger.warning(f"⚠️ Expiration dict missing 'date' field: {expiration_date}")
+                        return None
+                else:
+                    date_str = expiration_date
+                    exp_type = None
+                    date_str_symbol = symbol
+                
+                logger.info(f"📅 Processing expiration: {date_str}")
+                
+                # Get basic options chain (same as streaming - step 1)
+                options_chain = await provider.get_options_chain_basic(
+                    symbol=date_str_symbol,
+                    expiry=date_str,
+                    underlying_price=underlying_price,
+                    strike_count=20,
+                    type=exp_type,
+                    underlying_symbol=symbol
+                )
+                
+                if not options_chain:
+                    logger.warning(f"No options chain for {symbol} {date_str}")
+                    return None
+
+                # Find ATM strike (same as streaming - step 2)
+                atm_strike = None
+                min_diff = float('inf')
+                for contract in options_chain:
+                    diff = abs(contract.strike_price - underlying_price)
+                    if diff < min_diff:
+                        min_diff = diff
+                        atm_strike = contract.strike_price
+                
+                if not atm_strike:
+                    logger.warning(f"Could not find ATM strike for {symbol} {date_str}")
+                    return None
+                
+                # Find ATM call and put contracts (same as streaming - step 3)
+                atm_call = next((c for c in options_chain if c.strike_price == atm_strike and c.type == 'call'), None)
+                atm_put = next((c for c in options_chain if c.strike_price == atm_strike and c.type == 'put'), None)
+                
+                if not atm_call or not atm_put:
+                    logger.warning(f"Could not find ATM call/put for {symbol} {date_str} at strike {atm_strike}")
+                    return None
+                
+                # Get live greeks/IV data for ATM options (same as streaming - step 4)
+                symbols_to_fetch = [atm_call.symbol, atm_put.symbol]
+                
+                try:
+                    greeks_results_dict = await provider.get_streaming_greeks_batch(symbols_to_fetch)
+                except asyncio.TimeoutError:
+                    logger.warning(f"Timeout fetching greeks for {symbol} {date_str}")
+                    return None
+                except Exception as e:
+                    logger.error(f"Error fetching greeks for {symbol} {date_str}: {e}")
+                    return None
+                
+                # Extract valid IVs (same as streaming - step 5)
+                valid_ivs = [
+                    greeks.get('implied_volatility') 
+                    for greeks in greeks_results_dict.values() 
+                    if greeks and greeks.get('implied_volatility') is not None
+                ]
+                
+                if not valid_ivs:
+                    logger.warning(f"Failed to get IV for ATM options for {symbol} {date_str}")
+                    return None
+                
+                # Calculate IVx (average of ATM call and put IV - same as streaming)
+                ivx = sum(valid_ivs) / len(valid_ivs)
+                
+                # Calculate DTE and expected move (same as streaming)
+                exp_date = datetime.strptime(date_str, "%Y-%m-%d").date()
+                today = datetime.now().date()
+                dte = (exp_date - today).days
+                
+                if dte <= 0:
+                    logger.warning(f"Skipping expired expiration {symbol} {date_str} (DTE: {dte})")
+                    return None
+                
+                # Calculate expected move (same as streaming)
+                def calculate_expected_move(underlying_price: float, ivx: float, dte: int) -> float:
+                    """Calculate the expected move in dollars."""
+                    import math
+                    return underlying_price * ivx * math.sqrt(dte / 365)
+                
+                expected_move = calculate_expected_move(underlying_price, ivx, dte)
+                
+                # Create result (same format as streaming)
+                result = {
+                    "expiration_date": date_str,
+                    "days_to_expiration": dte,
+                    "ivx_percent": round(ivx * 100, 2),
+                    "expected_move_dollars": round(expected_move, 2),
+                    "calculation_method": "atm_iv_average",  # Same as streaming
+                    "options_count": len(options_chain)
+                }
+                return result
+                
+            except Exception as e:
+                logger.error(f"❌ Error calculating IVx for {symbol} {expiration_date}: {e}")
+                return None
+        
+        # Process expirations in parallel with concurrency control (increased for better performance)
+        concurrency_limit = 10  # Increased from 5 to reduce batching pauses
+        semaphore = asyncio.Semaphore(concurrency_limit)
+        
+        async def worker(expiration_date):
+            async with semaphore:
+                return await process_single_expiration(expiration_date)
+        
+        # Create tasks for all expirations
+        tasks = [worker(exp) for exp in expiration_dates]
+        
+        # Process all tasks and collect results as they complete
+        completed_count = 0
+        
+        for future in asyncio.as_completed(tasks):
+            try:
+                result = await future
+                completed_count += 1
+                
+                if result:
+                    ivx_results.append(result)
+                else:
+                    logger.warning(f"IVx calculation failed for an expiration ({completed_count}/{len(expiration_dates)})")
+            
+            except Exception as e:
+                completed_count += 1
+                logger.error(f"Error processing an expiration task: {e}")
+        
+        logger.info(f"Successfully calculated IVx for {len(ivx_results)}/{len(expiration_dates)} expirations for {symbol}")
+        
+        calculation_time = time.time() - start_time
+        
+        # Cache the results
+        if ivx_results:
+            ivx_cache.set(symbol, ivx_results)
+            logger.info(f"💾 Cached IVx data for {symbol} ({len(ivx_results)} expirations)")
+        
+        return ApiResponse(
+            success=True,
+            data={
+                "symbol": symbol,
+                "expirations": ivx_results,
+                "cached": False,
+                "calculation_time": round(calculation_time, 2)
+            },
+            message=f"Calculated IVx data for {symbol} ({len(ivx_results)} expirations in {calculation_time:.2f}s)"
+        )
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting IVx data for {symbol}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/symbols/lookup", response_model=ApiResponse)

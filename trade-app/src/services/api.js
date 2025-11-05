@@ -495,7 +495,22 @@ export const api = {
     }
   },
 
-  // Get IVx for all expirations for a symbol
+  // Get IVx data for all expirations (NEW API-based approach)
+  async getIvxData(symbol) {
+    try {
+      // Use a longer timeout for IVx calculation since it processes multiple expirations
+      const response = await apiClient.get(`${API_BASE_URL}/api/ivx/${symbol}`, {
+        timeout: 60000 // 60 second timeout for IVx calculations
+      });
+      // Return the full response.data, not response.data.data
+      return response.data;
+    } catch (error) {
+      console.error(`API: Error fetching IVx data for ${symbol}:`, error);
+      throw error;
+    }
+  },
+
+  // Get IVx for all expirations for a symbol (LEGACY - will be deprecated)
   async fetchIvxForAllExpirations(symbol, underlyingPrice) {
     try {
       const params = {};
