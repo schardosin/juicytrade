@@ -974,8 +974,8 @@ export default {
       const expirationDatesToExpand = new Set(
         legs.map((leg) => {
           const parsed = parseOptionSymbol(leg.symbol);
-          return parsed ? parsed.expiry.substring(0, 10) : null;
-        })
+          return parsed && parsed.expiry_date ? parsed.expiry_date.substring(0, 10) : null;
+        }).filter(Boolean) // Remove null values
       );
 
       expirationDatesToExpand.forEach((expiryDate) => {
@@ -1001,9 +1001,9 @@ export default {
 
           const selection = {
             symbol: leg.symbol,
-            strike_price: parsed.strike,
-            type: parsed.type,
-            expiry: parsed.expiry,
+            strike_price: parsed.strike_price,
+            type: parsed.option_type,
+            expiry: parsed.expiry_date,
             side: side,
             quantity: Math.abs(leg.qty),
           };
