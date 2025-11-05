@@ -47,7 +47,6 @@ from .watchlist_manager import watchlist_manager
 from .greeks_manager import greeks_manager
 from .services.ivx_calculator import calculate_ivx_data
 from .services.ivx_cache import ivx_cache
-from .ivx_streaming_manager import IVxStreamingManager
 from .strategies.api_endpoints import router as strategies_router
 from .strategies.execution_engine import StrategyExecutionEngine
 from .services.data_import.import_manager import import_manager
@@ -88,11 +87,6 @@ async def lifespan(app: FastAPI):
         else:
             logger.warning("⚠️ Streaming manager connection failed - continuing with limited functionality")
         
-        # DISABLED: IVx streaming manager (using API-based approach instead)
-        logger.info("🔄 IVx streaming manager disabled - using API-based IVx calculation")
-        # await ivx_streaming_manager.start()
-        # logger.info("✅ IVx streaming manager started")
-        
         # Initialize Strategy Database
         logger.info("🔄 Initializing Strategy Database...")
         from .strategies.database import strategy_db_manager
@@ -119,14 +113,6 @@ async def lifespan(app: FastAPI):
     
     # Shutdown - this will be handled by the shutdown manager
     logger.info("🛑 Application lifespan shutdown - cleanup will be handled by shutdown manager")
-    
-    # DISABLED: IVx streaming manager shutdown (using API-based approach instead)
-    try:
-        logger.info("🛑 IVx streaming manager disabled - no shutdown needed")
-        # await ivx_streaming_manager.stop()
-        # logger.info("✅ IVx streaming manager stopped")
-    except Exception as e:
-        logger.error(f"❌ Error stopping IVx streaming manager: {e}")
 
 # Create FastAPI app
 app = FastAPI(
@@ -160,14 +146,6 @@ else:
 # WebSocket connection manager
 manager = ConnectionManager(streaming_manager, shutdown_manager)
 shutdown_manager.set_connection_manager(manager)
-
-# Initialize IVx streaming manager BEFORE starting streaming
-ivx_streaming_manager = IVxStreamingManager(manager)
-manager.set_ivx_streaming_manager(ivx_streaming_manager)
-
-# CRITICAL: Set the global ivx_streaming_manager reference BEFORE streaming starts
-from .ivx_streaming_manager import set_global_ivx_streaming_manager
-set_global_ivx_streaming_manager(ivx_streaming_manager)
 
 # === Register Authentication Router ===
 app.include_router(auth_router)
@@ -879,13 +857,11 @@ async def get_ivx_cache_status():
     """Get current IVX cache status for debugging."""
     try:
         cache_info = ivx_cache.get_cache_info()
-        ivx_manager_status = ivx_streaming_manager.get_status() if ivx_streaming_manager else None
         
         return ApiResponse(
             success=True,
             data={
                 "cache_info": cache_info,
-                "ivx_manager_status": ivx_manager_status,
                 "cache_behavior": {
                     "ttl_seconds": cache_info["ttl_seconds"],
                     "description": "Cache stores IVX data for 5 minutes. On first request, data is calculated and cached. Subsequent requests within 5 minutes return cached data immediately. After 5 minutes, cache expires and new calculation is triggered."

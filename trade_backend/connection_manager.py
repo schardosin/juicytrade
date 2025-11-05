@@ -26,9 +26,6 @@ class ConnectionManager:
         self.streaming_manager = streaming_manager
         self.shutdown_manager = shutdown_manager
         
-        # IVx streaming manager will be set after initialization
-        self.ivx_streaming_manager = None
-        
         # Register to receive data updates from the streaming manager's cache
         self.streaming_manager._latest_cache.add_update_callback(self.broadcast_market_data)
         
@@ -68,9 +65,6 @@ class ConnectionManager:
         
         # Notify the streaming manager to update global subscriptions
         await self.streaming_manager.update_global_subscriptions(self.client_subscriptions)
-        
-        # Update IVx streaming subscriptions
-        await self._update_ivx_subscriptions()
         
         logger.info(f"🔌 WebSocket disconnected. Total connections: {len(self.active_connections)}")
     
@@ -153,9 +147,6 @@ class ConnectionManager:
         # Notify the streaming manager to update its global subscription list
         await self.streaming_manager.update_global_subscriptions(self.client_subscriptions)
         
-        # Update IVx streaming subscriptions (only for stock symbols)
-        await self._update_ivx_subscriptions()
-        
         await self._send_json_safe(websocket, {
             "type": "subscription_confirmed",
             "stock_symbols": list(stock_symbols),
@@ -230,37 +221,6 @@ class ConnectionManager:
                 # Update global subscriptions if any changes were made
                 if subscriptions_changed:
                     await self.streaming_manager.update_global_subscriptions(self.client_subscriptions)
-                    # Also update IVx subscriptions
-                    await self._update_ivx_subscriptions()
-
-    async def _update_ivx_subscriptions(self):
-        """Update IVx streaming subscriptions based on current client subscriptions."""
-        if not self.ivx_streaming_manager or not self.ivx_streaming_manager.is_running:
-            return
-        
-        try:
-            # Get all stock symbols from all client subscriptions (IVx is only for stocks)
-            all_stock_symbols = set()
-            for client_symbols in self.client_subscriptions.values():
-                for symbol in client_symbols:
-                    # Only include stock symbols (not option symbols)
-                    if not self._is_option_symbol(symbol):
-                        all_stock_symbols.add(symbol)
-            
-            # Trigger IVx calculation for each stock symbol
-            for symbol in all_stock_symbols:
-                await self.ivx_streaming_manager.calculate_ivx_for_symbol(symbol)
-            
-        except Exception as e:
-            logger.error(f"Error updating IVx subscriptions: {e}")
-
-    def _is_option_symbol(self, symbol: str) -> bool:
-        """Check if symbol is an option symbol."""
-        return len(symbol) > 10 and any(c in symbol for c in ['C', 'P']) and any(c.isdigit() for c in symbol[-8:])
-
-    def set_ivx_streaming_manager(self, ivx_streaming_manager):
-        """Set the IVx streaming manager reference."""
-        self.ivx_streaming_manager = ivx_streaming_manager
 
     async def broadcast_ivx_data(self, symbol: str, message: dict):
         """Broadcast IVx data to subscribed clients."""

@@ -7,7 +7,6 @@ from .provider_config import provider_config_manager
 from .provider_manager import provider_manager
 from .models import MarketData
 from .utils.symbol_converter import SymbolConverter
-from .ivx_streaming_manager import ivx_streaming_manager
 
 logger = logging.getLogger(__name__)
 
@@ -248,15 +247,6 @@ class StreamingManager:
                     logger.info(f"✅ Unsubscribed from Greeks-only streaming on {provider_name}: {len(symbols)} symbols")
                 except Exception as e:
                     logger.error(f"❌ Error unsubscribing Greeks on {provider_name}: {e}")
-
-    async def _update_ivx_subscriptions(self, stock_symbols: Set[str]):
-        """Triggers IVx calculations for subscribed stock symbols."""
-        if not ivx_streaming_manager:
-            return
-
-        for symbol in stock_symbols:
-            # This will start the calculation if it's not already running.
-            await ivx_streaming_manager.calculate_ivx_for_symbol(symbol)
 
     def get_subscription_status(self) -> Dict[str, any]:
         """Gets the current global subscription status."""

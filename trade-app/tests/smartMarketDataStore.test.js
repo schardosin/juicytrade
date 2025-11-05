@@ -1054,13 +1054,13 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
       it('fetches IVx data for symbol and processes correctly', async () => {
         const symbol = 'SPY';
 
-        // Get IVx data reference (this will set up streaming subscription)
+        // Get IVx data reference (this will trigger API-based fetch)
         const ivxDataRef = store.getIvxData(symbol);
         
         // Initially should show loading state
         expect(ivxDataRef.value.isLoading).toBe(true);
 
-        // Simulate WebSocket IVx updates (streaming approach)
+        // Simulate IVx API response (API-based approach)
         store.handleIvxUpdate({
           symbol: symbol,
           data: {
@@ -1111,7 +1111,7 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
         expect(ivxDataRef.value.lastUpdated).toBeGreaterThan(Date.now() - 1000);
       });
 
-      it('handles IVx streaming failures gracefully', async () => {
+      it('handles IVx API failures gracefully', async () => {
         const symbol = 'SPY';
         
         // Get IVx data reference
@@ -1164,7 +1164,7 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
           store.registerSymbolUsage(symbol, componentId);
         });
         
-        // For streaming IVx, tracked symbols are the same as registered symbols
+        // For API-based IVx, tracked symbols are the same as registered symbols
         // since IVx data comes via WebSocket for subscribed symbols
         const registeredSymbols = Array.from(store.symbolUsageCount.keys());
         
@@ -1301,7 +1301,7 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
         expect(ivxDataRef.value.expirations[0].expected_move_dollars).toBe(13.10);
       });
 
-      it('handles IVx streaming for multiple symbols', async () => {
+      it('handles IVx API calls for multiple symbols', async () => {
         const symbols = ['SPY', 'QQQ'];
         const componentId = 'multi-symbol';
         
