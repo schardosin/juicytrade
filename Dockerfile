@@ -12,7 +12,7 @@ WORKDIR /app/trade-app
 RUN npm run build
 
 # Stage 2: Final image with Python, nginx and supervisor
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 ENV PYTHONUNBUFFERED=1 \
     PATH=/root/.local/bin:$PATH
