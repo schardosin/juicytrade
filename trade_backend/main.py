@@ -4,6 +4,7 @@ import asyncio
 import uvicorn
 import logging
 import time
+import pytz
 from contextlib import asynccontextmanager
 
 # Check for debug mode at the very start
@@ -1063,36 +1064,106 @@ async def get_ivx_data(symbol: str):
                 # Calculate IVx (average of ATM call and put IV - same as streaming)
                 ivx = sum(valid_ivs) / len(valid_ivs)
                 
-                # Calculate DTE and expected move (same as streaming)
+                # Calculate DTE with time precision for 0DTE accuracy
                 exp_date = datetime.strptime(date_str, "%Y-%m-%d").date()
                 today = datetime.now().date()
-                dte = (exp_date - today).days
+                
+                # For same-day expiration (0DTE), calculate fractional time to 4:00 PM ET
+                if exp_date == today:
+                    try:
+                        # Options expire at 4:00 PM ET (market close)
+                        et = pytz.timezone('US/Eastern')
+                        now_et = datetime.now(et)
+                        
+                        # Market close is 4:00 PM ET
+                        market_close = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+                        
+                        # If after market close, use minimal time for expired 0DTE calculation
+                        if now_et >= market_close:
+                            logger.info(f"📅 0DTE after market close for {symbol} {date_str} - using minimal time for expired calculation")
+                            dte = 0.0001  # Very small value (about 0.1 hours) to show expired but calculate IVx
+                        else:
+                            # Calculate fractional time remaining until market close
+                            time_remaining = market_close - now_et
+                            dte_hours = time_remaining.total_seconds() / 3600  # Hours remaining
+                            dte = dte_hours / 24  # Convert to fractional days
+                            
+                            logger.info(f"📅 0DTE calculation for {symbol} {date_str}: {dte_hours:.2f} hours = {dte:.4f} days remaining")
+                    except Exception as tz_error:
+                        logger.warning(f"⚠️ Timezone calculation failed for 0DTE {symbol} {date_str}: {tz_error}")
+                        # Fallback: Use minimal time for 0DTE (don't skip)
+                        logger.info(f"📅 Using fallback 0DTE logic for {symbol} {date_str}")
+                        dte = 0.0001  # Minimal value for expired 0DTE
+                else:
+                    # For future expirations, use standard day calculation but add time precision
+                    full_days = (exp_date - today).days
+                    
+                    try:
+                        # Add fractional day based on current time (assume 4:00 PM ET expiration)
+                        et = pytz.timezone('US/Eastern')
+                        now_et = datetime.now(et)
+                        
+                        # Time remaining in current day until 4:00 PM ET
+                        market_close_today = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
+                        if now_et < market_close_today:
+                            time_remaining_today = market_close_today - now_et
+                            fractional_day = time_remaining_today.total_seconds() / (24 * 3600)
+                        else:
+                            # After market close, start from next day
+                            fractional_day = 0
+                        
+                        dte = full_days + fractional_day
+                    except Exception as tz_error:
+                        logger.warning(f"⚠️ Timezone calculation failed for {symbol} {date_str}: {tz_error}")
+                        # Fallback: Use simple day calculation
+                        dte = full_days if full_days > 0 else 0.0001  # Minimal value for same-day
                 
                 if dte <= 0:
-                    logger.warning(f"Skipping expired expiration {symbol} {date_str} (DTE: {dte})")
+                    logger.warning(f"Skipping truly expired expiration {symbol} {date_str} (DTE: {dte:.4f})")
                     return None
                 
-                # Calculate expected move (same as streaming)
-                def calculate_expected_move(underlying_price: float, ivx: float, dte: int) -> float:
-                    """Calculate the expected move in dollars."""
+                # For very small DTE (expired 0DTE), ensure minimum calculation value
+                if dte < 0.0001:
+                    logger.info(f"📅 Adjusting very small DTE for {symbol} {date_str}: {dte:.6f} -> 0.0001")
+                    dte = 0.0001
+                
+                # Calculate expected move with time precision
+                def calculate_expected_move(underlying_price: float, ivx: float, dte: float) -> float:
+                    """Calculate the expected move in dollars with fractional time support."""
                     import math
                     return underlying_price * ivx * math.sqrt(dte / 365)
                 
                 expected_move = calculate_expected_move(underlying_price, ivx, dte)
                 
+                # Adjust IVx for expired options - they should have minimal volatility
+                is_expired = dte <= 0.0001  # Mark as expired if using minimal DTE
+                if is_expired:
+                    # For expired options, IVx should be near zero since there's no time value
+                    adjusted_ivx = 0.001  # Very small value (0.1%)
+                    expected_move = calculate_expected_move(underlying_price, adjusted_ivx, dte)
+                    logger.info(f"📅 Adjusted expired IVx for {symbol} {date_str}: {ivx:.3f} -> {adjusted_ivx:.3f}")
+                else:
+                    adjusted_ivx = ivx
+                
                 # Create result (same format as streaming)
+                calculation_method = "atm_iv_average"
+                if is_expired:
+                    calculation_method = "atm_iv_average_expired_adjusted"
+                
                 result = {
                     "expiration_date": date_str,
                     "days_to_expiration": dte,
-                    "ivx_percent": round(ivx * 100, 2),
+                    "ivx_percent": round(adjusted_ivx * 100, 2),
                     "expected_move_dollars": round(expected_move, 2),
-                    "calculation_method": "atm_iv_average",  # Same as streaming
-                    "options_count": len(options_chain)
+                    "calculation_method": calculation_method,
+                    "options_count": len(options_chain),
+                    "is_expired": is_expired  # Indicates if this is an expired 0DTE
                 }
                 return result
                 
             except Exception as e:
                 logger.error(f"❌ Error calculating IVx for {symbol} {expiration_date}: {e}")
+                logger.debug(f"🔍 Debug info for {symbol} {date_str}: exp_type={exp_type}, options_count={len(options_chain) if 'options_chain' in locals() else 'N/A'}")
                 return None
         
         # Process expirations in parallel with concurrency control (increased for better performance)

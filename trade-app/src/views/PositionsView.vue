@@ -1,15 +1,23 @@
 <template>
   <div class="positions-view-container">
     <!-- Top Bar -->
-    <TopBar />
+    <TopBar @toggle-mobile-nav="showMobileNav = true" />
+
+    <!-- Mobile Navigation Drawer -->
+    <MobileNavDrawer
+      v-if="isMobile"
+      :visible="showMobileNav"
+      @close="showMobileNav = false"
+      @navigate="onMobileNavigation"
+    />
 
     <!-- Main Layout -->
     <div class="main-layout">
-      <!-- Left Navigation -->
-      <SideNav />
+      <!-- Left Navigation (Desktop Only) -->
+      <SideNav v-if="!isMobile" />
 
       <!-- Content Area -->
-      <div class="content-area">
+      <div class="content-area" :class="{ 'mobile-content': isMobile }">
         <!-- Symbol Header -->
         <SymbolHeader
           :currentSymbol="currentSymbol"
@@ -79,8 +87,8 @@
             </div>
           </div>
 
-          <!-- Positions Table -->
-          <div class="positions-table-container">
+          <!-- Desktop: Positions Table -->
+          <div v-if="!isMobile" class="positions-table-container">
             <div class="positions-table-scroll">
               <table class="positions-table">
                 <thead>
@@ -306,6 +314,36 @@
               </table>
             </div>
           </div>
+
+          <!-- Mobile: Positions Cards -->
+          <div v-else class="mobile-positions-container">
+            <MobilePositionsCard
+              v-for="group in filteredPositionGroups"
+              :key="group.id"
+              :group="group"
+              :isExpanded="expandedGroups.includes(group.id)"
+              :currentPrice="currentPrice"
+              :getStrategyPlDay="getStrategyPlDay"
+              :getStrategyPlOpen="getStrategyPlOpen"
+              :getLegPL="getLegPL"
+              :getLegPlDay="getLegPlDay"
+              :getLegBid="getLegBid"
+              :getLegAsk="getLegAsk"
+              :getLegDaysOpen="getLegDaysOpen"
+              :getStrategyDTE="getStrategyDTE"
+              :formatLegDate="formatLegDate"
+              :formatLegDays="formatLegDays"
+              :formatLegStrike="formatLegStrike"
+              :formatLegType="formatLegType"
+              :formatDTE="formatDTE"
+              :formatDaysOpen="formatDaysOpen"
+              :getLegTypeClass="getLegTypeClass"
+              :isLegITM="isLegITM"
+              :isLegSelected="isLegSelected"
+              @toggle-expand="toggleExpand"
+              @toggle-leg-selection="togglePositionLegSelection"
+            />
+          </div>
         </template>
 
         <!-- Empty State -->
@@ -314,8 +352,9 @@
         </div>
       </div>
 
-      <!-- Right Panel -->
+      <!-- Right Panel (Desktop Only) -->
       <RightPanel
+        v-if="!isMobile"
         :currentSymbol="currentSymbol"
         :currentPrice="currentPrice"
         :priceChange="priceChange"
@@ -362,6 +401,33 @@
       @review-send="onEquityReviewSend"
       @clear-trade="onEquityClearTrade"
     />
+
+    <!-- Mobile Bottom Button Bar (Mobile Only) -->
+    <MobileBottomButtonBar
+      v-if="isMobile"
+      :activeSection="showMobileOverlay ? activeMobileSection : null"
+      @section-selected="onMobileSectionSelected"
+    />
+
+    <!-- Mobile Full Screen Overlay (Mobile Only) -->
+    <MobileFullScreenOverlay
+      v-if="isMobile"
+      :visible="showMobileOverlay"
+      :activeSection="activeMobileSection"
+      :currentSymbol="currentSymbol"
+      :currentPrice="currentPrice"
+      :priceChange="priceChange"
+      :isLivePrice="isLivePrice"
+      :chartData="chartData"
+      :additionalQuoteData="additionalQuoteData"
+      :allPositions="allMobilePositions"
+      :checkedPositions="mobileCheckedPositions"
+      :isAllSelected="isMobileAllSelected"
+      :isIndeterminate="isMobileIndeterminate"
+      @close="closeMobileOverlay"
+      @toggle-position-check="onMobileTogglePositionCheck"
+      @toggle-select-all="onMobileToggleSelectAll"
+    />
   </div>
 </template>
 
@@ -379,8 +445,13 @@ import { useMarketData } from "../composables/useMarketData.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { useOrderManagement } from "../composables/useOrderManagement";
+import { useMobileDetection } from "../composables/useMobileDetection";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 import { mapToRootSymbol } from "../utils/symbolMapping.js";
+import MobilePositionsCard from "../components/MobilePositionsCard.vue";
+import MobileNavDrawer from "../components/MobileNavDrawer.vue";
+import MobileBottomButtonBar from "../components/MobileBottomButtonBar.vue";
+import MobileFullScreenOverlay from "../components/MobileFullScreenOverlay.vue";
 
 export default {
   name: "PositionsView",
@@ -392,8 +463,30 @@ export default {
     BottomTradingPanel,
     SharesTradingPanel,
     OrderConfirmationDialog,
+    MobilePositionsCard,
+    MobileNavDrawer,
+    MobileBottomButtonBar,
+    MobileFullScreenOverlay,
   },
   setup() {
+    // Mobile detection
+    const { isMobile, isTablet, isDesktop } = useMobileDetection();
+
+    // Mobile navigation state
+    const showMobileNav = ref(false);
+
+    // Mobile overlay state
+    const showMobileOverlay = ref(false);
+    const activeMobileSection = ref('overview');
+    const mobileCheckedPositions = ref(new Set());
+
+    // Mobile navigation handler
+    const onMobileNavigation = (navItem) => {
+      console.log("Mobile navigation:", navItem);
+      // Navigation is handled by the MobileNavDrawer component
+      // The drawer will close automatically after navigation
+    };
+
     // Use global symbol state with centralized symbol selection
     const { globalSymbolState, setupSymbolSelectionListener, updateSymbol } = useGlobalSymbol({
       onSymbolChange: async (symbolData) => {
@@ -1721,6 +1814,166 @@ export default {
       }
     };
 
+    // Mobile overlay methods (same as OptionsTrading)
+    const onMobileSectionSelected = (sectionKey) => {
+      activeMobileSection.value = sectionKey;
+      showMobileOverlay.value = true;
+    };
+
+    const closeMobileOverlay = () => {
+      showMobileOverlay.value = false;
+    };
+
+    const onMobileTogglePositionCheck = (positionId) => {
+      if (mobileCheckedPositions.value.has(positionId)) {
+        mobileCheckedPositions.value.delete(positionId);
+      } else {
+        mobileCheckedPositions.value.add(positionId);
+      }
+      // Use the same event-driven pattern as desktop RightPanel
+      const checkedPositionsList = allMobilePositions.value.filter((pos) =>
+        mobileCheckedPositions.value.has(pos.id)
+      );
+      onPositionsChanged(checkedPositionsList);
+    };
+
+    const onMobileToggleSelectAll = () => {
+      if (isMobileAllSelected.value) {
+        // Uncheck all
+        mobileCheckedPositions.value.clear();
+      } else {
+        // Check all
+        allMobilePositions.value.forEach((pos) => {
+          mobileCheckedPositions.value.add(pos.id);
+        });
+      }
+      // Use the same event-driven pattern as desktop RightPanel
+      const checkedPositionsList = allMobilePositions.value.filter((pos) =>
+        mobileCheckedPositions.value.has(pos.id)
+      );
+      onPositionsChanged(checkedPositionsList);
+    };
+
+    // Mobile computed properties (same logic as OptionsTrading)
+    const { getPositionsForSymbol } = useMarketData();
+    
+    const allMobilePositions = computed(() => {
+      const positions = [];
+      const existingSymbols = new Set();
+      const symbolGroup = getSymbolGroup(currentSymbol.value);
+
+      // Get existing positions using the same method as desktop RightPanel
+      const positionsComputed = getPositionsForSymbol(currentSymbol.value);
+      const positionsData = positionsComputed.value;
+      
+      // Add existing positions for the current symbol group
+      if (positionsData?.positions && Array.isArray(positionsData.positions)) {
+        positionsData.positions.forEach((position) => {
+          if (symbolGroup.includes(position.underlying_symbol)) {
+            // Parse option symbol to get missing details for existing positions
+            const parsedOption = parseOptionSymbol(position.symbol);
+            
+            // Look up current market price from options chain data for existing positions
+            const chainOption = optionsManager.flattenedData?.value?.find?.(
+              (opt) => opt.symbol === position.symbol
+            ) || null;
+
+            // Use entry price as fallback if current price is 0
+            let currentPrice = position.current_price || position.avg_entry_price || 0;
+            let unrealizedPL = position.unrealized_pl || 0;
+
+            // If we don't have current P&L but have entry price, estimate it
+            if (unrealizedPL === 0 && position.avg_entry_price && position.avg_entry_price > 0) {
+              // For now, assume current price equals entry price (no P&L change)
+              currentPrice = position.avg_entry_price;
+              unrealizedPL = 0; // No change assumed
+            }
+
+            // Update current price and P&L if we have chain data
+            if (chainOption && position.avg_entry_price && chainOption.bid && chainOption.ask) {
+              // Use mid price for current market value
+              currentPrice = (chainOption.bid + chainOption.ask) / 2;
+
+              // Recalculate P&L with current market price
+              const qty = position.qty;
+              if (qty > 0) {
+                // Long position: (current_price - entry_price) * qty * 100
+                unrealizedPL = (currentPrice - position.avg_entry_price) * qty * 100;
+              } else {
+                // Short position: (entry_price - current_price) * |qty| * 100
+                unrealizedPL = (position.avg_entry_price - currentPrice) * Math.abs(qty) * 100;
+              }
+            }
+
+            const positionData = {
+              ...position,
+              id: `existing:${position.symbol || position.id}`,
+              symbol: position.symbol,
+              asset_class: position.asset_class || "us_option",
+              underlying_symbol: position.underlying_symbol,
+              qty: position.qty,
+              // Use parsed option data to fill missing fields
+              strike_price: parsedOption?.strike || position.strike_price || 0,
+              option_type: parsedOption?.type || position.option_type || "call",
+              expiry_date: parsedOption?.expiryWithYear || position.expiry_date || "",
+              current_price: currentPrice,
+              avg_entry_price: position.avg_entry_price || 
+                (position.cost_basis ? Math.abs(position.cost_basis / (position.qty * 100)) : 0),
+              unrealized_pl: unrealizedPL,
+              isExisting: true,
+              isSelected: false,
+            };
+
+            positions.push(positionData);
+            existingSymbols.add(position.symbol);
+          }
+        });
+      }
+
+      // Add selected legs from centralized store as new positions (same as desktop RightPanel)
+      selectedLegs.value.forEach((leg, index) => {
+        positions.push({
+          id: `selected:${leg.symbol}:${index}`,
+          symbol: leg.symbol,
+          asset_class: "us_option",
+          qty: leg.side === "buy" ? leg.quantity : -leg.quantity,
+          strike_price: leg.strike_price,
+          option_type: leg.type,
+          expiry_date: leg.expiry,
+          current_price: leg.current_price || ((leg.bid + leg.ask) / 2) || 0,
+          avg_entry_price: leg.avg_entry_price,
+          unrealized_pl: 0,
+          isExisting: false,
+          isSelected: true, // This is key - newly selected legs should be marked as selected
+        });
+      });
+
+      return positions;
+    });
+
+    const isMobileAllSelected = computed(() => {
+      if (allMobilePositions.value.length === 0) return false;
+      return allMobilePositions.value.every((pos) =>
+        mobileCheckedPositions.value.has(pos.id)
+      );
+    });
+
+    const isMobileIndeterminate = computed(() => {
+      if (allMobilePositions.value.length === 0) return false;
+      const checkedCount = allMobilePositions.value.filter((pos) =>
+        mobileCheckedPositions.value.has(pos.id)
+      ).length;
+      return checkedCount > 0 && checkedCount < allMobilePositions.value.length;
+    });
+
+    // Helper function to get symbol group (handles SPX/SPXW grouping)
+    const getSymbolGroup = (symbol) => {
+      if (symbol === "SPX" || symbol === "SPXW") {
+        return ["SPX", "SPXW"];
+      }
+      return [symbol];
+    };
+
     // Component cleanup system
     const cleanupComponentRegistrations = () => {
       // Unregister all symbols this component was using
@@ -1764,6 +2017,11 @@ export default {
     });
 
     return {
+      // Mobile detection
+      isMobile,
+      isTablet,
+      isDesktop,
+
       // State
       loading,
       error,
@@ -1868,6 +2126,22 @@ export default {
       isEquityPositionSelected,
       onEquityReviewSend,
       onEquityClearTrade,
+
+      // Mobile navigation state and methods
+      showMobileNav,
+      onMobileNavigation,
+
+      // Mobile overlay state and methods
+      showMobileOverlay,
+      activeMobileSection,
+      mobileCheckedPositions,
+      allMobilePositions,
+      isMobileAllSelected,
+      isMobileIndeterminate,
+      onMobileSectionSelected,
+      closeMobileOverlay,
+      onMobileTogglePositionCheck,
+      onMobileToggleSelectAll,
     };
   },
 };
@@ -2382,6 +2656,42 @@ export default {
   color: white;
 }
 
+/* Mobile Positions Container */
+.mobile-positions-container {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  flex: 1;
+  overflow-y: auto;
+  padding-bottom: 80px; /* Space for mobile bottom button bar */
+  min-height: 0; /* Allow container to shrink */
+  max-height: none; /* Remove any height restrictions */
+  height: auto; /* Allow natural height expansion */
+}
+
+/* Mobile Content Area */
+.content-area.mobile-content {
+  padding-bottom: 80px; /* Space for mobile bottom button bar */
+}
+
+.content-area.mobile-content > :not(.symbol-header) {
+  padding-left: var(--spacing-md);
+  padding-right: var(--spacing-md);
+}
+
+.content-area.mobile-content > .positions-header,
+.content-area.mobile-content > .totals-section,
+.content-area.mobile-content > .mobile-positions-container,
+.content-area.mobile-content > .loading-state,
+.content-area.mobile-content > .error-state,
+.content-area.mobile-content > .empty-state {
+  margin-top: var(--spacing-md);
+}
+
+.content-area.mobile-content > .positions-header {
+  margin-top: 0;
+}
+
 /* Responsive design */
 @media (max-width: 1200px) {
   .positions-table th:nth-child(n + 8),
@@ -2401,6 +2711,81 @@ export default {
   .header-right {
     width: 100%;
     justify-content: flex-start;
+  }
+
+  /* Mobile-specific adjustments */
+  .totals-row {
+    padding: var(--spacing-sm);
+    font-size: var(--font-size-sm);
+  }
+
+  .totals-label {
+    font-size: var(--font-size-md);
+  }
+
+  .totals-values {
+    gap: var(--spacing-md);
+    flex-direction: column;
+    align-items: flex-end;
+  }
+
+  .tab-button {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    font-size: var(--font-size-sm);
+  }
+}
+
+@media (max-width: 480px) {
+  .content-area.mobile-content > :not(.symbol-header) {
+    padding-left: var(--spacing-sm);
+    padding-right: var(--spacing-sm);
+  }
+
+  .totals-row {
+    flex-direction: column;
+    gap: var(--spacing-sm);
+    align-items: stretch;
+    text-align: center;
+  }
+
+  .totals-values {
+    flex-direction: row;
+    justify-content: space-around;
+    align-items: center;
+  }
+
+  .position-type-tabs {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .tab-button {
+    flex: 1;
+    text-align: center;
+  }
+}
+
+@media (max-width: 360px) {
+  .content-area.mobile-content > :not(.symbol-header) {
+    padding-left: var(--spacing-xs);
+    padding-right: var(--spacing-xs);
+  }
+
+  .mobile-positions-container {
+    gap: var(--spacing-sm);
+  }
+
+  .totals-row {
+    padding: var(--spacing-xs);
+  }
+
+  .totals-label {
+    font-size: var(--font-size-sm);
+  }
+
+  .tab-button {
+    padding: var(--spacing-xs);
+    font-size: var(--font-size-xs);
   }
 }
 </style>

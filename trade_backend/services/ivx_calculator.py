@@ -192,7 +192,7 @@ def calculate_price_based_ivx(options_chain: List[OptionContract], underlying_pr
             logger.debug(f"Insufficient strikes for price-based IVx: {len(selected_options)} < {MIN_STRIKES_REQUIRED}")
         return None
     
-    # Calculate time to expiration in years
+    # Calculate time to expiration in years (supports fractional days for 0DTE)
     T = dte / 365.0
     if T <= 0:
         return None

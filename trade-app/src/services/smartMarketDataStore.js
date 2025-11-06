@@ -1796,8 +1796,9 @@ class SmartMarketDataStore {
 
     const cached = this.cache.get(key);
 
-    // Check cache validity
-    if (!forceRefresh && cached && !this.isCacheExpired(cached, config.ttl)) {
+    // Check cache validity with dynamic TTL for IVx 0DTE
+    const effectiveTtl = this.getEffectiveTtl(key, config.ttl, cached);
+    if (!forceRefresh && cached && !this.isCacheExpired(cached, effectiveTtl)) {
       return cached.data;
     }
     
@@ -1843,6 +1844,23 @@ class SmartMarketDataStore {
     } finally {
       this.setLoading(key, false);
     }
+  }
+
+  /**
+   * Get effective TTL based on data type and content
+   */
+  getEffectiveTtl(key, defaultTtl, cachedData) {
+    // For IVx data, use shorter cache for 0DTE expirations
+    if (key.startsWith('ivxData.') && cachedData && cachedData.data) {
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+      const hasZeroDte = cachedData.data.expirations && 
+        cachedData.data.expirations.some(exp => exp.expiration_date === today);
+      
+      if (hasZeroDte) {
+        return 60000; // 1 minute for 0DTE
+      }
+    }
+    return defaultTtl;
   }
 
   /**
