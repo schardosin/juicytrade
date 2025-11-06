@@ -1064,12 +1064,16 @@ async def get_ivx_data(symbol: str):
                 # Calculate IVx (average of ATM call and put IV - same as streaming)
                 ivx = sum(valid_ivs) / len(valid_ivs)
                 
-                # Calculate DTE with time precision for 0DTE accuracy
+                # Calculate DTE with time precision for 0DTE accuracy - ALWAYS use Eastern Time
                 exp_date = datetime.strptime(date_str, "%Y-%m-%d").date()
-                today = datetime.now().date()
+                
+                # Always use Eastern Time for all date calculations (fixes UTC/EST server issues)
+                et = pytz.timezone('US/Eastern')
+                now_et = datetime.now(et)
+                today_et = now_et.date()
                 
                 # For same-day expiration (0DTE), calculate fractional time to 4:00 PM ET
-                if exp_date == today:
+                if exp_date == today_et:
                     try:
                         # Options expire at 4:00 PM ET (market close)
                         et = pytz.timezone('US/Eastern')
@@ -1096,12 +1100,11 @@ async def get_ivx_data(symbol: str):
                         dte = 0.0001  # Minimal value for expired 0DTE
                 else:
                     # For future expirations, use standard day calculation but add time precision
-                    full_days = (exp_date - today).days
+                    full_days = (exp_date - today_et).days
                     
                     try:
                         # Add fractional day based on current time (assume 4:00 PM ET expiration)
-                        et = pytz.timezone('US/Eastern')
-                        now_et = datetime.now(et)
+                        # et timezone already defined above
                         
                         # Time remaining in current day until 4:00 PM ET
                         market_close_today = now_et.replace(hour=16, minute=0, second=0, microsecond=0)
@@ -1113,10 +1116,15 @@ async def get_ivx_data(symbol: str):
                             fractional_day = 0
                         
                         dte = full_days + fractional_day
+                        
+                        # Ensure future dates have positive DTE
+                        if dte <= 0:
+                            dte = 0.0001  # Minimal value for edge cases
+                            
                     except Exception as tz_error:
                         logger.warning(f"⚠️ Timezone calculation failed for {symbol} {date_str}: {tz_error}")
-                        # Fallback: Use simple day calculation
-                        dte = full_days if full_days > 0 else 0.0001  # Minimal value for same-day
+                        # Fallback: Use simple day calculation based on Eastern Time
+                        dte = max(full_days, 0.0001)  # Ensure positive DTE
                 
                 if dte <= 0:
                     logger.warning(f"Skipping truly expired expiration {symbol} {date_str} (DTE: {dte:.4f})")
@@ -1124,7 +1132,6 @@ async def get_ivx_data(symbol: str):
                 
                 # For very small DTE (expired 0DTE), ensure minimum calculation value
                 if dte < 0.0001:
-                    logger.info(f"📅 Adjusting very small DTE for {symbol} {date_str}: {dte:.6f} -> 0.0001")
                     dte = 0.0001
                 
                 # Calculate expected move with time precision
@@ -1141,7 +1148,6 @@ async def get_ivx_data(symbol: str):
                     # For expired options, IVx should be near zero since there's no time value
                     adjusted_ivx = 0.001  # Very small value (0.1%)
                     expected_move = calculate_expected_move(underlying_price, adjusted_ivx, dte)
-                    logger.info(f"📅 Adjusted expired IVx for {symbol} {date_str}: {ivx:.3f} -> {adjusted_ivx:.3f}")
                 else:
                     adjusted_ivx = ivx
                 

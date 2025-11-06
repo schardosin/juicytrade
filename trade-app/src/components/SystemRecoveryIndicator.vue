@@ -14,14 +14,6 @@
       </button>
     </div>
   </div>
-
-  <!-- Subtle recovery indicator (shown during grace period) -->
-  <div v-if="showSubtleRecovery" class="subtle-recovery-indicator" :class="subtleIndicatorClass">
-    <div class="subtle-recovery-content">
-      <i class="subtle-recovery-icon" :class="subtleIconClass"></i>
-      <span class="subtle-recovery-message">{{ subtleMessage }}</span>
-    </div>
-  </div>
 </template>
 
 <script>
@@ -79,10 +71,7 @@ export default {
 
     // Separate computed for showing subtle recovery indicator
     const showSubtleRecovery = computed(() => {
-      return inSilentRecovery.value && 
-             !systemHealth.value.isHealthy && 
-             !showTemporarySuccess.value &&
-             (Date.now() - silentRecoveryStartTime.value) < silentRecoveryGracePeriod;
+      return false; // Completely disabled
     });
 
     const indicatorClass = computed(() => {
@@ -93,7 +82,7 @@ export default {
     });
 
     const subtleIndicatorClass = computed(() => {
-      return 'subtle-recovery';
+      return ''; // Not used anymore
     });
 
     const iconClass = computed(() => {
@@ -104,7 +93,7 @@ export default {
     });
 
     const subtleIconClass = computed(() => {
-      return 'fas fa-sync-alt fa-spin';
+      return ''; // Not used anymore
     });
 
     const message = computed(() => {
@@ -121,7 +110,7 @@ export default {
     });
 
     const subtleMessage = computed(() => {
-      return 'Reconnecting...';
+      return ''; // Not used anymore
     });
 
     const canRetry = computed(() => {
@@ -367,13 +356,9 @@ export default {
 
     return {
       showIndicator,
-      showSubtleRecovery,
       indicatorClass,
-      subtleIndicatorClass,
       iconClass,
-      subtleIconClass,
       message,
-      subtleMessage,
       canRetry,
       isRetrying,
       retryConnection,
@@ -459,46 +444,6 @@ export default {
   cursor: not-allowed;
 }
 
-/* Subtle recovery indicator styles */
-.subtle-recovery-indicator {
-  position: fixed;
-  top: 70px; /* Below the top bar */
-  right: 20px;
-  z-index: 999; /* Slightly lower than main indicator */
-  padding: 8px 12px;
-  border-radius: 6px;
-  background: rgba(59, 130, 246, 0.1); /* Very subtle blue background */
-  border: 1px solid rgba(59, 130, 246, 0.2);
-  backdrop-filter: blur(8px);
-  min-width: 200px;
-  animation: subtleFadeIn 0.2s ease-out;
-}
-
-.subtle-recovery-indicator.subtle-recovery {
-  background: rgba(59, 130, 246, 0.1);
-  color: rgba(59, 130, 246, 0.9);
-  border-color: rgba(59, 130, 246, 0.2);
-}
-
-.subtle-recovery-content {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.subtle-recovery-icon {
-  font-size: 12px;
-  flex-shrink: 0;
-  opacity: 0.7;
-}
-
-.subtle-recovery-message {
-  flex: 1;
-  font-size: 12px;
-  font-weight: 400;
-  opacity: 0.8;
-}
-
 @keyframes slideIn {
   from {
     transform: translateX(100%);
@@ -506,17 +451,6 @@ export default {
   }
   to {
     transform: translateX(0);
-    opacity: 1;
-  }
-}
-
-@keyframes subtleFadeIn {
-  from {
-    transform: translateY(-10px);
-    opacity: 0;
-  }
-  to {
-    transform: translateY(0);
     opacity: 1;
   }
 }
@@ -547,25 +481,6 @@ export default {
   
   .retry-button {
     padding: 4px 8px;
-    font-size: 11px;
-  }
-
-  .subtle-recovery-indicator {
-    right: 10px;
-    left: 10px;
-    min-width: auto;
-    top: 60px;
-  }
-  
-  .subtle-recovery-content {
-    gap: 6px;
-  }
-  
-  .subtle-recovery-message {
-    font-size: 11px;
-  }
-  
-  .subtle-recovery-icon {
     font-size: 11px;
   }
 }

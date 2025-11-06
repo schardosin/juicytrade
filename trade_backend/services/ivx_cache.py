@@ -44,12 +44,15 @@ class IVxCache:
         has_expired_0dte = False
         if data:
             from datetime import datetime
-            today = datetime.now().date()
+            import pytz
+            # Always use Eastern Time for consistency with main calculation
+            et = pytz.timezone('US/Eastern')
+            today_et = datetime.now(et).date()
             for expiration in data:
                 if 'expiration_date' in expiration:
                     try:
                         exp_date = datetime.strptime(expiration['expiration_date'], "%Y-%m-%d").date()
-                        if exp_date == today:
+                        if exp_date == today_et:
                             has_0dte = True
                             # Check if this 0DTE is marked as expired
                             if expiration.get('is_expired', False):
