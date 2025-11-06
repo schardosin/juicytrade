@@ -33,7 +33,7 @@
       </div>
     </div>
 
-    <!-- Center Section: Search -->
+    <!-- Center Section: Search / Mobile Logo -->
     <div class="center-section">
       <!-- Desktop Search -->
       <div v-if="!isMobile" class="search-container">
@@ -97,15 +97,12 @@
         </div>
       </div>
 
-      <!-- Mobile Search Icon -->
-      <button
-        v-if="isMobile"
-        class="mobile-search-button"
-        @click="openMobileSearch"
-        aria-label="Open search"
-      >
-        <i class="pi pi-search"></i>
-      </button>
+      <!-- Mobile Logo -->
+      <div v-if="isMobile" class="mobile-logo-section">
+        <div class="mobile-logo">
+          <img src="/logos/juicytrade-logo.svg" alt="juicytrade" class="mobile-logo-svg" />
+        </div>
+      </div>
     </div>
 
     <!-- Mobile Search Overlay -->
@@ -867,6 +864,11 @@ export default {
       window.addEventListener('websocket-status-change', handleConnectionStatusUpdate);
     };
 
+    // Handle mobile search event from SymbolHeader
+    const handleMobileSearchEvent = () => {
+      openMobileSearch();
+    };
+
     // Lifecycle hooks
     onMounted(() => {
       // Initialize activeLink based on current route
@@ -882,6 +884,9 @@ export default {
       
       // Set up WebSocket status listener
       setupWebSocketStatusListener();
+      
+      // Listen for mobile search events from SymbolHeader
+      window.addEventListener('open-mobile-search', handleMobileSearchEvent);
       
       // Listen for data updates to track freshness
       webSocketClient.onPriceUpdate(handleDataReceived);
@@ -947,6 +952,7 @@ export default {
       window.removeEventListener('websocket-recovered', handleRecoveryEvent);
       window.removeEventListener('system-recovery-internal', handleInternalRecovery);
       window.removeEventListener('websocket-status-change', handleConnectionStatusUpdate);
+      window.removeEventListener('open-mobile-search', handleMobileSearchEvent);
     });
 
     return {
@@ -1683,34 +1689,30 @@ export default {
   font-size: 18px;
 }
 
-/* Mobile search button */
-.mobile-search-button {
-  background: none;
-  border: none;
-  color: var(--text-primary);
-  width: 44px;
-  height: 44px;
-  border-radius: var(--radius-md);
+/* Mobile logo section */
+.mobile-logo-section {
   display: flex;
   align-items: center;
   justify-content: center;
-  cursor: pointer;
-  transition: var(--transition-normal);
   flex: 1;
-  max-width: 44px;
 }
 
-.mobile-search-button:hover {
-  background-color: var(--bg-tertiary);
-  color: var(--text-primary);
+.mobile-logo {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
-.mobile-search-button:active {
-  transform: scale(0.95);
+.mobile-logo-svg {
+  height: 40px;
+  width: auto;
+  display: block;
+  transition: var(--transition-normal);
+  object-fit: contain;
 }
 
-.mobile-search-button i {
-  font-size: 20px;
+.mobile-logo-svg:hover {
+  opacity: 0.8;
 }
 
 /* Mobile layout adjustments */

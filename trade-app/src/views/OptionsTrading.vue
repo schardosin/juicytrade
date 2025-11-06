@@ -32,6 +32,7 @@
           :tradeModes="tradeModes"
           :showTradeMode="true"
           @trade-mode-changed="onTradeModeChanged"
+          @open-mobile-search="onOpenMobileSearch"
         />
 
         <!-- Options Mode: Options Chain Section -->
@@ -1020,6 +1021,15 @@ export default {
       // The drawer will close automatically after navigation
     };
 
+    // Mobile search handler
+    const onOpenMobileSearch = () => {
+      // This method is called when the search icon in SymbolHeader is clicked on mobile
+      // We need to trigger the same mobile search overlay that TopBar uses
+      // Find the TopBar component's mobile search method and call it
+      // For now, we'll dispatch a custom event that TopBar can listen to
+      window.dispatchEvent(new CustomEvent('open-mobile-search'));
+    };
+
     // Mobile overlay methods
     const onMobileSectionSelected = (sectionKey) => {
       activeMobileSection.value = sectionKey;
@@ -1418,6 +1428,7 @@ export default {
       adjustedNetCredit,
       additionalQuoteData,
       onMobileNavigation,
+      onOpenMobileSearch,
 
       // New props for CollapsibleOptionsChain
       optionsDataByExpiration,

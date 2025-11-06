@@ -2,7 +2,18 @@
   <div class="symbol-header" :class="{ 'mobile-layout': isMobile }">
     <div class="symbol-info">
       <div class="symbol-details">
-        <h2 class="symbol-name">{{ currentSymbol }}</h2>
+        <div class="symbol-name-row">
+          <h2 class="symbol-name">{{ currentSymbol }}</h2>
+          <!-- Mobile search icon next to symbol -->
+          <button
+            v-if="isMobile"
+            class="mobile-symbol-search-button"
+            @click="$emit('open-mobile-search')"
+            aria-label="Open search"
+          >
+            <i class="pi pi-search"></i>
+          </button>
+        </div>
         <!-- Hide company name and exchange on mobile -->
         <div v-if="!isMobile" class="symbol-meta">
           <span class="company-name">{{ companyName }}</span>
@@ -110,7 +121,7 @@ export default {
       default: true,
     },
   },
-  emits: ["trade-mode-changed"],
+  emits: ["trade-mode-changed", "open-mobile-search"],
   setup(props) {
     const { fetchSymbolDetails } = useGlobalSymbol();
     
@@ -300,11 +311,45 @@ export default {
   gap: var(--spacing-xl);
 }
 
+.symbol-name-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
 .symbol-details h2 {
   margin: 0;
   font-size: var(--font-size-xxl);
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
+}
+
+.mobile-symbol-search-button {
+  background: none;
+  border: none;
+  color: var(--text-secondary);
+  width: 32px;
+  height: 32px;
+  border-radius: var(--radius-md);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: pointer;
+  transition: var(--transition-normal);
+  flex-shrink: 0;
+}
+
+.mobile-symbol-search-button:hover {
+  background-color: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.mobile-symbol-search-button:active {
+  transform: scale(0.95);
+}
+
+.mobile-symbol-search-button i {
+  font-size: 16px;
 }
 
 .symbol-meta {
