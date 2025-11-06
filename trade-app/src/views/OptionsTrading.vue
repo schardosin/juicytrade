@@ -357,8 +357,8 @@ export default {
     // This prevents blocking the UI while expiration dates are loading
     const shouldShowLoading = computed(() => {
       // Show loading only if we're loading expiration dates AND we have no expirations to show
-      return optionsManager.expirationDatesLoading.value && 
-             optionsManager.expirationDates.value.length === 0;
+      return optionsManager?.expirationDatesLoading?.value && 
+             optionsManager?.expirationDates?.value?.length === 0;
     });
 
     const marketStatusClass = computed(() => ({
