@@ -1,5 +1,8 @@
 <template>
-  <div class="options-trading-container">
+  <div 
+    class="options-trading-container"
+    :style="mobileTradingPanelStyles"
+  >
     <!-- Top Bar -->
     <TopBar @toggle-mobile-nav="showMobileNav = true" />
 
@@ -1077,6 +1080,24 @@ export default {
       windowHeight.value = window.innerHeight;
     };
 
+    // Mobile trading panel height management
+    const mobileTradingPanelStyles = computed(() => {
+      if (!isMobile.value) return {};
+      
+      let panelHeight = 0;
+      if (selectedTradeMode.value === 'options' && showBottomPanel.value) {
+        // BottomTradingPanel height: ~280px (stats + controls + content)
+        panelHeight = 280;
+      } else if (selectedTradeMode.value === 'shares' && showSharesPanel.value) {
+        // SharesTradingPanel height: ~160px (simpler layout)
+        panelHeight = 160;
+      }
+      
+      return {
+        '--mobile-trading-panel-height': `${panelHeight}px`
+      };
+    });
+
     // Listen for system recovery events to refresh data
     const handleSystemRecovery = async (event) => {
       try {
@@ -1429,6 +1450,9 @@ export default {
       additionalQuoteData,
       onMobileNavigation,
       onOpenMobileSearch,
+
+      // Mobile trading panel height management
+      mobileTradingPanelStyles,
 
       // New props for CollapsibleOptionsChain
       optionsDataByExpiration,
@@ -1817,6 +1841,28 @@ export default {
 
 .content-area.mobile-layout .shares-section {
   padding: 8px 12px;
+}
+
+/* Mobile: Adjust content area height when trading panels are visible */
+@media (max-width: 768px) {
+  .content-area {
+    /* Reserve space for mobile bottom button bar (80px) + trading panel when visible */
+    padding-bottom: calc(80px + var(--mobile-trading-panel-height, 0px));
+  }
+  
+  .options-chain-wrapper {
+    /* Ensure options chain accounts for trading panel space */
+    max-height: calc(100vh - 140px - var(--mobile-trading-panel-height, 0px)); /* 140px = TopBar + SymbolHeader */
+    /* Add bottom padding to prevent content from being hidden behind trading panel */
+    padding-bottom: calc(80px + var(--mobile-trading-panel-height, 0px));
+  }
+  
+  .shares-section {
+    /* Ensure shares section accounts for trading panel space */
+    max-height: calc(100vh - 140px - var(--mobile-trading-panel-height, 0px)); /* 140px = TopBar + SymbolHeader */
+    /* Add bottom padding to prevent content from being hidden behind trading panel */
+    padding-bottom: calc(80px + var(--mobile-trading-panel-height, 0px));
+  }
 }
 
 /* Hide right panel on mobile - will be replaced with tabs */

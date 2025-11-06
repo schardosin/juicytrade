@@ -1,5 +1,8 @@
 <template>
-  <div class="positions-view-container">
+  <div 
+    class="positions-view-container"
+    :style="mobileTradingPanelStyles"
+  >
     <!-- Top Bar -->
     <TopBar @toggle-mobile-nav="showMobileNav = true" />
 
@@ -1995,6 +1998,24 @@ export default {
       livePrices.clear();
     };
 
+    // Mobile trading panel height management
+    const mobileTradingPanelStyles = computed(() => {
+      if (!isMobile.value) return {};
+      
+      let panelHeight = 0;
+      if (hasSelectedLegs.value) {
+        // BottomTradingPanel height: ~280px (stats + controls + content)
+        panelHeight = 280;
+      } else if (hasSelectedEquityPositions.value) {
+        // SharesTradingPanel height: ~160px (simpler layout)
+        panelHeight = 160;
+      }
+      
+      return {
+        '--mobile-trading-panel-height': `${panelHeight}px`
+      };
+    });
+
     // Watch for symbol changes to clean up old registrations
     watch(
       () => currentSymbol.value,
@@ -2152,6 +2173,9 @@ export default {
       closeMobileOverlay,
       onMobileTogglePositionCheck,
       onMobileToggleSelectAll,
+
+      // Mobile trading panel height management
+      mobileTradingPanelStyles,
     };
   },
 };
@@ -2682,6 +2706,21 @@ export default {
 /* Mobile Content Area */
 .content-area.mobile-content {
   padding-bottom: 80px; /* Space for mobile bottom button bar */
+}
+
+/* Mobile: Adjust content area height when trading panels are visible */
+@media (max-width: 768px) {
+  .content-area {
+    /* Reserve space for mobile bottom button bar (80px) + trading panel when visible */
+    padding-bottom: calc(80px + var(--mobile-trading-panel-height, 0px));
+  }
+  
+  .mobile-positions-container {
+    /* Ensure container accounts for trading panel space */
+    max-height: calc(100vh - 140px - var(--mobile-trading-panel-height, 0px)); /* 140px = TopBar + SymbolHeader */
+    /* Add bottom padding to prevent content from being hidden behind trading panel */
+    padding-bottom: calc(80px + var(--mobile-trading-panel-height, 0px));
+  }
 }
 
 .content-area.mobile-content > :not(.symbol-header) {
