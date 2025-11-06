@@ -24,6 +24,7 @@
           :tradeModes="tradeModes"
           :showTradeMode="false"
           @trade-mode-changed="onTradeModeChanged"
+          @open-mobile-search="onOpenMobileSearch"
         />
 
         <!-- Chart Section -->
@@ -198,6 +199,14 @@ export default {
       selectedTradeMode.value = mode;
     };
 
+    // Mobile search handler
+    const onOpenMobileSearch = () => {
+      // This method is called when the search icon in SymbolHeader is clicked on mobile
+      // We need to trigger the same mobile search overlay that TopBar uses
+      // Dispatch a custom event that TopBar can listen to
+      window.dispatchEvent(new CustomEvent('open-mobile-search'));
+    };
+
     const toggleRightPanel = () => {
       isRightPanelExpanded.value = !isRightPanelExpanded.value;
     };
@@ -310,6 +319,7 @@ export default {
 
       // Methods
       onTradeModeChanged,
+      onOpenMobileSearch,
       toggleRightPanel,
       formatVolume,
       formatMarketCap,

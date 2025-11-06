@@ -29,6 +29,7 @@
           :isLivePrice="isLivePrice"
           :marketStatus="marketStatus"
           :showTradeMode="false"
+          @open-mobile-search="onOpenMobileSearch"
         />
 
         <!-- Header Section -->
@@ -485,6 +486,14 @@ export default {
       console.log("Mobile navigation:", navItem);
       // Navigation is handled by the MobileNavDrawer component
       // The drawer will close automatically after navigation
+    };
+
+    // Mobile search handler
+    const onOpenMobileSearch = () => {
+      // This method is called when the search icon in SymbolHeader is clicked on mobile
+      // We need to trigger the same mobile search overlay that TopBar uses
+      // Dispatch a custom event that TopBar can listen to
+      window.dispatchEvent(new CustomEvent('open-mobile-search'));
     };
 
     // Use global symbol state with centralized symbol selection
@@ -2130,6 +2139,7 @@ export default {
       // Mobile navigation state and methods
       showMobileNav,
       onMobileNavigation,
+      onOpenMobileSearch,
 
       // Mobile overlay state and methods
       showMobileOverlay,
