@@ -161,10 +161,7 @@ class StreamingManager:
         # 4. Update Greeks subscriptions (options only)
         await self._update_greeks_subscriptions(option_symbols)
         
-        # 5. Trigger IVx calculations for stock symbols
-        await self._update_ivx_subscriptions(stock_symbols)
-        
-        logger.info(f"Global subscriptions updated. Quotes: {len(global_new_symbols)}, Greeks: {len(option_symbols)}, IVx: {len(stock_symbols)} symbols.")
+        logger.info(f"Global subscriptions updated. Quotes: {len(global_new_symbols)}, Greeks: {len(option_symbols)} symbols.")
 
     def _is_option_symbol(self, symbol: str) -> bool:
         """Check if symbol is an option symbol."""
