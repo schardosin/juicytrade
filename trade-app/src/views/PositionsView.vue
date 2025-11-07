@@ -437,6 +437,7 @@
 
 <script>
 import { ref, computed, watch, onMounted, onUnmounted, reactive, nextTick } from "vue";
+import { DateTime } from "luxon";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
 import RightPanel from "../components/RightPanel.vue";
@@ -452,6 +453,7 @@ import { useOrderManagement } from "../composables/useOrderManagement";
 import { useMobileDetection } from "../composables/useMobileDetection";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 import { mapToRootSymbol } from "../utils/symbolMapping.js";
+import MarketHoursUtil from "../utils/marketHours.js";
 import MobilePositionsCard from "../components/MobilePositionsCard.vue";
 import MobileNavDrawer from "../components/MobileNavDrawer.vue";
 import MobileBottomButtonBar from "../components/MobileBottomButtonBar.vue";
@@ -772,12 +774,20 @@ export default {
     const getLegPlDay = (leg) => {
       const lastdayPrice = leg.lastday_price;
       
-      // Check if this is a same-day trade by comparing date_acquired with today
-      const today = new Date().toISOString().split('T')[0];
-      const dateAcquired = leg.date_acquired ? leg.date_acquired.split('T')[0] : null;
+      // TIMEZONE FIX: Use Eastern Time instead of UTC for trading day boundary
+      // Get current date in Eastern Time (EST/EDT) - this is the timezone US markets operate in
+      const todayEastern = DateTime.now().setZone("America/New_York").toISODate(); // YYYY-MM-DD format
       
-      // If lastday_price is null/undefined OR if position was acquired today, treat as same-day trade
-      if (lastdayPrice === null || lastdayPrice === undefined || dateAcquired === today) {
+      // Extract date from date_acquired in Eastern Time
+      let dateAcquiredEastern = null;
+      if (leg.date_acquired) {
+        // Parse the date_acquired timestamp and convert to Eastern Time
+        const acquiredDateTime = DateTime.fromISO(leg.date_acquired).setZone("America/New_York");
+        dateAcquiredEastern = acquiredDateTime.toISODate(); // YYYY-MM-DD format
+      }
+      
+      // If lastday_price is null/undefined OR if position was acquired today (Eastern Time), treat as same-day trade
+      if (lastdayPrice === null || lastdayPrice === undefined || dateAcquiredEastern === todayEastern) {
         return getLegPL(leg);
       }
 
