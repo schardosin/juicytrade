@@ -466,14 +466,14 @@ export default {
 }
 
 .mobile-section {
-  margin-bottom: 24px;
+  margin-bottom: 0; /* Remove bottom margin to eliminate spacing */
 }
 
 .section-title {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin: 0 0 16px 0;
+  margin: 0; /* Remove all margins */
   padding: 12px 16px;
   font-size: 16px;
   font-weight: 600;
@@ -488,6 +488,7 @@ export default {
 
 .chart-wrapper {
   padding: 0;
+  margin: 0; /* Ensure no margins */
 }
 
 .no-chart-message {

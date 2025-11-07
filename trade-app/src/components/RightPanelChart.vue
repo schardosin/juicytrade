@@ -458,6 +458,8 @@ export default {
   background-color: #0b0d10;
   border-radius: 8px;
   overflow: hidden;
+  margin: 0; /* Ensure no margins */
+  padding: 0; /* Ensure no padding */
 }
 
 .chart-container {
