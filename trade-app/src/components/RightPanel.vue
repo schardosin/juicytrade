@@ -79,6 +79,23 @@
       <div class="content-body">
         <!-- Overview Section -->
         <div v-if="activeSection === 'overview'" class="section-content">
+          <!-- Price Chart Section -->
+          <RightPanelSection
+            title="Price Chart"
+            icon="pi pi-chart-line"
+            :defaultExpanded="true"
+            @toggle="onSectionToggle"
+          >
+            <RightPanelChart
+              :symbol="currentSymbol"
+              :currentPrice="currentPrice"
+              :height="220"
+              :livePrice="livePrice"
+              :enableRealtime="true"
+            />
+          </RightPanelSection>
+
+          <!-- Quote Details Section -->
           <RightPanelSection
             title="Quote Details"
             icon="pi pi-list"
@@ -263,6 +280,7 @@
 import { ref, computed, watch, onMounted, reactive } from "vue";
 import RightPanelSection from "./RightPanelSection.vue";
 import QuoteDetailsSection from "./QuoteDetailsSection.vue";
+import RightPanelChart from "./RightPanelChart.vue";
 import PayoffChart from "./PayoffChart.vue";
 import ActivitySection from "./ActivitySection.vue";
 import WatchlistSection from "./WatchlistSection.vue";
@@ -277,6 +295,7 @@ export default {
   components: {
     RightPanelSection,
     QuoteDetailsSection,
+    RightPanelChart,
     PayoffChart,
     ActivitySection,
     WatchlistSection,
@@ -328,7 +347,7 @@ export default {
     // Use unified market data composable and centralized selected legs
     const { getPositionsForSymbol } = useMarketData();
     const { selectedLegs } = useSelectedLegs();
-    const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
+    const { getOptionPrice: getSmartOptionPrice, getStockPrice } = useSmartMarketData();
     const liveOptionPrices = reactive(new Map());
     const componentId = `RightPanel-${Math.random().toString(36).substr(2, 9)}`;
     const registeredSymbols = new Set();
@@ -881,6 +900,13 @@ export default {
     // Avoid any internal caching here to prevent stale charts when no legs are selected.
     const chartData = computed(() => props.chartData);
 
+    // Live price subscription for chart updates (similar to ChartView)
+    const livePrice = computed(() => {
+      if (!props.currentSymbol) return null;
+      const priceData = getStockPrice(props.currentSymbol);
+      return priceData?.value || null;
+    });
+
     // REMOVED: This watcher was causing race conditions with the parent's flag system
     // The parent (OptionsTrading) now properly manages the priority between selectedLegs and position selections
     // watch(
@@ -903,6 +929,7 @@ export default {
       isAllSelected,
       isIndeterminate,
       chartData, // Use computed chartData instead of prop
+      livePrice, // Live price data for chart updates
       toggleSection,
       collapsePanel,
       getSectionTitle,

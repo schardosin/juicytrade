@@ -12,6 +12,22 @@
     <div class="overlay-content">
       <!-- Overview Section -->
       <div v-if="activeSection === 'overview'" class="section-content">
+        <!-- Price Chart Section -->
+        <div class="mobile-section">
+          <h3 class="section-title">
+            <i class="pi pi-chart-line"></i>
+            Price Chart
+          </h3>
+          <RightPanelChart
+            :symbol="currentSymbol"
+            :currentPrice="currentPrice"
+            :height="220"
+            :livePrice="livePrice"
+            :enableRealtime="true"
+          />
+        </div>
+
+        <!-- Quote Details Section -->
         <div class="mobile-section">
           <h3 class="section-title">
             <i class="pi pi-list"></i>
@@ -203,14 +219,17 @@
 <script>
 import { computed } from 'vue';
 import QuoteDetailsSection from './QuoteDetailsSection.vue';
+import RightPanelChart from './RightPanelChart.vue';
 import PayoffChart from './PayoffChart.vue';
 import ActivitySection from './ActivitySection.vue';
 import WatchlistSection from './WatchlistSection.vue';
+import { useSmartMarketData } from '../composables/useSmartMarketData.js';
 
 export default {
   name: 'MobileFullScreenOverlay',
   components: {
     QuoteDetailsSection,
+    RightPanelChart,
     PayoffChart,
     ActivitySection,
     WatchlistSection,
@@ -267,6 +286,15 @@ export default {
   },
   emits: ['close', 'toggle-position-check', 'toggle-select-all'],
   setup(props, { emit }) {
+    const { getStockPrice } = useSmartMarketData();
+
+    // Live price subscription for chart updates (similar to ChartView and RightPanel)
+    const livePrice = computed(() => {
+      if (!props.currentSymbol) return null;
+      const priceData = getStockPrice(props.currentSymbol);
+      return priceData?.value || null;
+    });
+
     const getSectionTitle = (section) => {
       const titles = {
         overview: 'Overview',
@@ -344,6 +372,7 @@ export default {
     };
 
     return {
+      livePrice, // Live price data for chart updates
       getSectionTitle,
       closeOverlay,
       togglePositionCheck,
