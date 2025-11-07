@@ -136,91 +136,29 @@ export default {
     },
   },
   setup(props) {
-    // ✅ CORRECT - Use unified composable, no direct API calls
+    // ✅ UNIFIED SMART DATA SYSTEM - All data comes from preloaded Overview data
     const { 
       getStockPrice, 
       getBalance, 
       getPositions,
-      getPreviousClose,
-      getHistoricalData,
-      getAvailableExpirations,
-      getOptionsChainBasic,
-      get52WeekRange,
-      getAverageVolume
+      getOverviewData
     } = useMarketData();
     
-    // ✅ CORRECT - Just get reactive data, everything else is automatic
-    const liveQuote = getStockPrice(props.symbol);
+    // ✅ Live streaming data (bid/ask updates during market hours)
+    const rawLiveQuote = getStockPrice(props.symbol);
     const balance = getBalance(); // Auto-refreshes every 60s
     const positions = getPositions(); // Auto-refreshes every 30s
     
-    // For async data, we need to create reactive refs and load the data
-    const previousClose = ref(null);
-    const weekRange52 = ref(null);
-    const averageVolume = ref(null);
-    const todayData = ref(null);
-    const expirations = ref(null);
-    const optionsChain = ref(null);
+    // ✅ Validate live quote data matches current symbol
+    const liveQuote = computed(() => {
+      const quote = rawLiveQuote.value;
+      // Only return quote data if we have a valid current price for this symbol
+      // This prevents showing stale bid/ask from previous symbol
+      return (quote && props.currentPrice > 0) ? quote : null;
+    });
     
-    // Load async data when symbol changes
-    const loadAsyncData = async () => {
-      try {
-        // Load all async data in parallel
-        const [
-          prevCloseData,
-          weekRangeData,
-          avgVolumeData,
-          todayHistData,
-          expirationsData
-        ] = await Promise.all([
-          getPreviousClose(props.symbol),
-          get52WeekRange(props.symbol),
-          getAverageVolume(props.symbol, 20),
-          getHistoricalData(props.symbol, 'D', {
-            start_date: new Date().toISOString().split('T')[0],
-            limit: 1
-          }),
-          getAvailableExpirations(props.symbol)
-        ]);
-        
-        previousClose.value = prevCloseData;
-        weekRange52.value = weekRangeData;
-        averageVolume.value = avgVolumeData?.average_volume || null;
-        todayData.value = todayHistData?.bars?.[0] || null;
-        expirations.value = expirationsData;
-        
-        // Load options chain if we have expirations
-        if (expirationsData && expirationsData.length > 0) {
-          try {
-            // Extract the date string from the expiration object
-            const firstExpiration = expirationsData[0];
-            const expirationDate = typeof firstExpiration === 'string' 
-              ? firstExpiration 
-              : firstExpiration.date || firstExpiration;
-              
-            const chainData = await getOptionsChainBasic(
-              props.symbol, 
-              expirationDate, 
-              props.currentPrice, 
-              5
-            );
-            optionsChain.value = chainData;
-          } catch (optionsError) {
-            console.warn("Could not load options chain:", optionsError.message);
-            // Don't fail the whole component if options data fails
-          }
-        }
-      } catch (error) {
-        console.error("Error loading async data:", error);
-      }
-    };
-
-    // Watch for symbol changes and reload data
-    watch(() => props.symbol, () => {
-      if (props.symbol) {
-        loadAsyncData();
-      }
-    }, { immediate: true });
+    // ✅ Get ALL preloaded Overview data (includes everything we need)
+    const overviewData = computed(() => getOverviewData(props.symbol).value);
 
     // Get account info from balance data
     const accountInfo = computed(() => {
@@ -236,6 +174,38 @@ export default {
       return positions.value.positions.find(pos => 
         pos.underlying_symbol === props.symbol || pos.symbol === props.symbol
       ) || null;
+    });
+
+    // ✅ UNIFIED SMART DATA SYSTEM - All data from preloaded Overview data
+    const previousClose = computed(() => {
+      const data = overviewData.value;
+      // Only return data if it matches the current symbol
+      return (data && data.symbol === props.symbol) ? data.previousClose : null;
+    });
+    
+    const weekRange52 = computed(() => {
+      const data = overviewData.value;
+      // Only return data if it matches the current symbol
+      return (data && data.symbol === props.symbol) ? data.weekRange52 : null;
+    });
+    
+    const averageVolume = computed(() => {
+      const data = overviewData.value;
+      // Only return data if it matches the current symbol
+      return (data && data.symbol === props.symbol) ? data.averageVolume : null;
+    });
+    
+    // ✅ Today's OHLCV data from preloaded Overview data
+    const todayData = computed(() => {
+      const data = overviewData.value;
+      // Only return data if it matches the current symbol
+      return (data && data.symbol === props.symbol) ? data.todayData : null;
+    });
+    
+    const expirations = computed(() => {
+      const data = overviewData.value;
+      // Only return data if it matches the current symbol
+      return (data && data.symbol === props.symbol) ? data.expirations || [] : [];
     });
 
     // Get next expiration (filter for future dates only)
@@ -261,12 +231,13 @@ export default {
         : futureExpiration.date || futureExpiration;
     });
 
-    // Get implied volatility from options chain
+    // ✅ Get implied volatility from preloaded options chain
     const impliedVolatility = computed(() => {
-      if (!optionsChain.value?.length) return null;
+      const data = overviewData.value;
+      if (!data || data.symbol !== props.symbol || !data.optionsChain?.length) return null;
       
       // Find ATM option and get its IV
-      const atmOption = optionsChain.value.find(opt => 
+      const atmOption = data.optionsChain.find(opt => 
         Math.abs(opt.strike_price - props.currentPrice) < 5
       );
       

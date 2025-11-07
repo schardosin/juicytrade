@@ -47,7 +47,6 @@ export function useMarketData() {
    * Uses TTL caching for optimal performance
    */
   const getIvxData = (symbol) => {
-    console.log('🔍 useMarketData.getIvxData called with symbol:', symbol);
     return smartMarketDataStore.getIvxData(symbol);
   };
 
@@ -254,6 +253,22 @@ export function useMarketData() {
     return smartMarketDataStore.getDebugInfo();
   };
 
+  /**
+   * Get preloaded Overview data for a symbol
+   * Returns static data that was preloaded when symbol was selected
+   */
+  const getOverviewData = (symbol) => {
+    return smartMarketDataStore.getOverviewData(symbol);
+  };
+
+  /**
+   * Force refresh Overview data for a symbol
+   * Useful for manual refresh of static data
+   */
+  const refreshOverviewData = async (symbol) => {
+    return await smartMarketDataStore.refreshOverviewData(symbol);
+  };
+
   return {
     // Real-time data (WebSocket)
     getStockPrice,
@@ -283,6 +298,10 @@ export function useMarketData() {
     getPreviousClose,
     get52WeekRange,
     getAverageVolume,
+
+    // Overview data (Preloaded static data)
+    getOverviewData,
+    refreshOverviewData,
 
     // Provider configuration data
     getAvailableProviders,

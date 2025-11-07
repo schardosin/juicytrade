@@ -141,8 +141,6 @@ export function useOptionsChainManager(
       return;
     }
 
-    console.log(`📅 Options Manager: Loading expiration dates for ${symbol.value} (auth: ${authService.isAuthenticated()}, services running: ${smartMarketDataStore.isServicesRunning()})`);
-
     try {
       expirationDatesLoading.value = true; // Use separate loading state
       error.value = null;
@@ -151,7 +149,6 @@ export function useOptionsChainManager(
       
       if (dates && dates.length > 0) {
         expirationDates.value = dates;
-        console.log(`✅ Options Manager: Successfully loaded ${dates.length} expiration dates for ${symbol.value}`);
       } else {
         expirationDates.value = [];
         error.value = "No expiration dates available";

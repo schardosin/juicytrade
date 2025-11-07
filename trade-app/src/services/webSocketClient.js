@@ -263,8 +263,6 @@ class WebSocketStreamingClient {
       }
 
       if (sessionToken) {
-        console.log("🔐 Using session cookie for WebSocket authentication");
-        console.log(`🔐 Session cookie name: ${sessionCookieName}, token length: ${sessionToken.length}`);
         return { 
           token: sessionToken, 
           headers: {} 

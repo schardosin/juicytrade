@@ -68,8 +68,6 @@ const tokenProcessed = handleOAuthTokenFromURL();
 
 // Initialize Authentication Service first, then conditionally initialize store
 authService.init().then(() => {
-  console.log('Authentication service initialized');
-  
   // SmartMarketDataStore will initialize itself based on auth state
   // No need to call initialize() here - it handles auth-aware initialization internally
 }).catch(error => {

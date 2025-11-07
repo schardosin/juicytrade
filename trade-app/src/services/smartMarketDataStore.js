@@ -1328,8 +1328,6 @@ class SmartMarketDataStore {
    * Set up WebSocket integration to receive price updates
    */
   async setupWebSocketIntegration() {
-    console.log(`🔌 Setting up WebSocket integration (auth: ${this.isAuthenticated})`);
-    
     // The new webSocketClient connects automatically via the worker
     // We just need to set up the listeners
     
@@ -1358,9 +1356,7 @@ class SmartMarketDataStore {
     // but we should avoid calling it at all when not authenticated
     if (this.isAuthenticated) {
       try {
-        console.log(`🔌 Attempting WebSocket connection...`);
         await webSocketClient.connect();
-        console.log(`✅ WebSocket connection established`);
       } catch (error) {
         console.error("❌ Failed to connect to WebSocket via worker:", error);
       }
@@ -1937,6 +1933,11 @@ class SmartMarketDataStore {
       this.ensureCurrentSymbolDaily6M(symbol).catch(err => {
         console.warn(`⚠️ Background daily 6M load failed for ${symbol}:`, err.message);
       });
+      
+      // NEW: Preload Overview static data asynchronously
+      this.preloadOverviewData(symbol).catch(err => {
+        console.warn(`⚠️ Background Overview data load failed for ${symbol}:`, err.message);
+      });
     }
 
     // Schedule backend update
@@ -2252,6 +2253,334 @@ class SmartMarketDataStore {
     }
   }
 
+  // ===== OVERVIEW DATA PRELOADING SYSTEM =====
+
+  /**
+   * Preload Overview tab ALL data for a symbol (background fetch)
+   * Loads ALL data needed for Overview tab through unified SMART DATA system
+   */
+  async preloadOverviewData(symbol) {
+    if (!symbol) return;
+
+    // Don't load data if not authenticated
+    if (authService.isAuthEnabled() && !authService.isAuthenticated()) {
+      console.log("🔒 Skipping Overview data preload - user not authenticated");
+      return;
+    }
+
+    const key = `overviewData.${symbol}`;
+    
+    // CRITICAL: Clear any existing Overview data for other symbols immediately
+    // This prevents showing stale data from previous symbol while new data loads
+    this.clearOtherOverviewData(symbol);
+    
+    try {
+      this.setLoading(key, true);      
+      // Get a date range to ensure we get the most recent trading day's data
+      // instead of just today (which might not have data yet)
+      const today = new Date();
+      const threeDaysAgo = new Date(today.getTime() - (3 * 24 * 60 * 60 * 1000));
+      const threeDaysAgoISO = this.formatISODate(threeDaysAgo);
+      
+      const [
+        previousClose,
+        weekRange52,
+        averageVolume,
+        todaysData,
+        expirations
+      ] = await Promise.allSettled([
+        api.getPreviousClose(symbol),
+        api.get52WeekRange(symbol),
+        api.getAverageVolume(symbol, 20),
+        api.getHistoricalData(symbol, 'D', {
+          start_date: threeDaysAgoISO,
+          limit: 3  // Get last 3 days to ensure we have recent data
+        }),
+        api.getAvailableExpirations(symbol)
+      ]);
+      
+      // Extract today's OHLCV data with debugging - get the most recent bar
+      let todayBar = null;
+      if (todaysData.status === 'fulfilled' && todaysData.value?.bars?.length > 0) {
+        // Get the most recent bar (last in the array)
+        const bars = todaysData.value.bars;
+        todayBar = bars[bars.length - 1];
+      } else {
+        console.warn(`⚠️ No recent bar data found for ${symbol}:`, todaysData);
+      }
+      
+      // DEBUG: Log the todaysData result to see what's happening
+      if (todaysData.status === 'rejected') {
+        console.error(`❌ Failed to load recent OHLC data for ${symbol}:`, todaysData.reason);
+      }
+      
+      // Build complete overview data object with ALL data
+      const overviewData = {
+        symbol,
+        // Static data (doesn't change during day)
+        previousClose: previousClose.status === 'fulfilled' ? previousClose.value : null,
+        weekRange52: weekRange52.status === 'fulfilled' ? weekRange52.value : null,
+        averageVolume: averageVolume.status === 'fulfilled' ? averageVolume.value?.average_volume : null,
+        expirations: expirations.status === 'fulfilled' ? expirations.value : [],
+        
+        // Today's data (changes during day, but good for initial load)
+        todayData: todayBar ? {
+          open: todayBar.open,
+          high: todayBar.high,
+          low: todayBar.low,
+          close: todayBar.close,
+          volume: todayBar.volume
+        } : null,
+        
+        // Current price snapshot (will be updated by WebSocket streaming)
+        currentPriceSnapshot: null, // Will be updated by WebSocket streaming
+        
+        // Metadata
+        hasOptions: false,
+        lastUpdated: Date.now(),
+        isLoading: false
+      };
+
+      // Determine if symbol has options
+      overviewData.hasOptions = overviewData.expirations && overviewData.expirations.length > 0;
+
+      // Load options chain if symbol has options
+      if (overviewData.hasOptions && overviewData.expirations.length > 0) {
+        try {
+          const firstExpiration = overviewData.expirations[0];
+          const expirationDate = typeof firstExpiration === 'string' 
+            ? firstExpiration 
+            : firstExpiration.date || firstExpiration;
+          
+          const chainData = await api.getOptionsChainBasic(
+            symbol, 
+            expirationDate, 
+            overviewData.currentPriceSnapshot?.price || 0, 
+            5
+          );
+          
+          overviewData.optionsChain = chainData;
+        } catch (optionsError) {
+          console.warn(`⚠️ Could not load options chain for ${symbol}:`, optionsError.message);
+          overviewData.optionsChain = null;
+        }
+      }
+
+      // Store the complete preloaded data
+      this.updateData(key, overviewData);
+      
+    } catch (error) {
+      console.error(`❌ Failed to preload Overview data for ${symbol}:`, error);
+      this.setError(key, error);
+    } finally {
+      this.setLoading(key, false);
+    }
+  }
+
+  /**
+   * Clear Overview data AND WebSocket price data for all symbols except the specified one
+   * Prevents showing stale data from previous symbol (including bid/ask off-hours)
+   */
+  clearOtherOverviewData(currentSymbol) {
+    const keysToDelete = [];
+    const symbolsToDeleteFromWebSocket = [];
+    
+    // Find all Overview data keys for other symbols
+    for (const [key, data] of this.data.entries()) {
+      if (key.startsWith('overviewData.') && key !== `overviewData.${currentSymbol}`) {
+        keysToDelete.push(key);
+      }
+    }
+    
+    // Find all WebSocket price data for other symbols
+    for (const symbol of this.stockPrices.keys()) {
+      if (symbol !== currentSymbol) {
+        symbolsToDeleteFromWebSocket.push(symbol);
+      }
+    }
+    
+    for (const symbol of this.optionPrices.keys()) {
+      if (symbol !== currentSymbol) {
+        symbolsToDeleteFromWebSocket.push(symbol);
+      }
+    }
+    
+    // Clear Overview data immediately
+    keysToDelete.forEach(key => {
+      this.data.delete(key);
+      this.cache.delete(key);
+      this.errors.delete(key);
+    });
+    
+    // Clear WebSocket price data for other symbols immediately
+    symbolsToDeleteFromWebSocket.forEach(symbol => {
+      this.stockPrices.delete(symbol);
+      this.optionPrices.delete(symbol);
+      // Also clear access tracking for these symbols
+      this.lastAccess.delete(symbol);
+    });
+    
+    if (keysToDelete.length > 0 || symbolsToDeleteFromWebSocket.length > 0) {
+      console.log(`🧹 Cleared Overview data for ${keysToDelete.length} previous symbols and WebSocket data for ${symbolsToDeleteFromWebSocket.length} symbols`);
+    }
+  }
+
+  /**
+   * Get today's opening price for a symbol
+   * Fetches today's OHLCV data and extracts the open price
+   */
+  async getTodaysOpen(symbol) {
+    try {
+      const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+      const todayData = await api.getHistoricalData(symbol, 'D', {
+        start_date: today,
+        limit: 1
+      });
+      
+      return todayData?.bars?.[0]?.open || null;
+    } catch (error) {
+      console.warn(`⚠️ Could not fetch today's open for ${symbol}:`, error.message);
+      return null;
+    }
+  }
+
+  /**
+   * Get reactive Overview data for a symbol
+   * Returns preloaded static data if available (non-blocking)
+   */
+  getOverviewData(symbol) {
+    if (!symbol) return computed(() => null);
+
+    // Trigger loading immediately and asynchronously (non-blocking)
+    this.ensureOverviewDataLoaded(symbol);
+
+    return computed(() => {
+      // Return early if services are stopping
+      if (this.isServicesStopping) {
+        return null;
+      }
+      
+      const key = `overviewData.${symbol}`;
+      return this.data.get(key) || null;
+    });
+  }
+
+  /**
+   * Ensure overview data is loaded for a symbol (non-blocking async trigger)
+   */
+  ensureOverviewDataLoaded(symbol) {
+    if (!symbol || this.isServicesStopping || !this.isServicesRunning()) {
+      return;
+    }
+
+    const key = `overviewData.${symbol}`;
+    const existingData = this.data.get(key);
+    
+    // If no data exists, trigger background loading (fire and forget)
+    if (!existingData) {
+      // Use setImmediate equivalent to ensure this doesn't block
+      setTimeout(() => {
+        this.preloadOverviewData(symbol).catch(err => {
+          console.warn(`⚠️ Background Overview data load failed for ${symbol}:`, err.message);
+        });
+      }, 0); // Next tick - completely non-blocking
+    }
+  }
+
+  /**
+   * Refresh Overview data for a symbol (force reload)
+   */
+  async refreshOverviewData(symbol) {
+    if (!symbol) return;
+    
+    const key = `overviewData.${symbol}`;
+    
+    // Clear existing data
+    this.data.delete(key);
+    this.cache.delete(key);
+    this.errors.delete(key);
+    
+    // Reload data
+    return await this.preloadOverviewData(symbol);
+  }
+
+  /**
+   * Set up periodic refresh for Overview data (5 minutes, static data only)
+   * Only refreshes data for symbols that have been preloaded
+   */
+  setupOverviewDataPeriodicRefresh() {
+    // Set up periodic refresh every 5 minutes
+    const overviewRefreshTimer = setInterval(() => {
+      // Don't refresh when services are stopping
+      if (this.isServicesStopping) {
+        return;
+      }
+      
+      this.refreshActiveOverviewData();
+    }, 300000); // 5 minutes
+
+    // Store timer for cleanup
+    this.timers.set('overviewDataRefresh', overviewRefreshTimer);
+    
+  }
+
+  /**
+   * Refresh Overview data for all symbols that have preloaded data
+   * Only updates static data - never interferes with live streams
+   */
+  async refreshActiveOverviewData() {
+    const activeOverviewSymbols = [];
+    
+    // Find all symbols with preloaded Overview data
+    for (const [key, data] of this.data.entries()) {
+      if (key.startsWith('overviewData.') && data && data.symbol) {
+        activeOverviewSymbols.push(data.symbol);
+      }
+    }
+    
+    if (activeOverviewSymbols.length === 0) {
+      return; // No symbols to refresh
+    }
+    
+    console.log(`📊 Refreshing Overview data for ${activeOverviewSymbols.length} symbols...`);
+    
+    // Refresh each symbol's static data
+    for (const symbol of activeOverviewSymbols) {
+      try {
+        const key = `overviewData.${symbol}`;
+        const existingData = this.data.get(key);
+        
+        if (!existingData) continue;
+        
+        // Load updated static data in parallel (same as preload, but update existing)
+        const [
+          weekRange52,
+          averageVolume
+        ] = await Promise.allSettled([
+          api.get52WeekRange(symbol),
+          api.getAverageVolume(symbol, 20)
+        ]);
+
+        // Update only the data that can change (52-week range, average volume)
+        // Previous close and today's open don't change during trading day
+        const updatedData = {
+          ...existingData,
+          weekRange52: weekRange52.status === 'fulfilled' ? weekRange52.value : existingData.weekRange52,
+          averageVolume: averageVolume.status === 'fulfilled' ? averageVolume.value?.average_volume : existingData.averageVolume,
+          lastUpdated: Date.now()
+        };
+
+        // Store the updated data
+        this.updateData(key, updatedData);
+        
+      } catch (error) {
+        console.warn(`⚠️ Failed to refresh Overview data for ${symbol}:`, error.message);
+      }
+    }
+    
+    console.log(`✅ Overview data refresh completed for ${activeOverviewSymbols.length} symbols`);
+  }
+
   /**
    * Set up authentication integration
    * Monitors auth state and controls service initialization
@@ -2295,7 +2624,6 @@ class SmartMarketDataStore {
         this.isAuthenticated = authService.isAuthenticated();
         
         if (this.isAuthenticated) {
-          console.log("🔐 User is authenticated, starting services");
           this.startServices();
         } else {
           console.log("🔐 User not authenticated, services will start after login");
@@ -2318,12 +2646,9 @@ class SmartMarketDataStore {
    */
   startServices() {
     if (this.isInitialized) {
-      console.log("⚠️ Services already initialized");
       return;
     }
 
-    console.log("🚀 Starting SmartMarketDataStore services");
-    
     // Set service state flags
     this.isServicesStopping = false;
     
@@ -2354,14 +2679,11 @@ class SmartMarketDataStore {
     // Listen for system recovery events
     this.setupRecoveryListeners();
 
-    console.log("✅ SmartMarketDataStore services started");
-    
     // CRITICAL: Update backend subscriptions for any symbols that were added before authentication
     if (this.activeSubscriptions.size > 0) {
       this.scheduleBackendUpdate();
     }
     
-    console.log("✅ All services fully started and ready");
   }
 
   /**
@@ -2490,6 +2812,9 @@ class SmartMarketDataStore {
       method: "getIvxData",
       ttl: 300000, // 5 minutes (same as backend cache)
     });
+
+    // Overview data periodic refresh (5 minutes, static data only)
+    this.setupOverviewDataPeriodicRefresh();
   }
 
   /**

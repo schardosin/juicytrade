@@ -288,10 +288,8 @@ export default {
     );
 
     // Get IVx data for current symbol (after globalSymbolState is initialized)
-    console.log('🔍 OptionsTrading: Setting up rawIvxData for symbol:', globalSymbolState.currentSymbol);
     const rawIvxData = getIvxData(
       computed(() => {
-        console.log('🔍 OptionsTrading: rawIvxData computed symbol changed to:', globalSymbolState.currentSymbol);
         return globalSymbolState.currentSymbol;
       })
     );
@@ -299,7 +297,6 @@ export default {
     // Create defensive IVx data with fallbacks
     const ivxData = computed(() => {
       const data = rawIvxData.value;
-      console.log('🔍 OptionsTrading ivxData computed running, rawIvxData.value:', data);
       if (!data) {
         return {
           isLoading: true,
