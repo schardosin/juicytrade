@@ -624,12 +624,22 @@ export default {
       limitPrice.value = parseFloat(
         (parseFloat(limitPrice.value) + 0.01).toFixed(2)
       );
+      
+      // Auto-activate price lock when user manually adjusts price
+      if (!priceLocked.value) {
+        priceLocked.value = true;
+      }
     };
 
     const decrementPrice = () => {
       limitPrice.value = parseFloat(
         (parseFloat(limitPrice.value) - 0.01).toFixed(2)
       );
+      
+      // Auto-activate price lock when user manually adjusts price
+      if (!priceLocked.value) {
+        priceLocked.value = true;
+      }
     };
 
     const toggleLegSelection = (symbol) => {
@@ -963,12 +973,23 @@ export default {
     watch(
       selectedLegs,
       (newOptions, oldOptions) => {
-        // Simple approach: unlock on ANY change if currently locked
-        if (priceLocked.value) {
-          console.log(
-            "🔓 Auto-unlocking because price was locked and options changed"
-          );
-          priceLocked.value = false;
+        // Only unlock if the leg composition changes (symbols added/removed), not quantity changes
+        if (priceLocked.value && oldOptions) {
+          const newSymbols = new Set(newOptions.map(leg => leg.symbol));
+          const oldSymbols = new Set(oldOptions.map(leg => leg.symbol));
+          
+          // Check if symbols were added or removed
+          const symbolsChanged = newSymbols.size !== oldSymbols.size || 
+            [...newSymbols].some(symbol => !oldSymbols.has(symbol)) ||
+            [...oldSymbols].some(symbol => !newSymbols.has(symbol));
+          
+          if (symbolsChanged) {
+            console.log(
+              "🔓 Auto-unlocking because leg composition changed (symbols added/removed)"
+            );
+            priceLocked.value = false;
+          }
+          // Don't unlock for quantity-only changes
         }
       },
       { deep: true, immediate: true }

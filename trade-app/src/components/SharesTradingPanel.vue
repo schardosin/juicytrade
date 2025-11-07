@@ -330,18 +330,38 @@ export default {
 
     const incrementPrice = () => {
       limitPrice.value = parseFloat((parseFloat(limitPrice.value) + 0.01).toFixed(2));
+      
+      // Auto-activate price lock when user manually adjusts limit price
+      if (!priceLocked.value) {
+        priceLocked.value = true;
+      }
     };
 
     const decrementPrice = () => {
       limitPrice.value = parseFloat((parseFloat(limitPrice.value) - 0.01).toFixed(2));
+      
+      // Auto-activate price lock when user manually adjusts limit price
+      if (!priceLocked.value) {
+        priceLocked.value = true;
+      }
     };
 
     const incrementStopPrice = () => {
       stopPrice.value = parseFloat((parseFloat(stopPrice.value) + 0.01).toFixed(2));
+      
+      // Auto-activate stop price lock when user manually adjusts stop price
+      if (!stopPriceLocked.value) {
+        stopPriceLocked.value = true;
+      }
     };
 
     const decrementStopPrice = () => {
       stopPrice.value = parseFloat((parseFloat(stopPrice.value) - 0.01).toFixed(2));
+      
+      // Auto-activate stop price lock when user manually adjusts stop price
+      if (!stopPriceLocked.value) {
+        stopPriceLocked.value = true;
+      }
     };
 
     const togglePriceLock = () => {
