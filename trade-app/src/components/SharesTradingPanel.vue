@@ -1,10 +1,10 @@
 <template>
   <!-- Simplified Bottom Trading Panel for Shares -->
   <div v-if="visible" class="bottom-panel slide-up">
-    <!-- Main Trading Row -->
-    <div class="trading-row">
+    <!-- Main Trading Row - Keep original desktop structure -->
+    <div class="trading-row" :class="{ 'mobile-layout': isMobile }">
       <!-- Left Side: Order Side and Quantity -->
-      <div class="left-controls">
+      <div class="left-controls" :class="{ 'mobile-layout': isMobile }">
         <div class="order-side-section">
           <span class="control-label">Order Side</span>
           <div class="side-buttons">
@@ -42,7 +42,7 @@
       </div>
 
       <!-- Center: Price Progress Bar -->
-      <div class="price-section">
+      <div class="price-section" :class="{ 'mobile-layout': isMobile }">
         <!-- Stop Price Section (shown above prices for stop orders) -->
         <div v-if="needsStopPrice" class="stop-price-section">
           <span class="price-label">Stop Trigger Price</span>
@@ -154,8 +154,41 @@
       </div>
 
       <!-- Right Side: Order Type, Time in Force, and Action Buttons -->
-      <div class="right-controls">
-        <div class="config-row">
+      <div class="right-controls" :class="{ 'mobile-layout': isMobile }">
+        <!-- Mobile Order Config Row -->
+        <div v-if="isMobile" class="mobile-config-row">
+          <div class="order-type-section">
+            <span class="config-label">Order Type</span>
+            <select v-model="selectedOrderType" class="config-select">
+              <option value="market">Market</option>
+              <option value="limit">Limit</option>
+              <option value="stop_market">Stop Market</option>
+              <option value="stop_limit">Stop Limit</option>
+            </select>
+          </div>
+
+          <div class="time-force-section">
+            <span class="config-label">Time in Force</span>
+            <select v-model="selectedTimeInForce" class="config-select">
+              <option value="day">Day</option>
+              <option value="gtc">GTC</option>
+            </select>
+          </div>
+          
+          <!-- Mobile: Review Button beside Order Config -->
+          <div class="mobile-review-section">
+            <button
+              class="review-btn mobile-layout"
+              @click="handleReviewSend"
+              :disabled="!canSubmit"
+            >
+              Review
+            </button>
+          </div>
+        </div>
+
+        <!-- Desktop Config Row -->
+        <div v-if="!isMobile" class="config-row">
           <div class="order-type-section">
             <span class="config-label">Order Type</span>
             <select v-model="selectedOrderType" class="config-select">
@@ -175,7 +208,7 @@
           </div>
         </div>
 
-        <div class="action-buttons">
+        <div v-if="!isMobile" class="action-buttons">
           <button
             class="review-btn"
             @click="handleReviewSend"
@@ -193,6 +226,7 @@
 import { ref, computed, watch, onMounted, onUnmounted } from "vue";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol.js";
+import { useMobileDetection } from "../composables/useMobileDetection.js";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 
 export default {
@@ -223,6 +257,9 @@ export default {
   emits: ["review-send", "clear-trade"],
   setup(props, { emit }) {
     const { globalSymbolState } = useGlobalSymbol();
+
+    // Mobile detection
+    const { isMobile, isTablet, isDesktop } = useMobileDetection();
 
     // Component registration system
     const componentId = `SharesTradingPanel-${Math.random().toString(36).substr(2, 9)}`;
@@ -521,6 +558,11 @@ export default {
     });
 
     return {
+      // Mobile detection
+      isMobile,
+      isTablet,
+      isDesktop,
+      
       // State
       quantity,
       orderSide,
@@ -561,9 +603,6 @@ export default {
 <style scoped>
 .bottom-panel {
   position: relative;
-  bottom: 0;
-  left: 0;
-  right: 0;
   background-color: var(--bg-secondary);
   border-top: 1px solid var(--border-primary);
   color: var(--text-primary);
@@ -572,19 +611,103 @@ export default {
   transform: translateY(100%);
   transition: var(--transition-slow);
   margin-bottom: var(--spacing-xs);
+  max-height: 70vh;
+  overflow-y: auto;
 }
 
 .bottom-panel.slide-up {
   transform: translateY(0);
 }
 
-/* Main Trading Row */
+/* Mobile specific positioning */
+@media (max-width: 768px) {
+  .bottom-panel {
+    position: fixed;
+    bottom: 80px; /* Position above the mobile bottom button bar */
+    left: 0;
+    right: 0;
+    max-height: 60vh;
+    min-height: 200px;
+    margin-bottom: 0;
+    border-radius: 12px 12px 0 0;
+    /* Add smooth scrolling for mobile */
+    -webkit-overflow-scrolling: touch;
+    /* Prevent zoom on input focus */
+    touch-action: manipulation;
+  }
+  
+  /* Ensure content is scrollable on mobile */
+  .bottom-panel .content-row {
+    min-height: auto;
+    flex-shrink: 0;
+  }
+  
+  /* Make sure the panel doesn't get cut off by mobile keyboards */
+  .bottom-panel.slide-up {
+    transform: translateY(0);
+    /* Position above the mobile bottom button bar (approximately 80px height) */
+    bottom: 80px;
+  }
+}
+
+/* Additional mobile viewport fixes */
+@media (max-width: 768px) and (max-height: 700px) {
+  .bottom-panel {
+    max-height: 50vh;
+  }
+}
+
+/* For very small screens */
+@media (max-width: 480px) {
+  .bottom-panel {
+    max-height: 55vh;
+  }
+}
+
+
+/* Main Trading Row - Original desktop layout preserved */
 .trading-row {
   display: flex;
   align-items: center;
   padding: 16px 24px;
   background-color: var(--bg-secondary);
   gap: 24px;
+}
+
+/* Mobile Config Row */
+.mobile-config-row {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+  align-items: flex-end;
+}
+
+.mobile-config-row .order-type-section,
+.mobile-config-row .time-force-section {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Mobile Review Section */
+.mobile-review-section {
+  display: flex;
+  align-items: flex-end;
+  min-width: 80px;
+}
+
+.mobile-review-section .review-btn {
+  width: 100%;
+  min-width: 80px;
+  padding: 8px 12px;
+  font-size: 11px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+.review-btn.mobile-layout {
+  padding: 8px 16px;
+  font-size: 12px;
+  letter-spacing: 0.3px;
 }
 
 /* Left Controls */
@@ -623,6 +746,7 @@ export default {
   font-size: 14px;
   font-weight: 600;
   transition: all 0.2s ease;
+  height: 32px;
 }
 
 .buy-btn {
@@ -691,6 +815,7 @@ export default {
   font-size: 14px;
   font-weight: 600;
   flex: 1;
+  height: 32px;
 }
 
 .quantity-input:focus {
@@ -1053,6 +1178,7 @@ export default {
   background-position: right 8px center;
   background-size: 16px;
   padding-right: 32px;
+  height: 32px;
 }
 
 .config-select:hover {
@@ -1117,6 +1243,148 @@ export default {
   background-color: #555;
   color: #888;
   cursor: not-allowed;
+}
+
+/* Mobile Layout Adjustments - Match BottomTradingPanel compact sizing */
+@media (max-width: 768px) {
+  /* Trading Row Mobile Layout */
+  .trading-row.mobile-layout {
+    flex-direction: column;
+    gap: var(--spacing-md);
+    padding: var(--spacing-md);
+  }
+
+  /* Left Controls Mobile Layout */
+  .left-controls.mobile-layout {
+    min-width: auto;
+    width: 100%;
+    gap: 12px;
+  }
+
+  .left-controls.mobile-layout .control-label {
+    font-size: 10px;
+    margin-bottom: 4px;
+  }
+
+  .left-controls.mobile-layout .side-buttons {
+    width: 100%;
+    gap: 2px;
+  }
+
+  .left-controls.mobile-layout .side-btn {
+    font-size: 11px;
+    padding: 6px 8px;
+    height: 28px;
+  }
+
+  .left-controls.mobile-layout .quantity-input-group {
+    width: 100%;
+    gap: 2px;
+  }
+
+  .left-controls.mobile-layout .quantity-input {
+    font-size: 12px;
+    padding: 4px 8px;
+    height: 28px;
+  }
+
+  .left-controls.mobile-layout .qty-btn {
+    width: 32px;
+    height: 28px;
+    font-size: 12px;
+  }
+
+  /* Price Section Mobile Layout */
+  .price-section.mobile-layout {
+    gap: 8px;
+  }
+
+  .price-section.mobile-layout .price-label {
+    font-size: 9px;
+    margin-bottom: 2px;
+  }
+
+  .price-section.mobile-layout .price-input {
+    font-size: 11px;
+    padding: 4px 6px;
+    min-width: 50px;
+    height: 24px;
+  }
+
+  .price-section.mobile-layout .price-btn {
+    width: 22px;
+    height: 24px;
+    font-size: 9px;
+  }
+
+  .price-section.mobile-layout .progress-row {
+    gap: 8px;
+  }
+
+  .price-section.mobile-layout .price-text {
+    font-size: 10px;
+  }
+
+  .price-section.mobile-layout .price-text.highlight {
+    font-size: 11px;
+  }
+
+  .price-section.mobile-layout .price-dot {
+    width: 6px;
+    height: 6px;
+  }
+
+  /* Right Controls Mobile Layout */
+  .right-controls.mobile-layout {
+    min-width: auto;
+    width: 100%;
+    gap: 8px;
+  }
+
+  .right-controls.mobile-layout .config-label {
+    font-size: 9px;
+    margin-bottom: 2px;
+  }
+
+  .right-controls.mobile-layout .config-select {
+    font-size: 10px;
+    padding: 4px 8px;
+    padding-right: 24px;
+    height: 28px;
+  }
+
+  .right-controls.mobile-layout .mobile-config-row {
+    gap: 8px;
+    margin-top: 4px;
+  }
+
+  .right-controls.mobile-layout .mobile-review-section .review-btn {
+    padding: 6px 10px;
+    font-size: 10px;
+    letter-spacing: 0.1px;
+    min-width: 70px;
+    height: 28px;
+  }
+}
+
+/* Touch-friendly adjustments - Only apply to desktop, not mobile */
+@media (hover: none) and (pointer: coarse) and (min-width: 769px) {
+  .side-btn,
+  .qty-btn,
+  .price-btn,
+  .review-btn,
+  .mobile-close-btn {
+    min-height: 44px;
+  }
+  
+  .config-select {
+    min-height: 44px;
+  }
+  
+  .quantity-input,
+  .price-input {
+    min-height: 44px;
+  }
 }
 
 /* Responsive */

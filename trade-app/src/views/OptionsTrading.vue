@@ -64,9 +64,9 @@
           <LightweightChart
             :symbol="currentSymbol"
             :theme="'dark'"
-            :height="chartHeight"
             :enableRealtime="true"
             :livePrice="livePrice"
+            :hideControls="isMobile"
           />
         </div>
       </div>
@@ -167,6 +167,7 @@ import PayoffChart from "../components/PayoffChart.vue";
 import BottomTradingPanel from "../components/BottomTradingPanel.vue";
 import SharesTradingPanel from "../components/SharesTradingPanel.vue";
 import LightweightChart from "../components/LightweightChart.vue";
+import RightPanelChart from "../components/RightPanelChart.vue";
 import OrderConfirmationDialog from "../components/OrderConfirmationDialog.vue";
 import RightPanel from "../components/RightPanel.vue";
 import { useOrderManagement } from "../composables/useOrderManagement";
@@ -196,6 +197,7 @@ export default {
     BottomTradingPanel,
     SharesTradingPanel,
     LightweightChart,
+    RightPanelChart,
     OrderConfirmationDialog,
     RightPanel,
   },
@@ -882,14 +884,24 @@ export default {
         tradingPanelHeight = 200;
       }
       
-      // Chart controls at bottom: ~60px
-      const chartControls = 60;
+      // Mobile-specific adjustments
+      let mobileBottomSpace = 0;
+      if (isMobile.value) {
+        // Mobile bottom navigation: 80px
+        mobileBottomSpace = 80;
+        // On mobile, trading panels are positioned fixed, so we need to account for them
+        // The tradingPanelHeight calculated above is already correct for mobile
+      } else {
+        // Desktop chart controls at bottom: ~60px
+        mobileBottomSpace = 60;
+      }
       
       // Calculate remaining space for chart using reactive window height
-      const availableHeight = windowHeight.value - fixedElements - tradingPanelHeight - chartControls;
+      const availableHeight = windowHeight.value - fixedElements - tradingPanelHeight - mobileBottomSpace;
       
-      // Ensure minimum height
-      return Math.max(availableHeight, 300);
+      // Ensure minimum height (smaller minimum on mobile)
+      const minHeight = isMobile.value ? 200 : 300;
+      return Math.max(availableHeight, minHeight);
     });
 
     // Live price data for chart
@@ -1646,6 +1658,7 @@ export default {
   display: flex;
   flex-direction: column;
   overflow: hidden;
+  padding: 0;
 }
 
 .chart-wrapper {
@@ -1837,7 +1850,7 @@ export default {
 }
 
 .content-area.mobile-layout .shares-section {
-  padding: 8px 12px;
+  padding: 0;
 }
 
 /* Mobile: Adjust content area height when trading panels are visible */
@@ -1855,10 +1868,14 @@ export default {
   }
   
   .shares-section {
-    /* Ensure shares section accounts for trading panel space */
-    max-height: calc(100vh - 140px - var(--mobile-trading-panel-height, 0px)); /* 140px = TopBar + SymbolHeader */
-    /* Add bottom padding to prevent content from being hidden behind trading panel */
-    padding-bottom: calc(80px + var(--mobile-trading-panel-height, 0px));
+    /* Calculate available height excluding fixed elements */
+    height: calc(100vh - 140px - 80px - 160px); /* 140px = TopBar + SymbolHeader, 80px = bottom nav, 160px = SharesTradingPanel */
+    /* Ensure chart doesn't overflow */
+    overflow: hidden;
+    /* Ensure proper positioning */
+    position: relative;
+    /* Add small bottom margin to prevent overlap with fixed trading panel */
+    margin-bottom: 85px;
   }
 }
 
@@ -1883,9 +1900,12 @@ export default {
   }
   
   /* Mobile-optimized trading panels */
-  .options-section,
-  .shares-section {
+  .options-section {
     padding: 8px;
+  }
+  
+  .shares-section {
+    padding: 0;
   }
   
   /* Ensure mobile nav toggle is always visible */

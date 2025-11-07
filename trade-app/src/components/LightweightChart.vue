@@ -1,7 +1,7 @@
 <template>
   <div class="lightweight-chart-container">
     <div ref="chartContainer" class="chart-container"></div>
-    <div class="chart-controls">
+    <div v-if="!hideControls" class="chart-controls">
       <div class="control-section">
         <div class="timeframe-buttons">
           <button
@@ -65,7 +65,7 @@ export default {
     },
     height: {
       type: Number,
-      default: 400,
+      default: null,
     },
     enableRealtime: {
       type: Boolean,
@@ -74,6 +74,10 @@ export default {
     livePrice: {
       type: Object,
       default: null,
+    },
+    hideControls: {
+      type: Boolean,
+      default: false,
     },
   },
   setup(props) {
@@ -182,7 +186,7 @@ export default {
       try {
         // Ensure container has dimensions
         const containerWidth = chartContainer.value.clientWidth || 800;
-        const containerHeight = props.height || 400;
+        const containerHeight = props.height || chartContainer.value.clientHeight || 300;
 
         // Create the chart
         chart = createChart(chartContainer.value, {
@@ -694,10 +698,17 @@ export default {
 
 .chart-container {
   flex: 1;
-  min-height: 400px;
+  min-height: 200px;
   width: 100%;
   height: 100%;
   position: relative;
+}
+
+/* Mobile responsive adjustments */
+@media (max-width: 768px) {
+  .chart-container {
+    min-height: 150px;
+  }
 }
 
 .chart-controls {
