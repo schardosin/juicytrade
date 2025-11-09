@@ -188,6 +188,7 @@
                     class="provider-dropdown"
                     :loading="updatingRouting"
                     :disabled="updatingRouting"
+                    :show-clear="service.key === 'streaming_greeks'"
                   />
                   
                   <!-- Status Indicator -->
@@ -523,68 +524,76 @@ export default {
       credentials: {}
     });
 
-    // Service categories configuration
-    const serviceCategories = [
-      {
-        name: "trading",
-        title: "Trading Services",
-        icon: "pi pi-chart-line",
-        services: [
-          {
-            key: "trade_account",
-            label: "Trade Account",
-            description: "Order execution and account management"
-          },
-        ]
-      },
-      {
-        name: "market",
-        title: "Market Data",
-        icon: "pi pi-database",
-        services: [
-          {
-            key: "stock_quotes",
-            label: "Stock Quotes",
-            description: "Real-time stock price data"
-          },
-          {
-            key: "options_chain",
-            label: "Options Chain",
-            description: "Options contract data and pricing"
-          },
-          {
-            key: "historical_data",
-            label: "Historical Data",
-            description: "Historical price and volume data"
-          },
-          {
-            key: "symbol_lookup",
-            label: "Symbol Lookup",
-            description: "Symbol search and company information"
-          },
-          {
-            key: "market_calendar",
-            label: "Market Calendar",
-            description: "Trading holidays and market hours"
-          },
-          {
-            key: "streaming_quotes",
-            label: "Streaming Quotes",
-            description: "Real-time price streaming"
-          },
-          {
-            key: "greeks",
-            label: "Greeks (API)",
-            description: "Option Greeks via API calls"
-          },
-          {
-            key: "streaming_greeks",
-            label: "Greeks (Streaming)",
-            description: "Real-time option Greeks streaming"
-          },
-        ]
-      },
-    ];
+    // Service categories configuration - computed to handle conditional Greeks (API)
+    const serviceCategories = computed(() => {
+      const baseServices = [
+        {
+          key: "stock_quotes",
+          label: "Stock Quotes",
+          description: "Real-time stock price data"
+        },
+        {
+          key: "options_chain",
+          label: "Options Chain",
+          description: "Options contract data and pricing"
+        },
+        {
+          key: "historical_data",
+          label: "Historical Data",
+          description: "Historical price and volume data"
+        },
+        {
+          key: "symbol_lookup",
+          label: "Symbol Lookup",
+          description: "Symbol search and company information"
+        },
+        {
+          key: "market_calendar",
+          label: "Market Calendar",
+          description: "Trading holidays and market hours"
+        },
+        {
+          key: "streaming_quotes",
+          label: "Streaming Quotes",
+          description: "Real-time price streaming"
+        },
+        {
+          key: "streaming_greeks",
+          label: "Greeks (Streaming)",
+          description: "Real-time option Greeks streaming"
+        }
+      ];
+
+      // Only show Greeks (API) if no provider is selected for Greeks (Streaming)
+      if (!currentConfig.value.streaming_greeks) {
+        baseServices.push({
+          key: "greeks",
+          label: "Greeks (API)",
+          description: "Option Greeks via API calls (fallback when streaming not available)"
+        });
+      }
+
+      return [
+        {
+          name: "trading",
+          title: "Trading Services",
+          icon: "pi pi-chart-line",
+          services: [
+            {
+              key: "trade_account",
+              label: "Trade Account",
+              description: "Order execution and account management"
+            },
+          ]
+        },
+        {
+          name: "market",
+          title: "Market Data",
+          icon: "pi pi-database",
+          services: baseServices
+        },
+      ];
+    });
 
     // Methods
     const setActiveSubTab = (tabKey) => {
