@@ -743,10 +743,23 @@ class TradierProvider(BaseProvider):
             greeks_data = {}
             for group in symbol_groups.values():
                 try:
+                    # Calculate the number of strikes needed based on requested symbols
+                    # Get all unique strikes from the requested symbols
+                    strikes_needed = set()
+                    for symbol in group['symbols']:
+                        parsed = self._parse_option_symbol(symbol)
+                        if parsed:
+                            strikes_needed.add(parsed['strike'])
+                    
+                    # Use a strike count that covers all requested strikes plus some buffer
+                    # This ensures we get all the strikes the frontend is asking for
+                    strike_count = max(len(strikes_needed) * 2, 50)  # At least 50 strikes or 2x requested
+                    
                     contracts = await self.get_options_chain_basic(
                         symbol=group['underlying'], 
                         expiry=group['expiry'],
-                        include_greeks=True  # This was missing!
+                        strike_count=strike_count,  # Use calculated strike count instead of default 20
+                        include_greeks=True
                     )
                     
                     # Extract Greeks for requested symbols
