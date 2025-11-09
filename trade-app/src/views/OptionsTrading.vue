@@ -334,7 +334,6 @@ export default {
     const tradeModes = [
       { label: "Options", value: "options" },
       { label: "Shares", value: "shares" },
-      { label: "Futures", value: "futures" },
     ];
 
     // Computed properties for global symbol state
