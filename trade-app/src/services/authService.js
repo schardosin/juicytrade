@@ -25,6 +25,11 @@ class AuthService {
         const status = await this.getAuthStatus();
         this.authenticated = status.authenticated;
         this.user = status.user;
+      } else {
+        // CRITICAL FIX: When auth is disabled, treat user as authenticated
+        console.log('🔐 Authentication disabled, treating user as authenticated');
+        this.authenticated = true;
+        this.user = { username: 'anonymous', authenticated: true };
       }
       
       this.notifyListeners();
