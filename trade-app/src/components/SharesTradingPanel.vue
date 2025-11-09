@@ -1297,6 +1297,26 @@ export default {
   /* Price Section Mobile Layout */
   .price-section.mobile-layout {
     gap: 8px;
+    width: 100%;
+  }
+
+  /* Mobile-specific styling for limit and stop price sections */
+  .price-section.mobile-layout .limit-price-section,
+  .price-section.mobile-layout .stop-price-section {
+    width: 100%;
+    gap: 6px;
+  }
+
+  .price-section.mobile-layout .limit-price-section .price-label,
+  .price-section.mobile-layout .stop-price-section .price-label {
+    font-size: 10px;
+    margin-bottom: 4px;
+    text-align: left;
+  }
+
+  .price-section.mobile-layout .price-input-group {
+    width: 100%;
+    gap: 6px;
   }
 
   .price-section.mobile-layout .price-label {
@@ -1305,20 +1325,27 @@ export default {
   }
 
   .price-section.mobile-layout .price-input {
-    font-size: 11px;
-    padding: 4px 6px;
-    min-width: 50px;
-    height: 24px;
+    font-size: 12px;
+    padding: 6px 8px;
+    min-width: 0;
+    height: 32px;
+    flex: 1;
   }
 
   .price-section.mobile-layout .price-btn {
-    width: 22px;
-    height: 24px;
-    font-size: 9px;
+    width: 32px;
+    height: 32px;
+    font-size: 10px;
+    flex-shrink: 0;
   }
 
   .price-section.mobile-layout .progress-row {
     gap: 8px;
+  }
+
+  .price-section.mobile-layout .progress-row .bid-section,
+  .price-section.mobile-layout .progress-row .ask-section {
+    min-width: 80px;
   }
 
   .price-section.mobile-layout .price-text {
