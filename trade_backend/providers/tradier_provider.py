@@ -744,8 +744,9 @@ class TradierProvider(BaseProvider):
             for group in symbol_groups.values():
                 try:
                     contracts = await self.get_options_chain_basic(
-                        group['underlying'], 
-                        group['expiry']
+                        symbol=group['underlying'], 
+                        expiry=group['expiry'],
+                        include_greeks=True  # This was missing!
                     )
                     
                     # Extract Greeks for requested symbols
@@ -758,6 +759,7 @@ class TradierProvider(BaseProvider):
                                 'vega': contract.vega,
                                 'implied_volatility': contract.implied_volatility
                             }
+                        
                 except Exception as e:
                     self._log_error(f"get_options_greeks_batch for group {group['underlying']}", e)
                     continue

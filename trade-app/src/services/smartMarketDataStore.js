@@ -1416,9 +1416,23 @@ class SmartMarketDataStore {
   /**
    * Handle incoming Greeks updates from WebSocket - optimized for high frequency
    */
-  handleGreeksUpdate(data) {
+  async handleGreeksUpdate(data) {
     const { symbol } = data;
     if (!symbol) return;
+
+    // CRITICAL FIX: Only process streaming Greeks if streaming provider is configured
+    // Check provider configuration first
+    try {
+      const config = await this.getData("providers.config");
+      
+      // If no streaming Greeks provider is configured, ignore streaming Greeks
+      if (!config || !config.streaming_greeks) {
+        return;
+      }
+    } catch (error) {
+      console.warn("⚠️ Could not check provider config, ignoring streaming Greeks:", error);
+      return;
+    }
 
     // Fast path - direct Greeks extraction
     const dataObj = data.data || data;
@@ -1432,6 +1446,8 @@ class SmartMarketDataStore {
     if (delta === undefined && gamma === undefined && theta === undefined && vega === undefined && iv === undefined) {
       return;
     }
+
+    console.log(`📊 Processing streaming Greeks for ${symbol}:`, { delta, gamma, theta, vega });
 
     // Minimal Greeks data object
     const greeksData = {
