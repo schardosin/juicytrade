@@ -343,7 +343,7 @@ export const api = {
   // Preview order to get cost estimates and validation
   async previewOrder(orderPayload) {
     try {
-      const response = await axios.post(
+      const response = await apiClient.post(
         `${API_BASE_URL}/orders/preview`,
         orderPayload
       );
@@ -357,7 +357,7 @@ export const api = {
   // Place single-leg option order
   async placeSingleLegOrder(orderPayload) {
     try {
-      const response = await axios.post(
+      const response = await apiClient.post(
         `${API_BASE_URL}/orders/single-leg`,
         orderPayload
       );
@@ -371,7 +371,7 @@ export const api = {
   // Place multi-leg order (renamed from placeButterflyOrder for clarity)
   async placeMultiLegOrder(orderPayload) {
     try {
-      const response = await axios.post(
+      const response = await apiClient.post(
         `${API_BASE_URL}/orders/multi-leg`,
         orderPayload
       );
@@ -693,7 +693,7 @@ export const api = {
   // Get all watchlists
   async getWatchlists() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/watchlists`);
+      const response = await apiClient.get(`${API_BASE_URL}/watchlists`);
       return response.data.data;
     } catch (error) {
       console.error("Error fetching watchlists:", error);
@@ -704,7 +704,7 @@ export const api = {
   // Get a specific watchlist by ID
   async getWatchlist(watchlistId) {
     try {
-      const response = await axios.get(`${API_BASE_URL}/watchlists/${watchlistId}`);
+      const response = await apiClient.get(`${API_BASE_URL}/watchlists/${watchlistId}`);
       return response.data.data;
     } catch (error) {
       console.error("Error fetching watchlist:", error);
@@ -715,7 +715,7 @@ export const api = {
   // Create a new watchlist
   async createWatchlist(watchlistData) {
     try {
-      const response = await axios.post(`${API_BASE_URL}/watchlists`, watchlistData);
+      const response = await apiClient.post(`${API_BASE_URL}/watchlists`, watchlistData);
       return response.data.data;
     } catch (error) {
       console.error("Error creating watchlist:", error);
@@ -726,7 +726,7 @@ export const api = {
   // Update an existing watchlist
   async updateWatchlist(watchlistId, updateData) {
     try {
-      const response = await axios.put(`${API_BASE_URL}/watchlists/${watchlistId}`, updateData);
+      const response = await apiClient.put(`${API_BASE_URL}/watchlists/${watchlistId}`, updateData);
       return response.data.data;
     } catch (error) {
       console.error("Error updating watchlist:", error);
@@ -737,7 +737,7 @@ export const api = {
   // Delete a watchlist
   async deleteWatchlist(watchlistId) {
     try {
-      const response = await axios.delete(`${API_BASE_URL}/watchlists/${watchlistId}`);
+      const response = await apiClient.delete(`${API_BASE_URL}/watchlists/${watchlistId}`);
       return response.data;
     } catch (error) {
       console.error("Error deleting watchlist:", error);
@@ -748,7 +748,7 @@ export const api = {
   // Add a symbol to a watchlist
   async addSymbolToWatchlist(watchlistId, symbol) {
     try {
-      const response = await axios.post(`${API_BASE_URL}/watchlists/${watchlistId}/symbols`, {
+      const response = await apiClient.post(`${API_BASE_URL}/watchlists/${watchlistId}/symbols`, {
         symbol: symbol
       });
       return response.data.data;
@@ -761,7 +761,7 @@ export const api = {
   // Remove a symbol from a watchlist
   async removeSymbolFromWatchlist(watchlistId, symbol) {
     try {
-      const response = await axios.delete(`${API_BASE_URL}/watchlists/${watchlistId}/symbols/${symbol}`);
+      const response = await apiClient.delete(`${API_BASE_URL}/watchlists/${watchlistId}/symbols/${symbol}`);
       return response.data.data;
     } catch (error) {
       console.error("Error removing symbol from watchlist:", error);
@@ -772,7 +772,7 @@ export const api = {
   // Get the active watchlist
   async getActiveWatchlist() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/watchlists/active`);
+      const response = await apiClient.get(`${API_BASE_URL}/watchlists/active`);
       return response.data.data;
     } catch (error) {
       console.error("Error fetching active watchlist:", error);
@@ -783,7 +783,7 @@ export const api = {
   // Set the active watchlist
   async setActiveWatchlist(watchlistId) {
     try {
-      const response = await axios.put(`${API_BASE_URL}/watchlists/active`, {
+      const response = await apiClient.put(`${API_BASE_URL}/watchlists/active`, {
         watchlist_id: watchlistId
       });
       return response.data.data;
@@ -796,7 +796,7 @@ export const api = {
   // Search watchlists by name or symbols
   async searchWatchlists(query) {
     try {
-      const response = await axios.post(`${API_BASE_URL}/watchlists/search`, {
+      const response = await apiClient.post(`${API_BASE_URL}/watchlists/search`, {
         query: query
       });
       return response.data.data;
@@ -809,7 +809,7 @@ export const api = {
   // Get all unique symbols across all watchlists
   async getAllWatchlistSymbols() {
     try {
-      const response = await axios.get(`${API_BASE_URL}/watchlists/symbols/all`);
+      const response = await apiClient.get(`${API_BASE_URL}/watchlists/symbols/all`);
       return response.data.data;
     } catch (error) {
       console.error("Error fetching all watchlist symbols:", error);
