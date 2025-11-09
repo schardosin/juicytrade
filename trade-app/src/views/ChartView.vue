@@ -1,15 +1,23 @@
 <template>
   <div class="chart-view-container">
     <!-- Top Bar -->
-    <TopBar />
+    <TopBar @toggle-mobile-nav="showMobileNav = true" />
+
+    <!-- Mobile Navigation Drawer -->
+    <MobileNavDrawer
+      v-if="isMobile"
+      :visible="showMobileNav"
+      @close="showMobileNav = false"
+      @navigate="onMobileNavigation"
+    />
 
     <!-- Main Layout -->
     <div class="main-layout">
-      <!-- Left Navigation -->
-      <SideNav />
+      <!-- Left Navigation (hidden on mobile) -->
+      <SideNav v-if="!isMobile" />
 
       <!-- Content Area -->
-      <div class="content-area">
+      <div class="content-area" :class="{ 'mobile-layout': isMobile }">
         <!-- Symbol Header -->
         <SymbolHeader
           :currentSymbol="currentSymbol"
@@ -29,19 +37,19 @@
 
         <!-- Chart Section -->
         <div class="chart-section">
-          <!-- Lightweight Charts -->
           <LightweightChart
             :symbol="currentSymbol"
             :theme="'dark'"
-            :height="chartHeight"
             :enableRealtime="true"
             :livePrice="livePrice"
+            :hideControls="false"
           />
         </div>
       </div>
 
-      <!-- Right Panel -->
+      <!-- Right Panel (desktop only) -->
       <RightPanel
+        v-if="!isMobile"
         :currentSymbol="currentSymbol"
         :currentPrice="currentPrice"
         :priceChange="priceChange"
@@ -52,10 +60,40 @@
         :optionsChainData="[]"
         :forceExpanded="isRightPanelExpanded"
         :forceSection="rightPanelSection"
+        :isMobile="isMobile"
+        :isTablet="isTablet"
+        :isDesktop="isDesktop"
         @panel-collapsed="onRightPanelCollapsed"
         @positions-changed="onPositionsChanged"
       />
     </div>
+
+    <!-- Mobile Bottom Button Bar -->
+    <MobileBottomButtonBar
+      v-if="isMobile"
+      :activeSection="showMobileOverlay ? activeMobileSection : null"
+      @section-selected="onMobileSectionSelected"
+    />
+
+    <!-- Mobile Full Screen Overlay -->
+    <MobileFullScreenOverlay
+      v-if="isMobile"
+      :visible="showMobileOverlay"
+      :activeSection="activeMobileSection"
+      :currentSymbol="currentSymbol"
+      :currentPrice="currentPrice"
+      :priceChange="priceChange"
+      :isLivePrice="isLivePrice"
+      :chartData="null"
+      :additionalQuoteData="additionalQuoteData"
+      :allPositions="[]"
+      :checkedPositions="new Set()"
+      :isAllSelected="false"
+      :isIndeterminate="false"
+      @close="closeMobileOverlay"
+      @toggle-position-check="onMobileTogglePositionCheck"
+      @toggle-select-all="onMobileToggleSelectAll"
+    />
   </div>
 </template>
 
@@ -63,30 +101,34 @@
 import { ref, computed, onMounted, onUnmounted } from "vue";
 import TopBar from "../components/TopBar.vue";
 import SideNav from "../components/SideNav.vue";
+import MobileNavDrawer from "../components/MobileNavDrawer.vue";
 import SymbolHeader from "../components/SymbolHeader.vue";
 import LightweightChart from "../components/LightweightChart.vue";
 import RightPanel from "../components/RightPanel.vue";
+import MobileBottomButtonBar from "../components/MobileBottomButtonBar.vue";
+import MobileFullScreenOverlay from "../components/MobileFullScreenOverlay.vue";
 import { useGlobalSymbol } from "../composables/useGlobalSymbol";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
+import { useMobileDetection } from "../composables/useMobileDetection.js";
 import api from "../services/api";
-// webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
-// import webSocketClient from "../services/webSocketClient";
 
 export default {
   name: "ChartView",
   components: {
     TopBar,
     SideNav,
+    MobileNavDrawer,
     SymbolHeader,
     LightweightChart,
     RightPanel,
+    MobileBottomButtonBar,
+    MobileFullScreenOverlay,
   },
   setup() {
-    // Use global symbol state with centralized symbol selection
-    const { globalSymbolState, updateSymbol, updatePrice, updateMarketStatus, setupSymbolSelectionListener } =
+    // Use global symbol state
+    const { globalSymbolState, updateSymbol, updatePrice, setupSymbolSelectionListener } =
       useGlobalSymbol({
         onSymbolChange: async (symbolData) => {
-          // Fetch new data for the selected symbol
           try {
             await fetchSymbolData(symbolData.symbol);
           } catch (error) {
@@ -98,15 +140,19 @@ export default {
     // Use SmartMarketData for live price subscriptions
     const { getStockPrice } = useSmartMarketData();
 
-    // Local reactive data (non-symbol related)
+    // Mobile detection
+    const { isMobile, isTablet, isDesktop } = useMobileDetection();
+
+    // Mobile navigation state
+    const showMobileNav = ref(false);
+
+    // Mobile overlay state
+    const showMobileOverlay = ref(false);
+    const activeMobileSection = ref('overview');
+
+    // Local reactive data
     const selectedTradeMode = ref("chart");
     const isRightPanelExpanded = ref(false);
-    const selectedTimeframe = ref("D");
-    const selectedChartType = ref("1");
-    const volume = ref(0);
-    const avgVolume = ref(0);
-    const marketCap = ref(0);
-    const peRatio = ref(null);
 
     // Computed properties for global symbol state
     const currentSymbol = computed(() => globalSymbolState.currentSymbol);
@@ -114,9 +160,7 @@ export default {
     const exchange = computed(() => globalSymbolState.exchange);
     const currentPrice = computed(() => globalSymbolState.currentPrice);
     const priceChange = computed(() => globalSymbolState.priceChange);
-    const priceChangePercent = computed(
-      () => globalSymbolState.priceChangePercent
-    );
+    const priceChangePercent = computed(() => globalSymbolState.priceChangePercent);
     const isLivePrice = computed(() => globalSymbolState.isLivePrice);
     const marketStatus = computed(() => globalSymbolState.marketStatus);
 
@@ -127,71 +171,23 @@ export default {
       return priceData?.value || null;
     });
 
-    // Chart configuration
-    const chartProvider = ref("lightweight");
-    const chartHeight = computed(() => {
-      // Calculate chart height based on available space
-      // Account for TopBar (~60px), SymbolHeader (~80px), and chart controls (~60px)
-      return window.innerHeight - 200;
-    });
-
     // Trade modes (for header compatibility)
     const tradeModes = [
       { label: "Chart", value: "chart" },
       { label: "Analysis", value: "analysis" },
     ];
 
-    // Timeframe options
-    const timeframes = [
-      { label: "1 Min", value: "1" },
-      { label: "5 Min", value: "5" },
-      { label: "15 Min", value: "15" },
-      { label: "30 Min", value: "30" },
-      { label: "1 Hour", value: "60" },
-      { label: "4 Hour", value: "240" },
-      { label: "Daily", value: "D" },
-      { label: "Weekly", value: "W" },
-      { label: "Monthly", value: "M" },
-    ];
-
-    // Chart type options
-    const chartTypes = [
-      { label: "Candlestick", value: "1" },
-      { label: "Line", value: "2" },
-      { label: "Area", value: "3" },
-      { label: "Bars", value: "0" },
-    ];
-
     // Methods
     const fetchSymbolData = async (symbol) => {
       try {
-        // Only fetch price via API if we don't have live data already
         if (!isLivePrice.value || currentPrice.value === 0) {
           const price = await api.getUnderlyingPrice(symbol);
           if (price !== null) {
             updatePrice({ price, isLive: false });
           }
         }
-
-        // WebSocket streaming is now handled automatically by SmartMarketDataStore
-        // via the global state integration - no manual streaming needed
       } catch (error) {
         console.error("Error fetching symbol data:", error);
-      }
-    };
-
-    // Streaming is now handled automatically by SmartMarketDataStore via global state
-    // No manual WebSocket management needed
-
-    const onSymbolSelected = async (symbol) => {
-      // Update global symbol state
-      updateSymbol(symbol);
-
-      // Fetch new data for the selected symbol
-      try {
-        await fetchSymbolData(symbol.symbol);
-      } catch (error) {
-        console.error("Error loading data for new symbol:", error);
       }
     };
 
@@ -199,59 +195,47 @@ export default {
       selectedTradeMode.value = mode;
     };
 
-    // Mobile search handler
     const onOpenMobileSearch = () => {
-      // This method is called when the search icon in SymbolHeader is clicked on mobile
-      // We need to trigger the same mobile search overlay that TopBar uses
-      // Dispatch a custom event that TopBar can listen to
       window.dispatchEvent(new CustomEvent('open-mobile-search'));
     };
 
-    const toggleRightPanel = () => {
-      isRightPanelExpanded.value = !isRightPanelExpanded.value;
-    };
-
-    const formatVolume = (vol) => {
-      if (!vol) return "--";
-      if (vol >= 1000000) {
-        return `${(vol / 1000000).toFixed(1)}M`;
-      } else if (vol >= 1000) {
-        return `${(vol / 1000).toFixed(1)}K`;
-      }
-      return vol.toLocaleString();
-    };
-
-    const formatMarketCap = (cap) => {
-      if (!cap) return "--";
-      if (cap >= 1000000000000) {
-        return `$${(cap / 1000000000000).toFixed(1)}T`;
-      } else if (cap >= 1000000000) {
-        return `$${(cap / 1000000000).toFixed(1)}B`;
-      } else if (cap >= 1000000) {
-        return `$${(cap / 1000000).toFixed(1)}M`;
-      }
-      return `$${cap.toLocaleString()}`;
-    };
-
-    // RightPanel event handlers
     const onRightPanelCollapsed = () => {
       isRightPanelExpanded.value = false;
     };
 
     const onPositionsChanged = (checkedPositions) => {
-      // Chart view doesn't need to handle position changes for payoff chart
-      // since it's primarily for price charts, not options analysis
+      // Chart view doesn't need position changes for payoff chart
     };
 
-    // Computed properties for RightPanel
-    const rightPanelSection = computed(() => {
-      // Default to overview section for chart view
-      return null; // Let user choose which section to view
-    });
+    const rightPanelSection = computed(() => null);
+
+    // Mobile overlay methods
+    const onMobileSectionSelected = (sectionKey) => {
+      activeMobileSection.value = sectionKey;
+      showMobileOverlay.value = true;
+    };
+
+    const closeMobileOverlay = () => {
+      showMobileOverlay.value = false;
+    };
+
+    const onMobileTogglePositionCheck = (positionId) => {
+      console.log("Mobile position check:", positionId);
+    };
+
+    const onMobileToggleSelectAll = () => {
+      console.log("Mobile select all");
+    };
+
+    // Mobile navigation method
+    const onMobileNavigation = (route) => {
+      showMobileNav.value = false;
+      // Navigation is handled by the router
+      console.log("Mobile navigation to:", route);
+    };
 
     // Additional quote data for the right panel
     const additionalQuoteData = computed(() => ({
-      // Mock data - in real implementation, this would come from API
       open: currentPrice.value * 0.998,
       close: currentPrice.value * 1.001,
       high: currentPrice.value * 1.005,
@@ -264,9 +248,9 @@ export default {
       askSize: 300,
       ivRank: 13.2,
       ivIndex: 17.5,
-      volume: volume.value,
-      marketCap: marketCap.value,
-      peRatio: peRatio.value,
+      volume: 51500000,
+      marketCap: null,
+      peRatio: null,
       eps: null,
       earnings: null,
       dividend: 1.76,
@@ -276,17 +260,32 @@ export default {
     }));
 
     // Lifecycle hooks
+    let cleanup = null;
+    
     onMounted(async () => {
       await fetchSymbolData(currentSymbol.value);
+      cleanup = setupSymbolSelectionListener();
+    });
 
-      // Set up centralized symbol selection listener
-      const cleanup = setupSymbolSelectionListener();
-      
-      // Store cleanup for unmount
-      onUnmounted(cleanup);
+    onUnmounted(() => {
+      if (cleanup) {
+        cleanup();
+      }
     });
 
     return {
+      // Mobile detection
+      isMobile,
+      isTablet,
+      isDesktop,
+
+      // Mobile navigation state
+      showMobileNav,
+
+      // Mobile overlay state
+      showMobileOverlay,
+      activeMobileSection,
+
       // Reactive data
       currentSymbol,
       companyName,
@@ -299,16 +298,6 @@ export default {
       selectedTradeMode,
       tradeModes,
       isRightPanelExpanded,
-      selectedTimeframe,
-      selectedChartType,
-      timeframes,
-      chartTypes,
-      volume,
-      avgVolume,
-      marketCap,
-      peRatio,
-      chartProvider,
-      chartHeight,
 
       // Live price data for chart
       livePrice,
@@ -320,11 +309,17 @@ export default {
       // Methods
       onTradeModeChanged,
       onOpenMobileSearch,
-      toggleRightPanel,
-      formatVolume,
-      formatMarketCap,
       onRightPanelCollapsed,
       onPositionsChanged,
+
+      // Mobile navigation methods
+      onMobileNavigation,
+
+      // Mobile overlay methods
+      onMobileSectionSelected,
+      closeMobileOverlay,
+      onMobileTogglePositionCheck,
+      onMobileToggleSelectAll,
     };
   },
 };
@@ -355,10 +350,35 @@ export default {
 
 .chart-section {
   flex: 1;
-  overflow: hidden;
+  display: flex;
+  flex-direction: column;
   background-color: var(--bg-primary);
-  position: relative;
+  min-height: 0; /* Important for flex child to shrink */
 }
 
-/* Chart view specific styles - most panel styles are now handled by RightPanel component */
+/* Mobile layout adjustments */
+@media (max-width: 768px) {
+  .main-layout {
+    flex-direction: column;
+  }
+  
+  .content-area {
+    margin-right: 0 !important;
+    /* Reserve space for mobile bottom button bar (80px) */
+    padding-bottom: 80px;
+  }
+  
+  .chart-section {
+    /* Ensure chart shows properly on mobile */
+    flex: 1;
+    min-height: 300px;
+  }
+}
+
+/* Tablet adjustments */
+@media (max-width: 1024px) and (min-width: 769px) {
+  .content-area {
+    margin-right: 0;
+  }
+}
 </style>

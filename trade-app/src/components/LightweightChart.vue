@@ -34,7 +34,6 @@
         </div>
       </div>
       <div class="chart-info">
-        <span class="symbol-info">{{ symbol }}</span>
         <span v-if="loading" class="loading-indicator">Loading...</span>
         <span v-if="error" class="error-indicator">{{ error }}</span>
       </div>
@@ -708,6 +707,85 @@ export default {
 @media (max-width: 768px) {
   .chart-container {
     min-height: 150px;
+  }
+  
+  .chart-controls {
+    flex-direction: column;
+    gap: 12px;
+    padding: var(--spacing-sm) var(--spacing-md);
+    min-height: auto;
+  }
+  
+  .control-section {
+    flex-direction: column;
+    gap: 12px;
+    width: 100%;
+    align-items: stretch;
+  }
+  
+  .timeframe-buttons {
+    justify-content: space-between;
+    gap: 6px;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+  
+  .timeframe-btn {
+    min-height: 44px; /* Touch-friendly height */
+    flex: 1;
+    min-width: 44px;
+    padding: var(--spacing-sm) var(--spacing-md);
+    font-size: var(--font-size-sm);
+  }
+  
+  .date-range-selector {
+    justify-content: flex-start;
+    width: 100%;
+  }
+  
+  .range-dropdown {
+    min-height: 44px; /* Touch-friendly height */
+    width: 100%; /* Use full width to match timeframe buttons */
+    min-width: 120px;
+    padding: 8px 12px;
+    font-size: var(--font-size-sm);
+  }
+  
+  .chart-info {
+    justify-content: center;
+    text-align: center;
+    width: 100%;
+  }
+  
+  .symbol-info {
+    font-size: var(--font-size-md);
+  }
+  
+  .loading-indicator,
+  .error-indicator {
+    font-size: var(--font-size-xs);
+  }
+}
+
+/* Very small mobile screens */
+@media (max-width: 480px) {
+  .timeframe-buttons {
+    gap: 4px;
+  }
+  
+  .timeframe-btn {
+    min-width: 36px;
+    padding: 6px 8px;
+    font-size: 11px;
+  }
+  
+  .range-dropdown {
+    min-width: 100px;
+    font-size: 12px;
+  }
+  
+  .chart-controls {
+    padding: 8px 12px;
   }
 }
 
