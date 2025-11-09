@@ -958,6 +958,26 @@ export default {
 
 .right-panel.expanded {
   width: 700px;
+  max-width: calc(100vw - 60px); /* Prevent overflow, account for SideNav */
+}
+
+/* Responsive breakpoints to prevent black bar issue */
+@media (max-width: 1200px) {
+  .right-panel.expanded {
+    width: 500px;
+  }
+}
+
+@media (max-width: 900px) {
+  .right-panel.expanded {
+    width: 400px;
+  }
+}
+
+@media (max-width: 768px) {
+  .right-panel {
+    display: none; /* Hide on mobile - use mobile overlay instead */
+  }
 }
 
 .left-icon-menu {

@@ -1920,9 +1920,7 @@ export default {
     margin-right: 0;
   }
   
-  .right-panel {
-    width: 400px;
-  }
+  /* Remove fixed width override - let RightPanel component handle its own responsive width */
   
   .options-chain-wrapper {
     padding: 12px 16px;
