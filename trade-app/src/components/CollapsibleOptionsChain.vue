@@ -74,8 +74,8 @@
 
           <!-- IV Information -->
           <div class="iv-display">
-            <span v-if="getIvxForExpiration(expiration.date)?.ivx_percent" class="iv-label">
-              IVx: {{ formatIvxPercent(getIvxForExpiration(expiration.date).ivx_percent) }}% (≈${{ formatIvxMove(getIvxForExpiration(expiration.date).expected_move_dollars) }})
+            <span v-if="expiration.ivxData?.ivx_percent" class="iv-label">
+              IVx: {{ formatIvxPercent(expiration.ivxData.ivx_percent) }}% (≈${{ formatIvxMove(expiration.ivxData.expected_move_dollars) }})
             </span>
             <!-- Keep space blank if no data - no loading, no error states -->
           </div>
@@ -368,6 +368,9 @@ export default {
         const isExpandedLocal = expandedSet.value.has(uniqueKey);
         const isLoading = isExpandedLocal && !hasLoaded;
 
+        // Get IVx data for this expiration
+        const ivxData = getIvxForExpiration(dateStr);
+
         return {
           date: dateStr,
           uniqueKey: uniqueKey,
@@ -388,6 +391,8 @@ export default {
           isQuarterly,
           isEOM,
           isWeekly,
+          // Include reactive IVx data for this expiration
+          ivxData: ivxData,
           // Static IV data to avoid unnecessary re-renders
           ivData: {
             rank: 45.2,

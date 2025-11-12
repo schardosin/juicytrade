@@ -46,10 +46,10 @@
                 Options
               </button>
               <button
-                :class="['tab-button', { active: showStocks }]"
+                :class="['tab-button', { active: showShares }]"
                 @click="toggleFilter('stocks')"
               >
-                Stocks
+                Shares
               </button>
             </div>
           </div>
@@ -605,7 +605,7 @@ export default {
     const positionGroups = ref([]);
     // Filter state - both can be active at the same time
     const showOptions = ref(true);
-    const showStocks = ref(true);
+    const showShares = ref(true);
     const expandedGroups = ref([]);
     const isRightPanelExpanded = ref(false);
     const adjustedNetCredit = ref(null); // Add adjustedNetCredit for limit price functionality
@@ -662,7 +662,7 @@ export default {
       if (type === 'options') {
         showOptions.value = !showOptions.value;
       } else if (type === 'stocks') {
-        showStocks.value = !showStocks.value;
+        showShares.value = !showShares.value;
       }
     };
 
@@ -673,7 +673,7 @@ export default {
         if ((group.asset_class === "options" || group.asset_class === "us_option") && showOptions.value) {
           return true;
         }
-        if ((group.asset_class === "stocks" || group.asset_class === "us_equity") && showStocks.value) {
+        if ((group.asset_class === "stocks" || group.asset_class === "us_equity") && showShares.value) {
           return true;
         }
         return false;
@@ -903,7 +903,7 @@ export default {
             strategy:
               position.asset_class === "us_option"
                 ? "Single Option"
-                : "Stock Position",
+                : "Share Position",
             asset_class:
               position.asset_class === "us_option" ? "options" : "stocks",
             total_qty: 0,
@@ -2067,7 +2067,7 @@ export default {
       error,
       positionGroups,
       showOptions,
-      showStocks,
+      showShares,
       expandedGroups,
 
       // Computed
