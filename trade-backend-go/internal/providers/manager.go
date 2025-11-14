@@ -476,6 +476,128 @@ func (pm *ProviderManager) InitializeActiveProviders() {
 	pm.initializeActiveProviders()
 }
 
+// GetSubscriptionStatus gets the current subscription status from all providers.
+// Exact conversion of Python streaming_manager.get_subscription_status method.
+func (pm *ProviderManager) GetSubscriptionStatus() *models.SubscriptionStatusResponse {
+	pm.mutex.RLock()
+	defer pm.mutex.RUnlock()
+	
+	// Collect subscription data from all providers
+	quoteSubscriptions := make([]string, 0)
+	greeksSubscriptions := make([]string, 0)
+	quoteProviders := make([]string, 0)
+	greeksProviders := make([]string, 0)
+	isConnected := false
+	
+	// Iterate through all providers to collect subscription information
+	for instanceID, provider := range pm.providers {
+		// Check if provider is connected
+		if provider.IsStreamingConnected() {
+			isConnected = true
+		}
+		
+		// Get subscribed symbols from this provider
+		subscribedSymbols := provider.GetSubscribedSymbols()
+		
+		// Separate stock and option symbols (similar to Python logic)
+		for symbol, subscribed := range subscribedSymbols {
+			if subscribed {
+				if pm.isOptionSymbol(symbol) {
+					// Option symbols go to both quotes and Greeks
+					quoteSubscriptions = append(quoteSubscriptions, symbol)
+					greeksSubscriptions = append(greeksSubscriptions, symbol)
+					
+					// Add to Greeks providers if not already present
+					if !pm.containsString(greeksProviders, instanceID) {
+						greeksProviders = append(greeksProviders, instanceID)
+					}
+				} else {
+					// Stock symbols go to quotes only
+					quoteSubscriptions = append(quoteSubscriptions, symbol)
+				}
+				
+				// Add to quote providers if not already present
+				if !pm.containsString(quoteProviders, instanceID) {
+					quoteProviders = append(quoteProviders, instanceID)
+				}
+			}
+		}
+	}
+	
+	// Remove duplicates from subscriptions
+	quoteSubscriptions = pm.removeDuplicateStrings(quoteSubscriptions)
+	greeksSubscriptions = pm.removeDuplicateStrings(greeksSubscriptions)
+	
+	return &models.SubscriptionStatusResponse{
+		QuoteSubscriptions:       quoteSubscriptions,
+		GreeksSubscriptions:      greeksSubscriptions,
+		TotalQuoteSubscriptions:  len(quoteSubscriptions),
+		TotalGreeksSubscriptions: len(greeksSubscriptions),
+		IsConnected:              isConnected,
+		QuoteProviders:           quoteProviders,
+		GreeksProviders:          greeksProviders,
+	}
+}
+
+// isOptionSymbol checks if a symbol is an option symbol.
+// Exact conversion of Python _is_option_symbol method.
+func (pm *ProviderManager) isOptionSymbol(symbol string) bool {
+	// Basic check: option symbols are typically longer than 10 characters
+	// and contain 'C' or 'P' and have digits in the last 8 characters
+	if len(symbol) <= 10 {
+		return false
+	}
+	
+	// Check for 'C' or 'P' (call/put indicators)
+	hasCallPut := false
+	for _, char := range symbol {
+		if char == 'C' || char == 'P' {
+			hasCallPut = true
+			break
+		}
+	}
+	if !hasCallPut {
+		return false
+	}
+	
+	// Check if last 8 characters contain digits (strike price)
+	lastEight := symbol[len(symbol)-8:]
+	hasDigits := false
+	for _, char := range lastEight {
+		if char >= '0' && char <= '9' {
+			hasDigits = true
+			break
+		}
+	}
+	
+	return hasDigits
+}
+
+// containsString checks if a string slice contains a specific string.
+func (pm *ProviderManager) containsString(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// removeDuplicateStrings removes duplicate strings from a slice.
+func (pm *ProviderManager) removeDuplicateStrings(slice []string) []string {
+	keys := make(map[string]bool)
+	result := make([]string, 0)
+	
+	for _, item := range slice {
+		if !keys[item] {
+			keys[item] = true
+			result = append(result, item)
+		}
+	}
+	
+	return result
+}
+
 // Global provider manager instance
 var GlobalProviderManager *ProviderManager
 

@@ -1056,6 +1056,18 @@ func main() {
 		})
 	})
 	
+	// Subscription status endpoint - exact same path as Python
+	router.GET("/subscriptions/status", func(c *gin.Context) {
+		status := providerManager.GetSubscriptionStatus()
+		c.JSON(200, gin.H{
+			"success":   true,
+			"data":      status,
+			"error":     nil,
+			"message":   "Retrieved subscription status",
+			"timestamp": time.Now().Format(time.RFC3339),
+		})
+	})
+	
 	// IVx (Implied Volatility) endpoints - exact same paths as Python
 	router.GET("/api/ivx/:symbol", func(c *gin.Context) {
 		symbol := c.Param("symbol")
