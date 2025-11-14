@@ -1432,31 +1432,31 @@ func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []s
 		var streamingSymbol string
 		if p.isOptionSymbol(symbol) {
 			streamingSymbol = p.convertToStreamerSymbol(symbol)
-			slog.Debug(fmt.Sprintf("TastyTrade: Using streamer symbol for %s: %s", symbol, streamingSymbol))
+			slog.Info(fmt.Sprintf("TastyTrade: Converted option symbol %s -> %s for streaming", symbol, streamingSymbol))
 		} else {
 			streamingSymbol = symbol // Stock symbols use as-is
 			slog.Debug(fmt.Sprintf("TastyTrade: Using stock symbol as-is: %s", streamingSymbol))
 		}
 
 		// Add Quote subscription only if requested
-		for _, dataType := range dataTypes {
-			if dataType == "Quote" {
-				subscriptions = append(subscriptions, map[string]interface{}{
-					"type":   "Quote",
-					"symbol": streamingSymbol,
-				})
-				slog.Debug(fmt.Sprintf("TastyTrade: Added Quote subscription for %s", streamingSymbol))
-			}
-
-			// Add Greeks subscription for option symbols only if requested
-			if dataType == "Greeks" && p.isOptionSymbol(symbol) {
-				subscriptions = append(subscriptions, map[string]interface{}{
-					"type":   "Greeks",
-					"symbol": streamingSymbol,
-				})
-				slog.Debug(fmt.Sprintf("TastyTrade: Added Greeks subscription for %s", streamingSymbol))
-			}
+		if containsString(dataTypes, "Quote") {
+			subscriptions = append(subscriptions, map[string]interface{}{
+				"type":   "Quote",
+				"symbol": streamingSymbol,
+			})
+			slog.Info(fmt.Sprintf("TastyTrade: Added Quote subscription for %s (original: %s)", streamingSymbol, symbol))
 		}
+
+	// Add Greeks subscription for option symbols only if requested
+	if containsString(dataTypes, "Greeks") && p.isOptionSymbol(symbol) {
+		subscriptions = append(subscriptions, map[string]interface{}{
+			"type":   "Greeks",
+			"symbol": streamingSymbol,
+		})
+		slog.Info(fmt.Sprintf("TastyTrade: Added Greeks subscription for %s (original: %s)", streamingSymbol, symbol))
+	} else if containsString(dataTypes, "Greeks") && !p.isOptionSymbol(symbol) {
+		slog.Info(fmt.Sprintf("TastyTrade: Skipping Greeks subscription for non-option symbol %s", symbol))
+	}
 	}
 
 	// Send subscription message
@@ -2055,14 +2055,14 @@ func (p *TastyTradeProvider) processQuoteFeedData(feedData []interface{}) map[st
 // Exact conversion of Python _process_greeks_feed_data method.
 func (p *TastyTradeProvider) processGreeksFeedData(feedData []interface{}) map[string]map[string]interface{} {
 	greeksData := make(map[string]map[string]interface{})
-	
+
 	// DXLink COMPACT format: flat array with Greeks data
 	// Format: ['Greeks', 'SYMBOL', delta, gamma, theta, vega, volatility, 'Greeks', ...]
 	for _, item := range feedData {
 		if itemArray, ok := item.([]interface{}); ok {
 			// Parse the flat array - each Greeks event has 7 consecutive elements
 			i := 0
-			for i+6 < len(itemArray) {
+			for i+5 < len(itemArray) {
 				if itemArray[i] == "Greeks" {
 					symbol := itemArray[i+1].(string)
 					greeks := map[string]interface{}{
@@ -2070,10 +2070,13 @@ func (p *TastyTradeProvider) processGreeksFeedData(feedData []interface{}) map[s
 						"gamma":               itemArray[i+3],
 						"theta":               itemArray[i+4],
 						"vega":                itemArray[i+5],
-						"implied_volatility":  itemArray[i+6],
+						"implied_volatility":  nil, // Default to nil
+					}
+					// Only set implied_volatility if it's available
+					if i+6 < len(itemArray) {
+						greeks["implied_volatility"] = itemArray[i+6]
 					}
 					greeksData[symbol] = greeks
-					slog.Debug(fmt.Sprintf("TastyTrade: Processed Greeks for %s", symbol))
 					i += 7 // Move to next Greeks event (7 fields per event)
 				} else {
 					i++ // Skip non-Greeks data
@@ -2081,11 +2084,7 @@ func (p *TastyTradeProvider) processGreeksFeedData(feedData []interface{}) map[s
 			}
 		}
 	}
-	
-	if len(greeksData) > 0 {
-		slog.Debug(fmt.Sprintf("TastyTrade: Total Greeks processed: %d symbols", len(greeksData)))
-	}
-	
+
 	return greeksData
 }
 
@@ -2176,14 +2175,14 @@ func (p *TastyTradeProvider) convertToStreamerSymbol(symbol string) string {
 	if !p.isOptionSymbol(symbol) {
 		return symbol
 	}
-	
-	// Parse the standard OCC symbol
-	// Format: ROOT + YYMMDD + C/P + STRIKE(8 digits)
+
+	// Parse OCC format: ROOT + YYMMDD + C/P + STRIKE(8 digits)
+	// Need to find the 6-digit date part in the correct position
 	if len(symbol) < 15 {
 		slog.Warn(fmt.Sprintf("TastyTrade: Symbol too short for option parsing: %s", symbol))
 		return symbol
 	}
-	
+
 	// Find where the date starts (6 consecutive digits)
 	for i := 0; i <= len(symbol)-15; i++ { // Need at least 15 chars after position i
 		datePart := symbol[i : i+6]
@@ -2193,17 +2192,17 @@ func (p *TastyTradeProvider) convertToStreamerSymbol(symbol string) string {
 			date := datePart  // YYMMDD
 			optionType := symbol[i+6] // C or P
 			strikePart := symbol[i+7 : i+15] // 8 digits
-			
+
 			// Convert strike to actual dollar amount (OCC format is dollars * 1000)
 			strikeRaw, err := strconv.Atoi(strikePart)
 			if err != nil {
 				slog.Error(fmt.Sprintf("TastyTrade: Invalid strike price in symbol: %s", symbol))
 				return symbol
 			}
-			
+
 			// Divide by 1000 to get actual strike price
 			strikeDollars := float64(strikeRaw) / 1000
-			
+
 			// Convert to clean string (remove .0 if it's a whole number)
 			var strikeClean string
 			if strikeDollars == float64(int(strikeDollars)) {
@@ -2214,15 +2213,15 @@ func (p *TastyTradeProvider) convertToStreamerSymbol(symbol string) string {
 				strikeClean = strings.TrimRight(strikeClean, "0")
 				strikeClean = strings.TrimRight(strikeClean, ".")
 			}
-			
+
 			// Build streamer symbol: .ROOT + DATE + TYPE + STRIKE
 			streamerSymbol := fmt.Sprintf(".%s%s%c%s", root, date, optionType, strikeClean)
-			
+
 			slog.Debug(fmt.Sprintf("TastyTrade: Converted %s -> %s", symbol, streamerSymbol))
 			return streamerSymbol
 		}
 	}
-	
+
 	slog.Warn(fmt.Sprintf("TastyTrade: Could not parse option symbol: %s", symbol))
 	return symbol
 }
@@ -2235,6 +2234,16 @@ func (p *TastyTradeProvider) isAllDigits(s string) bool {
 		}
 	}
 	return true
+}
+
+// containsString checks if a slice contains a string
+func containsString(slice []string, item string) bool {
+	for _, s := range slice {
+		if s == item {
+			return true
+		}
+	}
+	return false
 }
 
 // TestCredentials tests provider credentials.
@@ -2432,18 +2441,63 @@ func (p *TastyTradeProvider) PreviewOrder(ctx context.Context, orderData map[str
 // === Helper Methods ===
 
 // convertSymbolToStandardFormat converts TastyTrade symbol to standard OCC format.
-// Handles TastyTrade API symbols with extra spaces: "SPY   251114C00595000" -> "SPY251114C00595000"
+// Handles both:
+// - TastyTrade API symbols with spaces: "SPY   251114C00595000" -> "SPY251114C00595000"
+// - TastyTrade streamer symbols: ".TSLA251114P315" -> "TSLA251114P00315000"
 // Exact conversion of Python convert_symbol_to_standard_format method.
 func (p *TastyTradeProvider) convertSymbolToStandardFormat(symbol string) string {
 	// Handle TastyTrade API symbols with extra spaces
-	if strings.Contains(symbol, "  ") { // Two or more spaces
+	if !strings.HasPrefix(symbol, ".") && strings.Contains(symbol, "  ") { // Two or more spaces
 		// Remove extra spaces from TastyTrade API symbols
 		// Normalize all whitespace to single spaces, then remove all spaces
 		cleanedSymbol := strings.Join(strings.Fields(symbol), "")
 		slog.Debug(fmt.Sprintf("TastyTrade: Cleaned API symbol %s -> %s", symbol, cleanedSymbol))
 		return cleanedSymbol
 	}
-	
+
+	// Handle streamer symbols (start with dot)
+	if strings.HasPrefix(symbol, ".") {
+		// Remove the leading dot
+		symbolNoDot := symbol[1:]
+
+		// Parse the streamer symbol format: ROOT + YYMMDD + C/P + STRIKE
+		if len(symbolNoDot) < 10 {
+			slog.Warn(fmt.Sprintf("TastyTrade: Streamer symbol too short: %s", symbol))
+			return symbol
+		}
+
+		// Find where the date starts (6 consecutive digits)
+		for i := 0; i <= len(symbolNoDot)-9; i++ { // Need at least 10 chars after position i
+			datePart := symbolNoDot[i : i+6]
+			if p.isAllDigits(datePart) {
+				// Found the date part
+				root := symbolNoDot[:i]
+				date := datePart  // YYMMDD
+				optionType := symbolNoDot[i+6] // C or P
+				strikePart := symbolNoDot[i+7:] // Strike price
+
+				// Convert strike back to 8-digit OCC format (multiply by 1000)
+				strikeDollars, err := strconv.ParseFloat(strikePart, 64)
+				if err != nil {
+					slog.Error(fmt.Sprintf("TastyTrade: Invalid strike price in streamer symbol: %s", symbol))
+					return symbol
+				}
+
+				strikeRaw := int(strikeDollars * 1000)
+				strikeFormatted := fmt.Sprintf("%08d", strikeRaw) // 8 digits with leading zeros
+
+				// Build standard OCC symbol: ROOT + DATE + TYPE + STRIKE
+				standardSymbol := fmt.Sprintf("%s%s%c%s", root, date, optionType, strikeFormatted)
+
+				slog.Debug(fmt.Sprintf("TastyTrade: Converted streamer %s -> standard %s", symbol, standardSymbol))
+				return standardSymbol
+			}
+		}
+
+		slog.Warn(fmt.Sprintf("TastyTrade: Could not parse streamer symbol: %s", symbol))
+		return symbol
+	}
+
 	// If no special handling needed, return as-is
 	return symbol
 }

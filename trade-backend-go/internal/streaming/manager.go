@@ -459,19 +459,28 @@ func (sm *StreamingManager) unsubscribeQuotesSafe(ctx context.Context, symbols [
 // subscribeGreeksSafe safely subscribes to Greeks data on Greeks providers.
 // Exact conversion of Python _subscribe_greeks_safe method.
 func (sm *StreamingManager) subscribeGreeksSafe(ctx context.Context, symbols []string) error {
+	slog.Info("subscribeGreeksSafe called", "greeks_providers_count", len(sm.greeksProviders), "symbols_count", len(symbols))
+
 	for providerName, provider := range sm.greeksProviders {
+		slog.Info("Subscribing Greeks on provider", "provider", providerName, "symbols", len(symbols))
+
 		// Convert symbols to provider format if needed
 		providerSymbols := sm.convertSymbolsToProviderFormat(symbols, providerName)
-		
+
 		// Call subscribe_to_symbols with Greeks-only data types
 		_, err := provider.SubscribeToSymbols(ctx, providerSymbols, []string{"Greeks"})
 		if err != nil {
 			slog.Error("Error subscribing Greeks on provider", "provider", providerName, "error", err)
 			continue
 		}
-		
+
 		slog.Info("Subscribed to Greeks-only streaming on provider", "provider", providerName, "symbols", len(symbols))
 	}
+
+	if len(sm.greeksProviders) == 0 {
+		slog.Warn("No Greeks providers available for subscription")
+	}
+
 	return nil
 }
 

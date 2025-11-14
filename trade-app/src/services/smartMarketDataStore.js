@@ -1447,8 +1447,6 @@ class SmartMarketDataStore {
       return;
     }
 
-    console.log(`📊 Processing streaming Greeks for ${symbol}:`, { delta, gamma, theta, vega });
-
     // Minimal Greeks data object
     const greeksData = {
       delta,
