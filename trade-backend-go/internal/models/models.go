@@ -334,3 +334,22 @@ type TestProviderConnectionResponse struct {
 	Message string                 `json:"message"`
 	Details map[string]interface{} `json:"details,omitempty"`
 }
+
+// IVxExpiration represents individual expiration data for IVx calculations
+type IVxExpiration struct {
+	ExpirationDate       string  `json:"expiration_date"`
+	DaysToExpiration     float64 `json:"days_to_expiration"`
+	IVxPercent           float64 `json:"ivx_percent"`
+	ExpectedMoveDollars  float64 `json:"expected_move_dollars"`
+	CalculationMethod    string  `json:"calculation_method"`
+	OptionsCount         int     `json:"options_count"`
+	IsExpired            bool    `json:"is_expired"`
+}
+
+// IVxResponse represents the complete IVx API response data
+type IVxResponse struct {
+	Symbol          string          `json:"symbol"`
+	Expirations     []IVxExpiration `json:"expirations"`
+	Cached          bool            `json:"cached"`
+	CalculationTime *float64        `json:"calculation_time,omitempty"`
+}

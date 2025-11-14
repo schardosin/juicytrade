@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -187,16 +188,72 @@ func (p *TastyTradeProvider) makeAuthenticatedRequest(ctx context.Context, metho
 
 // === Market Data Methods ===
 
-// GetStockQuote gets the latest stock quote for a symbol.
-// Exact conversion of Python get_stock_quote method.
-func (p *TastyTradeProvider) GetStockQuote(ctx context.Context, symbol string) (*models.StockQuote, error) {
-	// TastyTrade doesn't have a direct stock quote endpoint
-	// This would typically use streaming, but for now return a basic implementation
-	return &models.StockQuote{
-		Symbol:    symbol,
-		Timestamp: time.Now().Format(time.RFC3339),
-	}, nil
-}
+	// GetStockQuote gets the latest stock quote for a symbol using streaming (DXLink).
+	// Mirrors Python get_streaming_quote: subscribe to Quote, wait for one update, then unsubscribe.
+	func (p *TastyTradeProvider) GetStockQuote(ctx context.Context, symbol string) (*models.StockQuote, error) {
+		// Ensure streaming connection is healthy
+		if !p.ensureHealthyConnection(ctx) {
+			return nil, fmt.Errorf("streaming connection not available for quotes")
+		}
+	
+		// Prepare a one-shot channel to receive the quote
+		quoteCh := make(chan map[string]interface{}, 1)
+		p.streamingState.requestsLock.Lock()
+		p.streamingState.quoteRequests[symbol] = quoteCh
+		p.streamingState.requestsLock.Unlock()
+	
+		// Ensure cleanup of request registration
+		defer func() {
+			p.streamingState.requestsLock.Lock()
+			delete(p.streamingState.quoteRequests, symbol)
+			p.streamingState.requestsLock.Unlock()
+		}()
+	
+		// Subscribe to Quote for the symbol
+		success, err := p.SubscribeToSymbols(ctx, []string{symbol}, []string{"Quote"})
+		if err != nil || !success {
+			return nil, fmt.Errorf("failed to subscribe to quote for %s: %v", symbol, err)
+		}
+	
+		// Always unsubscribe before returning
+		defer func() {
+			p.UnsubscribeFromSymbols(ctx, []string{symbol}, []string{"Quote"})
+		}()
+	
+		// Wait for a quote with timeout
+		timeout := 5 * time.Second
+		var quoteData map[string]interface{}
+		select {
+		case q := <-quoteCh:
+			quoteData = q
+		case <-time.After(timeout):
+			slog.Warn("Timeout waiting for streaming quote", "symbol", symbol)
+			quoteData = nil
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	
+		// Build StockQuote from received data (bid/ask midpoint, last not provided in Quote feed)
+		var bidPtr, askPtr *float64
+		if quoteData != nil {
+			if b, ok := quoteData["bid"].(float64); ok && b > 0 {
+				bidVal := b
+				bidPtr = &bidVal
+			}
+			if a, ok := quoteData["ask"].(float64); ok && a > 0 {
+				askVal := a
+				askPtr = &askVal
+			}
+		}
+	
+		return &models.StockQuote{
+			Symbol:    symbol,
+			Bid:       bidPtr,
+			Ask:       askPtr,
+			Last:      nil, // DXLink Quote feed here does not provide last; Python also uses bid/ask midpoint
+			Timestamp: time.Now().Format(time.RFC3339),
+		}, nil
+	}
 
 // GetStockQuotes gets stock quotes for multiple symbols.
 // Exact conversion of Python get_stock_quotes method.
@@ -302,7 +359,11 @@ func (p *TastyTradeProvider) GetExpirationDates(ctx context.Context, symbol stri
 // GetOptionsChainBasic gets basic options chain data.
 // Exact conversion of Python get_options_chain_basic method.
 func (p *TastyTradeProvider) GetOptionsChainBasic(ctx context.Context, symbol, expiry string, underlyingPrice *float64, strikeCount int, optionType, underlyingSymbol *string) ([]*models.OptionContract, error) {
-	endpoint := fmt.Sprintf("/option-chains/%s", symbol)
+	apiSymbol := symbol
+	if underlyingSymbol != nil && *underlyingSymbol != "" {
+		apiSymbol = *underlyingSymbol
+	}
+	endpoint := fmt.Sprintf("/option-chains/%s?root-symbol=%s", apiSymbol, url.QueryEscape(symbol))
 	response, err := p.makeAuthenticatedRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get options chain: %w", err)
@@ -328,6 +389,11 @@ func (p *TastyTradeProvider) GetOptionsChainBasic(ctx context.Context, symbol, e
 	for _, item := range apiResponse.Data.Items {
 		// Filter by expiry if specified
 		if expiry != "" && item.ExpirationDate != expiry {
+			continue
+		}
+
+		// Filter by root symbol to ensure exact chain scoping (parity with Python)
+		if item.RootSymbol == "" || !strings.EqualFold(item.RootSymbol, symbol) {
 			continue
 		}
 
@@ -364,8 +430,8 @@ func (p *TastyTradeProvider) GetOptionsChainBasic(ctx context.Context, symbol, e
 
 	// Get underlying price if not provided
 	if underlyingPrice == nil {
-		// Try to get quote for the underlying
-		quote, err := p.GetStockQuote(ctx, symbol)
+		// Try to get quote for the underlying (respect underlying_symbol override used for API calls)
+		quote, err := p.GetStockQuote(ctx, apiSymbol)
 		if err == nil && quote != nil && quote.Bid != nil && quote.Ask != nil {
 			avgPrice := (*quote.Bid + *quote.Ask) / 2
 			underlyingPrice = &avgPrice
@@ -436,12 +502,92 @@ func (p *TastyTradeProvider) GetOptionsChainBasic(ctx context.Context, symbol, e
 	return contracts, nil
 }
 
-// GetOptionsGreeksBatch gets Greeks for multiple option symbols.
-// Exact conversion of Python get_options_greeks_batch method.
+// GetOptionsGreeksBatch gets Greeks for multiple option symbols using streaming.
+// Exact conversion of Python get_streaming_greeks_batch method.
 func (p *TastyTradeProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbols []string) (map[string]map[string]interface{}, error) {
-	// TastyTrade doesn't have a dedicated Greeks endpoint
-	// This would typically use streaming, but for now return empty
-	return make(map[string]map[string]interface{}), nil
+	return p.getStreamingGreeksBatch(ctx, optionSymbols, 5)
+}
+
+// getStreamingGreeksBatch subscribes to a list of option symbols and waits for their greeks data.
+// This is more efficient than calling getStreamingGreeks for each symbol individually.
+// Exact conversion of Python get_streaming_greeks_batch method.
+func (p *TastyTradeProvider) getStreamingGreeksBatch(ctx context.Context, symbols []string, timeout int) (map[string]map[string]interface{}, error) {
+	if !p.ensureHealthyConnection(ctx) {
+		return make(map[string]map[string]interface{}), fmt.Errorf("streaming connection not available")
+	}
+
+	// Create futures for each symbol
+	futures := make(map[string]chan map[string]interface{})
+	for _, symbol := range symbols {
+		futures[symbol] = make(chan map[string]interface{}, 1)
+		p.streamingState.requestsLock.Lock()
+		p.streamingState.greeksRequests[symbol] = futures[symbol]
+		p.streamingState.requestsLock.Unlock()
+	}
+
+	// Subscribe to Greeks data for all symbols
+	success, err := p.SubscribeToSymbols(ctx, symbols, []string{"Greeks"})
+	if err != nil || !success {
+		// Clean up futures
+		p.streamingState.requestsLock.Lock()
+		for _, symbol := range symbols {
+			delete(p.streamingState.greeksRequests, symbol)
+		}
+		p.streamingState.requestsLock.Unlock()
+		return make(map[string]map[string]interface{}), fmt.Errorf("failed to subscribe to symbols: %v", err)
+	}
+
+	// Wait for results with timeout
+	results := make(map[string]map[string]interface{})
+	timeoutDuration := time.Duration(timeout) * time.Second
+
+	for _, symbol := range symbols {
+		select {
+		case greeks := <-futures[symbol]:
+			if greeks != nil {
+				results[symbol] = greeks
+			} else {
+				results[symbol] = nil
+			}
+		case <-time.After(timeoutDuration):
+			slog.Warn(fmt.Sprintf("Timeout waiting for greeks for %s", symbol))
+			results[symbol] = nil
+		case <-ctx.Done():
+			results[symbol] = nil
+		}
+	}
+
+	// Clean up: unsubscribe and remove futures
+	p.UnsubscribeFromSymbols(ctx, symbols, []string{"Greeks"})
+	p.streamingState.requestsLock.Lock()
+	for _, symbol := range symbols {
+		delete(p.streamingState.greeksRequests, symbol)
+	}
+	p.streamingState.requestsLock.Unlock()
+
+	return results, nil
+}
+
+// ensureHealthyConnection ensures we have a healthy streaming connection, reconnect if needed.
+// Exact conversion of Python _ensure_healthy_connection method.
+func (p *TastyTradeProvider) ensureHealthyConnection(ctx context.Context) bool {
+	// Check if we're already connected and healthy
+	if p.streamingState.isConnected && p.streamingState.streamConnection != nil {
+		// Test the connection with a ping (simple check)
+		// For WebSocket, we can check if the connection is still open
+		// In Go, we don't have a direct ping method, so we'll assume it's healthy if connected
+		slog.Debug("TastyTrade: Connection health check passed")
+		return true
+	}
+
+	// Connection is not healthy, attempt to reconnect
+	slog.Info("TastyTrade: Establishing new streaming connection...")
+	success, err := p.ConnectStreaming(ctx)
+	if err != nil {
+		slog.Error("TastyTrade: Failed to establish streaming connection", "error", err)
+		return false
+	}
+	return success
 }
 
 // GetOptionsChainSmart gets smart options chain data.
@@ -1251,6 +1397,7 @@ type StreamingState struct {
 	streamingTask      *StreamingTask
 	connectionID       string
 	recvLock           sync.Mutex
+	writeLock          sync.Mutex                   // Add: mutex for WebSocket writes
 	greeksRequests     map[string]chan map[string]interface{}
 	quoteRequests      map[string]chan map[string]interface{}
 	requestsLock       sync.Mutex
@@ -1469,7 +1616,10 @@ func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []s
 
 	slog.Info(fmt.Sprintf("TastyTrade: Sending subscription message with %d subscriptions for data_types: %v", len(subscriptions), dataTypes))
 	
-	if err := p.streamingState.streamConnection.WriteJSON(subscriptionMsg); err != nil {
+	p.streamingState.writeLock.Lock()
+	err := p.streamingState.streamConnection.WriteJSON(subscriptionMsg)
+	p.streamingState.writeLock.Unlock()
+	if err != nil {
 		slog.Error("Failed to send subscription message", "error", err)
 		return false, err
 	}
@@ -1540,7 +1690,10 @@ func (p *TastyTradeProvider) UnsubscribeFromSymbols(ctx context.Context, symbols
 		"remove":  subscriptions,
 	}
 
-	if err := p.streamingState.streamConnection.WriteJSON(unsubscriptionMsg); err != nil {
+	p.streamingState.writeLock.Lock()
+	err := p.streamingState.streamConnection.WriteJSON(unsubscriptionMsg)
+	p.streamingState.writeLock.Unlock()
+	if err != nil {
 		slog.Error("Failed to send unsubscription message", "error", err)
 		return false, err
 	}
@@ -1936,7 +2089,10 @@ func (p *TastyTradeProvider) periodicKeepalive(ctx context.Context) {
 					"channel": 0,
 				}
 				
-				if err := p.streamingState.streamConnection.WriteJSON(keepaliveMsg); err != nil {
+				p.streamingState.writeLock.Lock()
+				err := p.streamingState.streamConnection.WriteJSON(keepaliveMsg)
+				p.streamingState.writeLock.Unlock()
+				if err != nil {
 					slog.Warn("TastyTrade: Periodic keepalive failed", "error", err)
 					// Don't trigger recovery here - let the main loop handle it
 					return

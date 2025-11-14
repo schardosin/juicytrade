@@ -4,16 +4,20 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
+	"sort"
 	"strings"
 	"syscall"
 	"time"
 
 	"trade-backend-go/internal/api/handlers"
 	"trade-backend-go/internal/config"
+	"trade-backend-go/internal/models"
 	"trade-backend-go/internal/providers"
+	"trade-backend-go/internal/services/ivx"
 	"trade-backend-go/internal/streaming"
 
 	"github.com/gin-gonic/gin"
@@ -50,7 +54,10 @@ func main() {
 	// Initialize provider manager (same as Python provider_manager)
 	providers.InitializeProviderManager()
 	providerManager := providers.GlobalProviderManager
-	
+
+	// Initialize IVx services
+	ivxCache := ivx.NewCache()
+
 	// Initialize streaming manager and connect to providers
 	streamingMgr := streaming.GetStreamingManager()
 	ctx := context.Background()
@@ -1042,18 +1049,80 @@ func main() {
 	// IVx (Implied Volatility) endpoints - exact same paths as Python
 	router.GET("/api/ivx/:symbol", func(c *gin.Context) {
 		symbol := c.Param("symbol")
-		
-		// For now, return a placeholder response since IVx calculation is complex
-		// In the Python backend, this would calculate implied volatility metrics
-		c.JSON(200, gin.H{
-			"success": true,
-			"data": map[string]interface{}{
-				"symbol": symbol,
-				"ivx":    nil, // Placeholder - would need complex IV calculation
-				"message": "IVx calculation not yet implemented in Go backend",
-			},
-			"message": fmt.Sprintf("IVx data requested for %s (not yet implemented)", symbol),
-		})
+		startTime := time.Now()
+
+		log.Printf("📊 API request for IVx data for %s", symbol)
+
+		// Check cache first
+		cachedData := ivxCache.Get(symbol)
+		if cachedData != nil {
+			log.Printf("📦 Returning cached IVx data for %s (%d expirations)", symbol, len(cachedData))
+			response := models.NewApiResponse(true, models.IVxResponse{
+				Symbol:    symbol,
+				Expirations: cachedData,
+				Cached:    true,
+			}, nil, stringPtr(fmt.Sprintf("Retrieved cached IVx data for %s (%d expirations)", symbol, len(cachedData))))
+			c.JSON(200, response)
+			return
+		}
+
+		// Calculate fresh data
+		log.Printf("🔄 Calculating fresh IVx data for %s", symbol)
+
+		// Get all available expirations
+		expirationDatesRaw, err := providerManager.GetExpirationDates(c.Request.Context(), symbol)
+		if err != nil || len(expirationDatesRaw) == 0 {
+		response := models.NewApiResponse(false, models.IVxResponse{
+			Symbol:     symbol,
+			Expirations: []models.IVxExpiration{},
+		}, stringPtr("No expiration dates available"), stringPtr(fmt.Sprintf("No expiration dates available for %s", symbol)))
+			c.JSON(404, response)
+			return
+		}
+
+		// expirationDatesRaw is already []map[string]interface{}, no conversion needed
+		expirationDates := expirationDatesRaw
+
+		if len(expirationDates) == 0 {
+			response := models.NewApiResponse(false, models.IVxResponse{
+				Symbol:     symbol,
+				Expirations: []models.IVxExpiration{},
+			}, stringPtr("No valid expiration dates available"), stringPtr(fmt.Sprintf("No valid expiration dates available for %s", symbol)))
+			c.JSON(404, response)
+			return
+		}
+
+		// Get underlying price with fallback logic (same as Python)
+		underlyingPrice, err := getUnderlyingPrice(c.Request.Context(), providerManager, symbol)
+		if err != nil || underlyingPrice == nil {
+			log.Printf("❌ No valid price available for %s: %v", symbol, err)
+			response := models.NewApiResponse(false, models.IVxResponse{
+				Symbol:     symbol,
+				Expirations: []models.IVxExpiration{},
+			}, stringPtr("No valid price available"), stringPtr(fmt.Sprintf("No valid price available for %s", symbol)))
+			c.JSON(404, response)
+			return
+		}
+
+		// Process expirations in parallel
+		ivxResults := processExpirationsParallel(c.Request.Context(), expirationDates, providerManager, *underlyingPrice, symbol)
+
+		calculationTime := time.Since(startTime).Seconds()
+
+		// Cache the results if we have any
+		if len(ivxResults) > 0 {
+			ivxCache.Set(symbol, ivxResults)
+			log.Printf("💾 Cached IVx data for %s (%d expirations)", symbol, len(ivxResults))
+		}
+
+		response := models.NewApiResponse(true, models.IVxResponse{
+			Symbol:          symbol,
+			Expirations:     ivxResults,
+			Cached:          false,
+			CalculationTime: &calculationTime,
+		}, nil, stringPtr(fmt.Sprintf("Calculated IVx data for %s (%d expirations) in %.2fs", symbol, len(ivxResults), calculationTime)))
+
+		c.JSON(200, response)
 	})
 	
 	// WebSocket endpoint - exact same path as Python
@@ -1088,4 +1157,331 @@ func main() {
 	}
 	
 	log.Println("Server exited")
+}
+
+// Helper function to create string pointer
+func stringPtr(s string) *string {
+	return &s
+}
+
+// getUnderlyingPrice gets the underlying price with fallback logic (same as Python implementation)
+func getUnderlyingPrice(ctx context.Context, providerManager *providers.ProviderManager, symbol string) (*float64, error) {
+	log.Printf("🔍 Getting stock quote for %s", symbol)
+	quote, err := providerManager.GetStockQuote(ctx, symbol)
+	if err != nil {
+		log.Printf("⚠️ Error getting stock quote for %s: %v", symbol, err)
+		// Don't return error immediately, try fallback
+	}
+
+	log.Printf("🔍 Quote result: %+v", quote)
+
+	var underlyingPrice *float64
+	if quote != nil {
+		// Try to get price from last, then bid/ask midpoint, then individual bid or ask
+		if quote.Last != nil && *quote.Last > 0 {
+			underlyingPrice = quote.Last
+			log.Printf("📈 Using last price for %s: $%.2f", symbol, *underlyingPrice)
+		} else if quote.Bid != nil && quote.Ask != nil && *quote.Bid > 0 && *quote.Ask > 0 {
+			midpoint := (*quote.Bid + *quote.Ask) / 2
+			underlyingPrice = &midpoint
+			log.Printf("📈 Using bid/ask midpoint for %s: $%.2f (bid: $%.2f, ask: $%.2f)", symbol, *underlyingPrice, *quote.Bid, *quote.Ask)
+		} else if quote.Bid != nil && *quote.Bid > 0 {
+			underlyingPrice = quote.Bid
+			log.Printf("📈 Using bid price for %s: $%.2f", symbol, *underlyingPrice)
+		} else if quote.Ask != nil && *quote.Ask > 0 {
+			underlyingPrice = quote.Ask
+			log.Printf("📈 Using ask price for %s: $%.2f", symbol, *underlyingPrice)
+		}
+	}
+
+	// Fallback for indices like SPX where direct quotes might fail (same as Python)
+	if underlyingPrice == nil {
+		log.Printf("⚠️ Direct quote failed for %s, trying fallback via options chain", symbol)
+		// Try to get underlying price from options chain (same as Python implementation)
+		// Get the first available expiration to extract underlying price
+		expirationDatesRaw, err := providerManager.GetExpirationDates(ctx, symbol)
+		if err == nil && len(expirationDatesRaw) > 0 {
+			// Use the first expiration date
+			firstExpiry := ""
+			expMap := expirationDatesRaw[0]
+			if expMap != nil {
+				if date, ok := expMap["date"].(string); ok {
+					firstExpiry = date
+				}
+			}
+
+			if firstExpiry != "" {
+				log.Printf("🔄 Trying options chain fallback for %s using expiry %s", symbol, firstExpiry)
+
+				// Get basic options chain for this expiration
+				optionsChain, err := providerManager.GetOptionsChainBasic(ctx, symbol, firstExpiry, nil, 5, nil, &symbol)
+				if err == nil && len(optionsChain) > 0 {
+					// Some providers include underlying price in options response
+					// For now, estimate from ATM strikes as fallback (same as Python)
+					strikes := make([]float64, len(optionsChain))
+					for i, contract := range optionsChain {
+						if contract != nil {
+							strikes[i] = contract.StrikePrice
+						}
+					}
+
+					if len(strikes) > 0 {
+						// Sort strikes and use middle one as approximation
+						sort.Float64s(strikes)
+						estimatedPrice := strikes[len(strikes)/2]
+						underlyingPrice = &estimatedPrice
+						log.Printf("📈 Estimated underlying price from strikes for %s: $%.2f", symbol, *underlyingPrice)
+					}
+				} else {
+					log.Printf("❌ Options chain fallback failed for %s: %v", symbol, err)
+				}
+			}
+		} else {
+			log.Printf("❌ Could not get expiration dates for fallback: %v", err)
+		}
+	}
+
+	if underlyingPrice == nil {
+		return nil, fmt.Errorf("no valid price available for %s", symbol)
+	}
+
+	return underlyingPrice, nil
+}
+
+// processExpirationsParallel processes multiple expirations concurrently using goroutines
+func processExpirationsParallel(ctx context.Context, expirationDates []map[string]interface{}, providerManager *providers.ProviderManager, underlyingPrice float64, symbol string) []models.IVxExpiration {
+	if len(expirationDates) == 0 {
+		return []models.IVxExpiration{}
+	}
+
+	log.Printf("🔄 Processing %d expiration dates for %s", len(expirationDates), symbol)
+
+	// Use a semaphore for concurrency control (similar to Python's semaphore)
+	concurrencyLimit := 10 // Increased from 5 to reduce batching pauses
+	semaphore := make(chan struct{}, concurrencyLimit)
+	results := make(chan *models.IVxExpiration, len(expirationDates))
+
+	// Worker function to process a single expiration
+	processExpiration := func(expirationDate map[string]interface{}) {
+		defer func() { <-semaphore }() // Release semaphore
+
+		// Extract date string and other info
+		dateStr, ok := expirationDate["date"].(string)
+		if !ok || dateStr == "" {
+			log.Printf("⚠️ Expiration missing 'date' field: %+v", expirationDate)
+			results <- nil
+			return
+		}
+
+		dateStrSymbol, _ := expirationDate["symbol"].(string)
+		if dateStrSymbol == "" {
+			dateStrSymbol = symbol
+		}
+
+		log.Printf("📅 Processing expiration: %s", dateStr)
+
+		// Get basic options chain (same as Python - step 1)
+		optionsChain, err := providerManager.GetOptionsChainBasic(ctx, dateStrSymbol, dateStr, &underlyingPrice, 20, nil, &symbol)
+		if err != nil {
+			log.Printf("❌ Error getting options chain for %s %s: %v", symbol, dateStr, err)
+			results <- nil
+			return
+		}
+
+		if len(optionsChain) == 0 {
+			log.Printf("⚠️ No options chain for %s %s", symbol, dateStr)
+			results <- nil
+			return
+		}
+
+		// Find ATM strike (same as Python - step 2)
+		atmStrike := 0.0
+		minDiff := math.MaxFloat64
+		for _, contract := range optionsChain {
+			if contract != nil {
+				diff := math.Abs(contract.StrikePrice - underlyingPrice)
+				if diff < minDiff {
+					minDiff = diff
+					atmStrike = contract.StrikePrice
+				}
+			}
+		}
+
+		if atmStrike == 0 {
+			log.Printf("⚠️ Could not find ATM strike for %s %s", symbol, dateStr)
+			results <- nil
+			return
+		}
+
+		// Find ATM call and put contracts (same as Python - step 3)
+		var atmCall, atmPut *models.OptionContract
+		for _, contract := range optionsChain {
+			if contract != nil && contract.StrikePrice == atmStrike {
+				if contract.Type == "call" {
+					atmCall = contract
+				} else if contract.Type == "put" {
+					atmPut = contract
+				}
+			}
+		}
+
+		if atmCall == nil || atmPut == nil {
+			log.Printf("⚠️ Could not find ATM call/put for %s %s at strike %.2f", symbol, dateStr, atmStrike)
+			results <- nil
+			return
+		}
+
+		// Get live greeks/IV data for ATM options (same as Python - step 4)
+		symbolsToFetch := []string{atmCall.Symbol, atmPut.Symbol}
+		
+		// Python uses get_streaming_greeks_batch, but Go doesn't have this method yet
+		// For now, use the regular GetOptionsGreeksBatch method
+		greeksResults, err := providerManager.GetOptionsGreeksBatch(ctx, symbolsToFetch)
+		if err != nil {
+			log.Printf("❌ Error fetching greeks for %s %s: %v", symbol, dateStr, err)
+			results <- nil
+			return
+		}
+
+		// Extract valid IVs (same as Python - step 5)
+		var validIVs []float64
+		for _, greeks := range greeksResults {
+			if greeks != nil {
+				if iv, ok := greeks["implied_volatility"].(float64); ok && iv > 0 {
+					validIVs = append(validIVs, iv)
+				}
+			}
+		}
+
+		if len(validIVs) == 0 {
+			log.Printf("⚠️ Failed to get IV for ATM options for %s %s", symbol, dateStr)
+			results <- nil
+			return
+		}
+
+		// Calculate IVx (average of ATM call and put IV - same as Python)
+		ivx := 0.0
+		for _, iv := range validIVs {
+			ivx += iv
+		}
+		ivx /= float64(len(validIVs))
+
+		// Calculate DTE with Eastern Time logic (same as Python)
+		dte, isExpired := calculateDaysToExpiration(dateStr)
+		if dte <= 0 && !isExpired {
+			log.Printf("⏰ Skipping truly expired expiration %s %s (DTE: %.4f)", symbol, dateStr, dte)
+			results <- nil
+			return
+		}
+
+		// For very small DTE (expired 0DTE), ensure minimum calculation value
+		if dte < 0.0001 {
+			dte = 0.0001
+		}
+
+		// Calculate expected move with time precision (same as Python)
+		expectedMove := underlyingPrice * ivx * math.Sqrt(dte/365)
+
+		// Adjust IVx for expired options (same as Python)
+		adjustedIVx := ivx
+		calculationMethod := "atm_iv_average"
+		if isExpired {
+			// For expired options, IVx should be near zero since there's no time value
+			adjustedIVx = 0.001 // Very small value (0.1%)
+			expectedMove = underlyingPrice * adjustedIVx * math.Sqrt(dte/365)
+			calculationMethod = "atm_iv_average_expired_adjusted"
+		}
+
+		// Create result (same format as Python)
+		result := &models.IVxExpiration{
+			ExpirationDate:      dateStr,
+			DaysToExpiration:    dte,
+			IVxPercent:          math.Round(adjustedIVx*100*100) / 100, // Round to 2 decimal places
+			ExpectedMoveDollars: math.Round(expectedMove*100) / 100,    // Round to 2 decimal places
+			CalculationMethod:   calculationMethod,
+			OptionsCount:        len(optionsChain),
+			IsExpired:           isExpired,
+		}
+
+		results <- result
+	}
+
+	// Start goroutines for all expirations
+	for _, exp := range expirationDates {
+		semaphore <- struct{}{} // Acquire semaphore
+		go processExpiration(exp)
+	}
+
+	// Collect results
+	var ivxResults []models.IVxExpiration
+	for i := 0; i < len(expirationDates); i++ {
+		result := <-results
+		if result != nil {
+			ivxResults = append(ivxResults, *result)
+		}
+	}
+
+	close(results)
+	log.Printf("✅ Successfully calculated IVx for %d/%d expirations for %s", len(ivxResults), len(expirationDates), symbol)
+
+	return ivxResults
+}
+
+// calculateDaysToExpiration calculates DTE with Eastern Time logic (same as Python)
+func calculateDaysToExpiration(expirationDate string) (float64, bool) {
+	// Parse expiration date
+	expDate, err := time.Parse("2006-01-02", expirationDate)
+	if err != nil {
+		log.Printf("❌ Error parsing expiration date %s: %v", expirationDate, err)
+		return 0, false
+	}
+
+	// Always use Eastern Time for all date calculations (fixes UTC/EST server issues)
+	et, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		log.Printf("❌ Error loading Eastern timezone: %v", err)
+		return 0, false
+	}
+
+	now := time.Now().In(et)
+	today := now.Truncate(24 * time.Hour)
+	expDate = expDate.In(et)
+
+	// For same-day expiration (0DTE), calculate fractional time to 4:00 PM ET
+	if expDate.Equal(today) {
+		// Market close is 4:00 PM ET
+		marketClose := time.Date(today.Year(), today.Month(), today.Day(), 16, 0, 0, 0, et)
+
+		// If after market close, use minimal time for expired 0DTE calculation
+		if now.After(marketClose) {
+			log.Printf("📅 0DTE after market close for %s - using minimal time for expired calculation", expirationDate)
+			return 0.0001, true // Very small value (about 0.1 hours) to show expired but calculate IVx
+		} else {
+			// Calculate fractional time remaining until market close
+			timeRemaining := marketClose.Sub(now)
+			dteHours := timeRemaining.Hours()
+			dte := dteHours / 24 // Convert to fractional days
+
+			log.Printf("📅 0DTE calculation for %s: %.2f hours = %.4f days remaining", expirationDate, dteHours, dte)
+			return dte, false
+		}
+	} else {
+		// For future expirations, use standard day calculation but add time precision
+		fullDays := expDate.Sub(today).Hours() / 24
+
+		// Add fractional day based on current time (assume 4:00 PM ET expiration)
+		marketCloseToday := time.Date(today.Year(), today.Month(), today.Day(), 16, 0, 0, 0, et)
+		if now.Before(marketCloseToday) {
+			timeRemainingToday := marketCloseToday.Sub(now)
+			fractionalDay := timeRemainingToday.Hours() / 24
+			fullDays += fractionalDay
+		}
+
+		// Ensure future dates have positive DTE
+		if fullDays <= 0 {
+			fullDays = 0.0001 // Minimal value for edge cases
+		}
+
+		return fullDays, false
+	}
 }
