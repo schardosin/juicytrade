@@ -805,40 +805,22 @@ func (p *TastyTradeProvider) GetPositions(ctx context.Context) ([]*models.Positi
 
 // GetPositionsEnhanced gets enhanced positions grouped by date_acquired (same order timing).
 // Exact conversion of Python get_positions_enhanced method.
-func (p *TastyTradeProvider) GetPositionsEnhanced(ctx context.Context) (map[string]interface{}, error) {
+func (p *TastyTradeProvider) GetPositionsEnhanced(ctx context.Context) (*models.EnhancedPositionsResponse, error) {
 	slog.Debug("TastyTrade: Getting enhanced positions grouped by acquisition date...")
 
 	// 1. Get current positions only (no additional API calls needed)
 	currentPositions, err := p.GetPositions(ctx)
 	if err != nil {
-		return map[string]interface{}{
-			"enhanced":      true,
-			"symbol_groups": []interface{}{},
-		}, nil
+		return models.NewEnhancedPositionsResponse(), nil
 	}
 
 	if len(currentPositions) == 0 {
 		slog.Info("TastyTrade: No current positions found")
-		return map[string]interface{}{
-			"enhanced":      true,
-			"symbol_groups": []interface{}{},
-		}, nil
+		return models.NewEnhancedPositionsResponse(), nil
 	}
 
-	// 2. Group by date_acquired instead of expensive order chain analysis
-	symbolGroups, err := p.createDateBasedHierarchicalGroups(currentPositions)
-	if err != nil {
-		return map[string]interface{}{
-			"enhanced":      true,
-			"symbol_groups": []interface{}{},
-		}, nil
-	}
-
-	slog.Debug(fmt.Sprintf("TastyTrade: Created %d symbol groups using date_acquired grouping", len(symbolGroups)))
-	return map[string]interface{}{
-		"enhanced":      true,
-		"symbol_groups": symbolGroups,
-	}, nil
+	// 2. Use base provider's conversion logic
+	return p.BaseProviderImpl.ConvertPositionsToEnhanced(currentPositions), nil
 }
 
 // createDateBasedHierarchicalGroups creates hierarchical groups based on date_acquired (same order timing).

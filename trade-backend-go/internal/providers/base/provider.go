@@ -57,6 +57,10 @@ type Provider interface {
 	// Exact conversion of Python get_positions method.
 	GetPositions(ctx context.Context) ([]*models.Position, error)
 	
+	// GetPositionsEnhanced gets enhanced positions with hierarchical grouping.
+	// Exact conversion of Python get_positions_enhanced method.
+	GetPositionsEnhanced(ctx context.Context) (*models.EnhancedPositionsResponse, error)
+	
 	// GetOrders gets orders with optional status filter.
 	// Exact conversion of Python get_orders method.
 	GetOrders(ctx context.Context, status string) ([]*models.Order, error)
@@ -279,6 +283,435 @@ func (bp *BaseProviderImpl) ConvertSymbolToStandardFormat(symbol string) string 
 // Exact conversion of Python _get_provider_type method.
 func (bp *BaseProviderImpl) GetProviderType() string {
 	return strings.ToLower(bp.Name)
+}
+
+// GetPositionsEnhanced provides a default implementation that converts regular positions to enhanced format.
+// Individual providers can override this if they have native enhanced support.
+// Exact conversion of Python fallback logic.
+func (bp *BaseProviderImpl) GetPositionsEnhanced(ctx context.Context) (*models.EnhancedPositionsResponse, error) {
+	// This is a default implementation that should be overridden by concrete providers
+	// For now, return an error indicating the method needs to be implemented
+	return nil, fmt.Errorf("GetPositionsEnhanced not implemented for provider %s", bp.Name)
+}
+
+// ConvertPositionsToEnhanced converts regular positions to enhanced hierarchical format
+// Exact conversion of Python enhanced positions logic
+func (bp *BaseProviderImpl) ConvertPositionsToEnhanced(positions []*models.Position) *models.EnhancedPositionsResponse {
+	if len(positions) == 0 {
+		return models.NewEnhancedPositionsResponse()
+	}
+
+	// Group positions by underlying symbol
+	symbolGroups := make(map[string]*models.SymbolGroup)
+	
+	// First, group positions by underlying symbol and date acquired to identify strategies
+	positionsBySymbolAndTime := make(map[string]map[string][]*models.Position)
+	
+	for _, position := range positions {
+		underlyingSymbol := bp.getUnderlyingSymbol(position)
+		
+		if _, exists := positionsBySymbolAndTime[underlyingSymbol]; !exists {
+			positionsBySymbolAndTime[underlyingSymbol] = make(map[string][]*models.Position)
+		}
+		
+		// Group by acquisition time (truncated to minute for grouping related trades)
+		timeKey := bp.getTimeGroupKey(position.DateAcquired)
+		if _, exists := positionsBySymbolAndTime[underlyingSymbol][timeKey]; !exists {
+			positionsBySymbolAndTime[underlyingSymbol][timeKey] = []*models.Position{}
+		}
+		
+		positionsBySymbolAndTime[underlyingSymbol][timeKey] = append(positionsBySymbolAndTime[underlyingSymbol][timeKey], position)
+	}
+	
+	// Process each symbol group
+	for underlyingSymbol, timeGroups := range positionsBySymbolAndTime {
+		// Collect all positions for this symbol to determine asset class
+		var allPositionsForSymbol []*models.Position
+		for _, groupPositions := range timeGroups {
+			allPositionsForSymbol = append(allPositionsForSymbol, groupPositions...)
+		}
+		
+		assetClass := bp.determineAssetClass(allPositionsForSymbol)
+		symbolGroup := models.NewSymbolGroup(underlyingSymbol, assetClass)
+		
+		// Process each time group as a potential strategy
+		for timeKey, groupPositions := range timeGroups {
+			strategy := bp.detectAndCreateStrategy(groupPositions, timeKey)
+			symbolGroup.AddStrategy(*strategy)
+		}
+		
+		// Calculate DTE for strategies
+		bp.calculateDTEForStrategies(symbolGroup)
+		symbolGroups[underlyingSymbol] = symbolGroup
+	}
+	
+	// Convert map to slice
+	response := models.NewEnhancedPositionsResponse()
+	for _, group := range symbolGroups {
+		response.AddSymbolGroup(*group)
+	}
+	
+	bp.Logger.Info(fmt.Sprintf("✅ Processed %d positions into %d symbol groups with enhanced structure", len(positions), len(response.SymbolGroups)))
+	
+	return response
+}
+
+// getUnderlyingSymbol extracts the underlying symbol from a position
+func (bp *BaseProviderImpl) getUnderlyingSymbol(position *models.Position) string {
+	// For options, use the underlying symbol if available
+	if position.UnderlyingSymbol != nil && *position.UnderlyingSymbol != "" {
+		return *position.UnderlyingSymbol
+	}
+	
+	// For options without explicit underlying symbol, extract from option symbol
+	if position.AssetClass == "us_option" {
+		return bp.extractUnderlyingFromOptionSymbol(position.Symbol)
+	}
+	
+	// For stocks and other assets, use the symbol itself
+	return position.Symbol
+}
+
+// extractUnderlyingFromOptionSymbol extracts underlying symbol from option symbol
+func (bp *BaseProviderImpl) extractUnderlyingFromOptionSymbol(optionSymbol string) string {
+	// Find the first digit (start of date)
+	for i, char := range optionSymbol {
+		if char >= '0' && char <= '9' {
+			return optionSymbol[:i]
+		}
+	}
+	return optionSymbol
+}
+
+// determineAssetClass determines the asset class for the symbol group
+func (bp *BaseProviderImpl) determineAssetClass(positions []*models.Position) string {
+	// Check if any position in the group is an option
+	for _, position := range positions {
+		if position.AssetClass == "us_option" {
+			return "options"
+		}
+	}
+	// If no options found, it's stocks
+	return "stocks"
+}
+
+// convertPositionToLeg converts a Position to a PositionLeg
+func (bp *BaseProviderImpl) convertPositionToLeg(position *models.Position) models.PositionLeg {
+	return models.PositionLeg{
+		Symbol:           position.Symbol,
+		Qty:              position.Qty,
+		AvgEntryPrice:    position.AvgEntryPrice,
+		CostBasis:        position.CostBasis,
+		AssetClass:       position.AssetClass,
+		LastdayPrice:     position.LastdayPrice,
+		DateAcquired:     position.DateAcquired,
+		UnderlyingSymbol: position.UnderlyingSymbol,
+		OptionType:       position.OptionType,
+		StrikePrice:      position.StrikePrice,
+		ExpiryDate:       position.ExpiryDate,
+	}
+}
+
+// addPositionToStrategy adds a position leg to the appropriate strategy
+func (bp *BaseProviderImpl) addPositionToStrategy(symbolGroup *models.SymbolGroup, leg models.PositionLeg, position *models.Position) {
+	strategyName := bp.detectStrategy(position)
+	
+	// Find existing strategy or create new one
+	var targetStrategy *models.Strategy
+	for i := range symbolGroup.Strategies {
+		if symbolGroup.Strategies[i].Name == strategyName {
+			targetStrategy = &symbolGroup.Strategies[i]
+			break
+		}
+	}
+	
+	if targetStrategy == nil {
+		// Create new strategy
+		newStrategy := models.NewStrategy(strategyName)
+		symbolGroup.AddStrategy(*newStrategy)
+		targetStrategy = &symbolGroup.Strategies[len(symbolGroup.Strategies)-1]
+	}
+	
+	// Add leg to strategy
+	targetStrategy.AddLeg(leg)
+}
+
+// detectStrategy detects the trading strategy based on position
+func (bp *BaseProviderImpl) detectStrategy(position *models.Position) string {
+	// For equity positions
+	if position.AssetClass != "us_option" {
+		if position.Qty > 0 {
+			return "Long Stock"
+		}
+		return "Short Stock"
+	}
+	
+	// For single option positions
+	if position.OptionType != nil {
+		if position.Qty > 0 {
+			return fmt.Sprintf("Long %s", strings.Title(*position.OptionType))
+		}
+		return fmt.Sprintf("Short %s", strings.Title(*position.OptionType))
+	}
+	
+	return "Option Position"
+}
+
+// calculateDTEForStrategies calculates days to expiration for strategies
+func (bp *BaseProviderImpl) calculateDTEForStrategies(symbolGroup *models.SymbolGroup) {
+	for i := range symbolGroup.Strategies {
+		strategy := &symbolGroup.Strategies[i]
+		
+		// Find the nearest expiration date among all legs
+		var nearestExpiry *string
+		var nearestDate time.Time
+		
+		for _, leg := range strategy.Legs {
+			if leg.ExpiryDate != nil && *leg.ExpiryDate != "" {
+				if expiryDate, err := time.Parse("2006-01-02", *leg.ExpiryDate); err == nil {
+					if nearestExpiry == nil || expiryDate.Before(nearestDate) {
+						nearestExpiry = leg.ExpiryDate
+						nearestDate = expiryDate
+					}
+				}
+			}
+		}
+		
+		// Calculate DTE
+		if nearestExpiry != nil {
+			dte := bp.calculateDTE(*nearestExpiry)
+			strategy.DTE = &dte
+		}
+	}
+}
+
+// calculateDTE calculates days to expiration
+func (bp *BaseProviderImpl) calculateDTE(expiryDate string) int {
+	expiry, err := time.Parse("2006-01-02", expiryDate)
+	if err != nil {
+		return -1
+	}
+	
+	now := time.Now()
+	diff := expiry.Sub(now)
+	days := int(diff.Hours() / 24)
+	
+	// If same day, return 0 instead of negative
+	if days < 0 {
+		return 0
+	}
+	
+	return days
+}
+
+// getTimeGroupKey creates a time-based key for grouping related positions
+func (bp *BaseProviderImpl) getTimeGroupKey(dateAcquired *string) string {
+	if dateAcquired == nil || *dateAcquired == "" {
+		return "unknown"
+	}
+	
+	// Parse the date and truncate to minute for grouping
+	if t, err := time.Parse(time.RFC3339, *dateAcquired); err == nil {
+		// Group by minute to catch related trades
+		return t.Truncate(time.Minute).Format("2006-01-02 15:04")
+	}
+	
+	return *dateAcquired
+}
+
+// detectAndCreateStrategy analyzes a group of positions and creates the appropriate strategy
+func (bp *BaseProviderImpl) detectAndCreateStrategy(positions []*models.Position, timeKey string) *models.Strategy {
+	if len(positions) == 0 {
+		return models.NewStrategy("Unknown Strategy")
+	}
+	
+	// Convert positions to legs
+	legs := make([]models.PositionLeg, len(positions))
+	for i, position := range positions {
+		legs[i] = bp.convertPositionToLeg(position)
+	}
+	
+	// Detect strategy type based on the positions
+	strategyName := bp.detectMultiLegStrategy(positions)
+	strategy := models.NewStrategy(strategyName)
+	
+	// Add all legs to the strategy
+	for _, leg := range legs {
+		strategy.AddLeg(leg)
+	}
+	
+	// Set strategy-level properties
+	strategy.DateAcquired = &timeKey
+	
+	// Calculate total quantity and cost basis
+	totalQty := 0.0
+	totalCostBasis := 0.0
+	for _, leg := range legs {
+		totalQty += leg.Qty
+		totalCostBasis += leg.CostBasis
+	}
+	strategy.TotalQty = totalQty
+	strategy.CostBasis = totalCostBasis
+	
+	return strategy
+}
+
+// detectMultiLegStrategy detects the strategy type for multiple positions
+func (bp *BaseProviderImpl) detectMultiLegStrategy(positions []*models.Position) string {
+	if len(positions) == 1 {
+		return bp.detectStrategy(positions[0])
+	}
+	
+	// Separate calls and puts
+	calls := []*models.Position{}
+	puts := []*models.Position{}
+	stocks := []*models.Position{}
+	
+	for _, pos := range positions {
+		if pos.AssetClass != "us_option" {
+			stocks = append(stocks, pos)
+		} else {
+			// Try to get option type from the field first, then extract from symbol
+			optionType := ""
+			if pos.OptionType != nil && *pos.OptionType != "" {
+				optionType = *pos.OptionType
+			} else {
+				// Extract option type from symbol (C or P in the symbol)
+				optionType = bp.extractOptionTypeFromSymbol(pos.Symbol)
+			}
+			
+			if optionType == "call" {
+				calls = append(calls, pos)
+			} else if optionType == "put" {
+				puts = append(puts, pos)
+			}
+		}
+	}
+	
+	bp.LogInfo(fmt.Sprintf("Strategy detection: %d calls, %d puts, %d stocks", len(calls), len(puts), len(stocks)))
+	
+	// Detect spreads
+	if len(calls) == 2 && len(puts) == 0 {
+		strategyName := bp.detectCallSpread(calls)
+		bp.LogInfo(fmt.Sprintf("Detected call spread: %s", strategyName))
+		return strategyName
+	}
+	
+	if len(puts) == 2 && len(calls) == 0 {
+		strategyName := bp.detectPutSpread(puts)
+		bp.LogInfo(fmt.Sprintf("Detected put spread: %s", strategyName))
+		return strategyName
+	}
+	
+	if len(calls) == 1 && len(puts) == 1 {
+		return bp.detectStraddleOrStrangle(calls[0], puts[0])
+	}
+	
+	if len(calls) == 2 && len(puts) == 2 {
+		return "Iron Condor"
+	}
+	
+	if len(stocks) > 0 && (len(calls) > 0 || len(puts) > 0) {
+		return "Covered Position"
+	}
+	
+	bp.LogInfo("Falling back to Multi-Leg Strategy")
+	return "Multi-Leg Strategy"
+}
+
+// detectCallSpread detects call spread type
+func (bp *BaseProviderImpl) detectCallSpread(calls []*models.Position) string {
+	if len(calls) != 2 {
+		return "Call Spread"
+	}
+	
+	// Determine if it's a debit or credit spread based on quantities
+	pos1, pos2 := calls[0], calls[1]
+	
+	// Credit spread: sell higher strike, buy lower strike
+	// Debit spread: buy lower strike, sell higher strike
+	if (pos1.Qty > 0 && pos2.Qty < 0) || (pos1.Qty < 0 && pos2.Qty > 0) {
+		// One long, one short - it's a spread
+		if pos1.Qty < 0 || pos2.Qty < 0 {
+			return "Call Credit Spread"
+		}
+		return "Call Debit Spread"
+	}
+	
+	return "Call Spread"
+}
+
+// detectPutSpread detects put spread type
+func (bp *BaseProviderImpl) detectPutSpread(puts []*models.Position) string {
+	if len(puts) != 2 {
+		return "Put Spread"
+	}
+	
+	// Determine if it's a debit or credit spread based on quantities
+	pos1, pos2 := puts[0], puts[1]
+	
+	// Credit spread: sell higher strike, buy lower strike
+	// Debit spread: buy higher strike, sell lower strike
+	if (pos1.Qty > 0 && pos2.Qty < 0) || (pos1.Qty < 0 && pos2.Qty > 0) {
+		// One long, one short - it's a spread
+		if pos1.Qty < 0 || pos2.Qty < 0 {
+			return "Put Credit Spread"
+		}
+		return "Put Debit Spread"
+	}
+	
+	return "Put Spread"
+}
+
+// detectStraddleOrStrangle detects straddle or strangle
+func (bp *BaseProviderImpl) detectStraddleOrStrangle(call, put *models.Position) string {
+	// Check if strikes are the same (straddle) or different (strangle)
+	if call.StrikePrice != nil && put.StrikePrice != nil {
+		if *call.StrikePrice == *put.StrikePrice {
+			if call.Qty > 0 && put.Qty > 0 {
+				return "Long Straddle"
+			}
+			return "Short Straddle"
+		} else {
+			if call.Qty > 0 && put.Qty > 0 {
+				return "Long Strangle"
+			}
+			return "Short Strangle"
+		}
+	}
+	
+	return "Straddle/Strangle"
+}
+
+// extractOptionTypeFromSymbol extracts option type (call/put) from option symbol
+func (bp *BaseProviderImpl) extractOptionTypeFromSymbol(symbol string) string {
+	// Option symbol format: [UNDERLYING][YYMMDD][C/P][STRIKE:8]
+	// Look for 'C' or 'P' in the symbol
+	if strings.Contains(symbol, "C") {
+		// Find the position of 'C' - it should be after the date part
+		for i := len(symbol) - 9; i >= 0; i-- { // Start from position where C/P should be
+			if symbol[i] == 'C' {
+				// Verify this is the option type indicator by checking if followed by 8 digits
+				if i+9 == len(symbol) {
+					return "call"
+				}
+			}
+		}
+	}
+	
+	if strings.Contains(symbol, "P") {
+		// Find the position of 'P' - it should be after the date part
+		for i := len(symbol) - 9; i >= 0; i-- { // Start from position where C/P should be
+			if symbol[i] == 'P' {
+				// Verify this is the option type indicator by checking if followed by 8 digits
+				if i+9 == len(symbol) {
+					return "put"
+				}
+			}
+		}
+	}
+	
+	return ""
 }
 
 // Helper method to check if a symbol is an option symbol

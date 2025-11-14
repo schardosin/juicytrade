@@ -221,25 +221,35 @@ func main() {
 	})
 	
 	router.GET("/positions", func(c *gin.Context) {
-		positions, err := providerManager.GetPositions(c.Request.Context())
+		enhancedPositions, err := providerManager.GetPositionsEnhanced(c.Request.Context())
 		if err != nil {
 			c.JSON(500, gin.H{
-				"success": false,
-				"message": err.Error(),
+				"success":   false,
+				"data":      nil,
+				"error":     err.Error(),
+				"message":   err.Error(),
+				"timestamp": time.Now().Format(time.RFC3339),
 			})
 			return
 		}
 		
-		responseData := map[string]interface{}{
-			"positions":       positions,
-			"total_positions": len(positions),
-			"enhanced":        false,
+		if enhancedPositions == nil {
+			c.JSON(404, gin.H{
+				"success":   false,
+				"data":      nil,
+				"error":     "Enhanced positions not available",
+				"message":   "Enhanced positions not available",
+				"timestamp": time.Now().Format(time.RFC3339),
+			})
+			return
 		}
 		
 		c.JSON(200, gin.H{
-			"success": true,
-			"data":    responseData,
-			"message": fmt.Sprintf("Retrieved %d positions", len(positions)),
+			"success":   true,
+			"data":      enhancedPositions,
+			"error":     nil,
+			"message":   fmt.Sprintf("Retrieved %d symbol groups with hierarchical structure", len(enhancedPositions.SymbolGroups)),
+			"timestamp": time.Now().Format(time.RFC3339),
 		})
 	})
 	

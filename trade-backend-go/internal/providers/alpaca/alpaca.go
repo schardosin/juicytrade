@@ -386,6 +386,17 @@ func (ap *AlpacaProvider) GetPositions(ctx context.Context) ([]*models.Position,
 	return nil, fmt.Errorf("not implemented yet")
 }
 
+func (ap *AlpacaProvider) GetPositionsEnhanced(ctx context.Context) (*models.EnhancedPositionsResponse, error) {
+	// Get current positions
+	positions, err := ap.GetPositions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Convert to enhanced format using base provider logic
+	return ap.ConvertPositionsToEnhanced(positions), nil
+}
+
 func (ap *AlpacaProvider) GetOrders(ctx context.Context, status string) ([]*models.Order, error) {
 	return nil, fmt.Errorf("not implemented yet")
 }

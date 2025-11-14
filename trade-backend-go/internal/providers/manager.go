@@ -296,6 +296,17 @@ func (pm *ProviderManager) GetPositions(ctx context.Context) ([]*models.Position
 	return provider.GetPositions(ctx)
 }
 
+// GetPositionsEnhanced gets enhanced positions with hierarchical grouping.
+// Exact conversion of Python get_positions_enhanced method.
+func (pm *ProviderManager) GetPositionsEnhanced(ctx context.Context) (*models.EnhancedPositionsResponse, error) {
+	provider := pm.getProvider("trade_account")
+	if provider == nil {
+		return nil, fmt.Errorf("no provider configured for trade_account")
+	}
+	
+	return provider.GetPositionsEnhanced(ctx)
+}
+
 // GetOrders gets account orders.
 // Exact conversion of Python get_orders method.
 func (pm *ProviderManager) GetOrders(ctx context.Context, status string) ([]*models.Order, error) {

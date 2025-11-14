@@ -18,6 +18,7 @@ import (
 // TradierProvider implements the Provider interface for Tradier Brokerage API.
 // Exact conversion of Python TradierProvider class.
 type TradierProvider struct {
+	*base.BaseProviderImpl
 	accountID string
 	apiKey    string
 	baseURL   string
@@ -29,11 +30,12 @@ type TradierProvider struct {
 // Exact conversion of Python TradierProvider.__init__ method.
 func NewTradierProvider(accountID, apiKey, baseURL, streamURL string) *TradierProvider {
 	return &TradierProvider{
-		accountID: accountID,
-		apiKey:    apiKey,
-		baseURL:   baseURL,
-		streamURL: streamURL,
-		client:    utils.NewHTTPClient(),
+		BaseProviderImpl: base.NewBaseProvider("Tradier"),
+		accountID:        accountID,
+		apiKey:           apiKey,
+		baseURL:          baseURL,
+		streamURL:        streamURL,
+		client:           utils.NewHTTPClient(),
 	}
 }
 
@@ -545,6 +547,26 @@ func (t *TradierProvider) GetPositions(ctx context.Context) ([]*models.Position,
 	}
 	
 	return result, nil
+}
+
+// GetPositionsEnhanced gets enhanced positions grouped by underlying symbol and strategy.
+// Exact conversion of Python get_positions_enhanced method.
+func (t *TradierProvider) GetPositionsEnhanced(ctx context.Context) (*models.EnhancedPositionsResponse, error) {
+	slog.Debug("Tradier: Getting enhanced positions...")
+
+	// 1. Get current positions
+	currentPositions, err := t.GetPositions(ctx)
+	if err != nil {
+		return models.NewEnhancedPositionsResponse(), nil
+	}
+
+	if len(currentPositions) == 0 {
+		slog.Info("Tradier: No current positions found")
+		return models.NewEnhancedPositionsResponse(), nil
+	}
+
+	// 2. Use base provider's conversion logic
+	return t.BaseProviderImpl.ConvertPositionsToEnhanced(currentPositions), nil
 }
 
 // transformPosition transforms Tradier position to our standard model.
