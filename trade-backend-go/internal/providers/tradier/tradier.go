@@ -1122,6 +1122,294 @@ func (t *TradierProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[
 	return nil, fmt.Errorf("failed to place multi-leg order")
 }
 
+// PreviewOrder previews an order without placing it.
+// Exact conversion of Python preview_order method.
+func (t *TradierProvider) PreviewOrder(ctx context.Context, orderData map[string]interface{}) (map[string]interface{}, error) {
+	slog.Info("🔍 Tradier: PreviewOrder called", "orderData", orderData)
+	
+	endpoint := fmt.Sprintf("%s/v1/accounts/%s/orders", t.baseURL, t.accountID)
+	headers := map[string]string{
+		"Authorization": fmt.Sprintf("Bearer %s", t.apiKey),
+		"Accept":        "application/json",
+	}
+
+	// Determine if this is an equity order or options order
+	legs, _ := orderData["legs"].([]interface{})
+	symbol, _ := orderData["symbol"].(string)
+	side, _ := orderData["side"].(string)
+	
+	slog.Info("🔍 Tradier: Processing preview", "legs", len(legs), "symbol", symbol, "side", side)
+	
+	var payload map[string]string
+	
+	// Check if this is a simple equity order
+	if symbol != "" && side != "" && (len(legs) == 0) && !t.isOptionSymbol(symbol) {
+		// Single equity order preview
+		orderSide := side
+		if side == "sell" {
+			if isShortSell, ok := orderData["is_short_sell"].(bool); ok && isShortSell {
+				orderSide = "sell_short"
+			}
+		}
+		
+				payload = map[string]string{
+					"class":    "equity",
+					"symbol":   symbol,
+					"side":     orderSide,
+					"quantity": fmt.Sprintf("%.0f", getQuantity(orderData)),
+					"type":     getString(orderData, "order_type"),
+					"duration": getString(orderData, "time_in_force"),
+					"preview":  "true",
+				}
+
+		// Add price parameters based on order type
+		orderType := getString(orderData, "order_type")
+		if orderType == "limit" || orderType == "stop_limit" {
+			if limitPrice := getFloat(orderData, "limit_price"); limitPrice != 0 {
+				payload["price"] = fmt.Sprintf("%.2f", limitPrice)
+			}
+		}
+		if orderType == "stop" || orderType == "stop_limit" {
+			if stopPrice := getFloat(orderData, "stop_price"); stopPrice != 0 {
+				payload["stop"] = fmt.Sprintf("%.2f", stopPrice)
+			}
+		}
+	} else if len(legs) == 1 {
+		// Single-leg option order preview
+		leg := legs[0].(map[string]interface{})
+		legSymbol := getString(leg, "symbol")
+		
+		if t.isOptionSymbol(legSymbol) {
+			// Option order
+			parsed := t.parseOptionSymbol(legSymbol)
+			if parsed == nil {
+				return map[string]interface{}{
+					"status":             "error",
+					"validation_errors":  []string{fmt.Sprintf("Invalid option symbol: %s", legSymbol)},
+					"commission":         0,
+					"cost":              0,
+					"fees":              0,
+					"order_cost":        0,
+					"margin_change":     0,
+					"buying_power_effect": 0,
+					"day_trades":        0,
+					"estimated_total":   0,
+				}, nil
+			}
+
+			payload = map[string]string{
+				"class":         "option",
+				"symbol":        parsed.Underlying,
+				"option_symbol": legSymbol,
+				"side":          getString(leg, "side"),
+				"quantity":      fmt.Sprintf("%.0f", getFloat(leg, "qty")),
+				"type":          getString(orderData, "order_type"),
+				"duration":      getString(orderData, "time_in_force"),
+				"preview":       "true",
+			}
+
+			if limitPrice := getFloat(orderData, "limit_price"); limitPrice != 0 {
+				payload["price"] = fmt.Sprintf("%.2f", abs(limitPrice))
+			}
+		} else {
+			// Single equity order from legs format
+			legSide := getString(leg, "side")
+			if legSide == "sell" {
+				if isShortSell, ok := orderData["is_short_sell"].(bool); ok && isShortSell {
+					legSide = "sell_short"
+				}
+			}
+			
+			payload = map[string]string{
+				"class":    "equity",
+				"symbol":   legSymbol,
+				"side":     legSide,
+				"quantity": fmt.Sprintf("%.0f", getFloat(leg, "qty")),
+				"type":     getString(orderData, "order_type"),
+				"duration": getString(orderData, "time_in_force"),
+				"preview":  "true",
+			}
+
+			// Add price parameters based on order type
+			orderType := getString(orderData, "order_type")
+			if orderType == "limit" || orderType == "stop_limit" {
+				if limitPrice := getFloat(orderData, "limit_price"); limitPrice != 0 {
+					payload["price"] = fmt.Sprintf("%.2f", limitPrice)
+				}
+			}
+			if orderType == "stop" || orderType == "stop_limit" {
+				if stopPrice := getFloat(orderData, "stop_price"); stopPrice != 0 {
+					payload["stop"] = fmt.Sprintf("%.2f", stopPrice)
+				}
+			}
+		}
+	} else {
+		// Multi-leg option order preview
+		if len(legs) == 0 {
+			return map[string]interface{}{
+				"status":             "error",
+				"validation_errors":  []string{"No legs provided for multi-leg order"},
+				"commission":         0,
+				"cost":              0,
+				"fees":              0,
+				"order_cost":        0,
+				"margin_change":     0,
+				"buying_power_effect": 0,
+				"day_trades":        0,
+				"estimated_total":   0,
+			}, nil
+		}
+		
+		firstLeg := legs[0].(map[string]interface{})
+		firstSymbol := getString(firstLeg, "symbol")
+		parsed := t.parseOptionSymbol(firstSymbol)
+		if parsed == nil {
+			return map[string]interface{}{
+				"status":             "error",
+				"validation_errors":  []string{fmt.Sprintf("Invalid option symbol in first leg: %s", firstSymbol)},
+				"commission":         0,
+				"cost":              0,
+				"fees":              0,
+				"order_cost":        0,
+				"margin_change":     0,
+				"buying_power_effect": 0,
+				"day_trades":        0,
+				"estimated_total":   0,
+			}, nil
+		}
+		
+		limitPrice := getFloat(orderData, "limit_price")
+		orderType := "debit"
+		if limitPrice < 0 {
+			orderType = "credit"
+		}
+
+		payload = map[string]string{
+			"class":    "multileg",
+			"symbol":   parsed.Underlying,
+			"type":     orderType,
+			"duration": getString(orderData, "time_in_force"),
+			"price":    fmt.Sprintf("%.2f", abs(limitPrice)),
+			"preview":  "true",
+		}
+
+		for i, leg := range legs {
+			legMap := leg.(map[string]interface{})
+			payload[fmt.Sprintf("option_symbol[%d]", i)] = getString(legMap, "symbol")
+			payload[fmt.Sprintf("side[%d]", i)] = strings.ToLower(getString(legMap, "side"))
+			payload[fmt.Sprintf("quantity[%d]", i)] = fmt.Sprintf("%.0f", getFloat(legMap, "qty"))
+		}
+	}
+
+	slog.Info("🔍 Tradier: Previewing order with payload", "payload", payload)
+
+	resp, err := t.client.PostForm(ctx, endpoint, headers, payload)
+	if err != nil {
+		slog.Error("❌ Tradier: preview_order failed", "error", err)
+		return map[string]interface{}{
+			"status":             "error",
+			"validation_errors":  []string{fmt.Sprintf("Preview failed: %s", err.Error())},
+			"commission":         0,
+			"cost":              0,
+			"fees":              0,
+			"order_cost":        0,
+			"margin_change":     0,
+			"buying_power_effect": 0,
+			"day_trades":        0,
+			"estimated_total":   0,
+		}, nil
+	}
+
+	var response struct {
+		Order  map[string]interface{} `json:"order"`
+		Errors interface{}            `json:"errors"`
+	}
+
+	if err := json.Unmarshal(resp, &response); err != nil {
+		return map[string]interface{}{
+			"status":             "error",
+			"validation_errors":  []string{fmt.Sprintf("Failed to parse preview response: %s", err.Error())},
+			"commission":         0,
+			"cost":              0,
+			"fees":              0,
+			"order_cost":        0,
+			"margin_change":     0,
+			"buying_power_effect": 0,
+			"day_trades":        0,
+			"estimated_total":   0,
+		}, nil
+	}
+
+	slog.Info("📊 Tradier: Preview response", "response", response)
+
+	// Extract preview data
+	orderPreview := response.Order
+	if status, ok := orderPreview["status"].(string); ok && status == "ok" {
+		// For equity orders, order_cost is the actual cost, not in cents
+		orderCost := getFloat(orderPreview, "order_cost")
+		
+		// For equity orders, don't divide by 100 (that's for options)
+		finalOrderCost := orderCost
+		if payload["class"] != "equity" {
+			finalOrderCost = orderCost / 100
+		}
+
+		commission := getFloat(orderPreview, "commission")
+		cost := getFloat(orderPreview, "cost")
+		fees := getFloat(orderPreview, "fees")
+		marginChange := getFloat(orderPreview, "margin_change")
+		dayTrades := int(getFloat(orderPreview, "day_trades"))
+		estimatedTotal := finalOrderCost + commission + fees
+
+		return map[string]interface{}{
+			"status":             "ok",
+			"preview_not_available": false,
+			"commission":         commission,
+			"cost":              cost,
+			"fees":              fees,
+			"order_cost":        finalOrderCost,
+			"margin_change":     marginChange,
+			"buying_power_effect": cost,
+			"day_trades":        dayTrades,
+			"validation_errors":  []string{},
+			"estimated_total":   estimatedTotal,
+		}, nil
+	} else {
+		errorMsg := "Unknown error"
+		if response.Errors != nil {
+			switch errors := response.Errors.(type) {
+			case map[string]interface{}:
+				if errStr, ok := errors["error"].(string); ok {
+					errorMsg = errStr
+				}
+			case []interface{}:
+				var errStrs []string
+				for _, err := range errors {
+					if errStr, ok := err.(string); ok {
+						errStrs = append(errStrs, errStr)
+					}
+				}
+				if len(errStrs) > 0 {
+					errorMsg = strings.Join(errStrs, ", ")
+				}
+			}
+		}
+		
+		return map[string]interface{}{
+			"status":             "error",
+			"validation_errors":  []string{errorMsg},
+			"commission":         0,
+			"cost":              0,
+			"fees":              0,
+			"order_cost":        0,
+			"margin_change":     0,
+			"buying_power_effect": 0,
+			"day_trades":        0,
+			"estimated_total":   0,
+		}, nil
+	}
+}
+
 // CancelOrder cancels an existing order.
 // Exact conversion of Python cancel_order method.
 func (t *TradierProvider) CancelOrder(ctx context.Context, orderID string) (bool, error) {
@@ -1674,9 +1962,57 @@ func getFloatPtr(data map[string]interface{}, key string) *float64 {
 	return nil
 }
 
+func getQuantity(data map[string]interface{}) float64 {
+	// Try "qty" first (Python uses this)
+	if val, ok := data["qty"].(float64); ok {
+		return val
+	}
+	if val, ok := data["qty"].(int); ok {
+		return float64(val)
+	}
+	
+	// Try "quantity" as fallback (frontend sends this)
+	if val, ok := data["quantity"].(float64); ok {
+		return val
+	}
+	if val, ok := data["quantity"].(int); ok {
+		return float64(val)
+	}
+	
+	// Try to parse from string
+	if val, ok := data["qty"].(string); ok {
+		if parsed, err := strconv.ParseFloat(val, 64); err == nil {
+			return parsed
+		}
+	}
+	if val, ok := data["quantity"].(string); ok {
+		if parsed, err := strconv.ParseFloat(val, 64); err == nil {
+			return parsed
+		}
+	}
+	
+	return 0
+}
+
 func getFloat(data map[string]interface{}, key string) float64 {
 	if val, ok := data[key].(float64); ok {
 		return val
+	}
+	// Try to convert from other numeric types
+	if val, ok := data[key].(int); ok {
+		return float64(val)
+	}
+	if val, ok := data[key].(int64); ok {
+		return float64(val)
+	}
+	if val, ok := data[key].(float32); ok {
+		return float64(val)
+	}
+	// Try to parse from string
+	if val, ok := data[key].(string); ok {
+		if parsed, err := strconv.ParseFloat(val, 64); err == nil {
+			return parsed
+		}
 	}
 	return 0
 }

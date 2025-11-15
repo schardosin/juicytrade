@@ -171,7 +171,7 @@
             <!-- Preview Error Message -->
             <div v-if="hasPreviewError" class="preview-error-message">
               <p><strong>⚠️ Order Preview Failed</strong></p>
-              <p v-if="effectivePreviewData && effectivePreviewData.validation_errors">{{ effectivePreviewData.validation_errors[0] }}</p>
+              <p v-if="effectivePreviewData && effectivePreviewData.data && effectivePreviewData.data.validation_errors && effectivePreviewData.data.validation_errors.length > 0">{{ effectivePreviewData.data.validation_errors[0] }}</p>
               <p v-else-if="effectivePreviewError">{{ effectivePreviewError }}</p>
               <p v-else>An unknown error occurred during the preview.</p>
             </div>
@@ -357,6 +357,7 @@ export default {
           console.log("Order preview successful:", result.preview);
         } else {
           previewError.value = result.message || "Preview failed";
+          previewData.value = result.preview; // Keep preview data to access validation_errors
           console.error("Order preview failed:", result.error);
         }
       } catch (error) {

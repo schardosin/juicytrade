@@ -351,6 +351,17 @@ func (pm *ProviderManager) PlaceMultiLegOrder(ctx context.Context, orderData map
 	return provider.PlaceMultiLegOrder(ctx, orderData)
 }
 
+// PreviewOrder previews a trading order to get cost estimates and validation.
+// Exact conversion of Python preview_order method.
+func (pm *ProviderManager) PreviewOrder(ctx context.Context, orderData map[string]interface{}) (map[string]interface{}, error) {
+	provider := pm.getProvider("trade_account")
+	if provider == nil {
+		return nil, fmt.Errorf("no provider configured for trade_account")
+	}
+	
+	return provider.PreviewOrder(ctx, orderData)
+}
+
 // CancelOrder cancels a trading order.
 // Exact conversion of Python cancel_order method.
 func (pm *ProviderManager) CancelOrder(ctx context.Context, orderID string) (bool, error) {

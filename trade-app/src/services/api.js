@@ -350,6 +350,14 @@ export const api = {
       return response.data;
     } catch (error) {
       console.error("Error previewing order:", error);
+      
+      // If the error has a response (e.g., 422 with validation errors), 
+      // return the response data so validation errors can be displayed
+      if (error.response && error.response.data) {
+        return error.response.data;
+      }
+      
+      // For network errors or other issues without response data
       throw error;
     }
   },

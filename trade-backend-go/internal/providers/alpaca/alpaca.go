@@ -517,6 +517,24 @@ func (ap *AlpacaProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[
 	return nil, fmt.Errorf("not implemented yet")
 }
 
+func (ap *AlpacaProvider) PreviewOrder(ctx context.Context, orderData map[string]interface{}) (map[string]interface{}, error) {
+	// Alpaca provider preview order stub implementation
+	// Exact conversion of Python preview_order method stub
+	ap.LogError("preview_order", fmt.Errorf("not implemented yet"))
+	return map[string]interface{}{
+		"status":             "error",
+		"validation_errors":  []string{"Order preview not implemented for Alpaca provider"},
+		"commission":         0.0,
+		"cost":              0.0,
+		"fees":              0.0,
+		"order_cost":        0.0,
+		"margin_change":     0.0,
+		"buying_power_effect": 0.0,
+		"day_trades":        0,
+		"estimated_total":   0.0,
+	}, nil
+}
+
 func (ap *AlpacaProvider) CancelOrder(ctx context.Context, orderID string) (bool, error) {
 	return false, fmt.Errorf("not implemented yet")
 }

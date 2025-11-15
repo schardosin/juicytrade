@@ -367,6 +367,51 @@ func main() {
 		})
 	})
 	
+	router.POST("/orders/preview", func(c *gin.Context) {
+		var orderRequest map[string]interface{}
+		if err := c.ShouldBindJSON(&orderRequest); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid order preview request: " + err.Error(),
+			})
+			return
+		}
+		
+		previewResult, err := providerManager.PreviewOrder(c.Request.Context(), orderRequest)
+		if err != nil {
+			c.JSON(500, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		if previewResult == nil {
+			c.JSON(500, gin.H{
+				"success": false,
+				"message": "Failed to preview order",
+			})
+			return
+		}
+		
+		// Check if the preview result indicates an error status
+		if status, ok := previewResult["status"].(string); ok && status == "error" {
+			// Return 422 for validation errors (same as Python implementation)
+			c.JSON(422, gin.H{
+				"success": false,
+				"data":    previewResult,
+				"message": "Order validation failed",
+			})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    previewResult,
+			"message": "Order preview completed successfully.",
+		})
+	})
+	
 	router.DELETE("/orders/:order_id", func(c *gin.Context) {
 		orderID := c.Param("order_id")
 		if orderID == "" {

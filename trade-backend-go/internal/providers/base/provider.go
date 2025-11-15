@@ -79,6 +79,10 @@ type Provider interface {
 	// Exact conversion of Python place_multi_leg_order method.
 	PlaceMultiLegOrder(ctx context.Context, orderData map[string]interface{}) (*models.Order, error)
 	
+	// PreviewOrder previews a trading order to get cost estimates and validation.
+	// Exact conversion of Python preview_order method.
+	PreviewOrder(ctx context.Context, orderData map[string]interface{}) (map[string]interface{}, error)
+	
 	// CancelOrder cancels an existing order.
 	// Exact conversion of Python cancel_order method.
 	CancelOrder(ctx context.Context, orderID string) (bool, error)
