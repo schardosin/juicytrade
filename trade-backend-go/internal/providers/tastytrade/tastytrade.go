@@ -179,7 +179,14 @@ func (p *TastyTradeProvider) makeAuthenticatedRequest(ctx context.Context, metho
 		return nil, fmt.Errorf("unsupported HTTP method: %s", method)
 	}
 
+	// If an error occurred but we have a response (HTTP >= 400), return the body as well
 	if err != nil {
+		if response != nil {
+			slog.Debug("TastyTrade: makeAuthenticatedRequest returning response body with error", "statusCode", response.StatusCode, "bodyLength", len(response.Body), "error", err)
+			// Return the response body so callers (like PreviewOrder) can parse validation/error details.
+			return response.Body, fmt.Errorf("HTTP %d: %s", response.StatusCode, string(response.Body))
+		}
+		slog.Debug("TastyTrade: makeAuthenticatedRequest returning nil body with error", "error", err)
 		return nil, err
 	}
 
@@ -2449,111 +2456,467 @@ func (p *TastyTradeProvider) HealthCheck(ctx context.Context) (map[string]interf
 	return result, nil
 }
 
-// PreviewOrder previews a multi-leg trading order using the dry-run endpoint.
-// Exact conversion of Python preview_order method.
-func (p *TastyTradeProvider) PreviewOrder(ctx context.Context, orderData map[string]interface{}) (map[string]interface{}, error) {
-	if err := p.ensureValidSession(ctx); err != nil {
-		return nil, fmt.Errorf("failed to authenticate with TastyTrade: %w", err)
-	}
+ // PreviewOrder previews a multi-leg trading order using the dry-run endpoint.
+ // Exact conversion of Python preview_order method.
+ func (p *TastyTradeProvider) PreviewOrder(ctx context.Context, orderData map[string]interface{}) (map[string]interface{}, error) {
+ 	if err := p.ensureValidSession(ctx); err != nil {
+ 		return nil, fmt.Errorf("failed to authenticate with TastyTrade: %w", err)
+ 	}
+ 
+ 	// Use the multi-leg transformation like Python does
+ 	tastytradeOrder := p.transformToTastyTradeMultiLegOrder(orderData)
+ 	
+ 	slog.Debug("TastyTrade: Sending dry-run payload", "payload", tastytradeOrder)
+ 	
+ 	endpoint := fmt.Sprintf("/accounts/%s/orders/dry-run", p.accountID)
+ 	responseBytes, err := p.makeAuthenticatedRequest(ctx, "POST", endpoint, tastytradeOrder)
 
-	tastytradeOrder := p.transformToTastyTradeOrder(orderData)
-	
-	slog.Debug("TastyTrade: Sending dry-run payload", "payload", tastytradeOrder)
-	
-	endpoint := fmt.Sprintf("/accounts/%s/orders/dry-run", p.accountID)
-	responseBytes, err := p.makeAuthenticatedRequest(ctx, "POST", endpoint, tastytradeOrder)
+	// TEMPORARY: Log exact response for debugging
+	slog.Info("=== TastyTrade PreviewOrder Raw Response Debug ===")
+	slog.Info("TastyTrade: PreviewOrder response", "responseBytes", responseBytes != nil, "responseLength", len(responseBytes), "error", err)
+	if responseBytes != nil {
+		slog.Info("TastyTrade: Raw response body", "body", string(responseBytes))
+	}
 	if err != nil {
-		// Handle 422 responses specially - they contain error details in the body
-		if strings.Contains(err.Error(), "422") {
+		slog.Info("TastyTrade: Error details", "error", err.Error(), "errorType", fmt.Sprintf("%T", err))
+	}
+	slog.Info("=== End Raw Response Debug ===")
+	
+	// Handle error responses specially - they contain error details in the body (matching Python logic)
+	if err != nil {
+		errStr := err.Error()
+		slog.Info("TastyTrade: Got error", "error", errStr, "hasResponseBytes", responseBytes != nil)
+		
+		// Extract JSON from error message if responseBytes is nil
+		var jsonData []byte
+		if responseBytes != nil {
+			jsonData = responseBytes
+			slog.Info("TastyTrade: Using response body", "bodyLength", len(responseBytes))
+		} else {
+			// Extract JSON from error string: "HTTP 422: {json...}"
+			if colonIndex := strings.Index(errStr, ": "); colonIndex != -1 {
+				jsonStr := errStr[colonIndex+2:]
+				jsonData = []byte(jsonStr)
+				slog.Info("TastyTrade: Extracted JSON from error string", "jsonLength", len(jsonData), "json", jsonStr)
+			}
+		}
+		
+		// Try to parse the JSON data regardless of error type to extract any error messages
+		if len(jsonData) == 0 {
+			slog.Warn("TastyTrade: No JSON data available to parse")
 			return map[string]interface{}{
-				"status":             "error",
-				"validation_errors":  []string{"Order validation failed"},
-				"commission":         0,
-				"cost":              0,
-				"fees":              0,
-				"order_cost":        0,
-				"margin_change":     0,
+				"status":              "error",
+				"validation_errors":   []string{"Error occurred but no response data available"},
+				"commission":          0,
+				"cost":                0,
+				"fees":                0,
+				"order_cost":          0,
+				"margin_change":       0,
 				"buying_power_effect": 0,
-				"day_trades":        0,
-				"estimated_total":   0,
+				"day_trades":          0,
+				"estimated_total":     0,
 			}, nil
 		}
-		return nil, fmt.Errorf("failed to preview order: %w", err)
-	}
-
-	var response map[string]interface{}
-	if err := json.Unmarshal(responseBytes, &response); err != nil {
-		return nil, fmt.Errorf("failed to parse preview response: %w", err)
-	}
-
-	data, ok := response["data"].(map[string]interface{})
-	if !ok {
-		data = make(map[string]interface{})
-	}
-
-	errorData, hasError := response["error"].(map[string]interface{})
-	if hasError {
-		errorMessages := []string{}
-		if errorsArray, ok := errorData["errors"].([]interface{}); ok {
-			for _, errorItem := range errorsArray {
-				if errorMap, ok := errorItem.(map[string]interface{}); ok {
-					if message, ok := errorMap["message"].(string); ok && message != "" {
-						errorMessages = append(errorMessages, message)
+		
+		var response map[string]interface{}
+		if parseErr := json.Unmarshal(jsonData, &response); parseErr == nil {
+			slog.Info("TastyTrade: Successfully parsed error response", "response", response)
+			
+			// Try multiple ways to extract error messages
+			var errorMessages []string
+			
+			// Method 1: response.error.errors[].message (TastyTrade format)
+			if errData, hasError := response["error"].(map[string]interface{}); hasError {
+				slog.Info("TastyTrade: Found top-level error object", "errorData", errData)
+				if errorsArray, ok := errData["errors"].([]interface{}); ok {
+					slog.Info("TastyTrade: Found errors array", "errorsArray", errorsArray)
+					for _, errorItem := range errorsArray {
+						if errorMap, ok := errorItem.(map[string]interface{}); ok {
+							if message, ok := errorMap["message"].(string); ok && message != "" {
+								errorMessages = append(errorMessages, message)
+								slog.Info("TastyTrade: Extracted error message from errors array", "message", message)
+							}
+						}
 					}
 				}
-			}
-		}
-		
-		return map[string]interface{}{
-			"status":             "error",
-			"validation_errors":  errorMessages,
-			"commission":         0,
-			"cost":              0,
-			"fees":              0,
-			"order_cost":        0,
-			"margin_change":     0,
-			"buying_power_effect": 0,
-			"day_trades":        0,
-			"estimated_total":   0,
-		}, nil
-	}
-
-	// Check for warnings
-	if warnings, ok := data["warnings"].([]interface{}); ok && len(warnings) > 0 {
-		errorWarnings := []interface{}{}
-		for _, warning := range warnings {
-			if warningMap, ok := warning.(map[string]interface{}); ok {
-				if message, ok := warningMap["message"].(string); ok {
-					if message != "Your order will begin working during next valid session." {
-						errorWarnings = append(errorWarnings, warning)
-					}
-				}
-			}
-		}
-		
-		if len(errorWarnings) > 0 {
-			errorMessages := []string{}
-			for _, warning := range errorWarnings {
-				if warningMap, ok := warning.(map[string]interface{}); ok {
-					if message, ok := warningMap["message"].(string); ok {
+				// Also try direct message in error object
+				if len(errorMessages) == 0 {
+					if message, ok := errData["message"].(string); ok && message != "" {
 						errorMessages = append(errorMessages, message)
+						slog.Info("TastyTrade: Extracted error message from error.message", "message", message)
 					}
 				}
 			}
 			
+			// Method 2: response.data.errors[] (alternative format)
+			if len(errorMessages) == 0 {
+				if dataObj, ok := response["data"].(map[string]interface{}); ok {
+					if dataErrors, ok := dataObj["errors"].([]interface{}); ok {
+						slog.Info("TastyTrade: Found data.errors array", "dataErrors", dataErrors)
+						for _, errorItem := range dataErrors {
+							switch e := errorItem.(type) {
+							case string:
+								if e != "" {
+									errorMessages = append(errorMessages, e)
+									slog.Info("TastyTrade: Extracted error from data.errors string", "message", e)
+								}
+							case map[string]interface{}:
+								if message, ok := e["message"].(string); ok && message != "" {
+									errorMessages = append(errorMessages, message)
+									slog.Info("TastyTrade: Extracted error from data.errors.message", "message", message)
+								}
+							}
+						}
+					}
+				}
+			}
+			
+			// Method 3: Top-level message
+			if len(errorMessages) == 0 {
+				if message, ok := response["message"].(string); ok && message != "" {
+					errorMessages = append(errorMessages, message)
+					slog.Info("TastyTrade: Extracted error from top-level message", "message", message)
+				}
+			}
+			
+			if len(errorMessages) > 0 {
+				slog.Info("TastyTrade: Successfully extracted error messages", "messages", errorMessages)
+				return map[string]interface{}{
+					"status":              "error",
+					"validation_errors":   errorMessages,
+					"commission":          0,
+					"cost":                0,
+					"fees":                0,
+					"order_cost":          0,
+					"margin_change":       0,
+					"buying_power_effect": 0,
+					"day_trades":          0,
+					"estimated_total":     0,
+				}, nil
+			} else {
+				slog.Warn("TastyTrade: No error messages found in parsed response", "response", response)
+			}
+		} else {
+			slog.Error("TastyTrade: Error parsing error response JSON", "error", parseErr, "jsonData", string(jsonData))
+			// Return the raw data as error if we can't parse it
 			return map[string]interface{}{
-				"status":             "error",
-				"validation_errors":  errorMessages,
-				"commission":         0,
-				"cost":              0,
-				"fees":              0,
-				"order_cost":        0,
-				"margin_change":     0,
+				"status":              "error",
+				"validation_errors":   []string{fmt.Sprintf("API Error: %s", string(jsonData))},
+				"commission":          0,
+				"cost":                0,
+				"fees":                0,
+				"order_cost":          0,
+				"margin_change":       0,
 				"buying_power_effect": 0,
-				"day_trades":        0,
-				"estimated_total":   0,
+				"day_trades":          0,
+				"estimated_total":     0,
 			}, nil
 		}
+	}	// If we have a response body, attempt to parse it and decide based on its contents.
+	if responseBytes != nil {
+		slog.Debug("TastyTrade: Parsing response body", "body", string(responseBytes))
+		var response map[string]interface{}
+		if parseErr := json.Unmarshal(responseBytes, &response); parseErr == nil {
+			slog.Debug("TastyTrade: Successfully parsed response JSON", "response", response)
+			
+			// 1) Top-level "error" object -> gather messages and return as validation errors (like Tradier)
+			if errData, hasError := response["error"].(map[string]interface{}); hasError {
+				slog.Debug("TastyTrade: Found top-level error object", "error", errData)
+				errorMessages := []string{}
+				if errorsArray, ok := errData["errors"].([]interface{}); ok {
+					slog.Debug("TastyTrade: Found errors array", "errors", errorsArray)
+					for _, errorItem := range errorsArray {
+						if errorMap, ok := errorItem.(map[string]interface{}); ok {
+							if message, ok := errorMap["message"].(string); ok && message != "" {
+								errorMessages = append(errorMessages, message)
+								slog.Debug("TastyTrade: Extracted error message", "message", message)
+							}
+						}
+					}
+				}
+				if len(errorMessages) == 0 {
+					if message, ok := errData["message"].(string); ok && message != "" {
+						errorMessages = append(errorMessages, message)
+						slog.Debug("TastyTrade: Extracted error.message", "message", message)
+					}
+				}
+
+				if len(errorMessages) > 0 {
+					slog.Debug("TastyTrade: Returning error messages", "messages", errorMessages)
+					return map[string]interface{}{
+						"status":              "error",
+						"validation_errors":   errorMessages,
+						"commission":          0,
+						"cost":                0,
+						"fees":                0,
+						"order_cost":          0,
+						"margin_change":       0,
+						"buying_power_effect": 0,
+						"day_trades":          0,
+						"estimated_total":     0,
+					}, nil
+				}
+			}
+
+			// 2) Data object present: check for warnings/errors and for successful order preview
+			if dataObj, ok := response["data"].(map[string]interface{}); ok {
+				slog.Debug("TastyTrade: Found data object", "data", dataObj)
+				
+				// 2a) If "warnings" exist, filter out informational warnings like Python does
+				if warnings, ok := dataObj["warnings"].([]interface{}); ok && len(warnings) > 0 {
+					slog.Debug("TastyTrade: Found warnings", "warnings", warnings)
+					errorMessages := []string{}
+					for _, warning := range warnings {
+						if warningMap, ok := warning.(map[string]interface{}); ok {
+							if message, ok := warningMap["message"].(string); ok && message != "" {
+								// Filter out informational warnings (matching Python logic)
+								if message != "Your order will begin working during next valid session." {
+									errorMessages = append(errorMessages, message)
+									slog.Debug("TastyTrade: Extracted warning message", "message", message)
+								} else {
+									slog.Debug("TastyTrade: Filtered out informational warning", "message", message)
+								}
+							}
+						}
+					}
+					if len(errorMessages) > 0 {
+						slog.Debug("TastyTrade: Returning error warnings (filtered)", "messages", errorMessages)
+						return map[string]interface{}{
+							"status":              "error",
+							"validation_errors":   errorMessages,
+							"commission":          0,
+							"cost":                0,
+							"fees":                0,
+							"order_cost":          0,
+							"margin_change":       0,
+							"buying_power_effect": 0,
+							"day_trades":          0,
+							"estimated_total":     0,
+						}, nil
+					}
+				}
+
+				// 2b) If data.order.status indicates success, treat as success even if HTTP returned non-2xx.
+				if orderDataObj, ok := dataObj["order"].(map[string]interface{}); ok {
+					if statusStr, ok := orderDataObj["status"].(string); ok && strings.ToLower(statusStr) == "ok" {
+						slog.Debug("TastyTrade: Found successful order status, processing as success")
+						// Process successful preview and return result (ignore HTTP error if body contains usable success)
+						return p.processSuccessfulPreviewResponse(response)
+					}
+				}
+
+				// 2c) Some APIs may return validation details under data.errors - surface them too
+				if dataErrors, ok := dataObj["errors"].([]interface{}); ok && len(dataErrors) > 0 {
+					slog.Debug("TastyTrade: Found data.errors", "errors", dataErrors)
+					errorMessages := []string{}
+					for _, e := range dataErrors {
+						switch ev := e.(type) {
+						case string:
+							if ev != "" {
+								errorMessages = append(errorMessages, ev)
+								slog.Debug("TastyTrade: Extracted data.errors string", "message", ev)
+							}
+						case map[string]interface{}:
+							if msg, ok := ev["message"].(string); ok && msg != "" {
+								errorMessages = append(errorMessages, msg)
+								slog.Debug("TastyTrade: Extracted data.errors.message", "message", msg)
+							}
+						}
+					}
+					if len(errorMessages) > 0 {
+						slog.Debug("TastyTrade: Returning data.errors messages", "messages", errorMessages)
+						return map[string]interface{}{
+							"status":              "error",
+							"validation_errors":   errorMessages,
+							"commission":          0,
+							"cost":                0,
+							"fees":                0,
+							"order_cost":          0,
+							"margin_change":       0,
+							"buying_power_effect": 0,
+							"day_trades":          0,
+							"estimated_total":     0,
+						}, nil
+					}
+				}
+			}
+
+			// Check for top-level message as fallback
+			if message, ok := response["message"].(string); ok && message != "" {
+				slog.Debug("TastyTrade: Found top-level message", "message", message)
+				return map[string]interface{}{
+					"status":              "error",
+					"validation_errors":   []string{message},
+					"commission":          0,
+					"cost":                0,
+					"fees":                0,
+					"order_cost":          0,
+					"margin_change":       0,
+					"buying_power_effect": 0,
+					"day_trades":          0,
+					"estimated_total":     0,
+				}, nil
+			}
+
+			// 3) If parse succeeded and we didn't return above but there was no explicit success,
+			//    still attempt to treat this as a successful preview if the response shape includes enough info.
+			//    For safety, call processSuccessfulPreviewResponse if it can extract sensible values.
+			if res, procErr := p.processSuccessfulPreviewResponse(response); procErr == nil {
+				// If processSuccessfulPreviewResponse returned a status "ok", forward it
+				if status, ok := res["status"].(string); ok && strings.ToLower(status) == "ok" {
+					slog.Debug("TastyTrade: processSuccessfulPreviewResponse returned ok status")
+					return res, nil
+				}
+			}
+			
+			slog.Debug("TastyTrade: No specific error patterns found, response parsed but no actionable data")
+		} else {
+			slog.Error("TastyTrade: Failed to parse response JSON", "error", parseErr, "body", string(responseBytes))
+			// Parsing failed: surface parse error as validation error if we have an HTTP error (prefer not to return Go error so UI gets structured response)
+			if err != nil {
+				msg := fmt.Sprintf("Failed to parse preview response: %s", parseErr.Error())
+				return map[string]interface{}{
+					"status":              "error",
+					"validation_errors":   []string{msg},
+					"commission":          0,
+					"cost":                0,
+					"fees":                0,
+					"order_cost":          0,
+					"margin_change":       0,
+					"buying_power_effect": 0,
+					"day_trades":          0,
+					"estimated_total":     0,
+				}, nil
+			}
+		}
+	}
+ 
+	// If we reach here and there was an underlying transport/HTTP error with no parseable body,
+	// prefer extracting human-facing messages from the response body (if any) instead of returning raw err.Error().
+	if err != nil {
+		// Try to parse the response body if available and extract messages by precedence.
+		if responseBytes != nil {
+			var parsed map[string]interface{}
+			if perr := json.Unmarshal(responseBytes, &parsed); perr == nil {
+				msgs := []string{}
+
+				// 1) response["error"].errors[].message, then response["error"].message
+				if errObj, ok := parsed["error"].(map[string]interface{}); ok {
+					if errsArr, ok := errObj["errors"].([]interface{}); ok {
+						for _, ei := range errsArr {
+							if em, ok := ei.(map[string]interface{}); ok {
+								if m, ok := em["message"].(string); ok && m != "" {
+									msgs = append(msgs, m)
+								}
+							}
+						}
+					}
+					if len(msgs) == 0 {
+						if m, ok := errObj["message"].(string); ok && m != "" {
+							msgs = append(msgs, m)
+						}
+					}
+				}
+
+				// 2) response["data"].warnings[].message (filter out informational warnings)
+				if len(msgs) == 0 {
+					if dataObj, ok := parsed["data"].(map[string]interface{}); ok {
+						if warnings, ok := dataObj["warnings"].([]interface{}); ok && len(warnings) > 0 {
+							for _, w := range warnings {
+								if wm, ok := w.(map[string]interface{}); ok {
+									if m, ok := wm["message"].(string); ok && m != "" {
+										// Filter out informational warnings (matching Python logic)
+										if m != "Your order will begin working during next valid session." {
+											msgs = append(msgs, m)
+										}
+									}
+							}
+							}
+						}
+					}
+				}
+
+				// 3) response["data"].errors (strings or objects with "message")
+				if len(msgs) == 0 {
+					if dataObj, ok := parsed["data"].(map[string]interface{}); ok {
+						if dataErrors, ok := dataObj["errors"].([]interface{}); ok && len(dataErrors) > 0 {
+							for _, de := range dataErrors {
+								switch dv := de.(type) {
+								case string:
+									if dv != "" {
+										msgs = append(msgs, dv)
+									}
+								case map[string]interface{}:
+									if m, ok := dv["message"].(string); ok && m != "" {
+										msgs = append(msgs, m)
+									}
+								}
+							}
+						}
+					}
+				}
+
+				// 4) fallback response["message"]
+				if len(msgs) == 0 {
+					if m, ok := parsed["message"].(string); ok && m != "" {
+						msgs = append(msgs, m)
+					}
+				}
+
+				// If we extracted any human-facing messages, return them (numeric preview fields zeroed).
+				if len(msgs) > 0 {
+					return map[string]interface{}{
+						"status":              "error",
+						"validation_errors":   msgs,
+						"commission":          0,
+						"cost":                0,
+						"fees":                0,
+						"order_cost":          0,
+						"margin_change":       0,
+						"buying_power_effect": 0,
+						"day_trades":          0,
+						"estimated_total":     0,
+					}, nil
+				}
+			}
+		}
+
+		// Generic fallback message (do NOT include raw err.Error() which may contain HTTP status + JSON).
+		slog.Debug("TastyTrade: Reached generic fallback for error extraction", "error", err, "responseAvailable", responseBytes != nil)
+		return map[string]interface{}{
+			"status":              "error",
+			"validation_errors":   []string{"Preview failed: unable to extract error details"},
+			"commission":          0,
+			"cost":                0,
+			"fees":                0,
+			"order_cost":          0,
+			"margin_change":       0,
+			"buying_power_effect": 0,
+			"day_trades":          0,
+			"estimated_total":     0,
+		}, nil
+	}
+ 
+ 	// Final fallback: unparseable/no-response
+ 	return map[string]interface{}{
+ 		"status":              "error",
+ 		"validation_errors":   []string{"Unable to parse preview response"},
+ 		"commission":          0,
+ 		"cost":                0,
+ 		"fees":                0,
+ 		"order_cost":          0,
+ 		"margin_change":       0,
+ 		"buying_power_effect": 0,
+ 		"day_trades":          0,
+ 		"estimated_total":     0,
+ 	}, nil
+ }
+
+// processSuccessfulPreviewResponse processes a successful preview response from TastyTrade
+func (p *TastyTradeProvider) processSuccessfulPreviewResponse(response map[string]interface{}) (map[string]interface{}, error) {
+	data, ok := response["data"].(map[string]interface{})
+	if !ok {
+		data = make(map[string]interface{})
 	}
 
 	feeCalculation, _ := data["fee-calculation"].(map[string]interface{})
@@ -2654,6 +3017,38 @@ func (p *TastyTradeProvider) convertSymbolToStandardFormat(symbol string) string
 	return symbol
 }
 
+ // Convert OCC -> TastyTrade format (ROOT padded to 6 chars with spaces + rest)
+func (p *TastyTradeProvider) convertToTastytradeFormat(symbol string) string {
+	// Only option symbols
+	if !p.isOptionSymbol(symbol) {
+		return symbol
+	}
+
+	// Ensure symbol long enough to parse
+	if len(symbol) >= 15 {
+		// Find the date part by locating 6 consecutive digits (YYMMDD)
+		for i := 1; i <= len(symbol)-14; i++ {
+			potentialDate := symbol[i : i+6]
+			if p.isAllDigits(potentialDate) {
+				// basic year sanity: YY >= 20
+				yearPrefix := potentialDate[:2]
+				if y, err := strconv.Atoi(yearPrefix); err == nil && y >=20 {
+					root := symbol[:i]
+					dateAndRest := symbol[i:]
+					// Left-justify root to 6 chars, pad with spaces
+					paddedRoot := fmt.Sprintf("%-6s", root)
+					tasty := paddedRoot + dateAndRest
+					slog.Debug(fmt.Sprintf("TastyTrade: Converted OCC -> TastyTrade: %s -> %s", symbol, tasty))
+					return tasty
+				}
+			}
+		}
+	}
+
+	// Fallback - return original
+	return symbol
+}
+
 // transformToTastyTradeOrder transforms standard order to TastyTrade format.
 func (p *TastyTradeProvider) transformToTastyTradeOrder(orderData map[string]interface{}) map[string]interface{} {
 	// Map order types
@@ -2694,16 +3089,22 @@ func (p *TastyTradeProvider) transformToTastyTradeOrder(orderData map[string]int
 		instrumentType = "Equity Option"
 	}
 
+	// Determine tastytrade symbol (convert for options)
+	tastySymbol := symbol
+	if p.isOptionSymbol(symbol) {
+		tastySymbol = p.convertToTastytradeFormat(symbol)
+	}
+
 	// Build TastyTrade order
 	tastytrade_order := map[string]interface{}{
 		"order-type":     orderTypeMap[orderType],
-		"time-in-force":  tifMap[tif],
+		"time-in-force": tifMap[tif],
 		"legs": []map[string]interface{}{
 			{
 				"instrument-type": instrumentType,
 				"action":          actionMap[side],
 				"quantity":        int(quantity),
-				"symbol":          symbol,
+				"symbol":          tastySymbol,
 			},
 		},
 	}
@@ -2721,6 +3122,165 @@ func (p *TastyTradeProvider) transformToTastyTradeOrder(orderData map[string]int
 	}
 
 	return tastytrade_order
+}
+
+// transformToTastyTradeMultiLegOrder transforms standard multi-leg order format to TastyTrade format.
+// Exact conversion of Python _transform_to_tastytrade_multi_leg_order method.
+func (p *TastyTradeProvider) transformToTastyTradeMultiLegOrder(orderData map[string]interface{}) map[string]interface{} {
+	// Map order types
+	orderTypeMap := map[string]string{
+		"market":     "Market",
+		"limit":      "Limit",
+		"stop":       "Stop",
+		"stop_limit": "Stop Limit",
+	}
+
+	// Map actions
+	actionMap := map[string]string{
+		"buy":           "Buy to Open",
+		"sell":          "Sell to Close",
+		"buy_to_open":   "Buy to Open",
+		"sell_to_open":  "Sell to Open",
+		"buy_to_close":  "Buy to Close",
+		"sell_to_close": "Sell to Close",
+	}
+
+	// Map time in force
+	tifMap := map[string]string{
+		"day": "Day",
+		"gtc": "GTC",
+		"ioc": "IOC",
+		"fok": "FOK",
+	}
+
+	// Build legs with proper symbol conversion
+	var legs []map[string]interface{}
+	orderLegs, _ := orderData["legs"].([]interface{})
+
+	// If no legs provided, this is a single-leg order - create leg from order data
+	if len(orderLegs) == 0 {
+		symbol := getString(orderData, "symbol")
+		side := getString(orderData, "side")
+		quantity := getFloat(orderData, "quantity")
+
+		// Determine instrument type
+		instrumentType := "Equity"
+		if p.isOptionSymbol(symbol) {
+			instrumentType = "Equity Option"
+		}
+
+		// Determine the correct action for sell orders
+		action := actionMap[side]
+		if side == "sell" {
+			// Check if this is a short sell
+			if isShortSell, ok := orderData["is_short_sell"].(bool); ok && isShortSell {
+				action = "Sell to Open" // Short selling
+			} else {
+				action = "Sell to Close" // Closing existing position
+			}
+		}
+
+		// Convert symbol to TastyTrade provider format for API if option
+		tastytradeSymbol := symbol
+		if p.isOptionSymbol(symbol) {
+			tastytradeSymbol = p.convertToTastytradeFormat(symbol)
+		}
+
+		legs = append(legs, map[string]interface{}{
+			"instrument-type": instrumentType,
+			"action":          action,
+			"quantity":        int(quantity),
+			"symbol":          tastytradeSymbol,
+		})
+	} else {
+		// Process multi-leg order
+		for _, leg := range orderLegs {
+			legMap, ok := leg.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			symbol := getString(legMap, "symbol")
+			side := getString(legMap, "side")
+			// Frontend sends "qty" but we need to check both "qty" and "quantity"
+			quantity := getFloat(legMap, "qty")
+			if quantity == 0 {
+				quantity = getFloat(legMap, "quantity")
+			}
+
+			// Determine instrument type
+			instrumentType := "Equity"
+			if p.isOptionSymbol(symbol) {
+				instrumentType = "Equity Option"
+			}
+
+			// Convert symbol to TastyTrade provider format for API if option
+			tastytradeSymbol := symbol
+			if p.isOptionSymbol(symbol) {
+				tastytradeSymbol = p.convertToTastytradeFormat(symbol)
+			}
+
+			legs = append(legs, map[string]interface{}{
+				"instrument-type": instrumentType,
+				"action":          actionMap[side],
+				"quantity":        int(quantity),
+				"symbol":          tastytradeSymbol,
+			})
+		}
+	}
+
+	// Build TastyTrade multi-leg order
+	orderType := getString(orderData, "order_type")
+	if orderType == "" {
+		orderType = "limit"
+	}
+	
+	tif := getString(orderData, "time_in_force")
+	if tif == "" {
+		tif = "day"
+	}
+
+	tastytradeOrder := map[string]interface{}{
+		"order-type":    orderTypeMap[orderType],
+		"time-in-force": tifMap[tif],
+		"legs":          legs,
+	}
+
+	// Add price and price-effect for limit orders (required for TastyTrade)
+	if orderType == "limit" || orderType == "stop_limit" {
+		// Check multiple possible price fields
+		price := getFloat(orderData, "price")
+		if price == 0 {
+			price = getFloat(orderData, "limit_price")
+		}
+		if price == 0 {
+			price = getFloat(orderData, "net_price")
+		}
+		if price == 0 {
+			price = getFloat(orderData, "premium")
+		}
+
+		if price != 0 { // Allow 0 price but not missing price
+			// TastyTrade requires positive prices and correct price-effect
+			tastytradeOrder["price"] = abs(price) // Always make price positive
+
+			// Determine price-effect based on order side and price sign
+			side := getString(orderData, "side")
+			if price < 0 {
+				// Negative price explicitly indicates credit
+				tastytradeOrder["price-effect"] = "Credit"
+			} else if side == "sell" || side == "sell_to_open" || side == "sell_to_close" {
+				// Selling typically receives credit (you get money)
+				tastytradeOrder["price-effect"] = "Credit"
+			} else {
+				// For multi-leg orders or buy orders, determine from price sign
+				// If price is positive and we don't have a clear sell side, default to Debit
+				tastytradeOrder["price-effect"] = "Debit"
+			}
+		}
+	}
+
+	return tastytradeOrder
 }
 
 // getString gets a string value from map with default empty string.
