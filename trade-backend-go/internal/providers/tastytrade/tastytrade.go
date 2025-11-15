@@ -1146,8 +1146,10 @@ func (p *TastyTradeProvider) isOptionSymbol(symbol string) bool {
 func (p *TastyTradeProvider) GetOrders(ctx context.Context, status string) ([]*models.Order, error) {
 	var endpoint string
 	if status == "open" {
+		// Use live orders endpoint for open orders - same as Python
 		endpoint = fmt.Sprintf("/accounts/%s/orders/live", p.accountID)
 	} else {
+		// Use all orders endpoint for other statuses - same as Python
 		endpoint = fmt.Sprintf("/accounts/%s/orders", p.accountID)
 	}
 
@@ -1156,113 +1158,41 @@ func (p *TastyTradeProvider) GetOrders(ctx context.Context, status string) ([]*m
 		return nil, fmt.Errorf("failed to get orders: %w", err)
 	}
 
-	var apiResponse struct {
-		Data struct {
-			Items []struct {
-				ID          string  `json:"id"`
-				Status      string  `json:"status"`
-				OrderType   string  `json:"order-type"`
-				TimeInForce string  `json:"time-in-force"`
-				Price       string  `json:"price"`
-				PriceEffect string  `json:"price-effect"`
-				FilledPrice *string `json:"filled-price"` // Add filled-price field
-				ReceivedAt  string  `json:"received-at"`
-				UpdatedAt   string  `json:"updated-at"`
-				Legs        []struct {
-					Symbol         string  `json:"symbol"`
-					InstrumentType string  `json:"instrument-type"`
-					Action         string  `json:"action"`
-					Quantity       float64 `json:"quantity"`
-				} `json:"legs"`
-			} `json:"items"`
-		} `json:"data"`
-	}
-
+	// Parse response as generic map (like Python) to handle flexible ID types
+	var apiResponse map[string]interface{}
 	if err := json.Unmarshal(response, &apiResponse); err != nil {
 		return nil, fmt.Errorf("failed to parse orders response: %w", err)
 	}
 
+	// Extract items from nested structure - same as Python
+	data, ok := apiResponse["data"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid response structure: missing data")
+	}
+
+	items, ok := data["items"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid response structure: missing items")
+	}
+
+	// Transform TastyTrade orders to our standard model - same as Python
 	var orders []*models.Order
-	for _, item := range apiResponse.Data.Items {
-		// Map status
-		orderStatus := strings.ToLower(item.Status)
-		if item.Status == "Live" || item.Status == "Routed" {
-			orderStatus = "open"
-		} else if item.Status == "Filled" {
-			orderStatus = "filled"
-		} else if item.Status == "Cancelled" {
-			orderStatus = "cancelled"
-		}
-
-		// Get first leg for single-leg orders
-		var symbol string
-		var quantity float64
-		var side string
-		var assetClass string
-
-		if len(item.Legs) > 0 {
-			leg := item.Legs[0]
-			symbol = leg.Symbol
-			quantity = leg.Quantity
-			
-			// Map action to side
-			if strings.Contains(strings.ToLower(leg.Action), "buy") {
-				side = "buy"
-			} else {
-				side = "sell"
-			}
-
-			// Map instrument type
-			if leg.InstrumentType == "Equity Option" {
-				assetClass = "us_option"
-			} else {
-				assetClass = "us_equity"
-			}
-		}
-
-		// Parse price
-		var limitPrice *float64
-		if item.Price != "" {
-			if price, err := strconv.ParseFloat(item.Price, 64); err == nil {
-				// Handle credit/debit
-				if item.PriceEffect == "Credit" {
-					price = -price
+	for _, item := range items {
+		if orderData, ok := item.(map[string]interface{}); ok {
+			order := p.transformTastyTradeOrder(orderData)
+			if order != nil {
+				// Apply additional status filtering for non-live endpoints - same as Python
+				if status != "open" && status != "all" {
+					orderStatus := strings.ToLower(order.Status)
+					if status == "filled" && orderStatus != "filled" {
+						continue
+					} else if status == "cancelled" && orderStatus != "cancelled" {
+						continue
+					}
 				}
-				limitPrice = &price
+				orders = append(orders, order)
 			}
 		}
-
-		// Parse avg_fill_price from filled-price field (TastyTrade specific)
-		var avgFillPrice *float64
-		if item.FilledPrice != nil && *item.FilledPrice != "" {
-			if fillPrice, err := strconv.ParseFloat(*item.FilledPrice, 64); err == nil {
-				// Apply credit/debit logic: negate price if price effect is "Credit"
-				if item.PriceEffect == "Credit" {
-					fillPrice = -fillPrice
-				}
-				avgFillPrice = &fillPrice
-			}
-		}
-
-		order := &models.Order{
-			ID:           item.ID,
-			Symbol:       symbol,
-			AssetClass:   assetClass,
-			Side:         side,
-			OrderType:    strings.ToLower(item.OrderType),
-			Qty:          quantity,
-			LimitPrice:   limitPrice,
-			AvgFillPrice: avgFillPrice, // Set the avg_fill_price field
-			Status:       orderStatus,
-			TimeInForce:  strings.ToLower(item.TimeInForce),
-			SubmittedAt:  item.ReceivedAt,
-		}
-
-		if item.Status == "Filled" {
-			order.FilledAt = &item.UpdatedAt
-		}
-
-		orders = append(orders, order)
 	}
 
 	return orders, nil
@@ -3497,18 +3427,32 @@ func (p *TastyTradeProvider) transformTastyTradeOrder(rawOrder map[string]interf
 		orderLegs = p.transformTastyTradeLegs(legs)
 	}
 
+	// Get status with fallback to "unknown" - same as Python
+	rawStatus := getString(rawOrder, "status")
+	status := statusMap[rawStatus]
+	if status == "" {
+		status = "unknown"
+	}
+	
+	// Get order type with fallback to "limit" - same as Python  
+	rawOrderType := getString(rawOrder, "order-type")
+	orderType := orderTypeMap[rawOrderType]
+	if orderType == "" {
+		orderType = "limit" // Default fallback
+	}
+
 	return &models.Order{
 		ID:           getString(rawOrder, "id"),
 		Symbol:       symbol,
 		AssetClass:   assetClass,
 		Side:         side,
-		OrderType:    orderTypeMap[getString(rawOrder, "order-type")],
+		OrderType:    orderType,
 		Qty:          quantity,
 		FilledQty:    totalFilledQty,
 		LimitPrice:   limitPrice,
 		StopPrice:    stopPrice,
 		AvgFillPrice: avgFillPrice,
-		Status:       statusMap[getString(rawOrder, "status")],
+		Status:       status,
 		TimeInForce:  strings.ToLower(getString(rawOrder, "time-in-force")),
 		SubmittedAt:  submittedAt,
 		FilledAt:     filledAt,
@@ -3550,6 +3494,13 @@ func getString(data map[string]interface{}, key string) string {
 	if val, ok := data[key]; ok {
 		if str, ok := val.(string); ok {
 			return str
+		}
+		// Handle numbers as strings (for fields like ID that can be either)
+		if num, ok := val.(float64); ok {
+			return fmt.Sprintf("%.0f", num)
+		}
+		if num, ok := val.(int); ok {
+			return fmt.Sprintf("%d", num)
 		}
 	}
 	return ""
