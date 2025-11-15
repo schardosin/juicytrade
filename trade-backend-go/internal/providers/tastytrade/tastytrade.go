@@ -1340,39 +1340,105 @@ func (p *TastyTradeProvider) GetAccount(ctx context.Context) (*models.Account, e
 // PlaceOrder places a trading order.
 // Exact conversion of Python place_order method.
 func (p *TastyTradeProvider) PlaceOrder(ctx context.Context, orderData map[string]interface{}) (*models.Order, error) {
-	// Transform order data to TastyTrade format
-	tastytrade_order := p.transformToTastyTradeOrder(orderData)
+	if err := p.ensureValidSession(ctx); err != nil {
+		return nil, fmt.Errorf("failed to authenticate with TastyTrade: %w", err)
+	}
+
+	// Transform our standard order format to TastyTrade format
+	tastytradeOrder := p.transformToTastyTradeOrder(orderData)
+
+	// Log the order being sent for debugging
+	slog.Debug("TastyTrade: Sending order payload", "payload", tastytradeOrder)
 
 	endpoint := fmt.Sprintf("/accounts/%s/orders", p.accountID)
-	response, err := p.makeAuthenticatedRequest(ctx, "POST", endpoint, tastytrade_order)
+	responseBytes, err := p.makeAuthenticatedRequest(ctx, "POST", endpoint, tastytradeOrder)
+
+	// Handle error responses specially - they contain error details in the body (matching Python logic)
 	if err != nil {
+		// Check if this is a 422 validation error with response body
+		if responseBytes != nil {
+			var errorResponse map[string]interface{}
+			if parseErr := json.Unmarshal(responseBytes, &errorResponse); parseErr == nil {
+				if errorData, ok := errorResponse["error"].(map[string]interface{}); ok {
+					var errorMessages []string
+					if errorsArray, ok := errorData["errors"].([]interface{}); ok {
+						for _, errorItem := range errorsArray {
+							if errorMap, ok := errorItem.(map[string]interface{}); ok {
+								if message, ok := errorMap["message"].(string); ok && message != "" {
+									errorMessages = append(errorMessages, message)
+								}
+							}
+						}
+					}
+					if len(errorMessages) > 0 {
+						errorMsg := strings.Join(errorMessages, "; ")
+						return nil, fmt.Errorf("order validation failed: %s", errorMsg)
+					}
+				}
+			}
+		}
 		return nil, fmt.Errorf("failed to place order: %w", err)
 	}
 
-	var apiResponse struct {
-		Data struct {
-			Order struct {
-				ID     string `json:"id"`
-				Status string `json:"status"`
-			} `json:"order"`
-		} `json:"data"`
-	}
-
-	if err := json.Unmarshal(response, &apiResponse); err != nil {
+	// Parse response
+	var response map[string]interface{}
+	if err := json.Unmarshal(responseBytes, &response); err != nil {
 		return nil, fmt.Errorf("failed to parse order response: %w", err)
 	}
 
-	// Return basic order info
-	return &models.Order{
-		ID:     apiResponse.Data.Order.ID,
-		Status: strings.ToLower(apiResponse.Data.Order.Status),
-	}, nil
+	// TastyTrade nests the actual order data under data.order
+	data, ok := response["data"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: missing data field")
+	}
+
+	orderResp, ok := data["order"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: missing order field")
+	}
+
+	// Transform TastyTrade order response to our standard model
+	return p.transformTastyTradeOrder(orderResp), nil
 }
 
 // PlaceMultiLegOrder places a multi-leg trading order.
 // Exact conversion of Python place_multi_leg_order method.
 func (p *TastyTradeProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[string]interface{}) (*models.Order, error) {
-	return p.PlaceOrder(ctx, orderData) // Same implementation for now
+	if err := p.ensureValidSession(ctx); err != nil {
+		return nil, fmt.Errorf("failed to authenticate with TastyTrade: %w", err)
+	}
+
+	// Transform our standard multi-leg order format to TastyTrade format
+	tastytradeOrder := p.transformToTastyTradeMultiLegOrder(orderData)
+
+	// Log the order being sent for debugging
+	slog.Debug("TastyTrade: Sending multi-leg order", "payload", tastytradeOrder)
+
+	endpoint := fmt.Sprintf("/accounts/%s/orders", p.accountID)
+	responseBytes, err := p.makeAuthenticatedRequest(ctx, "POST", endpoint, tastytradeOrder)
+	if err != nil {
+		return nil, fmt.Errorf("failed to place multi-leg order: %w", err)
+	}
+
+	// Parse response
+	var response map[string]interface{}
+	if err := json.Unmarshal(responseBytes, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse order response: %w", err)
+	}
+
+	// TastyTrade nests the actual order data under data.order
+	data, ok := response["data"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: missing data field")
+	}
+
+	orderResp2, ok := data["order"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid response format: missing order field")
+	}
+
+	// Transform TastyTrade order response to our standard model
+	return p.transformTastyTradeOrder(orderResp2), nil
 }
 
 // CancelOrder cancels an existing order.
@@ -2466,44 +2532,25 @@ func (p *TastyTradeProvider) HealthCheck(ctx context.Context) (map[string]interf
  	// Use the multi-leg transformation like Python does
  	tastytradeOrder := p.transformToTastyTradeMultiLegOrder(orderData)
  	
- 	slog.Debug("TastyTrade: Sending dry-run payload", "payload", tastytradeOrder)
- 	
- 	endpoint := fmt.Sprintf("/accounts/%s/orders/dry-run", p.accountID)
- 	responseBytes, err := p.makeAuthenticatedRequest(ctx, "POST", endpoint, tastytradeOrder)
-
-	// TEMPORARY: Log exact response for debugging
-	slog.Info("=== TastyTrade PreviewOrder Raw Response Debug ===")
-	slog.Info("TastyTrade: PreviewOrder response", "responseBytes", responseBytes != nil, "responseLength", len(responseBytes), "error", err)
-	if responseBytes != nil {
-		slog.Info("TastyTrade: Raw response body", "body", string(responseBytes))
-	}
-	if err != nil {
-		slog.Info("TastyTrade: Error details", "error", err.Error(), "errorType", fmt.Sprintf("%T", err))
-	}
-	slog.Info("=== End Raw Response Debug ===")
-	
-	// Handle error responses specially - they contain error details in the body (matching Python logic)
+	endpoint := fmt.Sprintf("/accounts/%s/orders/dry-run", p.accountID)
+	responseBytes, err := p.makeAuthenticatedRequest(ctx, "POST", endpoint, tastytradeOrder)	// Handle error responses specially - they contain error details in the body (matching Python logic)
 	if err != nil {
 		errStr := err.Error()
-		slog.Info("TastyTrade: Got error", "error", errStr, "hasResponseBytes", responseBytes != nil)
 		
 		// Extract JSON from error message if responseBytes is nil
 		var jsonData []byte
 		if responseBytes != nil {
 			jsonData = responseBytes
-			slog.Info("TastyTrade: Using response body", "bodyLength", len(responseBytes))
 		} else {
 			// Extract JSON from error string: "HTTP 422: {json...}"
 			if colonIndex := strings.Index(errStr, ": "); colonIndex != -1 {
 				jsonStr := errStr[colonIndex+2:]
 				jsonData = []byte(jsonStr)
-				slog.Info("TastyTrade: Extracted JSON from error string", "jsonLength", len(jsonData), "json", jsonStr)
 			}
 		}
 		
 		// Try to parse the JSON data regardless of error type to extract any error messages
 		if len(jsonData) == 0 {
-			slog.Warn("TastyTrade: No JSON data available to parse")
 			return map[string]interface{}{
 				"status":              "error",
 				"validation_errors":   []string{"Error occurred but no response data available"},
@@ -2520,21 +2567,24 @@ func (p *TastyTradeProvider) HealthCheck(ctx context.Context) (map[string]interf
 		
 		var response map[string]interface{}
 		if parseErr := json.Unmarshal(jsonData, &response); parseErr == nil {
-			slog.Info("TastyTrade: Successfully parsed error response", "response", response)
 			
 			// Try multiple ways to extract error messages
 			var errorMessages []string
 			
 			// Method 1: response.error.errors[].message (TastyTrade format)
 			if errData, hasError := response["error"].(map[string]interface{}); hasError {
-				slog.Info("TastyTrade: Found top-level error object", "errorData", errData)
 				if errorsArray, ok := errData["errors"].([]interface{}); ok {
-					slog.Info("TastyTrade: Found errors array", "errorsArray", errorsArray)
 					for _, errorItem := range errorsArray {
 						if errorMap, ok := errorItem.(map[string]interface{}); ok {
-							if message, ok := errorMap["message"].(string); ok && message != "" {
-								errorMessages = append(errorMessages, message)
-								slog.Info("TastyTrade: Extracted error message from errors array", "message", message)
+							// Try 'reason' first (more specific), then 'message' as fallback
+							var errorMsg string
+							if reason, ok := errorMap["reason"].(string); ok && reason != "" {
+								errorMsg = reason
+							} else if message, ok := errorMap["message"].(string); ok && message != "" {
+								errorMsg = message
+							}
+							if errorMsg != "" {
+								errorMessages = append(errorMessages, errorMsg)
 							}
 						}
 					}
@@ -2543,7 +2593,6 @@ func (p *TastyTradeProvider) HealthCheck(ctx context.Context) (map[string]interf
 				if len(errorMessages) == 0 {
 					if message, ok := errData["message"].(string); ok && message != "" {
 						errorMessages = append(errorMessages, message)
-						slog.Info("TastyTrade: Extracted error message from error.message", "message", message)
 					}
 				}
 			}
@@ -2558,12 +2607,20 @@ func (p *TastyTradeProvider) HealthCheck(ctx context.Context) (map[string]interf
 							case string:
 								if e != "" {
 									errorMessages = append(errorMessages, e)
-									slog.Info("TastyTrade: Extracted error from data.errors string", "message", e)
+
 								}
 							case map[string]interface{}:
-								if message, ok := e["message"].(string); ok && message != "" {
-									errorMessages = append(errorMessages, message)
-									slog.Info("TastyTrade: Extracted error from data.errors.message", "message", message)
+								// Try 'reason' first (more specific), then 'message' as fallback
+								var errorMsg string
+								if reason, ok := e["reason"].(string); ok && reason != "" {
+									errorMsg = reason
+
+								} else if message, ok := e["message"].(string); ok && message != "" {
+									errorMsg = message
+
+								}
+								if errorMsg != "" {
+									errorMessages = append(errorMessages, errorMsg)
 								}
 							}
 						}
@@ -2575,12 +2632,10 @@ func (p *TastyTradeProvider) HealthCheck(ctx context.Context) (map[string]interf
 			if len(errorMessages) == 0 {
 				if message, ok := response["message"].(string); ok && message != "" {
 					errorMessages = append(errorMessages, message)
-					slog.Info("TastyTrade: Extracted error from top-level message", "message", message)
 				}
 			}
 			
 			if len(errorMessages) > 0 {
-				slog.Info("TastyTrade: Successfully extracted error messages", "messages", errorMessages)
 				return map[string]interface{}{
 					"status":              "error",
 					"validation_errors":   errorMessages,
@@ -2593,11 +2648,8 @@ func (p *TastyTradeProvider) HealthCheck(ctx context.Context) (map[string]interf
 					"day_trades":          0,
 					"estimated_total":     0,
 				}, nil
-			} else {
-				slog.Warn("TastyTrade: No error messages found in parsed response", "response", response)
 			}
 		} else {
-			slog.Error("TastyTrade: Error parsing error response JSON", "error", parseErr, "jsonData", string(jsonData))
 			// Return the raw data as error if we can't parse it
 			return map[string]interface{}{
 				"status":              "error",
@@ -2717,9 +2769,17 @@ func (p *TastyTradeProvider) HealthCheck(ctx context.Context) (map[string]interf
 								slog.Debug("TastyTrade: Extracted data.errors string", "message", ev)
 							}
 						case map[string]interface{}:
-							if msg, ok := ev["message"].(string); ok && msg != "" {
-								errorMessages = append(errorMessages, msg)
+							// Try 'reason' first (more specific), then 'message' as fallback
+							var errorMsg string
+							if reason, ok := ev["reason"].(string); ok && reason != "" {
+								errorMsg = reason
+								slog.Debug("TastyTrade: Extracted data.errors.reason", "reason", reason)
+							} else if msg, ok := ev["message"].(string); ok && msg != "" {
+								errorMsg = msg
 								slog.Debug("TastyTrade: Extracted data.errors.message", "message", msg)
+							}
+							if errorMsg != "" {
+								errorMessages = append(errorMessages, errorMsg)
 							}
 						}
 					}
@@ -2847,7 +2907,10 @@ func (p *TastyTradeProvider) HealthCheck(ctx context.Context) (map[string]interf
 										msgs = append(msgs, dv)
 									}
 								case map[string]interface{}:
-									if m, ok := dv["message"].(string); ok && m != "" {
+									// Try 'reason' first (more specific), then 'message' as fallback
+									if reason, ok := dv["reason"].(string); ok && reason != "" {
+										msgs = append(msgs, reason)
+									} else if m, ok := dv["message"].(string); ok && m != "" {
 										msgs = append(msgs, m)
 									}
 								}
@@ -3051,7 +3114,7 @@ func (p *TastyTradeProvider) convertToTastytradeFormat(symbol string) string {
 
 // transformToTastyTradeOrder transforms standard order to TastyTrade format.
 func (p *TastyTradeProvider) transformToTastyTradeOrder(orderData map[string]interface{}) map[string]interface{} {
-	// Map order types
+	// Map order types exactly as Python
 	orderTypeMap := map[string]string{
 		"market":     "Market",
 		"limit":      "Limit",
@@ -3059,7 +3122,7 @@ func (p *TastyTradeProvider) transformToTastyTradeOrder(orderData map[string]int
 		"stop_limit": "Stop Limit",
 	}
 
-	// Map actions
+	// Map actions exactly as Python
 	actionMap := map[string]string{
 		"buy":           "Buy to Open",
 		"sell":          "Sell to Close",
@@ -3069,7 +3132,7 @@ func (p *TastyTradeProvider) transformToTastyTradeOrder(orderData map[string]int
 		"sell_to_close": "Sell to Close",
 	}
 
-	// Map time in force
+	// Map time in force exactly as Python
 	tifMap := map[string]string{
 		"day": "Day",
 		"gtc": "GTC",
@@ -3081,44 +3144,69 @@ func (p *TastyTradeProvider) transformToTastyTradeOrder(orderData map[string]int
 	side := getString(orderData, "side")
 	orderType := getString(orderData, "order_type")
 	tif := getString(orderData, "time_in_force")
+	
+	// Handle both 'quantity' and 'qty' field names - exactly as Python
 	quantity := getFloat(orderData, "quantity")
+	if quantity == 0 {
+		quantity = getFloat(orderData, "qty")
+	}
 
-	// Determine instrument type
+	// Determine instrument type - exactly as Python
 	instrumentType := "Equity"
 	if p.isOptionSymbol(symbol) {
 		instrumentType = "Equity Option"
 	}
 
-	// Determine tastytrade symbol (convert for options)
-	tastySymbol := symbol
-	if p.isOptionSymbol(symbol) {
-		tastySymbol = p.convertToTastytradeFormat(symbol)
-	}
-
-	// Build TastyTrade order
+	// For TastyTrade, ALL orders (stocks and options) use legs array format
+	// This matches the Python implementation exactly
 	tastytrade_order := map[string]interface{}{
-		"order-type":     orderTypeMap[orderType],
+		"order-type":    orderTypeMap[orderType],
 		"time-in-force": tifMap[tif],
 		"legs": []map[string]interface{}{
 			{
 				"instrument-type": instrumentType,
 				"action":          actionMap[side],
-				"quantity":        int(quantity),
-				"symbol":          tastySymbol,
+				"quantity":        int(quantity), // Convert to int as Python does
+				"symbol":          symbol,        // Use symbol as-is for stocks
 			},
 		},
 	}
 
-	// Add price for limit orders
+	// Add price for limit orders - handle multiple price field names exactly as Python
 	if orderType == "limit" || orderType == "stop_limit" {
-		if price := getFloat(orderData, "price"); price != 0 {
-			tastytrade_order["price"] = price
-			if side == "sell" {
+		var price float64
+		
+		// Check multiple possible price fields exactly as Python
+		if val := getFloat(orderData, "price"); val != 0 {
+			price = val
+		} else if val := getFloat(orderData, "limit_price"); val != 0 {
+			price = val
+		} else if val := getFloat(orderData, "net_price"); val != 0 {
+			price = val
+		} else if val := getFloat(orderData, "premium"); val != 0 {
+			price = val
+		}
+		
+		if price != 0 {
+			// TastyTrade requires positive prices - exactly as Python
+			if price < 0 {
+				tastytrade_order["price"] = -price // Make positive
 				tastytrade_order["price-effect"] = "Credit"
 			} else {
-				tastytrade_order["price-effect"] = "Debit"
+				tastytrade_order["price"] = price
+				// Determine price-effect based on side - exactly as Python logic
+				if side == "sell" || side == "sell_to_open" || side == "sell_to_close" {
+					tastytrade_order["price-effect"] = "Credit"
+				} else {
+					tastytrade_order["price-effect"] = "Debit"
+				}
 			}
 		}
+	}
+
+	// Add stop price for stop orders - exactly as Python
+	if stopPrice := getFloat(orderData, "stop_price"); stopPrice != 0 {
+		tastytrade_order["stop-trigger"] = stopPrice
 	}
 
 	return tastytrade_order
@@ -3161,7 +3249,14 @@ func (p *TastyTradeProvider) transformToTastyTradeMultiLegOrder(orderData map[st
 	if len(orderLegs) == 0 {
 		symbol := getString(orderData, "symbol")
 		side := getString(orderData, "side")
-		quantity := getFloat(orderData, "quantity")
+		// Frontend sends "qty" but we need to check both "qty" and "quantity"
+		quantity := getFloat(orderData, "qty")
+		if quantity == 0 {
+			quantity = getFloat(orderData, "quantity")
+		}
+		if quantity == 0 {
+			quantity = 1 // Default to 1 if no quantity specified
+		}
 
 		// Determine instrument type
 		instrumentType := "Equity"
@@ -3206,6 +3301,9 @@ func (p *TastyTradeProvider) transformToTastyTradeMultiLegOrder(orderData map[st
 			quantity := getFloat(legMap, "qty")
 			if quantity == 0 {
 				quantity = getFloat(legMap, "quantity")
+			}
+			if quantity == 0 {
+				quantity = 1 // Default to 1 if no quantity specified
 			}
 
 			// Determine instrument type
@@ -3281,6 +3379,170 @@ func (p *TastyTradeProvider) transformToTastyTradeMultiLegOrder(orderData map[st
 	}
 
 	return tastytradeOrder
+}
+
+// transformTastyTradeOrder transforms TastyTrade order response to our standard model.
+// Exact conversion of Python _transform_tastytrade_order method.
+func (p *TastyTradeProvider) transformTastyTradeOrder(rawOrder map[string]interface{}) *models.Order {
+	// Map TastyTrade status to our standard status
+	statusMap := map[string]string{
+		"Live":     "open",
+		"Routed":   "open", // TastyTrade uses "Routed" for submitted orders
+		"Filled":   "filled",
+		"Cancelled": "cancelled",
+		"Rejected": "rejected",
+		"Expired":  "expired",
+	}
+
+	// Map TastyTrade order type to our standard format
+	orderTypeMap := map[string]string{
+		"Market":     "market",
+		"Limit":      "limit",
+		"Stop":       "stop",
+		"Stop Limit": "stop_limit",
+	}
+
+	// Extract legs information
+	legs, _ := rawOrder["legs"].([]interface{})
+
+	var symbol string
+	var quantity float64
+	var side string
+	var assetClass string
+
+	// For single-leg orders, use the first leg
+	if len(legs) > 0 {
+		if firstLeg, ok := legs[0].(map[string]interface{}); ok {
+			symbol = getString(firstLeg, "symbol")
+			// Convert TastyTrade symbol to standard OCC format for UI consistency
+			symbol = p.convertSymbolToStandardFormat(symbol)
+			quantity = getFloat(firstLeg, "quantity")
+			side = p.mapTastyTradeActionToSide(getString(firstLeg, "action"))
+
+			// Determine asset class from instrument type
+			instrumentType := getString(firstLeg, "instrument-type")
+			if instrumentType == "Equity Option" {
+				assetClass = "us_option"
+			} else if instrumentType == "Equity" {
+				assetClass = "us_equity"
+			} else {
+				assetClass = "unknown"
+			}
+		}
+	} else {
+		symbol = ""
+		quantity = 0
+		side = "buy"
+		assetClass = "unknown"
+	}
+
+	// Calculate total filled quantity from all legs
+	totalFilledQty := 0.0
+	for _, leg := range legs {
+		if legMap, ok := leg.(map[string]interface{}); ok {
+			legQuantity := getFloat(legMap, "quantity")
+			remainingQuantity := getFloat(legMap, "remaining-quantity")
+			filledQty := legQuantity - remainingQuantity
+			totalFilledQty += filledQty
+		}
+	}
+
+	// Parse submitted timestamp
+	submittedAt := getString(rawOrder, "received-at")
+	if submittedAt == "" {
+		submittedAt = time.Now().Format(time.RFC3339)
+	}
+
+	// Handle limit_price with credit/debit conversion (same as Tradier)
+	var limitPrice *float64
+	if priceVal := getFloat(rawOrder, "price"); priceVal != 0 {
+		limitPrice = &priceVal
+	}
+	priceEffect := strings.ToLower(getString(rawOrder, "price-effect"))
+
+	// Convert credit orders to negative limit_price for UI consistency
+	if priceEffect == "credit" && limitPrice != nil {
+		negative := -*limitPrice
+		limitPrice = &negative
+	}
+
+	// Handle avg_fill_price with same credit/debit logic
+	var avgFillPrice *float64
+	if filledPriceVal := getFloat(rawOrder, "filled-price"); filledPriceVal != 0 {
+		if priceEffect == "credit" {
+			negative := -filledPriceVal
+			avgFillPrice = &negative
+		} else {
+			avgFillPrice = &filledPriceVal
+		}
+	}
+
+	// Handle stop price
+	var stopPrice *float64
+	if stopVal := getFloat(rawOrder, "stop-trigger"); stopVal != 0 {
+		stopPrice = &stopVal
+	}
+
+	// Handle filled_at timestamp
+	var filledAt *string
+	if getString(rawOrder, "status") == "Filled" {
+		if updatedAt := getString(rawOrder, "updated-at"); updatedAt != "" {
+			filledAt = &updatedAt
+		}
+	}
+
+	// Handle legs for multi-leg orders
+	var orderLegs []models.OrderLeg
+	if len(legs) > 1 {
+		orderLegs = p.transformTastyTradeLegs(legs)
+	}
+
+	return &models.Order{
+		ID:           getString(rawOrder, "id"),
+		Symbol:       symbol,
+		AssetClass:   assetClass,
+		Side:         side,
+		OrderType:    orderTypeMap[getString(rawOrder, "order-type")],
+		Qty:          quantity,
+		FilledQty:    totalFilledQty,
+		LimitPrice:   limitPrice,
+		StopPrice:    stopPrice,
+		AvgFillPrice: avgFillPrice,
+		Status:       statusMap[getString(rawOrder, "status")],
+		TimeInForce:  strings.ToLower(getString(rawOrder, "time-in-force")),
+		SubmittedAt:  submittedAt,
+		FilledAt:     filledAt,
+		Legs:         orderLegs,
+	}
+}
+
+// mapTastyTradeActionToSide maps TastyTrade action to our standard side.
+// Exact conversion of Python _map_tastytrade_action_to_side method.
+func (p *TastyTradeProvider) mapTastyTradeActionToSide(action string) string {
+	actionLower := strings.ToLower(action)
+	if strings.Contains(actionLower, "buy") {
+		return "buy"
+	} else if strings.Contains(actionLower, "sell") {
+		return "sell"
+	} else {
+		return "buy" // Default fallback
+	}
+}
+
+// transformTastyTradeLegs transforms TastyTrade legs to our standard format.
+// Exact conversion of Python _transform_tastytrade_legs method.
+func (p *TastyTradeProvider) transformTastyTradeLegs(legs []interface{}) []models.OrderLeg {
+	var transformedLegs []models.OrderLeg
+	for _, leg := range legs {
+		if legMap, ok := leg.(map[string]interface{}); ok {
+			transformedLegs = append(transformedLegs, models.OrderLeg{
+				Symbol: p.convertSymbolToStandardFormat(getString(legMap, "symbol")),
+				Side:   p.mapTastyTradeActionToSide(getString(legMap, "action")),
+				Qty:    getFloat(legMap, "quantity"),
+			})
+		}
+	}
+	return transformedLegs
 }
 
 // getString gets a string value from map with default empty string.

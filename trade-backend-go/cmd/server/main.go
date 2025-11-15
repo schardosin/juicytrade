@@ -333,6 +333,41 @@ func main() {
 		})
 	})
 	
+	router.POST("/orders/single-leg", func(c *gin.Context) {
+		var orderRequest map[string]interface{}
+		if err := c.ShouldBindJSON(&orderRequest); err != nil {
+			fmt.Printf("ERROR: Invalid single-leg order request: %v\n", err)
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid single-leg order request: " + err.Error(),
+			})
+			return
+		}
+		
+		order, err := providerManager.PlaceOrder(c.Request.Context(), orderRequest)
+		if err != nil {
+			c.JSON(500, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		if order == nil {
+			c.JSON(500, gin.H{
+				"success": false,
+				"message": "Failed to place single-leg order",
+			})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    order,
+			"message": "Single-leg order placed successfully.",
+		})
+	})
+
 	router.POST("/orders/multi-leg", func(c *gin.Context) {
 		var orderRequest map[string]interface{}
 		if err := c.ShouldBindJSON(&orderRequest); err != nil {

@@ -8,40 +8,25 @@ import (
 	"io"
 	"net/http"
 	"time"
-
-	"github.com/sony/gobreaker"
 )
 
-// HTTPClient provides HTTP client functionality with retry logic and circuit breaker.
+// HTTPClient provides HTTP client functionality with retry logic.
 // This replicates the retry and error handling behavior from the Python implementation.
 type HTTPClient struct {
-	client         *http.Client
-	circuitBreaker *gobreaker.CircuitBreaker
-	maxRetries     int
-	baseDelay      time.Duration
+	client     *http.Client
+	maxRetries int
+	baseDelay  time.Duration
 }
 
-// NewHTTPClient creates a new HTTP client with retry logic and circuit breaker.
+// NewHTTPClient creates a new HTTP client with retry logic.
 // Matches the Python retry configuration (3 retries, exponential backoff).
 func NewHTTPClient() *HTTPClient {
-	// Circuit breaker settings to match Python behavior
-	cbSettings := gobreaker.Settings{
-		Name:        "http-client",
-		MaxRequests: 3,
-		Interval:    60 * time.Second,
-		Timeout:     60 * time.Second,
-		ReadyToTrip: func(counts gobreaker.Counts) bool {
-			return counts.ConsecutiveFailures > 3
-		},
-	}
-
 	return &HTTPClient{
 		client: &http.Client{
 			Timeout: 30 * time.Second, // Same as Python requests timeout
 		},
-		circuitBreaker: gobreaker.NewCircuitBreaker(cbSettings),
-		maxRetries:     3,                      // Same as Python (3 retries)
-		baseDelay:      1 * time.Second,        // Same as Python (1s, 2s, 4s)
+		maxRetries: 3,             // Same as Python (3 retries)
+		baseDelay:  1 * time.Second, // Same as Python (1s, 2s, 4s)
 	}
 }
 
@@ -61,6 +46,27 @@ type Response struct {
 	Headers    http.Header
 }
 
+// HTTPError represents an HTTP error with status code and response
+type HTTPError struct {
+	StatusCode int
+	Message    string
+	Response   *Response
+}
+
+func (e *HTTPError) Error() string {
+	return e.Message
+}
+
+// IsClientError returns true if this is a 4xx client error
+func (e *HTTPError) IsClientError() bool {
+	return e.StatusCode >= 400 && e.StatusCode < 500
+}
+
+// IsServerError returns true if this is a 5xx server error  
+func (e *HTTPError) IsServerError() bool {
+	return e.StatusCode >= 500 && e.StatusCode < 600
+}
+
 // Do executes an HTTP request with retry logic and circuit breaker.
 // Exact replication of Python retry behavior: 3 attempts with exponential backoff (1s, 2s, 4s).
 func (c *HTTPClient) Do(ctx context.Context, req Request) (*Response, error) {
@@ -68,12 +74,17 @@ func (c *HTTPClient) Do(ctx context.Context, req Request) (*Response, error) {
 }
 
 func (c *HTTPClient) doWithRetry(ctx context.Context, req Request, attempt int) (*Response, error) {
-	// Execute through circuit breaker
-	result, err := c.circuitBreaker.Execute(func() (interface{}, error) {
-		return c.executeRequest(ctx, req)
-	})
+	// Execute request directly
+	resp, err := c.executeRequest(ctx, req)
 
 	if err != nil {
+		// Check if this is a client error (4xx) that should not be retried
+		if httpErr, ok := err.(*HTTPError); ok && httpErr.IsClientError() {
+			// Client errors (400-499) should not be retried and should return immediately
+			// These are validation/business logic errors, not infrastructure failures
+			return httpErr.Response, err
+		}
+
 		// If we haven't exceeded max retries, retry with exponential backoff
 		if attempt < c.maxRetries {
 			// Exponential backoff: 1s, 2s, 4s (same as Python)
@@ -89,7 +100,7 @@ func (c *HTTPClient) doWithRetry(ctx context.Context, req Request, attempt int) 
 		return nil, err
 	}
 
-	return result.(*Response), nil
+	return resp, nil
 }
 
 func (c *HTTPClient) executeRequest(ctx context.Context, req Request) (*Response, error) {
@@ -136,13 +147,21 @@ func (c *HTTPClient) executeRequest(ctx context.Context, req Request) (*Response
 		return nil, fmt.Errorf("failed to read response body: %w", err)
 	}
 
-	// Check for HTTP errors (same logic as Python requests)
+	// Check for HTTP errors
 	if resp.StatusCode >= 400 {
-		return &Response{
+		response := &Response{
 			StatusCode: resp.StatusCode,
 			Body:       body,
 			Headers:    resp.Header,
-		}, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(body))
+		}
+		
+		httpErr := &HTTPError{
+			StatusCode: resp.StatusCode,
+			Message:    fmt.Sprintf("HTTP %d: %s", resp.StatusCode, string(body)),
+			Response:   response,
+		}
+		
+		return response, httpErr
 	}
 
 	return &Response{
