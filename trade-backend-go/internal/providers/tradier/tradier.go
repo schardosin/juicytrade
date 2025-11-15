@@ -718,7 +718,7 @@ func (t *TradierProvider) transformOrder(rawOrder map[string]interface{}) *model
 		}
 		limitPrice = &price
 	}
-	if avgPrice, ok := rawOrder["avg_fill_price"].(float64); ok && avgPrice > 0 {
+	if avgPrice, ok := rawOrder["avg_fill_price"].(float64); ok {
 		avgFillPrice = &avgPrice
 	}
 	

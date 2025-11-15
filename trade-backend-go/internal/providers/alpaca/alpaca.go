@@ -398,7 +398,111 @@ func (ap *AlpacaProvider) GetPositionsEnhanced(ctx context.Context) (*models.Enh
 }
 
 func (ap *AlpacaProvider) GetOrders(ctx context.Context, status string) ([]*models.Order, error) {
-	return nil, fmt.Errorf("not implemented yet")
+	url := fmt.Sprintf("%s/v2/orders", ap.BaseURL)
+	
+	headers := map[string]string{
+		"APCA-API-KEY-ID":     ap.APIKey,
+		"APCA-API-SECRET-KEY": ap.APISecret,
+		"accept":              "application/json",
+	}
+	
+	params := map[string]string{}
+	
+	// Map status filter
+	switch strings.ToLower(status) {
+	case "open":
+		params["status"] = "open"
+	case "closed":
+		params["status"] = "closed"
+	case "filled":
+		params["status"] = "filled"
+	case "cancelled", "canceled":
+		params["status"] = "canceled"
+	case "all":
+		params["status"] = "all"
+	default:
+		if status != "" {
+			params["status"] = status
+		}
+	}
+	
+	resp, err := ap.httpClient.Get(ctx, url, headers, params)
+	if err != nil {
+		ap.LogError(fmt.Sprintf("get_orders with status %s", status), err)
+		return nil, err
+	}
+	
+	var orders []struct {
+		ID              string   `json:"id"`
+		Symbol          string   `json:"symbol"`
+		AssetClass      string   `json:"asset_class"`
+		Side            string   `json:"side"`
+		OrderType       string   `json:"order_type"`
+		Qty             *string  `json:"qty"`
+		FilledQty       *string  `json:"filled_qty"`
+		LimitPrice      *string  `json:"limit_price"`
+		StopPrice       *string  `json:"stop_price"`
+		FilledAvgPrice  *string  `json:"filled_avg_price"` // Alpaca uses filled_avg_price
+		Status          string   `json:"status"`
+		TimeInForce     string   `json:"time_in_force"`
+		SubmittedAt     string   `json:"submitted_at"`
+		FilledAt        *string  `json:"filled_at"`
+	}
+	
+	if err := json.Unmarshal(resp.Body, &orders); err != nil {
+		ap.LogError("unmarshal orders response", err)
+		return nil, err
+	}
+	
+	var result []*models.Order
+	for _, order := range orders {
+		// Parse quantities
+		var qty, filledQty float64
+		if order.Qty != nil {
+			qty, _ = strconv.ParseFloat(*order.Qty, 64)
+		}
+		if order.FilledQty != nil {
+			filledQty, _ = strconv.ParseFloat(*order.FilledQty, 64)
+		}
+		
+		// Parse prices
+		var limitPrice, stopPrice, avgFillPrice *float64
+		if order.LimitPrice != nil && *order.LimitPrice != "" {
+			if price, err := strconv.ParseFloat(*order.LimitPrice, 64); err == nil {
+				limitPrice = &price
+			}
+		}
+		if order.StopPrice != nil && *order.StopPrice != "" {
+			if price, err := strconv.ParseFloat(*order.StopPrice, 64); err == nil {
+				stopPrice = &price
+			}
+		}
+		// Parse avg_fill_price from filled_avg_price field (Alpaca specific)
+		if order.FilledAvgPrice != nil && *order.FilledAvgPrice != "" {
+			if price, err := strconv.ParseFloat(*order.FilledAvgPrice, 64); err == nil {
+				avgFillPrice = &price
+			}
+		}
+		
+		result = append(result, &models.Order{
+			ID:           order.ID,
+			Symbol:       order.Symbol,
+			AssetClass:   order.AssetClass,
+			Side:         order.Side,
+			OrderType:    order.OrderType,
+			Qty:          qty,
+			FilledQty:    filledQty,
+			LimitPrice:   limitPrice,
+			StopPrice:    stopPrice,
+			AvgFillPrice: avgFillPrice, // Set the avg_fill_price field
+			Status:       order.Status,
+			TimeInForce:  order.TimeInForce,
+			SubmittedAt:  order.SubmittedAt,
+			FilledAt:     order.FilledAt,
+		})
+	}
+	
+	return result, nil
 }
 
 func (ap *AlpacaProvider) GetAccount(ctx context.Context) (*models.Account, error) {

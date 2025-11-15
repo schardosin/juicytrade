@@ -1152,14 +1152,15 @@ func (p *TastyTradeProvider) GetOrders(ctx context.Context, status string) ([]*m
 	var apiResponse struct {
 		Data struct {
 			Items []struct {
-				ID          string `json:"id"`
-				Status      string `json:"status"`
-				OrderType   string `json:"order-type"`
-				TimeInForce string `json:"time-in-force"`
-				Price       string `json:"price"`
-				PriceEffect string `json:"price-effect"`
-				ReceivedAt  string `json:"received-at"`
-				UpdatedAt   string `json:"updated-at"`
+				ID          string  `json:"id"`
+				Status      string  `json:"status"`
+				OrderType   string  `json:"order-type"`
+				TimeInForce string  `json:"time-in-force"`
+				Price       string  `json:"price"`
+				PriceEffect string  `json:"price-effect"`
+				FilledPrice *string `json:"filled-price"` // Add filled-price field
+				ReceivedAt  string  `json:"received-at"`
+				UpdatedAt   string  `json:"updated-at"`
 				Legs        []struct {
 					Symbol         string  `json:"symbol"`
 					InstrumentType string  `json:"instrument-type"`
@@ -1224,17 +1225,30 @@ func (p *TastyTradeProvider) GetOrders(ctx context.Context, status string) ([]*m
 			}
 		}
 
+		// Parse avg_fill_price from filled-price field (TastyTrade specific)
+		var avgFillPrice *float64
+		if item.FilledPrice != nil && *item.FilledPrice != "" {
+			if fillPrice, err := strconv.ParseFloat(*item.FilledPrice, 64); err == nil {
+				// Apply credit/debit logic: negate price if price effect is "Credit"
+				if item.PriceEffect == "Credit" {
+					fillPrice = -fillPrice
+				}
+				avgFillPrice = &fillPrice
+			}
+		}
+
 		order := &models.Order{
-			ID:          item.ID,
-			Symbol:      symbol,
-			AssetClass:  assetClass,
-			Side:        side,
-			OrderType:   strings.ToLower(item.OrderType),
-			Qty:         quantity,
-			LimitPrice:  limitPrice,
-			Status:      orderStatus,
-			TimeInForce: strings.ToLower(item.TimeInForce),
-			SubmittedAt: item.ReceivedAt,
+			ID:           item.ID,
+			Symbol:       symbol,
+			AssetClass:   assetClass,
+			Side:         side,
+			OrderType:    strings.ToLower(item.OrderType),
+			Qty:          quantity,
+			LimitPrice:   limitPrice,
+			AvgFillPrice: avgFillPrice, // Set the avg_fill_price field
+			Status:       orderStatus,
+			TimeInForce:  strings.ToLower(item.TimeInForce),
+			SubmittedAt:  item.ReceivedAt,
 		}
 
 		if item.Status == "Filled" {
