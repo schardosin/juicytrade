@@ -738,73 +738,42 @@ func (p *TastyTradeProvider) GetHistoricalBars(ctx context.Context, symbol, time
 // GetPositions gets all current positions.
 // Exact conversion of Python get_positions method.
 func (p *TastyTradeProvider) GetPositions(ctx context.Context) ([]*models.Position, error) {
+	if err := p.ensureValidSession(ctx); err != nil {
+		return nil, fmt.Errorf("failed to authenticate with TastyTrade: %w", err)
+	}
+
 	endpoint := fmt.Sprintf("/accounts/%s/positions", p.accountID)
 	response, err := p.makeAuthenticatedRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get positions: %w", err)
 	}
 
-	var apiResponse struct {
-		Data struct {
-			Items []struct {
-				Symbol           string  `json:"symbol"`
-				InstrumentType   string  `json:"instrument-type"`
-				Quantity         float64 `json:"quantity"`
-				AverageOpenPrice float64 `json:"average-open-price"`
-				ClosePrice       float64 `json:"close-price"`
-				Multiplier       float64 `json:"multiplier"`
-				CostEffect       string  `json:"cost-effect"`
-				CreatedAt        string  `json:"created-at"`
-			} `json:"items"`
-		} `json:"data"`
-	}
-
+	// Parse response as generic map (like Python) to handle flexible field types
+	var apiResponse map[string]interface{}
 	if err := json.Unmarshal(response, &apiResponse); err != nil {
 		return nil, fmt.Errorf("failed to parse positions response: %w", err)
 	}
 
+	// Extract items from nested structure - same as Python
+	data, ok := apiResponse["data"].(map[string]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid response structure: missing data")
+	}
+
+	items, ok := data["items"].([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid response structure: missing items")
+	}
+
+	// Transform TastyTrade positions to our standard model - same as Python
 	var positions []*models.Position
-	for _, item := range apiResponse.Data.Items {
-		// Determine asset class
-		assetClass := "us_equity"
-		if item.InstrumentType == "Equity Option" {
-			assetClass = "us_option"
+	for _, item := range items {
+		if positionData, ok := item.(map[string]interface{}); ok {
+			position := p.transformTastyTradePosition(positionData)
+			if position != nil {
+				positions = append(positions, position)
+			}
 		}
-
-		// Determine side
-		side := "long"
-		if item.Quantity < 0 {
-			side = "short"
-		}
-
-		// Calculate values
-		multiplier := item.Multiplier
-		if multiplier == 0 {
-			multiplier = 1
-		}
-
-		costBasis := item.AverageOpenPrice * item.Quantity * multiplier
-		marketValue := item.ClosePrice * item.Quantity * multiplier
-		unrealizedPL := marketValue - costBasis
-
-		// Handle cost effect
-		if item.CostEffect == "Credit" {
-			costBasis = -costBasis
-		}
-
-		position := &models.Position{
-			Symbol:        item.Symbol,
-			Qty:           item.Quantity,
-			Side:          side,
-			MarketValue:   marketValue,
-			CostBasis:     costBasis,
-			UnrealizedPL:  unrealizedPL,
-			CurrentPrice:  item.ClosePrice,
-			AvgEntryPrice: item.AverageOpenPrice,
-			AssetClass:    assetClass,
-			DateAcquired:  &item.CreatedAt,
-		}
-		positions = append(positions, position)
 	}
 
 	return positions, nil
@@ -2947,6 +2916,79 @@ func (p *TastyTradeProvider) processSuccessfulPreviewResponse(response map[strin
 }
 
 // === Helper Methods ===
+
+// transformTastyTradePosition transforms TastyTrade position to our standard model.
+// Exact conversion of Python _transform_tastytrade_position method.
+func (p *TastyTradeProvider) transformTastyTradePosition(rawPosition map[string]interface{}) *models.Position {
+	symbol := getString(rawPosition, "symbol")
+	
+	// Convert TastyTrade symbol to standard OCC format for UI consistency - same as Python
+	standardSymbol := p.convertSymbolToStandardFormat(symbol)
+	
+	// Map TastyTrade instrument-type to our standard asset_class - same as Python
+	instrumentType := getString(rawPosition, "instrument-type")
+	var assetClass string
+	if instrumentType == "Equity" {
+		assetClass = "us_equity"
+	} else if instrumentType == "Equity Option" {
+		assetClass = "us_option"
+	} else {
+		assetClass = "unknown"
+	}
+	
+	// Determine side based on quantity - same as Python
+	qty := getFloat(rawPosition, "quantity")
+	var side string
+	if qty >= 0 {
+		side = "long"
+	} else {
+		side = "short"
+	}
+	
+	// Get TastyTrade-specific fields - same as Python
+	avgOpenPrice := getFloat(rawPosition, "average-open-price")
+	closePrice := getFloat(rawPosition, "close-price")
+	quantity := qty
+	multiplier := getFloat(rawPosition, "multiplier")
+	if multiplier == 0 {
+		multiplier = 1 // Default multiplier
+	}
+	
+	// Calculate cost basis (total amount paid/received for the position) - same as Python
+	costBasis := avgOpenPrice * quantity * multiplier
+	
+	// Calculate current market value - same as Python
+	marketValue := closePrice * quantity * multiplier
+	
+	// Calculate unrealized P/L - same as Python
+	unrealizedPL := marketValue - costBasis
+	
+	// Handle cost-effect (Credit means we received money, so cost_basis should be negative) - same as Python
+	costEffect := getString(rawPosition, "cost-effect")
+	if costEffect == "Credit" {
+		costBasis = -abs(costBasis) // Make cost basis negative for credits
+	}
+	
+	// Handle date-acquired field - same as Python
+	dateAcquired := getString(rawPosition, "created-at")
+	var dateAcquiredPtr *string
+	if dateAcquired != "" {
+		dateAcquiredPtr = &dateAcquired
+	}
+	
+	return &models.Position{
+		Symbol:        standardSymbol, // UI gets standard OCC format
+		Qty:           quantity,
+		Side:          side,
+		MarketValue:   marketValue,
+		CostBasis:     costBasis,
+		UnrealizedPL:  unrealizedPL,
+		CurrentPrice:  closePrice,
+		AvgEntryPrice: avgOpenPrice, // Use average-open-price directly
+		AssetClass:    assetClass,
+		DateAcquired:  dateAcquiredPtr,
+	}
+}
 
 // convertSymbolToStandardFormat converts TastyTrade symbol to standard OCC format.
 // Handles both:
