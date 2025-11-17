@@ -18,6 +18,7 @@ import (
 	"trade-backend-go/internal/models"
 	"trade-backend-go/internal/providers"
 	"trade-backend-go/internal/services/ivx"
+	"trade-backend-go/internal/services/watchlist"
 	"trade-backend-go/internal/streaming"
 
 	"github.com/gin-gonic/gin"
@@ -57,6 +58,9 @@ func main() {
 
 	// Initialize IVx services
 	ivxCache := ivx.NewCache()
+	
+	// Initialize watchlist manager
+	watchlistMgr := watchlist.GetManager()
 
 	// Initialize streaming manager and connect to providers
 	streamingMgr := streaming.GetStreamingManager()
@@ -378,8 +382,12 @@ func main() {
 			return
 		}
 		
+		log.Printf("DEBUG: Multi-leg order request received: %+v", orderRequest)
+		
 		order, err := providerManager.PlaceMultiLegOrder(c.Request.Context(), orderRequest)
 		if err != nil {
+			log.Printf("ERROR: PlaceMultiLegOrder failed: %v (type: %T)", err, err)
+			log.Printf("ERROR: Full error details: %+v", err)
 			c.JSON(500, gin.H{
 				"success": false,
 				"message": err.Error(),
@@ -1225,6 +1233,313 @@ func main() {
 		}, nil, stringPtr(fmt.Sprintf("Calculated IVx data for %s (%d expirations) in %.2fs", symbol, len(ivxResults), calculationTime)))
 
 		c.JSON(200, response)
+	})
+	
+	// Watchlist endpoints - exact same paths as Python
+	router.GET("/watchlists", func(c *gin.Context) {
+		data := watchlistMgr.GetAllWatchlists()
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    data,
+			"message": fmt.Sprintf("Retrieved %d watchlists", data.TotalWatchlists),
+		})
+	})
+	
+	router.GET("/watchlists/active", func(c *gin.Context) {
+		activeWatchlist := watchlistMgr.GetActiveWatchlist()
+		activeWatchlistID := watchlistMgr.GetActiveWatchlistID()
+		
+		if activeWatchlist == nil {
+			c.JSON(404, gin.H{
+				"success": false,
+				"message": "No active watchlist found",
+			})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"active_watchlist_id": activeWatchlistID,
+				"active_watchlist":    activeWatchlist,
+			},
+			"message": "Retrieved active watchlist",
+		})
+	})
+	
+	router.PUT("/watchlists/active", func(c *gin.Context) {
+		var request models.SetActiveWatchlistRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request: " + err.Error(),
+			})
+			return
+		}
+		
+		if err := watchlistMgr.SetActiveWatchlist(request.WatchlistID); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		activeWatchlist := watchlistMgr.GetActiveWatchlist()
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"active_watchlist_id": request.WatchlistID,
+				"active_watchlist":    activeWatchlist,
+			},
+			"message": fmt.Sprintf("Active watchlist set to '%s'", request.WatchlistID),
+		})
+	})
+	
+	router.GET("/watchlists/:watchlist_id", func(c *gin.Context) {
+		watchlistID := c.Param("watchlist_id")
+		watchlist := watchlistMgr.GetWatchlist(watchlistID)
+		
+		if watchlist == nil {
+			c.JSON(404, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("Watchlist '%s' not found", watchlistID),
+			})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    watchlist,
+			"message": fmt.Sprintf("Retrieved watchlist '%s'", watchlistID),
+		})
+	})
+	
+	router.POST("/watchlists", func(c *gin.Context) {
+		var request models.CreateWatchlistRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request: " + err.Error(),
+			})
+			return
+		}
+		
+		if err := request.Validate(); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		watchlistID, err := watchlistMgr.CreateWatchlist(request.Name, request.Symbols)
+		if err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		watchlist := watchlistMgr.GetWatchlist(watchlistID)
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"watchlist_id": watchlistID,
+				"watchlist":    watchlist,
+			},
+			"message": fmt.Sprintf("Watchlist '%s' created successfully", request.Name),
+		})
+	})
+	
+	router.PUT("/watchlists/:watchlist_id", func(c *gin.Context) {
+		watchlistID := c.Param("watchlist_id")
+		
+		var request models.UpdateWatchlistRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request: " + err.Error(),
+			})
+			return
+		}
+		
+		if err := request.Validate(); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		updated, err := watchlistMgr.UpdateWatchlist(watchlistID, request.Name, request.Symbols)
+		if err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		if !updated {
+			c.JSON(200, gin.H{
+				"success": true,
+				"data":    map[string]interface{}{"watchlist_id": watchlistID},
+				"message": "No changes made to watchlist",
+			})
+			return
+		}
+		
+		watchlist := watchlistMgr.GetWatchlist(watchlistID)
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"watchlist_id": watchlistID,
+				"watchlist":    watchlist,
+			},
+			"message": fmt.Sprintf("Watchlist '%s' updated successfully", watchlistID),
+		})
+	})
+	
+	router.DELETE("/watchlists/:watchlist_id", func(c *gin.Context) {
+		watchlistID := c.Param("watchlist_id")
+		
+		if err := watchlistMgr.DeleteWatchlist(watchlistID); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    map[string]interface{}{"watchlist_id": watchlistID, "deleted": true},
+			"message": fmt.Sprintf("Watchlist '%s' deleted successfully", watchlistID),
+		})
+	})
+	
+	router.POST("/watchlists/:watchlist_id/symbols", func(c *gin.Context) {
+		watchlistID := c.Param("watchlist_id")
+		
+		var request models.AddSymbolRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request: " + err.Error(),
+			})
+			return
+		}
+		
+		if err := request.Validate(); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		// Basic symbol validation
+		if !watchlistMgr.ValidateSymbol(request.Symbol) {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": fmt.Sprintf("Invalid symbol: %s", request.Symbol),
+			})
+			return
+		}
+		
+		if err := watchlistMgr.AddSymbol(watchlistID, request.Symbol); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		watchlist := watchlistMgr.GetWatchlist(watchlistID)
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"watchlist_id": watchlistID,
+				"symbol":       request.Symbol,
+				"watchlist":    watchlist,
+			},
+			"message": fmt.Sprintf("Symbol '%s' added to watchlist", request.Symbol),
+		})
+	})
+	
+	router.DELETE("/watchlists/:watchlist_id/symbols/:symbol", func(c *gin.Context) {
+		watchlistID := c.Param("watchlist_id")
+		symbol := c.Param("symbol")
+		
+		if err := watchlistMgr.RemoveSymbol(watchlistID, symbol); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		watchlist := watchlistMgr.GetWatchlist(watchlistID)
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"watchlist_id": watchlistID,
+				"symbol":       symbol,
+				"watchlist":    watchlist,
+			},
+			"message": fmt.Sprintf("Symbol '%s' removed from watchlist", symbol),
+		})
+	})
+	
+	router.POST("/watchlists/search", func(c *gin.Context) {
+		var request models.SearchWatchlistsRequest
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request: " + err.Error(),
+			})
+			return
+		}
+		
+		if err := request.Validate(); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": err.Error(),
+			})
+			return
+		}
+		
+		results := watchlistMgr.SearchWatchlists(request.Query)
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"query":         request.Query,
+				"results":       results,
+				"total_results": len(results),
+			},
+			"message": fmt.Sprintf("Found %d watchlists matching '%s'", len(results), request.Query),
+		})
+	})
+	
+	router.GET("/watchlists/symbols/all", func(c *gin.Context) {
+		symbols := watchlistMgr.GetAllSymbols()
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"symbols":       symbols,
+				"total_symbols": len(symbols),
+			},
+			"message": fmt.Sprintf("Retrieved %d unique symbols from all watchlists", len(symbols)),
+		})
 	})
 	
 	// WebSocket endpoint - exact same path as Python

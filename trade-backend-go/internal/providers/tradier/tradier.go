@@ -6,36 +6,82 @@ import (
 	"fmt"
 	"log/slog"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"trade-backend-go/internal/models"
 	"trade-backend-go/internal/providers/base"
 	"trade-backend-go/internal/utils"
+
+	"github.com/gorilla/websocket"
 )
+
+// weeklyMap maps index symbols to their weekly option root symbols
+// This handles cases where weekly options use different root symbols than the underlying
+var weeklyMap = map[string]string{
+	"SPX": "SPXW",
+	"NDX": "NDXP",
+	"RUT": "RUTW",
+	"VIX": "VIXW",
+}
 
 // TradierProvider implements the Provider interface for Tradier Brokerage API.
 // Exact conversion of Python TradierProvider class.
+// StreamingTask manages a streaming task with proper cancellation and completion tracking
+type StreamingTask struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+}
+
 type TradierProvider struct {
 	*base.BaseProviderImpl
-	accountID string
-	apiKey    string
-	baseURL   string
-	streamURL string
-	client    *utils.HTTPClient
+	accountID         string
+	apiKey            string
+	baseURL           string
+	streamURL         string
+	client            *utils.HTTPClient
+	sessionID         string
+	streamConnection  *websocket.Conn
+	connectionReady   chan struct{}
+	subscribedSymbols map[string]bool
+	streamingQueue    chan *models.MarketData
+	streamingCache    base.StreamingCache
+	streamMutex         sync.RWMutex
+	writeMutex          sync.Mutex
+	streamCancel        context.CancelFunc
+	IsConnected         bool
+	streamingDisabled   bool
+	lastConnectionError time.Time
+	connectionInProgress bool // Prevent recursive connection attempts
+	lastSubscriptionTime time.Time // Track recent subscriptions to prevent premature recovery
+	// Channel-based architecture like TastyTrade
+	messageChan         chan map[string]interface{}
+	errorChan           chan error
+	streamingTask       *StreamingTask
+	shutdownEvent       chan struct{}
+	writeLock           sync.Mutex
+	recvLock            sync.Mutex
 }
 
 // NewTradierProvider creates a new Tradier provider instance.
 // Exact conversion of Python TradierProvider.__init__ method.
 func NewTradierProvider(accountID, apiKey, baseURL, streamURL string) *TradierProvider {
 	return &TradierProvider{
-		BaseProviderImpl: base.NewBaseProvider("Tradier"),
-		accountID:        accountID,
-		apiKey:           apiKey,
-		baseURL:          baseURL,
-		streamURL:        streamURL,
-		client:           utils.NewHTTPClient(),
+		BaseProviderImpl:  base.NewBaseProvider("Tradier"),
+		accountID:         accountID,
+		apiKey:            apiKey,
+		baseURL:           baseURL,
+		streamURL:         streamURL,
+		client:            utils.NewHTTPClient(),
+		connectionReady:   make(chan struct{}),
+		subscribedSymbols: make(map[string]bool),
+		streamingQueue:    make(chan *models.MarketData, 1000), // Buffered channel like Python queue
+		messageChan:       make(chan map[string]interface{}, 100), // Buffered to avoid blocking reader
+		errorChan:         make(chan error, 1),
+		shutdownEvent:     make(chan struct{}),
 	}
 }
 
@@ -229,6 +275,16 @@ func (t *TradierProvider) GetExpirationDates(ctx context.Context, symbol string)
 		})
 	}
 	
+	// Sort expiration dates chronologically
+	sort.Slice(enhancedDates, func(i, j int) bool {
+		dateI, okI := enhancedDates[i]["date"].(string)
+		dateJ, okJ := enhancedDates[j]["date"].(string)
+		if !okI || !okJ {
+			return false
+		}
+		return dateI < dateJ
+	})
+	
 	return enhancedDates, nil
 }
 
@@ -296,9 +352,42 @@ func (t *TradierProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 		// Extract root from option symbol (OCC format)
 		root := strings.ToUpper(optionSymbol[:len(optionSymbol)-15])
 		
+		// Check for exact match
 		if root == upperSymbol {
 			filteredOptions = append(filteredOptions, option)
+			continue
 		}
+		
+		// Check weekly map: if requested symbol maps to a weekly root, accept that root
+		if weeklyRoot, ok := weeklyMap[upperSymbol]; ok && root == weeklyRoot {
+			filteredOptions = append(filteredOptions, option)
+			continue
+		}
+		
+		// Check reverse: if root is in weekly map and maps to requested symbol
+		for indexSymbol, weeklyRoot := range weeklyMap {
+			if root == indexSymbol && upperSymbol == weeklyRoot {
+				filteredOptions = append(filteredOptions, option)
+				break
+			}
+		}
+	}
+	// Diagnostic: if filtering removed everything, log raw response details to help debug root/format mismatches
+	if len(filteredOptions) == 0 {
+		var sampleSymbols []string
+		for i, opt := range options {
+			if i >= 10 {
+				break
+			}
+			if osym, ok := opt["symbol"].(string); ok {
+				root := ""
+				if len(osym) >= 15 {
+					root = strings.ToUpper(osym[:len(osym)-15])
+				}
+				sampleSymbols = append(sampleSymbols, fmt.Sprintf("%s(root=%s)", osym, root))
+			}
+		}
+		slog.Warn("Tradier: Filtered options empty after root filtering", "requestedSymbol", symbol, "apiSymbol", apiSymbol, "expiry", expiry, "totalOptions", len(options), "sampleSymbols", sampleSymbols)
 	}
 	
 	// Transform contracts
@@ -313,6 +402,15 @@ func (t *TradierProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 	// Apply strike filtering if underlying price is provided
 	if underlyingPrice != nil && len(contracts) > 0 {
 		contracts = t.filterByStrikeCount(contracts, *underlyingPrice, strikeCount)
+	} else {
+		// Sort all contracts by strike price and option type for consistent ordering
+		sort.Slice(contracts, func(i, j int) bool {
+			if contracts[i].StrikePrice != contracts[j].StrikePrice {
+				return contracts[i].StrikePrice < contracts[j].StrikePrice
+			}
+			// If strikes are equal, sort by option type (calls first)
+			return contracts[i].Type == "call" && contracts[j].Type == "put"
+		})
 	}
 	
 	return contracts, nil
@@ -349,17 +447,55 @@ func (t *TradierProvider) transformOptionContract(rawContract map[string]interfa
 		openInterest = &oi
 	}
 	
+	// Extract Greeks if present (when greeks=true is passed to API)
+	var impliedVolatility, delta, gamma, theta, vega *float64
+	if greeksData, ok := rawContract["greeks"].(map[string]interface{}); ok {
+		// DEBUG: Log that we found Greeks data
+		keys := make([]string, 0, len(greeksData))
+		for k := range greeksData {
+			keys = append(keys, k)
+		}
+		slog.Debug("Tradier: Found greeks object in contract", "symbol", symbol, "greeksKeys", keys)
+		
+		if midIV, ok := greeksData["mid_iv"].(float64); ok {
+			impliedVolatility = &midIV
+			slog.Debug("Tradier: Extracted mid_iv", "symbol", symbol, "iv", midIV)
+		} else {
+			slog.Debug("Tradier: mid_iv not found or wrong type", "symbol", symbol, "greeksData", greeksData)
+		}
+		if deltaVal, ok := greeksData["delta"].(float64); ok {
+			delta = &deltaVal
+		}
+		if gammaVal, ok := greeksData["gamma"].(float64); ok {
+			gamma = &gammaVal
+		}
+		if thetaVal, ok := greeksData["theta"].(float64); ok {
+			theta = &thetaVal
+		}
+		if vegaVal, ok := greeksData["vega"].(float64); ok {
+			vega = &vegaVal
+		}
+	} else {
+		// DEBUG: Log that Greeks object was not found
+		slog.Debug("Tradier: No greeks object in contract", "symbol", symbol, "hasGreeksKey", rawContract["greeks"] != nil)
+	}
+	
 	return &models.OptionContract{
-		Symbol:           symbol,
-		UnderlyingSymbol: underlying,
-		ExpirationDate:   expirationDate,
-		StrikePrice:      strike,
-		Type:             strings.ToLower(optionType),
-		Bid:              bid,
-		Ask:              ask,
-		ClosePrice:       closePrice,
-		Volume:           volume,
-		OpenInterest:     openInterest,
+		Symbol:            symbol,
+		UnderlyingSymbol:  underlying,
+		ExpirationDate:    expirationDate,
+		StrikePrice:       strike,
+		Type:              strings.ToLower(optionType),
+		Bid:               bid,
+		Ask:               ask,
+		ClosePrice:        closePrice,
+		Volume:            volume,
+		OpenInterest:      openInterest,
+		ImpliedVolatility: impliedVolatility,
+		Delta:             delta,
+		Gamma:             gamma,
+		Theta:             theta,
+		Vega:              vega,
 	}
 }
 
@@ -382,13 +518,7 @@ func (t *TradierProvider) filterByStrikeCount(contracts []*models.OptionContract
 	}
 	
 	// Sort strikes
-	for i := 0; i < len(strikes)-1; i++ {
-		for j := i + 1; j < len(strikes); j++ {
-			if strikes[i] > strikes[j] {
-				strikes[i], strikes[j] = strikes[j], strikes[i]
-			}
-		}
-	}
+	sort.Float64s(strikes)
 	
 	// Find ATM strike
 	minDiff := abs(strikes[0] - underlyingPrice)
@@ -419,13 +549,24 @@ func (t *TradierProvider) filterByStrikeCount(contracts []*models.OptionContract
 			filtered = append(filtered, contract)
 		}
 	}
-	
+
+	// Sort filtered contracts by strike price and option type for consistent ordering
+	sort.Slice(filtered, func(i, j int) bool {
+		if filtered[i].StrikePrice != filtered[j].StrikePrice {
+			return filtered[i].StrikePrice < filtered[j].StrikePrice
+		}
+		// If strikes are equal, sort by option type (calls first)
+		return filtered[i].Type == "call" && filtered[j].Type == "put"
+	})
+
 	return filtered
 }
 
 // GetOptionsGreeksBatch gets Greeks for multiple option symbols.
 // Exact conversion of Python get_options_greeks_batch method.
 func (t *TradierProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbols []string) (map[string]map[string]interface{}, error) {
+	slog.Info("🔍 GetOptionsGreeksBatch called", "symbolCount", len(optionSymbols), "symbols", optionSymbols)
+	
 	// Group symbols by underlying and expiration
 	symbolGroups := make(map[string]struct {
 		underlying string
@@ -436,6 +577,7 @@ func (t *TradierProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbo
 	for _, optionSymbol := range optionSymbols {
 		parsed := t.parseOptionSymbol(optionSymbol)
 		if parsed == nil {
+			slog.Warn("⚠️ Failed to parse option symbol", "symbol", optionSymbol)
 			continue
 		}
 		
@@ -447,47 +589,228 @@ func (t *TradierProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbo
 		symbolGroups[key] = group
 	}
 	
+	slog.Info("📊 Grouped symbols", "groupCount", len(symbolGroups))
+	
 	// Fetch Greeks for each group
 	greeksData := make(map[string]map[string]interface{})
 	
 	for _, group := range symbolGroups {
-		// Calculate strike count needed
-		strikeCount := max(len(group.symbols)*2, 50)
+		// Calculate strike count needed based on requested symbols
+		// Get all unique strikes from the requested symbols
+		strikesNeeded := make(map[float64]bool)
+		for _, symbol := range group.symbols {
+			parsed := t.parseOptionSymbol(symbol)
+			if parsed != nil {
+				strikesNeeded[parsed.Strike] = true
+			}
+		}
 		
-		contracts, err := t.GetOptionsChainBasic(ctx, group.underlying, group.expiry, nil, strikeCount, nil, nil)
+		// Use a strike count that covers all requested strikes plus some buffer
+		// This ensures we get all the strikes the frontend is asking for
+		strikeCount := max(len(strikesNeeded)*2, 50) // At least 50 strikes or 2x requested
+		
+		slog.Info("📈 Fetching options chain with Greeks", "underlying", group.underlying, "expiry", group.expiry, "strikeCount", strikeCount, "requestedSymbols", len(group.symbols))
+		
+		// CRITICAL FIX: Call GetOptionsChainSmart with include_greeks=true to get Greeks data
+		contracts, err := t.GetOptionsChainSmart(ctx, group.underlying, group.expiry, nil, strikeCount, true, false)
 		if err != nil {
-			slog.Error("Failed to get options chain for Greeks", "underlying", group.underlying, "expiry", group.expiry, "error", err)
+			slog.Error("❌ Failed to get options chain for Greeks", "underlying", group.underlying, "expiry", group.expiry, "error", err)
 			continue
 		}
 		
+		slog.Info("📦 Received contracts", "count", len(contracts))
+		
 		// Extract Greeks for requested symbols
+		matchedCount := 0
 		for _, contract := range contracts {
 			for _, requestedSymbol := range group.symbols {
 				if contract.Symbol == requestedSymbol {
+					matchedCount++
+					// Ensure we store a plain numeric float64 (or nil) for implied_volatility
+					var ivVal interface{}
+					if contract.ImpliedVolatility != nil {
+						ivVal = *contract.ImpliedVolatility
+					} else {
+						ivVal = nil
+					}
 					greeksData[contract.Symbol] = map[string]interface{}{
 						"delta":              contract.Delta,
 						"theta":              contract.Theta,
 						"gamma":              contract.Gamma,
 						"vega":               contract.Vega,
-						"implied_volatility": contract.ImpliedVolatility,
+						"implied_volatility": ivVal,
 					}
+					
+					// Log what we extracted
+					ivValue := "nil"
+					if contract.ImpliedVolatility != nil {
+						ivValue = fmt.Sprintf("%.4f", *contract.ImpliedVolatility)
+					}
+					slog.Info("✅ Extracted Greeks", "symbol", contract.Symbol, "iv", ivValue, "delta", contract.Delta, "gamma", contract.Gamma)
 				}
 			}
 		}
+		
+		slog.Info("🎯 Matched symbols", "matched", matchedCount, "requested", len(group.symbols))
 	}
 	
+	slog.Info("📊 GetOptionsGreeksBatch complete", "totalGreeksReturned", len(greeksData))
 	return greeksData, nil
 }
 
 // GetOptionsChainSmart gets smart options chain data.
 // Exact conversion of Python get_options_chain_smart method.
 func (t *TradierProvider) GetOptionsChainSmart(ctx context.Context, symbol, expiry string, underlyingPrice *float64, atmRange int, includeGreeks, strikesOnly bool) ([]*models.OptionContract, error) {
-	if includeGreeks {
-		// Use full options chain with Greeks - not implemented in basic version
-		return t.GetOptionsChainBasic(ctx, symbol, expiry, underlyingPrice, atmRange, nil, nil)
+	endpoint := fmt.Sprintf("%s/v1/markets/options/chains", t.baseURL)
+	
+	headers := map[string]string{
+		"Authorization": fmt.Sprintf("Bearer %s", t.apiKey),
+		"Accept":        "application/json",
 	}
 	
-	return t.GetOptionsChainBasic(ctx, symbol, expiry, underlyingPrice, atmRange, nil, nil)
+	// Determine API symbol to use
+	apiSymbol := symbol
+	if len(symbol) > 3 && (strings.HasSuffix(symbol, "W") || strings.HasSuffix(symbol, "P")) {
+		apiSymbol = symbol[:len(symbol)-1]
+	}
+	
+	params := make(map[string]string)
+	params["symbol"] = apiSymbol
+	params["expiration"] = expiry
+	// CRITICAL: Set greeks parameter based on includeGreeks flag
+	if includeGreeks {
+		params["greeks"] = "true"
+		slog.Debug("Tradier: Requesting options chain WITH Greeks", "symbol", symbol, "expiry", expiry)
+	} else {
+		params["greeks"] = "false"
+		slog.Debug("Tradier: Requesting options chain WITHOUT Greeks", "symbol", symbol, "expiry", expiry)
+	}
+	
+	resp, err := t.client.Get(ctx, endpoint, headers, params)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get options chain: %w", err)
+	}
+	
+	// DEBUG: Log raw response to see what Tradier is actually returning
+	slog.Debug("Tradier: Raw API response", "bodyLength", len(resp.Body), "includeGreeks", includeGreeks)
+	
+	var response struct {
+		Options struct {
+			Option interface{} `json:"option"`
+		} `json:"options"`
+	}
+	
+	if err := json.Unmarshal(resp.Body, &response); err != nil {
+		return nil, fmt.Errorf("failed to parse options chain response: %w", err)
+	}
+	
+	// Handle both single option (object) and multiple options (array)
+	var options []map[string]interface{}
+	switch v := response.Options.Option.(type) {
+	case map[string]interface{}:
+		options = []map[string]interface{}{v}
+	case []interface{}:
+		for _, item := range v {
+			if opt, ok := item.(map[string]interface{}); ok {
+				options = append(options, opt)
+			}
+		}
+	}
+	
+	// Filter contracts by root symbol
+	var filteredOptions []map[string]interface{}
+	upperSymbol := strings.ToUpper(symbol)
+	
+	for _, option := range options {
+		optionSymbol, ok := option["symbol"].(string)
+		if !ok || len(optionSymbol) < 15 {
+			continue
+		}
+		
+		// Extract root from option symbol (OCC format)
+		root := strings.ToUpper(optionSymbol[:len(optionSymbol)-15])
+		
+		// Check for exact match
+		if root == upperSymbol {
+			filteredOptions = append(filteredOptions, option)
+			continue
+		}
+		
+		// Check weekly map: if requested symbol maps to a weekly root, accept that root
+		if weeklyRoot, ok := weeklyMap[upperSymbol]; ok && root == weeklyRoot {
+			filteredOptions = append(filteredOptions, option)
+			continue
+		}
+		
+		// Check reverse: if root is in weekly map and maps to requested symbol
+		for indexSymbol, weeklyRoot := range weeklyMap {
+			if root == indexSymbol && upperSymbol == weeklyRoot {
+				filteredOptions = append(filteredOptions, option)
+				break
+			}
+		}
+	}
+	// Diagnostic: if filtering removed everything, log raw response details to help debug root/format mismatches
+	if len(filteredOptions) == 0 {
+		var sampleSymbols []string
+		for i, opt := range options {
+			if i >= 10 {
+				break
+			}
+			if osym, ok := opt["symbol"].(string); ok {
+				root := ""
+				if len(osym) >= 15 {
+					root = strings.ToUpper(osym[:len(osym)-15])
+				}
+				sampleSymbols = append(sampleSymbols, fmt.Sprintf("%s(root=%s)", osym, root))
+			}
+		}
+		slog.Warn("Tradier: Filtered options empty after root filtering", "requestedSymbol", symbol, "apiSymbol", apiSymbol, "totalOptions", len(options), "sampleSymbols", sampleSymbols)
+	}
+	
+	// Transform contracts with Greeks if requested
+	var contracts []*models.OptionContract
+	greeksFoundCount := 0
+	for i, option := range filteredOptions {
+		contract := t.transformOptionContract(option)
+		if contract != nil {
+			contracts = append(contracts, contract)
+			// DEBUG: Check if Greeks were extracted
+			if contract.ImpliedVolatility != nil {
+				greeksFoundCount++
+				if i < 3 { // Log first 3 contracts with Greeks
+					slog.Debug("Tradier: Contract with Greeks", 
+						"symbol", contract.Symbol, 
+						"iv", *contract.ImpliedVolatility,
+						"delta", contract.Delta,
+						"gamma", contract.Gamma,
+						"theta", contract.Theta,
+						"vega", contract.Vega)
+				}
+			}
+		}
+	}
+	
+	slog.Debug("Tradier: Greeks extraction summary", 
+		"totalContracts", len(contracts), 
+		"contractsWithGreeks", greeksFoundCount,
+		"includeGreeks", includeGreeks)
+	
+	// Apply strike filtering if underlying price is provided
+	if underlyingPrice != nil && len(contracts) > 0 {
+		contracts = t.filterByStrikeCount(contracts, *underlyingPrice, atmRange)
+	} else {
+		// Sort all contracts by strike price and option type for consistent ordering
+		sort.Slice(contracts, func(i, j int) bool {
+			if contracts[i].StrikePrice != contracts[j].StrikePrice {
+				return contracts[i].StrikePrice < contracts[j].StrikePrice
+			}
+			// If strikes are equal, sort by option type (calls first)
+			return contracts[i].Type == "call" && contracts[j].Type == "put"
+		})
+	}
+	
+	return contracts, nil
 }
 
 // GetPositions gets all current positions.
@@ -1543,42 +1866,838 @@ func (t *TradierProvider) GetHistoricalBars(ctx context.Context, symbol, timefra
 	return nil, fmt.Errorf("unsupported timeframe: %s", timeframe)
 }
 
-// ConnectStreaming connects to streaming data (placeholder implementation).
-// Tradier streaming would require WebSocket implementation.
+// createSession creates a Tradier streaming session.
+// Exact conversion of Python _create_session method.
+func (t *TradierProvider) createSession(ctx context.Context) error {
+	url := fmt.Sprintf("%s/v1/markets/events/session", t.baseURL)
+	headers := map[string]string{
+		"Authorization": fmt.Sprintf("Bearer %s", t.apiKey),
+		"Accept":        "application/json",
+	}
+
+	resp, err := t.client.Post(ctx, url, nil, headers)
+	if err != nil {
+		return fmt.Errorf("failed to create session: %w", err)
+	}
+
+	var response struct {
+		Stream struct {
+			SessionID string `json:"sessionid"`
+		} `json:"stream"`
+	}
+
+	if err := json.Unmarshal(resp.Body, &response); err != nil {
+		return fmt.Errorf("failed to parse session response: %w", err)
+	}
+
+	if response.Stream.SessionID == "" {
+		return fmt.Errorf("no session ID in response")
+	}
+
+	t.sessionID = response.Stream.SessionID
+	slog.Info("Tradier streaming session created", "sessionID", t.sessionID)
+	return nil
+}
+
+// ConnectStreaming connects to streaming data.
+// Enhanced version based on Python implementation with proper WebSocket lifecycle management.
 func (t *TradierProvider) ConnectStreaming(ctx context.Context) (bool, error) {
-	// Placeholder - Tradier streaming would require WebSocket implementation
-	// For now, return false to indicate streaming not implemented
-	return false, nil
+	slog.Info("Tradier: ConnectStreaming called")
+
+	// Lock for connection management
+	t.streamMutex.Lock()
+	defer t.streamMutex.Unlock()
+
+	// Prevent recursive connection attempts
+	if t.connectionInProgress {
+		return false, fmt.Errorf("connection already in progress")
+	}
+	t.connectionInProgress = true
+	defer func() { t.connectionInProgress = false }()
+
+	// Clear previous connection state
+	slog.Info("Tradier: Clearing previous connection state")
+	t.IsConnected = false
+	
+	// Reset connection ready channel if needed
+	select {
+	case <-t.connectionReady:
+		t.connectionReady = make(chan struct{})
+	default:
+	}
+
+	// Validate stream URL is set
+	if t.streamURL == "" {
+		slog.Error("Tradier: Stream URL is not configured")
+		return false, fmt.Errorf("stream URL is not configured")
+	}
+
+	// Check if streaming is temporarily disabled due to recent failures
+	if t.streamingDisabled && time.Since(t.lastConnectionError) < 5*time.Minute {
+		slog.Warn("Tradier: Streaming temporarily disabled due to recent failures")
+		return false, fmt.Errorf("streaming temporarily disabled")
+	}
+	t.streamingDisabled = false
+
+	// CRITICAL FIX: Only create a NEW session if we don't have one already
+	// Python implementation reuses sessions - we must do the same to avoid "too many sessions" error
+	if t.sessionID == "" {
+		slog.Info("Tradier: Creating NEW session...")
+		ctxWithTimeout, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		
+		if err := t.createSession(ctxWithTimeout); err != nil {
+			slog.Error("Tradier: Failed to create streaming session", "error", err)
+			return false, err
+		}
+		slog.Info("Tradier: NEW session created successfully", "sessionID", t.sessionID)
+	} else {
+		slog.Info("Tradier: REUSING existing session", "sessionID", t.sessionID)
+	}
+
+	// CRITICAL: Cancel previous stream handler FIRST to stop the reader
+	if t.streamCancel != nil {
+		slog.Info("Tradier: Cancelling old connection")
+		t.streamCancel()
+		
+		// IMPORTANT: Set a very short read deadline to unblock any pending ReadMessage() call
+		if t.streamConnection != nil {
+			t.streamConnection.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+			
+			// Wait for reader to detect cancellation and exit
+			time.Sleep(500 * time.Millisecond)
+			
+			// Now close the old connection
+			closeCtx, closeCancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer closeCancel()
+			
+			doneCh := make(chan struct{})
+			go func() {
+				defer close(doneCh)
+				t.streamConnection.Close()
+			}()
+			
+			select {
+			case <-doneCh:
+				slog.Debug("Tradier: Old connection closed")
+			case <-closeCtx.Done():
+				slog.Warn("Tradier: Timeout closing old connection")
+			}
+			
+			t.streamConnection = nil
+		}
+		
+		// CRITICAL FIX: Drain old error channel to prevent old errors from affecting new connection
+		drained := 0
+		drainLoop:
+		for {
+			select {
+			case <-t.errorChan:
+				drained++
+			case <-time.After(100 * time.Millisecond):
+				break drainLoop
+			}
+		}
+		if drained > 0 {
+			slog.Debug("Tradier: Drained stale errors", "count", drained)
+		}
+	}
+	
+	// CRITICAL: Create FRESH channels for the new connection
+	// This prevents old reader errors from affecting the new stream handler
+	t.messageChan = make(chan map[string]interface{}, 100)
+	t.errorChan = make(chan error, 10)
+
+	// Configure WebSocket dialer with proper settings matching Python implementation
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 15 * time.Second,
+		ReadBufferSize:   1024 * 1024, // 1MB read buffer
+		WriteBufferSize:  1024 * 1024, // 1MB write buffer
+	}
+
+	// Connect to WebSocket with timeout
+	slog.Info("Tradier: Connecting to WebSocket", "url", t.streamURL)
+	connCtx, connCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer connCancel()
+	
+	conn, resp, err := dialer.DialContext(connCtx, t.streamURL, nil)
+	if err != nil {
+		slog.Error("Tradier: Failed to connect to WebSocket", "error", err)
+		if resp != nil {
+			slog.Error("Tradier: WebSocket connection response", "status", resp.Status)
+		}
+		// Mark streaming as temporarily disabled on connection failure
+		t.streamingDisabled = true
+		t.lastConnectionError = time.Now()
+		return false, fmt.Errorf("failed to connect to WebSocket: %w", err)
+	}
+	slog.Info("Tradier: WebSocket connected successfully")
+
+	// Set connection options for better stability matching Python websockets library settings
+	conn.SetReadLimit(2 * 1024 * 1024) // 2MB message limit (matches Python max_size)
+	
+	// Set up ping/pong handling like Python implementation
+	conn.SetPingHandler(func(appData string) error {
+		slog.Debug("Tradier: Received ping, sending pong")
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+	})
+	
+	conn.SetPongHandler(func(appData string) error {
+		slog.Debug("Tradier: Received pong")
+		return nil
+	})
+
+	t.streamConnection = conn
+
+
+	// Keep-alive: send pings every 25 seconds and reset read deadline on pong
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPongHandler(func(appData string) error {
+		slog.Debug("Tradier: Received pong")
+		conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+		return nil
+	})
+
+	// Start ping ticker in its own goroutine (cancelled by streamCtx)
+	go func() {
+		ticker := time.NewTicker(25 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				t.writeMutex.Lock()
+				if t.streamConnection != nil {
+					if err := t.streamConnection.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
+						slog.Warn("Tradier: Failed to send ping", "error", err)
+					}
+				}
+				t.writeMutex.Unlock()
+			}
+		}
+	}()
+
+
+	// Start stream handler with proper context - it will signal ready when truly ready
+	streamCtx, cancel := context.WithCancel(context.Background())
+	t.streamCancel = cancel
+	
+	// Mark as connected before starting handler (handler needs this flag)
+	t.IsConnected = true
+	
+	go t.streamHandler(streamCtx)
+
+	// Wait for stream handler to signal ready (it will do so after reader is started)
+	select {
+	case <-t.connectionReady:
+		slog.Info("Tradier: Stream handler ready")
+	case <-time.After(10 * time.Second):
+		slog.Error("Tradier: Timeout waiting for stream handler to be ready")
+		cancel()
+		return false, fmt.Errorf("timeout waiting for stream handler")
+	case <-streamCtx.Done():
+		slog.Error("Tradier: Stream handler failed during initialization")
+		return false, fmt.Errorf("stream handler failed during initialization")
+	}
+
+	// CRITICAL: Add delay to allow Tradier server to fully initialize the session
+	// Tradier needs time to associate the WebSocket connection with the session ID
+	time.Sleep(2 * time.Second)
+
+	slog.Info("Tradier: Successfully connected to streaming", "sessionID", t.sessionID)
+	return true, nil
 }
 
-// DisconnectStreaming disconnects from streaming data (placeholder implementation).
+// DisconnectStreaming disconnects from streaming data.
+// Exact conversion of Python disconnect_streaming method with proper cleanup.
 func (t *TradierProvider) DisconnectStreaming(ctx context.Context) (bool, error) {
-	// Placeholder - Tradier streaming would require WebSocket implementation
-	return false, nil
+	slog.Info("Tradier: Disconnecting from streaming...")
+
+	// Lock for connection management
+	t.streamMutex.Lock()
+	defer t.streamMutex.Unlock()
+
+	// Clear connection state
+	t.IsConnected = false
+	t.sessionID = ""
+
+	// Cancel stream handler
+	if t.streamCancel != nil {
+		t.streamCancel()
+		t.streamCancel = nil
+	}
+
+	// Close WebSocket connection
+	if t.streamConnection != nil {
+		t.streamConnection.Close()
+		t.streamConnection = nil
+	}
+
+	// Clear subscribed symbols
+	for symbol := range t.subscribedSymbols {
+		delete(t.subscribedSymbols, symbol)
+	}
+
+	slog.Info("Tradier: Successfully disconnected from streaming")
+	return true, nil
 }
 
-// SubscribeToSymbols subscribes to real-time data for symbols (placeholder implementation).
+// readerGoroutine performs blocking reads from WebSocket and sends messages/errors to channels
+func (t *TradierProvider) readerGoroutine(ctx context.Context) {
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("Tradier: Reader panic recovered", "panic", r)
+		}
+		slog.Debug("Tradier: Reader goroutine exiting")
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Debug("Tradier: Reader context cancelled, exiting")
+			return
+		case <-t.shutdownEvent:
+			slog.Debug("Tradier: Reader shutdown requested")
+			return
+		default:
+			// Check if connection is still valid before reading
+			t.streamMutex.RLock()
+			conn := t.streamConnection
+			t.streamMutex.RUnlock()
+			
+			if conn == nil {
+				slog.Debug("Tradier: Connection is nil, reader exiting")
+				return
+			}
+			
+			// No timeout here - blocking read
+			t.recvLock.Lock()
+			_, messageBytes, err := conn.ReadMessage()
+			t.recvLock.Unlock()
+			
+			if err != nil {
+				// Check if context was cancelled - if so, this is expected
+				select {
+				case <-ctx.Done():
+					slog.Debug("Tradier: Read error after context cancel (expected)")
+					return
+				default:
+					// Real error - report it
+					slog.Error("Tradier: Reader encountered error", "error", err, "errorType", fmt.Sprintf("%T", err))
+					select {
+					case t.errorChan <- err:
+						slog.Error("Tradier: Sent error to processing loop", "error", err)
+					default:
+						slog.Warn("Tradier: Error channel full, could not send error")
+					}
+					return // Exit reader on any error
+				}
+			}
+			
+			// Parse JSON message
+			var message map[string]interface{}
+			if parseErr := json.Unmarshal(messageBytes, &message); parseErr != nil {
+				slog.Debug("Tradier: Failed to parse JSON message", "error", parseErr)
+				continue
+			}
+			
+			select {
+			case t.messageChan <- message:
+			case <-ctx.Done():
+				return
+			default:
+				slog.Warn("Tradier: Message channel full, dropping message")
+			}
+		}
+	}
+}
+
+func (t *TradierProvider) streamHandler(ctx context.Context) {
+	slog.Info("Tradier: Starting stream processor with channel-based architecture")
+	
+	// Create a unique handler ID to track if this handler has been superseded
+	handlerID := time.Now().UnixNano()
+	slog.Info("Tradier: Stream handler started", "handlerID", handlerID)
+	
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("Tradier: Stream processor panic recovered", "panic", r, "sessionID", t.sessionID, "handlerID", handlerID)
+		}
+		slog.Info("Tradier: Stream processor stopped", "handlerID", handlerID)
+	}()
+
+	currentSubscriptions := make(map[string]bool)
+	recoveryAttempt := 0
+	maxRecoveryAttempts := 3
+	readerStarted := false
+	readySignaled := false
+
+	for {
+		// CRITICAL: Check if context is cancelled at the start of each loop iteration
+		select {
+		case <-ctx.Done():
+			slog.Info("Tradier: Stream processor cancelled", "handlerID", handlerID)
+			return
+		case <-t.shutdownEvent:
+			slog.Info("Tradier: Stream processor shutdown requested", "handlerID", handlerID)
+			return
+		default:
+		}
+		
+		if t.IsConnected && t.streamConnection != nil {
+			// Start reader only once per connection
+			if !readerStarted {
+				go t.readerGoroutine(ctx)
+				readerStarted = true
+				
+				// Wait a moment for reader to initialize, then signal ready
+				time.Sleep(200 * time.Millisecond)
+				
+				if !readySignaled {
+					select {
+					case <-t.connectionReady:
+						// Already closed
+					default:
+						close(t.connectionReady)
+						readySignaled = true
+						slog.Info("Tradier: Stream processor ready", "handlerID", handlerID)
+					}
+				}
+			}
+
+			// CRITICAL FIX: Check for errors FIRST before processing messages
+			// This prevents the race condition where a message is processed right before an error
+			select {
+			case <-ctx.Done():
+				slog.Info("Tradier: Context cancelled (priority check)", "handlerID", handlerID)
+				return
+			case <-t.shutdownEvent:
+				slog.Info("Tradier: Shutdown (priority check)", "handlerID", handlerID)
+				return
+			case err := <-t.errorChan:
+				// Check if context is cancelled before triggering recovery
+				select {
+				case <-ctx.Done():
+					slog.Debug("Tradier: Ignoring error from cancelled handler", "error", err)
+					return
+				default:
+				}
+				
+				// Connection error from reader - trigger recovery
+				slog.Warn("Tradier: Connection error, attempting recovery", "error", err)
+				t.handleConnectionLoss(fmt.Sprintf("Reader error: %v", err), currentSubscriptions)
+				readerStarted = false
+				goto recovery
+			default:
+				// No error pending, proceed to check for messages
+			}
+
+			// Now process messages (only if no error was pending)
+			select {
+			case <-ctx.Done():
+				slog.Info("Tradier: Context cancelled in message loop", "handlerID", handlerID)
+				return
+			case <-t.shutdownEvent:
+				slog.Info("Tradier: Shutdown in message loop", "handlerID", handlerID)
+				return
+			case message := <-t.messageChan:
+				// Normal message - process it
+				t.processStreamMessage(message)
+				recoveryAttempt = 0 // reset on successful activity
+				continue // CRITICAL FIX: Continue to next iteration instead of falling through to recovery
+
+			case err := <-t.errorChan:
+				// Error arrived while waiting for message
+				select {
+				case <-ctx.Done():
+					slog.Info("Tradier: Ignoring error from cancelled handler", "error", err, "handlerID", handlerID)
+					return
+				default:
+				}
+				
+				slog.Error("Tradier: Connection error from reader - triggering recovery", "error", err, "handlerID", handlerID)
+				t.handleConnectionLoss(fmt.Sprintf("Reader error: %v", err), currentSubscriptions)
+				readerStarted = false
+				goto recovery
+
+			case <-time.After(90 * time.Second):
+				// Idle timeout - just log, do NOT recover
+				slog.Debug("Tradier: Idle - no traffic (normal when no quotes)", "handlerID", handlerID)
+				continue
+			}
+
+		} else {
+			slog.Debug("Tradier: Not connected, waiting...", "handlerID", handlerID, "isConnected", t.IsConnected, "hasConn", t.streamConnection != nil)
+			time.Sleep(1 * time.Second)
+			continue
+		}
+
+	recovery:
+		// Check if we should stop (context cancelled or shutdown)
+		select {
+		case <-ctx.Done():
+			slog.Info("Tradier: Context cancelled during recovery, stopping", "handlerID", handlerID)
+			return
+		case <-t.shutdownEvent:
+			slog.Info("Tradier: Shutdown requested during recovery, stopping", "handlerID", handlerID)
+			return
+		default:
+		}
+		
+		if recoveryAttempt >= maxRecoveryAttempts {
+			slog.Error("Tradier: Max recovery attempts exceeded - giving up", "handlerID", handlerID)
+			return
+		}
+
+		recoveryAttempt++
+		slog.Info("Tradier: Attempting recovery", "attempt", recoveryAttempt, "max", maxRecoveryAttempts, "handlerID", handlerID)
+
+		if t.attemptConnectionRecovery(ctx, currentSubscriptions, recoveryAttempt) {
+			slog.Info("Tradier: Recovery successful - resuming streaming", "handlerID", handlerID)
+			readerStarted = false
+			readySignaled = false // Reset ready signal for new connection
+			// IMPORTANT: Exit this handler - the new connection has its own handler
+			slog.Info("Tradier: Exiting old stream handler after successful recovery", "handlerID", handlerID)
+			return
+		}
+
+		// Backoff
+		delay := time.Duration(min(2*(1<<(recoveryAttempt-1)), 30)) * time.Second
+		if !t.lastSubscriptionTime.IsZero() && time.Since(t.lastSubscriptionTime) < 10*time.Second {
+			delay = 500 * time.Millisecond
+			slog.Info("Tradier: Fast retry after recent subscription", "handlerID", handlerID)
+		}
+
+		slog.Info("Tradier: Waiting before next attempt", "delay", delay, "handlerID", handlerID)
+		select {
+		case <-time.After(delay):
+		case <-ctx.Done():
+			slog.Info("Tradier: Context cancelled during backoff", "handlerID", handlerID)
+			return
+		case <-t.shutdownEvent:
+			slog.Info("Tradier: Shutdown during backoff", "handlerID", handlerID)
+			return
+		}
+	}
+}
+
+// processStreamMessage processes individual stream messages
+func (t *TradierProvider) processStreamMessage(message map[string]interface{}) {
+	msgType, ok := message["type"].(string)
+	if !ok {
+		msgType = "unknown"
+	}
+	
+	// Log messages at DEBUG level for troubleshooting (quotes are routine operations)
+	slog.Debug("Tradier: Received message", "type", msgType, "data", message)
+
+	switch msgType {
+	case "quote":
+		symbol, _ := message["symbol"].(string)
+		
+		// Validate subscription
+		if !t.subscribedSymbols[symbol] {
+			// Only warn for non-option symbols
+			if !t.isOptionSymbol(symbol) {
+				slog.Debug("Tradier: Received data for unsubscribed symbol", "symbol", symbol)
+			}
+			return
+		}
+
+		// Create market data object
+		timestamp := ""
+		if biddate, ok := message["biddate"].(string); ok {
+			timestamp = biddate
+		} else if ts, ok := message["timestamp"].(string); ok {
+			timestamp = ts
+		}
+
+		priceData := map[string]interface{}{
+			"bid":       message["bid"],
+			"ask":       message["ask"],
+			"last":      message["last"],
+			"volume":    message["volume"],
+			"timestamp": timestamp,
+		}
+
+		marketData := &models.MarketData{
+			Symbol:    symbol,
+			DataType:  "quote",
+			Timestamp: timestamp,
+			Data:      priceData,
+		}
+
+		// Send to cache or queue (like Python implementation)
+		if err := t.sendToCacheOrQueue(marketData); err != nil {
+			slog.Warn("Tradier: Failed to send market data", "error", err, "symbol", symbol)
+		}
+		
+	case "heartbeat":
+		slog.Debug("Tradier: Received heartbeat")
+		
+	case "session", "status":
+		slog.Info("Tradier: Received session/status confirmation", "type", msgType, "data", message)
+		
+	case "error":
+		slog.Error("Tradier: Received error message", "data", message)
+		
+	default:
+		slog.Debug("Tradier: Unknown message type", "type", msgType, "data", message)
+	}
+}
+
+// handleConnectionLoss handles connection loss by updating state and preparing for recovery
+func (t *TradierProvider) handleConnectionLoss(reason string, currentSubscriptions map[string]bool) {
+	// Skip if we're already connecting/recovering to prevent feedback loops
+	if t.connectionInProgress {
+		slog.Debug("Tradier: Ignoring connection loss during connection process", "reason", reason)
+		return
+	}
+	
+	slog.Warn("Tradier: Connection lost", "reason", reason)
+	
+	// Update connection state
+	t.IsConnected = false
+	t.connectionReady = make(chan struct{})
+	
+	// Store current subscriptions for recovery
+	if t.subscribedSymbols != nil {
+		for symbol := range t.subscribedSymbols {
+			currentSubscriptions[symbol] = true
+		}
+		slog.Info("Tradier: Stored subscriptions for recovery", "count", len(currentSubscriptions))
+	}
+	
+	// Clean up connection
+	if t.streamConnection != nil {
+		t.streamConnection.Close()
+		t.streamConnection = nil
+	}
+}
+
+// attemptConnectionRecovery attempts to recover the streaming connection and restore subscriptions
+func (t *TradierProvider) attemptConnectionRecovery(ctx context.Context, currentSubscriptions map[string]bool, attemptNumber int) bool {
+	slog.Info("Tradier: Starting connection recovery attempt", "attempt", attemptNumber)
+	
+	// CRITICAL: Check if we should even attempt recovery
+	// If context is already cancelled, don't try to recover
+	select {
+	case <-ctx.Done():
+		slog.Info("Tradier: Context cancelled, skipping recovery")
+		return false
+	default:
+	}
+	
+	// Reset streaming disabled flag to allow reconnection
+	t.streamingDisabled = false
+	t.lastConnectionError = time.Time{}
+	
+	// Create a fresh context for the new connection (not tied to the old handler's context)
+	recoveryCtx := context.Background()
+	
+	// Attempt to reconnect (but avoid recursive recovery)
+	success, err := t.ConnectStreaming(recoveryCtx)
+	if err != nil || !success {
+		slog.Error("Tradier: Connection recovery failed", "error", err)
+		return false
+	}
+	
+	slog.Info("Tradier: Connection recovery successful - new session established")
+	
+	// CRITICAL FIX: Add delay to ensure new connection is fully stable before restoring subscriptions
+	// This prevents subscription from using stale session ID during the transition
+	time.Sleep(500 * time.Millisecond)
+	slog.Info("Tradier: Post-recovery stabilization delay completed")
+	
+	// Restore subscriptions if we had any (without triggering more reconnects)
+	if len(currentSubscriptions) > 0 {
+		slog.Info("Tradier: Restoring subscriptions", "count", len(currentSubscriptions))
+		
+		// Convert map back to slice for subscription
+		var symbolsList []string
+		for symbol := range currentSubscriptions {
+			symbolsList = append(symbolsList, symbol)
+		}
+		
+		// Resubscribe to all symbols with the NEW session ID (SubscribeToSymbols will read current session)
+		success, err := t.SubscribeToSymbols(context.Background(), symbolsList, []string{"quote"})
+		if err != nil || !success {
+			slog.Warn("Tradier: Failed to restore some subscriptions", "error", err)
+			// Don't fail recovery just because subscription restoration failed
+		} else {
+			slog.Info("Tradier: Successfully restored subscriptions", "count", len(symbolsList))
+		}
+	}
+	
+	return true
+}
+
+// startStreamingTask starts the streaming data processing task.
+func (t *TradierProvider) startStreamingTask(ctx context.Context) {
+	taskCtx, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	
+	t.streamingTask = &StreamingTask{
+		cancel: cancel,
+		done:   done,
+	}
+	
+	go func() {
+		defer close(done)
+		t.streamHandler(taskCtx)
+	}()
+	
+	slog.Info("Tradier: Started streaming data processing task")
+}
+
+// SubscribeToSymbols subscribes to real-time data for symbols.
+// Enhanced version matching Python implementation with better error handling and connection management.
 func (t *TradierProvider) SubscribeToSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
-	// Placeholder - Tradier streaming would require WebSocket implementation
-	return false, nil
+	slog.Info("Tradier: SubscribeToSymbols called", "symbolCount", len(symbols))
+
+	// Check if we need to reconnect
+	t.streamMutex.RLock()
+	isConnected := t.IsConnected
+	hasSession := t.sessionID != ""
+	hasConn := t.streamConnection != nil
+	t.streamMutex.RUnlock()
+	
+	if !isConnected || !hasSession || !hasConn {
+		slog.Info("Tradier: Stream not connected, attempting to reconnect...", "connected", isConnected, "hasSession", hasSession, "hasConn", hasConn)
+		if success, err := t.ConnectStreaming(ctx); !success || err != nil {
+			slog.Error("Tradier: Failed to reconnect to Tradier stream. Cannot subscribe.", "error", err)
+			return false, fmt.Errorf("failed to reconnect: %w", err)
+		}
+		slog.Info("Tradier: Successfully reconnected for subscription")
+	}
+
+	// Wait for connection to be ready (like Python implementation)
+	select {
+	case <-t.connectionReady:
+		// Connection ready
+	case <-ctx.Done():
+		slog.Error("Tradier: Context cancelled while waiting for connection")
+		return false, ctx.Err()
+	case <-time.After(15 * time.Second):
+		slog.Error("Tradier: Timeout waiting for connection to be ready")
+		return false, fmt.Errorf("timeout waiting for connection")
+	}
+	
+	// Additional stability delay after ready signal to ensure reader is fully operational
+	time.Sleep(200 * time.Millisecond)
+
+	// CRITICAL FIX: Read session ID and connection at the EXACT moment of sending
+	// This prevents race condition where recovery creates new session while we're subscribing
+	t.streamMutex.RLock()
+	currentSessionID := t.sessionID
+	conn := t.streamConnection
+	t.streamMutex.RUnlock()
+
+	if conn == nil {
+		slog.Error("Tradier: WebSocket connection is nil during subscription")
+		return false, fmt.Errorf("WebSocket connection is nil")
+	}
+
+	if currentSessionID == "" {
+		slog.Error("Tradier: Session ID is empty during subscription")
+		return false, fmt.Errorf("session ID is empty")
+	}
+
+	// Create subscription payload with the CURRENT session ID
+	payload := map[string]interface{}{
+		"symbols":   symbols,
+		"sessionid": currentSessionID,
+		"filter":    []string{"quote"},
+	}
+
+	payloadBytes, err := json.Marshal(payload)
+	if err != nil {
+		return false, fmt.Errorf("failed to marshal subscription payload: %w", err)
+	}
+
+	slog.Info("Tradier: Sending subscription", "symbols", symbols, "sessionID", currentSessionID)
+	
+	// Use write lock to ensure thread-safe write
+	if err := t.writeMessage(websocket.TextMessage, payloadBytes); err != nil {
+		slog.Error("Tradier: Failed to send subscription message", "error", err)
+		// Mark as disconnected on write failure like Python implementation
+		t.streamMutex.Lock()
+		t.IsConnected = false
+		t.streamMutex.Unlock()
+		return false, fmt.Errorf("failed to send subscription message: %w", err)
+	}
+	
+	// Track subscription time to prevent premature recovery
+	t.lastSubscriptionTime = time.Now()
+
+	// IMPORTANT: Replace the entire subscription set like Python implementation
+	// Clear existing subscriptions first
+	for symbol := range t.subscribedSymbols {
+		delete(t.subscribedSymbols, symbol)
+	}
+	
+	// Add new subscriptions
+	for _, symbol := range symbols {
+		t.subscribedSymbols[symbol] = true
+	}
+
+	slog.Info("Tradier: Successfully subscribed to symbols", "count", len(symbols), "totalSubscribed", len(t.subscribedSymbols))
+	return true, nil
 }
 
-// UnsubscribeFromSymbols unsubscribes from real-time data for symbols (placeholder implementation).
+// UnsubscribeFromSymbols unsubscribes from real-time data for symbols.
+// Exact conversion of Python unsubscribe_from_symbols method.
 func (t *TradierProvider) UnsubscribeFromSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
-	// Placeholder - Tradier streaming would require WebSocket implementation
-	return false, nil
+	slog.Info("Tradier: Unsubscribing from symbols", "count", len(symbols))
+
+	// Remove from subscribed symbols tracking
+	for _, symbol := range symbols {
+		delete(t.subscribedSymbols, symbol)
+	}
+
+	slog.Info("Tradier: Successfully unsubscribed from symbols", "count", len(symbols))
+	return true, nil
 }
 
-// GetSubscribedSymbols gets currently subscribed symbols (placeholder implementation).
+// GetSubscribedSymbols gets currently subscribed symbols.
+// Exact conversion of Python get_subscribed_symbols method.
 func (t *TradierProvider) GetSubscribedSymbols() map[string]bool {
-	// Placeholder - return empty map
-	return make(map[string]bool)
+	// Return a copy to prevent external modification
+	result := make(map[string]bool)
+	for symbol, subscribed := range t.subscribedSymbols {
+		result[symbol] = subscribed
+	}
+	return result
 }
 
-// IsStreamingConnected checks if streaming connection is active (placeholder implementation).
+// IsStreamingConnected checks if streaming connection is active.
+// Exact conversion of Python is_streaming_connected method with WebSocket state check.
 func (t *TradierProvider) IsStreamingConnected() bool {
-	// Placeholder - streaming not implemented
-	return false
+	t.streamMutex.RLock()
+	defer t.streamMutex.RUnlock()
+	
+	return t.IsConnected && 
+		   t.sessionID != "" && 
+		   t.streamConnection != nil
+}
+
+// writeMessage safely writes a message to the WebSocket connection.
+func (t *TradierProvider) writeMessage(messageType int, data []byte) error {
+	t.writeMutex.Lock()
+	defer t.writeMutex.Unlock()
+
+	t.streamMutex.RLock()
+	conn := t.streamConnection
+	t.streamMutex.RUnlock()
+
+	if conn == nil {
+		return fmt.Errorf("WebSocket connection is nil")
+	}
+
+	// Set write deadline
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	return conn.WriteMessage(messageType, data)
 }
 
 // HealthCheck performs a health check on the provider.
@@ -1592,14 +2711,16 @@ func (t *TradierProvider) GetName() string {
 	return "tradier"
 }
 
-// SetStreamingQueue sets the queue for streaming data (placeholder implementation).
+// SetStreamingQueue sets the queue for streaming data.
+// Exact conversion of Python set_streaming_queue method.
 func (t *TradierProvider) SetStreamingQueue(queue chan *models.MarketData) {
-	// Placeholder - streaming not implemented
+	t.streamingQueue = queue
 }
 
-// SetStreamingCache sets the streaming cache for this provider (placeholder implementation).
+// SetStreamingCache sets the streaming cache for this provider.
+// Exact conversion of Python set_streaming_cache method.
 func (t *TradierProvider) SetStreamingCache(cache base.StreamingCache) {
-	// Placeholder - streaming not implemented
+	t.streamingCache = cache
 }
 
 // GetNextMarketDate gets the next trading date.
@@ -2066,4 +3187,34 @@ func convertLegsToOrderLegs(legs []map[string]interface{}) []models.OrderLeg {
 		})
 	}
 	return orderLegs
+}
+
+// sendToCacheOrQueue sends market data to cache if available, otherwise to queue.
+// Exact conversion of Python _send_to_cache_or_queue method.
+func (t *TradierProvider) sendToCacheOrQueue(marketData *models.MarketData) error {
+	// CRITICAL: Send to cache first (this triggers WebSocket broadcasts)
+	if t.streamingCache != nil {
+		if err := t.streamingCache.Update(marketData); err != nil {
+			slog.Error("Tradier: Failed to update streaming cache", "error", err, "symbol", marketData.Symbol)
+			return err
+		}
+		return nil // Cache update successful - this will trigger WebSocket broadcast
+	}
+	
+	// Fallback: Send to queue if cache not available (legacy support)
+	if t.streamingQueue != nil {
+		select {
+		case t.streamingQueue <- marketData:
+			return nil
+		case <-time.After(time.Second):
+			slog.Error("Tradier: Queue put timeout - queue may be full", "symbol", marketData.Symbol)
+			return fmt.Errorf("queue put timeout - queue may be full")
+		default:
+			slog.Error("Tradier: Queue full, skipping data point", "symbol", marketData.Symbol)
+			return fmt.Errorf("queue full, skipping data point")
+		}
+	}
+	
+	slog.Error("Tradier: No streaming queue or cache available!")
+	return fmt.Errorf("no streaming queue or cache available")
 }
