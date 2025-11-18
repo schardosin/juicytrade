@@ -30,6 +30,7 @@ type WebSocketClient struct {
 	subscriptions map[string]bool
 	lastPing      time.Time
 	mutex         sync.RWMutex
+	writeMutex    sync.Mutex // Protects concurrent writes to WebSocket connection
 }
 
 // WebSocketMessage represents incoming WebSocket messages
@@ -466,12 +467,38 @@ func (h *WebSocketHandler) broadcastMarketData(marketData *models.MarketData) er
 
 // sendToClientRaw sends a raw message to a specific WebSocket client
 func (h *WebSocketHandler) sendToClientRaw(conn *websocket.Conn, message map[string]interface{}) error {
+	// Get client to access write mutex
+	h.clientsMutex.RLock()
+	client, exists := h.clients[conn]
+	h.clientsMutex.RUnlock()
+	
+	if !exists {
+		return nil // Client disconnected
+	}
+	
+	// Serialize writes to prevent concurrent write panic
+	client.writeMutex.Lock()
+	defer client.writeMutex.Unlock()
+	
 	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return conn.WriteJSON(message)
 }
 
 // sendToClient sends a message to a specific WebSocket client
 func (h *WebSocketHandler) sendToClient(conn *websocket.Conn, response WebSocketResponse) error {
+	// Get client to access write mutex
+	h.clientsMutex.RLock()
+	client, exists := h.clients[conn]
+	h.clientsMutex.RUnlock()
+	
+	if !exists {
+		return nil // Client disconnected
+	}
+	
+	// Serialize writes to prevent concurrent write panic
+	client.writeMutex.Lock()
+	defer client.writeMutex.Unlock()
+	
 	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return conn.WriteJSON(response)
 }
@@ -512,9 +539,13 @@ func (h *WebSocketHandler) healthCheck() {
 			continue
 		}
 
-		// Send ping to client
+		// Send ping to client with proper synchronization
+		client.writeMutex.Lock()
 		conn.SetWriteDeadline(now.Add(10 * time.Second))
-		if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+		err := conn.WriteMessage(websocket.PingMessage, nil)
+		client.writeMutex.Unlock()
+		
+		if err != nil {
 			slog.Error("Failed to ping WebSocket client", "error", err)
 			disconnectedClients = append(disconnectedClients, conn)
 		}

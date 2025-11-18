@@ -51,7 +51,7 @@ func (cs *CredentialStore) loadCredentials() map[string]map[string]interface{} {
 		return make(map[string]map[string]interface{})
 	}
 	
-	slog.Info(fmt.Sprintf("✅ Loaded provider credentials from %s", credentialsPath))
+	slog.Debug(fmt.Sprintf("Loaded provider credentials from %s", credentialsPath))
 	return data
 }
 

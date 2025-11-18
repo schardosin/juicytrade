@@ -57,6 +57,7 @@ type TradierProvider struct {
 	lastConnectionError time.Time
 	connectionInProgress bool // Prevent recursive connection attempts
 	lastSubscriptionTime time.Time // Track recent subscriptions to prevent premature recovery
+	recoveryInProgress   bool // CRITICAL FIX: Track when recovery is happening to ignore old connection errors
 	// Channel-based architecture like TastyTrade
 	messageChan         chan map[string]interface{}
 	errorChan           chan error
@@ -565,7 +566,7 @@ func (t *TradierProvider) filterByStrikeCount(contracts []*models.OptionContract
 // GetOptionsGreeksBatch gets Greeks for multiple option symbols.
 // Exact conversion of Python get_options_greeks_batch method.
 func (t *TradierProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbols []string) (map[string]map[string]interface{}, error) {
-	slog.Info("🔍 GetOptionsGreeksBatch called", "symbolCount", len(optionSymbols), "symbols", optionSymbols)
+	slog.Debug("GetOptionsGreeksBatch called", "symbolCount", len(optionSymbols))
 	
 	// Group symbols by underlying and expiration
 	symbolGroups := make(map[string]struct {
@@ -577,7 +578,7 @@ func (t *TradierProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbo
 	for _, optionSymbol := range optionSymbols {
 		parsed := t.parseOptionSymbol(optionSymbol)
 		if parsed == nil {
-			slog.Warn("⚠️ Failed to parse option symbol", "symbol", optionSymbol)
+			slog.Warn("Failed to parse option symbol", "symbol", optionSymbol)
 			continue
 		}
 		
@@ -589,7 +590,7 @@ func (t *TradierProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbo
 		symbolGroups[key] = group
 	}
 	
-	slog.Info("📊 Grouped symbols", "groupCount", len(symbolGroups))
+	slog.Debug("Grouped symbols", "groupCount", len(symbolGroups))
 	
 	// Fetch Greeks for each group
 	greeksData := make(map[string]map[string]interface{})
@@ -609,16 +610,16 @@ func (t *TradierProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbo
 		// This ensures we get all the strikes the frontend is asking for
 		strikeCount := max(len(strikesNeeded)*2, 50) // At least 50 strikes or 2x requested
 		
-		slog.Info("📈 Fetching options chain with Greeks", "underlying", group.underlying, "expiry", group.expiry, "strikeCount", strikeCount, "requestedSymbols", len(group.symbols))
+		slog.Debug("Fetching options chain with Greeks", "underlying", group.underlying, "expiry", group.expiry, "strikeCount", strikeCount, "requestedSymbols", len(group.symbols))
 		
 		// CRITICAL FIX: Call GetOptionsChainSmart with include_greeks=true to get Greeks data
 		contracts, err := t.GetOptionsChainSmart(ctx, group.underlying, group.expiry, nil, strikeCount, true, false)
 		if err != nil {
-			slog.Error("❌ Failed to get options chain for Greeks", "underlying", group.underlying, "expiry", group.expiry, "error", err)
+			slog.Error("Failed to get options chain for Greeks", "underlying", group.underlying, "expiry", group.expiry, "error", err)
 			continue
 		}
 		
-		slog.Info("📦 Received contracts", "count", len(contracts))
+		slog.Debug("Received contracts", "count", len(contracts))
 		
 		// Extract Greeks for requested symbols
 		matchedCount := 0
@@ -641,20 +642,20 @@ func (t *TradierProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbo
 						"implied_volatility": ivVal,
 					}
 					
-					// Log what we extracted
+					// Log what we extracted at DEBUG level
 					ivValue := "nil"
 					if contract.ImpliedVolatility != nil {
 						ivValue = fmt.Sprintf("%.4f", *contract.ImpliedVolatility)
 					}
-					slog.Info("✅ Extracted Greeks", "symbol", contract.Symbol, "iv", ivValue, "delta", contract.Delta, "gamma", contract.Gamma)
+					slog.Debug("Extracted Greeks", "symbol", contract.Symbol, "iv", ivValue)
 				}
 			}
 		}
 		
-		slog.Info("🎯 Matched symbols", "matched", matchedCount, "requested", len(group.symbols))
+		slog.Debug("Matched symbols", "matched", matchedCount, "requested", len(group.symbols))
 	}
 	
-	slog.Info("📊 GetOptionsGreeksBatch complete", "totalGreeksReturned", len(greeksData))
+	slog.Debug("GetOptionsGreeksBatch complete", "totalGreeksReturned", len(greeksData))
 	return greeksData, nil
 }
 
@@ -2276,6 +2277,17 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 				slog.Info("Tradier: Shutdown (priority check)", "handlerID", handlerID)
 				return
 			case err := <-t.errorChan:
+				// CRITICAL FIX: Check if recovery is already in progress
+				// If so, this error is from the OLD connection being closed - ignore it
+				t.streamMutex.RLock()
+				recoveryActive := t.recoveryInProgress
+				t.streamMutex.RUnlock()
+				
+				if recoveryActive {
+					slog.Debug("Tradier: Ignoring error from old connection during recovery", "error", err, "handlerID", handlerID)
+					continue // Ignore errors from old connection
+				}
+				
 				// Check if context is cancelled before triggering recovery
 				select {
 				case <-ctx.Done():
@@ -2308,6 +2320,16 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 				continue // CRITICAL FIX: Continue to next iteration instead of falling through to recovery
 
 			case err := <-t.errorChan:
+				// CRITICAL FIX: Check if recovery is already in progress
+				t.streamMutex.RLock()
+				recoveryActive := t.recoveryInProgress
+				t.streamMutex.RUnlock()
+				
+				if recoveryActive {
+					slog.Debug("Tradier: Ignoring error from old connection during recovery", "error", err, "handlerID", handlerID)
+					continue
+				}
+				
 				// Error arrived while waiting for message
 				select {
 				case <-ctx.Done():
@@ -2479,6 +2501,18 @@ func (t *TradierProvider) handleConnectionLoss(reason string, currentSubscriptio
 // attemptConnectionRecovery attempts to recover the streaming connection and restore subscriptions
 func (t *TradierProvider) attemptConnectionRecovery(ctx context.Context, currentSubscriptions map[string]bool, attemptNumber int) bool {
 	slog.Info("Tradier: Starting connection recovery attempt", "attempt", attemptNumber)
+	
+	// CRITICAL FIX: Set recovery flag to prevent old connection errors from triggering new recovery
+	t.streamMutex.Lock()
+	t.recoveryInProgress = true
+	t.streamMutex.Unlock()
+	
+	defer func() {
+		// Clear recovery flag when done
+		t.streamMutex.Lock()
+		t.recoveryInProgress = false
+		t.streamMutex.Unlock()
+	}()
 	
 	// CRITICAL: Check if we should even attempt recovery
 	// If context is already cancelled, don't try to recover

@@ -19,6 +19,7 @@ type LatestValueCache struct {
 	data            map[string]*models.MarketData
 	lock            sync.RWMutex
 	updateCallbacks []func(*models.MarketData) error
+	healthManager   *StreamingHealthManager
 }
 
 // NewLatestValueCache creates a new latest value cache.
@@ -30,7 +31,7 @@ func NewLatestValueCache() *LatestValueCache {
 }
 
 // Update updates cache with new market data - maximum performance, no deduplication.
-// Exact conversion of Python update method.
+// Enhanced with health monitoring callback.
 func (c *LatestValueCache) Update(marketData *models.MarketData) error {
 	c.lock.Lock()
 	defer c.lock.Unlock()
@@ -43,6 +44,17 @@ func (c *LatestValueCache) Update(marketData *models.MarketData) error {
 	}
 
 	c.data[symbol] = marketData
+
+	// Notify health manager that data was received
+	if c.healthManager != nil {
+		// Record data received for all registered connections
+		// In a production system, we'd track which provider sent which data
+		c.healthManager.mutex.RLock()
+		for connID := range c.healthManager.connections {
+			c.healthManager.RecordDataReceived(connID)
+		}
+		c.healthManager.mutex.RUnlock()
+	}
 
 	// Call update callbacks
 	for _, callback := range c.updateCallbacks {
@@ -74,34 +86,49 @@ func (c *LatestValueCache) AddUpdateCallback(callback func(*models.MarketData)) 
 	c.updateCallbacks = append(c.updateCallbacks, wrappedCallback)
 }
 
+// SetHealthManager sets the health manager for data received tracking
+func (c *LatestValueCache) SetHealthManager(hm *StreamingHealthManager) {
+	c.lock.Lock()
+	defer c.lock.Unlock()
+	c.healthManager = hm
+}
+
 // StreamingManager manages streaming provider connections and aggregates subscriptions from all clients.
 // Supports independent quote and Greeks streams from different providers.
-// Exact conversion of Python StreamingManager class.
+// Enhanced with centralized health monitoring and automatic recovery.
 type StreamingManager struct {
-	quoteProviders       map[string]base.Provider
-	greeksProviders      map[string]base.Provider
-	latestCache          *LatestValueCache
-	quoteSubscriptions   map[string]bool
-	greeksSubscriptions  map[string]bool
-	isConnected          bool
-	shutdownEvent        chan struct{}
-	lock                 sync.RWMutex
+	quoteProviders      map[string]base.Provider
+	greeksProviders     map[string]base.Provider
+	latestCache         *LatestValueCache
+	quoteSubscriptions  map[string]bool
+	greeksSubscriptions map[string]bool
+	isConnected         bool
+	shutdownEvent       chan struct{}
+	lock                sync.RWMutex
+	
+	// Health monitoring
+	healthManager *StreamingHealthManager
 }
 
 // NewStreamingManager creates a new streaming manager.
 func NewStreamingManager() *StreamingManager {
+	healthManager := GetHealthManager()
+	cache := NewLatestValueCache()
+	cache.SetHealthManager(healthManager)
+	
 	return &StreamingManager{
 		quoteProviders:      make(map[string]base.Provider),
 		greeksProviders:     make(map[string]base.Provider),
-		latestCache:         NewLatestValueCache(),
+		latestCache:         cache,
 		quoteSubscriptions:  make(map[string]bool),
 		greeksSubscriptions: make(map[string]bool),
 		shutdownEvent:       make(chan struct{}),
+		healthManager:       healthManager,
 	}
 }
 
 // Connect connects to all streaming providers specified in the configuration.
-// Exact conversion of Python connect method.
+// Enhanced with health monitoring startup.
 func (sm *StreamingManager) Connect(ctx context.Context) error {
 	sm.lock.Lock()
 	defer sm.lock.Unlock()
@@ -162,17 +189,25 @@ func (sm *StreamingManager) Connect(ctx context.Context) error {
 	}
 
 	slog.Info("Streaming manager connected", "active_providers", activeProviders)
+	
+	// Start health monitoring
+	sm.healthManager.StartMonitoring(ctx)
+	
 	return nil
 }
 
 // connectQuoteProvider connects a provider for quote streaming.
-// Exact conversion of Python _connect_quote_provider method.
+// Enhanced with health monitoring registration.
 func (sm *StreamingManager) connectQuoteProvider(ctx context.Context, providerName string) error {
 	if _, exists := sm.quoteProviders[providerName]; !exists {
 		provider := providers.GlobalProviderManager.GetProvider(providerName)
 		if provider == nil {
 			return fmt.Errorf("provider %s not found", providerName)
 		}
+
+		// Register provider with health manager
+		sm.healthManager.RegisterProvider(providerName, provider)
+		sm.healthManager.RegisterConnection(providerName, providerName, "websocket")
 
 		// The provider already implements base.Provider which includes streaming methods
 		provider.SetStreamingCache(sm.latestCache)
@@ -185,8 +220,10 @@ func (sm *StreamingManager) connectQuoteProvider(ctx context.Context, providerNa
 
 		if connected {
 			slog.Info("Provider connected for quote streaming", "provider", providerName)
+			sm.healthManager.UpdateConnectionState(providerName, StateConnected)
 		} else {
 			slog.Error("Failed to connect provider for quotes", "provider", providerName)
+			sm.healthManager.UpdateConnectionState(providerName, StateFailed)
 		}
 	}
 
@@ -209,6 +246,10 @@ func (sm *StreamingManager) connectGreeksProvider(ctx context.Context, providerN
 				return fmt.Errorf("provider %s not found", providerName)
 			}
 
+			// Register with health manager
+			sm.healthManager.RegisterProvider(providerName, provider)
+			sm.healthManager.RegisterConnection(providerName+"_greeks", providerName, "websocket")
+
 			// The provider already implements base.Provider which includes streaming methods
 			provider.SetStreamingCache(sm.latestCache)
 			sm.greeksProviders[providerName] = provider
@@ -220,8 +261,10 @@ func (sm *StreamingManager) connectGreeksProvider(ctx context.Context, providerN
 
 			if connected {
 				slog.Info("Provider connected for Greeks streaming", "provider", providerName)
+				sm.healthManager.UpdateConnectionState(providerName+"_greeks", StateConnected)
 			} else {
 				slog.Error("Failed to connect provider for Greeks", "provider", providerName)
+				sm.healthManager.UpdateConnectionState(providerName+"_greeks", StateFailed)
 			}
 		}
 	}
@@ -547,7 +590,7 @@ func (sm *StreamingManager) GetSubscriptionStatus() map[string]interface{} {
 }
 
 // GetHealthStats gets detailed health statistics for streaming connections.
-// Exact conversion of Python get_health_stats method.
+// Enhanced to include health manager stats.
 func (sm *StreamingManager) GetHealthStats() map[string]interface{} {
 	sm.lock.RLock()
 	defer sm.lock.RUnlock()
@@ -571,25 +614,33 @@ func (sm *StreamingManager) GetHealthStats() map[string]interface{} {
 		allProviders[name] = true
 	}
 
+	// Get health manager stats
+	healthStatus := sm.healthManager.GetHealthStatus()
+
 	return map[string]interface{}{
-		"is_connected":    sm.isConnected,
-		"quote_providers": quoteProviders,
-		"greeks_providers": greeksProviders,
-		"total_providers": len(allProviders),
+		"is_connected":      sm.isConnected,
+		"quote_providers":   quoteProviders,
+		"greeks_providers":  greeksProviders,
+		"total_providers":   len(allProviders),
 		"subscription_counts": map[string]int{
 			"quotes": len(sm.quoteSubscriptions),
 			"greeks": len(sm.greeksSubscriptions),
 		},
+		"health": healthStatus,
 	}
 }
 
 // Disconnect disconnects all streaming providers.
-// Exact conversion of Python disconnect method.
+// Enhanced with health monitoring shutdown.
 func (sm *StreamingManager) Disconnect(ctx context.Context) error {
 	sm.lock.Lock()
 	defer sm.lock.Unlock()
 
 	slog.Info("Disconnecting streaming manager...")
+	
+	// Stop health monitoring
+	sm.healthManager.StopMonitoring()
+	
 	close(sm.shutdownEvent)
 
 	// Disconnect all providers (avoiding duplicates)

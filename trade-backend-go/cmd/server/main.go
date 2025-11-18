@@ -1671,8 +1671,6 @@ func processExpirationsParallel(ctx context.Context, expirationDates []map[strin
 		return []models.IVxExpiration{}
 	}
 
-	log.Printf("🔄 Processing %d expiration dates for %s", len(expirationDates), symbol)
-
 	// Use a semaphore for concurrency control (similar to Python's semaphore)
 	concurrencyLimit := 10 // Increased from 5 to reduce batching pauses
 	semaphore := make(chan struct{}, concurrencyLimit)
@@ -1694,8 +1692,6 @@ func processExpirationsParallel(ctx context.Context, expirationDates []map[strin
 		if dateStrSymbol == "" {
 			dateStrSymbol = symbol
 		}
-
-		log.Printf("📅 Processing expiration: %s", dateStr)
 
 		// Get basic options chain (same as Python - step 1)
 		optionsChain, err := providerManager.GetOptionsChainBasic(ctx, dateStrSymbol, dateStr, &underlyingPrice, 20, nil, &symbol)
@@ -1786,7 +1782,7 @@ func processExpirationsParallel(ctx context.Context, expirationDates []map[strin
 		// Calculate DTE with Eastern Time logic (same as Python)
 		dte, isExpired := calculateDaysToExpiration(dateStr)
 		if dte <= 0 && !isExpired {
-			log.Printf("⏰ Skipping truly expired expiration %s %s (DTE: %.4f)", symbol, dateStr, dte)
+			log.Printf("⚠️ Skipping truly expired expiration %s %s (DTE: %.4f)", symbol, dateStr, dte)
 			results <- nil
 			return
 		}
@@ -1839,7 +1835,6 @@ func processExpirationsParallel(ctx context.Context, expirationDates []map[strin
 	}
 
 	close(results)
-	log.Printf("✅ Successfully calculated IVx for %d/%d expirations for %s", len(ivxResults), len(expirationDates), symbol)
 
 	return ivxResults
 }

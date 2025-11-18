@@ -12,8 +12,9 @@ import (
 // ConfigManager manages provider configuration and routing.
 // Exact conversion of Python ProviderConfigManager class.
 type ConfigManager struct {
-	configFile string
-	config     map[string]string
+	configFile      string
+	config          map[string]string
+	credentialStore *CredentialStore // Cache credential store to avoid repeated file loads
 }
 
 // Default routing configuration - exact same as Python
@@ -33,7 +34,8 @@ var DefaultRouting = map[string]string{
 // Exact conversion of Python ProviderConfigManager.__init__ method.
 func NewConfigManager() *ConfigManager {
 	cm := &ConfigManager{
-		configFile: "provider_config.json",
+		configFile:      "provider_config.json",
+		credentialStore: NewCredentialStore(), // Load once and cache
 	}
 	cm.config = cm.loadConfig()
 	return cm
@@ -107,8 +109,7 @@ func (cm *ConfigManager) getConfigPath() string {
 func (cm *ConfigManager) GetConfig() map[string]string {
 	// Check if there are any active provider instances
 	// This logic matches the Python implementation
-	credentialStore := NewCredentialStore()
-	availableInstances := credentialStore.GetAllInstances()
+	availableInstances := cm.credentialStore.GetAllInstances()
 	
 	activeInstances := make(map[string]map[string]interface{})
 	for k, v := range availableInstances {
@@ -132,8 +133,7 @@ func (cm *ConfigManager) UpdateConfig(newConfig map[string]interface{}) bool {
 	validatedConfig := copyMap(cm.config)
 	
 	// Get available provider instances
-	credentialStore := NewCredentialStore()
-	availableInstances := credentialStore.GetAllInstances()
+	availableInstances := cm.credentialStore.GetAllInstances()
 	
 	for key, value := range newConfig {
 		if _, exists := DefaultRouting[key]; exists {
@@ -206,8 +206,7 @@ func (cm *ConfigManager) ResetConfig() {
 // Exact conversion of Python get_available_providers method.
 func (cm *ConfigManager) GetAvailableProviders() map[string]map[string]interface{} {
 	// Get available provider instances
-	credentialStore := NewCredentialStore()
-	availableInstances := credentialStore.GetAllInstances()
+	availableInstances := cm.credentialStore.GetAllInstances()
 	providerTypes := GetProviderTypes()
 	
 	result := make(map[string]map[string]interface{})
