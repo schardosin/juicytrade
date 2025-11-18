@@ -374,7 +374,7 @@ func hasDigitsInLast8(symbol string) bool {
 }
 
 // updateQuoteSubscriptions updates quote subscriptions on quote providers.
-// Exact conversion of Python _update_quote_subscriptions method.
+// Enhanced to send complete symbol list to providers (they decide whether to replace or add).
 func (sm *StreamingManager) updateQuoteSubscriptions(ctx context.Context, symbols map[string]bool) error {
 	// Convert current subscriptions to map for easier comparison
 	currentSubs := make(map[string]bool)
@@ -406,10 +406,21 @@ func (sm *StreamingManager) updateQuoteSubscriptions(ctx context.Context, symbol
 		}
 	}
 
-	// Subscribe to new symbols
+	// Subscribe to new symbols - IMPORTANT: Pass ALL symbols (existing + new)
+	// Each provider decides whether to replace or add based on their API requirements
 	if len(symbolsToAdd) > 0 {
-		slog.Info("Subscribing quotes to new symbols", "count", len(symbolsToAdd))
-		if err := sm.subscribeQuotesSafe(ctx, symbolsToAdd); err != nil {
+		// Build complete list of all symbols that should be subscribed
+		allSymbols := make([]string, 0, len(symbols))
+		for symbol := range symbols {
+			allSymbols = append(allSymbols, symbol)
+		}
+		
+		slog.Info("Subscribing quotes to symbols", 
+			"new_count", len(symbolsToAdd), 
+			"total_count", len(allSymbols))
+		
+		// Pass ALL symbols to providers - they handle replace vs add internally
+		if err := sm.subscribeQuotesSafe(ctx, allSymbols); err != nil {
 			return err
 		}
 	}
@@ -419,7 +430,7 @@ func (sm *StreamingManager) updateQuoteSubscriptions(ctx context.Context, symbol
 }
 
 // updateGreeksSubscriptions updates Greeks subscriptions on Greeks providers.
-// Exact conversion of Python _update_greeks_subscriptions method.
+// Enhanced to send complete symbol list to providers (they decide whether to replace or add).
 func (sm *StreamingManager) updateGreeksSubscriptions(ctx context.Context, optionSymbols map[string]bool) error {
 	// Convert current subscriptions to map for easier comparison
 	currentSubs := make(map[string]bool)
@@ -451,10 +462,21 @@ func (sm *StreamingManager) updateGreeksSubscriptions(ctx context.Context, optio
 		}
 	}
 
-	// Subscribe to new symbols
+	// Subscribe to new symbols - IMPORTANT: Pass ALL symbols (existing + new)
+	// Each provider decides whether to replace or add based on their API requirements
 	if len(symbolsToAdd) > 0 {
-		slog.Info("Subscribing Greeks to new symbols", "count", len(symbolsToAdd))
-		if err := sm.subscribeGreeksSafe(ctx, symbolsToAdd); err != nil {
+		// Build complete list of all symbols that should be subscribed
+		allSymbols := make([]string, 0, len(optionSymbols))
+		for symbol := range optionSymbols {
+			allSymbols = append(allSymbols, symbol)
+		}
+		
+		slog.Info("Subscribing Greeks to symbols", 
+			"new_count", len(symbolsToAdd), 
+			"total_count", len(allSymbols))
+		
+		// Pass ALL symbols to providers - they handle replace vs add internally
+		if err := sm.subscribeGreeksSafe(ctx, allSymbols); err != nil {
 			return err
 		}
 	}
