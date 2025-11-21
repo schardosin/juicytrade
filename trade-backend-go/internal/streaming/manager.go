@@ -58,9 +58,16 @@ func (c *LatestValueCache) Update(marketData *models.MarketData) error {
 
 	// Call update callbacks
 	for _, callback := range c.updateCallbacks {
-		if err := callback(marketData); err != nil {
-			slog.Error("Error in cache update callback", "error", err)
-		}
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					slog.Error("Panic in cache update callback", "panic", r)
+				}
+			}()
+			if err := callback(marketData); err != nil {
+				slog.Error("Error in cache update callback", "error", err)
+			}
+		}()
 	}
 
 	return nil
@@ -425,6 +432,17 @@ func (sm *StreamingManager) updateQuoteSubscriptions(ctx context.Context, symbol
 		}
 	}
 
+	// CRITICAL FIX: Always update HealthManager with the new full state for all quote providers
+	// This ensures that if we ONLY unsubscribed, the HealthManager still knows the new smaller list.
+	// This prevents "zombie" subscriptions from reappearing during recovery.
+	allSymbolsList := make([]string, 0, len(symbols))
+	for symbol := range symbols {
+		allSymbolsList = append(allSymbolsList, symbol)
+	}
+	for providerName := range sm.quoteProviders {
+		sm.healthManager.UpdateSubscriptions(providerName, allSymbolsList)
+	}
+
 	sm.quoteSubscriptions = symbols
 	return nil
 }
@@ -481,17 +499,37 @@ func (sm *StreamingManager) updateGreeksSubscriptions(ctx context.Context, optio
 		}
 	}
 
+	// CRITICAL FIX: Always update HealthManager with the new full state for all Greeks providers
+	allGreeksList := make([]string, 0, len(optionSymbols))
+	for symbol := range optionSymbols {
+		allGreeksList = append(allGreeksList, symbol)
+	}
+	for providerName := range sm.greeksProviders {
+		sm.healthManager.UpdateSubscriptions(providerName, allGreeksList)
+	}
+
 	sm.greeksSubscriptions = optionSymbols
 	return nil
 }
 
 // subscribeQuotesSafe safely subscribes to quote data on quote providers.
-// Exact conversion of Python _subscribe_quotes_safe method.
+// Enhanced to update health manager with subscription tracking.
 func (sm *StreamingManager) subscribeQuotesSafe(ctx context.Context, symbols []string) error {
 	for providerName, provider := range sm.quoteProviders {
 		// Convert symbols to provider format if needed
 		providerSymbols := sm.convertSymbolsToProviderFormat(symbols, providerName)
 		
+		// Update health manager with current subscriptions for recovery
+		sm.healthManager.UpdateSubscriptions(providerName, symbols)
+
+		// Ensure connection is healthy before subscribing (Python-style)
+		if healthyProvider, ok := provider.(interface{ EnsureHealthyConnection(context.Context) error }); ok {
+			if err := healthyProvider.EnsureHealthyConnection(ctx); err != nil {
+				slog.Error("Failed to ensure healthy connection", "provider", providerName, "error", err)
+				continue
+			}
+		}
+
 		_, err := provider.SubscribeToSymbols(ctx, providerSymbols, []string{"Quote"})
 		if err != nil {
 			slog.Error("Error subscribing quotes on provider", "provider", providerName, "error", err)
@@ -522,7 +560,7 @@ func (sm *StreamingManager) unsubscribeQuotesSafe(ctx context.Context, symbols [
 }
 
 // subscribeGreeksSafe safely subscribes to Greeks data on Greeks providers.
-// Exact conversion of Python _subscribe_greeks_safe method.
+// Enhanced to update health manager with subscription tracking.
 func (sm *StreamingManager) subscribeGreeksSafe(ctx context.Context, symbols []string) error {
 	slog.Info("subscribeGreeksSafe called", "greeks_providers_count", len(sm.greeksProviders), "symbols_count", len(symbols))
 
@@ -532,13 +570,24 @@ func (sm *StreamingManager) subscribeGreeksSafe(ctx context.Context, symbols []s
 		// Convert symbols to provider format if needed
 		providerSymbols := sm.convertSymbolsToProviderFormat(symbols, providerName)
 
+		// Update subscriptions FIRST before attempting to subscribe
+		sm.healthManager.UpdateSubscriptions(providerName, symbols)
+		
+		// Ensure connection is healthy before subscribing (Python-style)
+		if healthyProvider, ok := provider.(interface{ EnsureHealthyConnection(context.Context) error }); ok {
+			if err := healthyProvider.EnsureHealthyConnection(ctx); err != nil {
+				slog.Error("Failed to ensure healthy connection", "provider", providerName, "error", err)
+				continue
+			}
+		}
+
 		// Call subscribe_to_symbols with Greeks-only data types
 		_, err := provider.SubscribeToSymbols(ctx, providerSymbols, []string{"Greeks"})
 		if err != nil {
 			slog.Error("Error subscribing Greeks on provider", "provider", providerName, "error", err)
 			continue
 		}
-
+		
 		slog.Info("Subscribed to Greeks-only streaming on provider", "provider", providerName, "symbols", len(symbols))
 	}
 

@@ -111,9 +111,12 @@ type Provider interface {
 	// Exact conversion of Python get_subscribed_symbols method.
 	GetSubscribedSymbols() map[string]bool
 	
-	// IsStreamingConnected checks if streaming connection is active.
+	// IsStreamingConnected checks if streaming is currently connected.
 	// Exact conversion of Python is_streaming_connected method.
 	IsStreamingConnected() bool
+
+	// Ping sends a heartbeat message to the provider to verify connection health.
+	Ping(ctx context.Context) error
 	
 	// HealthCheck performs a health check on the provider.
 	// Exact conversion of Python health_check method.
@@ -191,6 +194,12 @@ func (bp *BaseProviderImpl) SetStreamingCache(cache StreamingCache) {
 	})
 }
 
+// UpdateLastDataTime updates the last data time to now.
+func (bp *BaseProviderImpl) UpdateLastDataTime() {
+	now := time.Now()
+	bp.LastDataTime = &now
+}
+
 // GetSubscribedSymbols gets currently subscribed symbols.
 // Exact conversion of Python get_subscribed_symbols method.
 func (bp *BaseProviderImpl) GetSubscribedSymbols() map[string]bool {
@@ -202,10 +211,19 @@ func (bp *BaseProviderImpl) GetSubscribedSymbols() map[string]bool {
 	return result
 }
 
-// IsStreamingConnected checks if streaming connection is active.
+// IsStreamingConnected checks if streaming is currently connected.
 // Exact conversion of Python is_streaming_connected method.
 func (bp *BaseProviderImpl) IsStreamingConnected() bool {
 	return bp.IsConnected
+}
+
+// Ping sends a heartbeat message to the provider to verify connection health.
+// Default implementation returns nil (assumes healthy if connected).
+func (bp *BaseProviderImpl) Ping(ctx context.Context) error {
+	if !bp.IsConnected {
+		return fmt.Errorf("not connected")
+	}
+	return nil
 }
 
 // HealthCheck performs a health check on the provider.

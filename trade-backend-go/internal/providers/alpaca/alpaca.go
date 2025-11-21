@@ -2192,25 +2192,20 @@ func (ap *AlpacaProvider) UnsubscribeFromSymbols(ctx context.Context, symbols []
 		return ap.DisconnectStreaming(ctx)
 	}
 	
-	// Otherwise, restart streams with remaining symbols
-	ap.LogInfo(fmt.Sprintf("Restarting streams with remaining %d symbols", len(ap.subscribedSymbols)))
-	remainingSymbols := make([]string, 0, len(ap.subscribedSymbols))
-	for symbol := range ap.subscribedSymbols {
-		remainingSymbols = append(remainingSymbols, symbol)
-	}
-	
-	// Disconnect and reconnect with new symbol list
-	if _, err := ap.DisconnectStreaming(ctx); err != nil {
-		return false, err
-	}
-	
-	time.Sleep(500 * time.Millisecond)
-	
-	return ap.SubscribeToSymbols(ctx, remainingSymbols, dataTypes)
+	// Otherwise, only update tracking and do NOT attempt to reconnect or restart streams.
+	// Connection lifecycle and subscription restoration are managed by the external StreamingHealthManager.
+	ap.LogInfo(fmt.Sprintf("Updated subscription tracking; %d symbols remain", len(ap.subscribedSymbols)))
+	return true, nil
 }
 
 // stockQuoteHandler handles stock quotes from the stream
 func (ap *AlpacaProvider) stockQuoteHandler(quote stream.Quote) {
+	defer func() {
+		if r := recover(); r != nil {
+			ap.LogInfo(fmt.Sprintf("Alpaca: Stock quote handler panic recovered: %v", r))
+		}
+	}()
+
 	marketData := &models.MarketData{
 		Symbol:    quote.Symbol,
 		DataType:  "quote",
@@ -2232,6 +2227,12 @@ func (ap *AlpacaProvider) stockQuoteHandler(quote stream.Quote) {
 
 // optionQuoteHandler handles option quotes from the stream
 func (ap *AlpacaProvider) optionQuoteHandler(quote stream.OptionQuote) {
+	defer func() {
+		if r := recover(); r != nil {
+			ap.LogInfo(fmt.Sprintf("Alpaca: Option quote handler panic recovered: %v", r))
+		}
+	}()
+
 	marketData := &models.MarketData{
 		Symbol:    quote.Symbol,
 		DataType:  "quote",
@@ -2308,7 +2309,11 @@ func (ap *AlpacaProvider) TestCredentials(ctx context.Context) (map[string]inter
 		accountType = "Live Trading"
 	}
 	
-	ap.LogInfo(fmt.Sprintf("Alpaca credentials valid - Account: %s, Status: %s", account.AccountNumber, account.Status))
+	acctNum := "<nil>"
+	if account.AccountNumber != nil {
+		acctNum = *account.AccountNumber
+	}
+	ap.LogInfo(fmt.Sprintf("Alpaca credentials valid - Account: %s, Status: %s", acctNum, account.Status))
 	
 	return map[string]interface{}{
 		"success": true,

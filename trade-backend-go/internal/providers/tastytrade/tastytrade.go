@@ -73,6 +73,7 @@ func (p *TastyTradeProvider) createSession(ctx context.Context) error {
 
 	// Use refresh_token if available
 	if p.clientSecret != "" && p.refreshToken != "" {
+		slog.Info("TastyTrade: Creating session using refresh_token")
 		payload = map[string]interface{}{
 			"grant_type":    "refresh_token",
 			"refresh_token": p.refreshToken,
@@ -82,6 +83,7 @@ func (p *TastyTradeProvider) createSession(ctx context.Context) error {
 			payload["client_id"] = p.clientID
 		}
 	} else if p.clientSecret != "" && p.authCode != "" {
+		slog.Info("TastyTrade: Creating session using authorization_code")
 		// Exchange authorization_code for tokens
 		payload = map[string]interface{}{
 			"grant_type":    "authorization_code",
@@ -95,11 +97,16 @@ func (p *TastyTradeProvider) createSession(ctx context.Context) error {
 			payload["redirect_uri"] = p.redirectURI
 		}
 	} else {
+		slog.Error("TastyTrade: OAuth2 credentials incomplete", 
+			"has_client_secret", p.clientSecret != "",
+			"has_refresh_token", p.refreshToken != "",
+			"has_auth_code", p.authCode != "")
 		return fmt.Errorf("OAuth2 credentials incomplete: provide refresh_token or authorization_code with client_secret")
 	}
 
 	response, err := p.httpClient.Post(ctx, url, payload, headers)
 	if err != nil {
+		slog.Error("TastyTrade: OAuth2 token request failed", "error", err)
 		return fmt.Errorf("OAuth2 token request failed: %w", err)
 	}
 
@@ -110,10 +117,12 @@ func (p *TastyTradeProvider) createSession(ctx context.Context) error {
 	}
 
 	if err := json.Unmarshal(response.Body, &tokenResponse); err != nil {
+		slog.Error("TastyTrade: Failed to parse OAuth2 response", "error", err, "body", string(response.Body))
 		return fmt.Errorf("failed to parse OAuth2 response: %w", err)
 	}
 
 	if tokenResponse.AccessToken == "" {
+		slog.Error("TastyTrade: No access token in OAuth2 response", "response", string(response.Body))
 		return fmt.Errorf("no access token in OAuth2 response")
 	}
 
@@ -127,10 +136,11 @@ func (p *TastyTradeProvider) createSession(ctx context.Context) error {
 
 	// Update refresh token if provided
 	if tokenResponse.RefreshToken != "" {
+		slog.Info("TastyTrade: OAuth2 refresh token updated")
 		p.refreshToken = tokenResponse.RefreshToken
 	}
 
-	slog.Debug("TastyTrade OAuth2 access token obtained successfully")
+	slog.Info("TastyTrade: OAuth2 access token obtained successfully", "expires_in_seconds", tokenResponse.ExpiresIn)
 	return nil
 }
 
@@ -138,15 +148,20 @@ func (p *TastyTradeProvider) createSession(ctx context.Context) error {
 // Exact conversion of Python _ensure_valid_session method.
 func (p *TastyTradeProvider) ensureValidSession(ctx context.Context) error {
 	if p.sessionToken == "" || p.sessionExpires == nil {
+		slog.Info("TastyTrade: No session token, creating new session")
 		return p.createSession(ctx)
 	}
 
 	// Check if session is about to expire (refresh 5 minutes early)
 	if time.Now().After(p.sessionExpires.Add(-5 * time.Minute)) {
-		slog.Debug("Session token expiring soon, refreshing...")
+		timeUntilExpiry := time.Until(*p.sessionExpires)
+		slog.Info("TastyTrade: Session token expiring soon, refreshing", 
+			"time_until_expiry", timeUntilExpiry.String())
 		return p.createSession(ctx)
 	}
 
+	timeUntilExpiry := time.Until(*p.sessionExpires)
+	slog.Debug("TastyTrade: Session token valid", "time_until_expiry", timeUntilExpiry.String())
 	return nil
 }
 
@@ -1366,6 +1381,7 @@ type StreamingState struct {
 	connectionID       string
 	recvLock           sync.Mutex
 	writeLock          sync.Mutex                   // Add: mutex for WebSocket writes
+	connectionMutex    sync.Mutex                   // Add: mutex to prevent concurrent ConnectStreaming calls
 	greeksRequests     map[string]chan map[string]interface{}
 	quoteRequests      map[string]chan map[string]interface{}
 	requestsLock       sync.Mutex
@@ -1395,6 +1411,19 @@ func (p *TastyTradeProvider) initStreamingState() {
 // ConnectStreaming connects to DXLink streaming service with health monitoring.
 // Exact conversion of Python connect_streaming method.
 func (p *TastyTradeProvider) ConnectStreaming(ctx context.Context) (bool, error) {
+	// CRITICAL: Lock to prevent concurrent connection attempts
+	p.streamingState.connectionMutex.Lock()
+	defer p.streamingState.connectionMutex.Unlock()
+	
+	// If already connected, return success
+	if p.streamingState.isConnected {
+		slog.Debug("TastyTrade: Already connected to streaming")
+		return true, nil
+	}
+	
+	slog.Info("TastyTrade: Establishing new streaming connection...")
+	
+	// Initialize streaming state if needed
 	if p.streamingState == nil {
 		p.initStreamingState()
 	}
@@ -1407,6 +1436,12 @@ func (p *TastyTradeProvider) ConnectStreaming(ctx context.Context) (bool, error)
 		<-p.streamingState.streamingTask.done
 		p.streamingState.streamingTask = nil
 	}
+	
+	// Recreate channels to ensure fresh state for new connection
+	// This is safe because we waited for the previous task to finish
+	p.streamingState.messageChan = make(chan map[string]interface{}, 100)
+	p.streamingState.errorChan = make(chan error, 1)
+	p.streamingState.shutdownEvent = make(chan struct{})
 
 	if p.streamingState.streamConnection != nil {
 		p.streamingState.streamConnection.Close()
@@ -1430,7 +1465,7 @@ func (p *TastyTradeProvider) ConnectStreaming(ctx context.Context) (bool, error)
 
 	// Configure WebSocket dialer with proper settings (matching Python websockets.connect parameters)
 	dialer := &websocket.Dialer{
-		HandshakeTimeout: 15 * time.Second,
+		HandshakeTimeout: 5 * time.Second, // Reduced from 15s for faster failure detection
 		ReadBufferSize:   4096,
 		WriteBufferSize:  4096,
 	}
@@ -1443,6 +1478,10 @@ func (p *TastyTradeProvider) ConnectStreaming(ctx context.Context) (bool, error)
 			// Configure the connection with proper timeouts (matching Python ping_interval=30, ping_timeout=10)
 			conn.SetPingHandler(func(appData string) error {
 				slog.Debug("TastyTrade: Received ping from server")
+				// Extend read deadline on Ping to keep connection alive
+				if err := conn.SetReadDeadline(time.Now().Add(70 * time.Second)); err != nil {
+					slog.Warn("Failed to extend read deadline on ping", "error", err)
+				}
 				return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
 			})
 			
@@ -1497,7 +1536,13 @@ func (p *TastyTradeProvider) DisconnectStreaming(ctx context.Context) (bool, err
 	}
 
 	// Signal shutdown
-	close(p.streamingState.shutdownEvent)
+	// Signal shutdown safely
+	select {
+	case <-p.streamingState.shutdownEvent:
+		// Already closed
+	default:
+		close(p.streamingState.shutdownEvent)
+	}
 
 	// Cancel streaming task
 	if p.streamingState.streamingTask != nil {
@@ -1518,8 +1563,35 @@ func (p *TastyTradeProvider) DisconnectStreaming(ctx context.Context) (bool, err
 	return true, nil
 }
 
+// EnsureHealthyConnection ensures we have a healthy streaming connection, reconnects if needed.
+// Exact conversion of Python _ensure_healthy_connection method.
+func (p *TastyTradeProvider) EnsureHealthyConnection(ctx context.Context) error {
+	// Check if we're already connected and healthy
+	if p.streamingState != nil && p.streamingState.isConnected && p.streamingState.streamConnection != nil {
+		// Test the connection with a ping (use caller's context for timeout)
+		if err := p.Ping(ctx); err == nil {
+			slog.Debug("TastyTrade: Connection health check passed")
+			return nil
+		}
+		slog.Warn("TastyTrade: Connection health check failed, reconnecting...")
+		p.streamingState.isConnected = false
+	}
+
+	// Connection is not healthy, attempt to reconnect
+	// CRITICAL: Use Background context for connection, not caller's context!
+	// The connection must survive beyond the HTTP request that triggered this check.
+	slog.Info("TastyTrade: Ensuring healthy connection, reconnecting...")
+	success, err := p.ConnectStreaming(context.Background())
+	if err != nil || !success {
+		return fmt.Errorf("failed to establish healthy connection: %w", err)
+	}
+	return nil
+}
+
+
+
 // SubscribeToSymbols subscribes to real-time data for symbols via DXLink.
-// Exact conversion of Python subscribe_to_symbols method.
+// Batches subscriptions into chunks of 50 to avoid server-side limits.
 func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
 	if p.streamingState == nil || !p.streamingState.isConnected {
 		return false, fmt.Errorf("streaming not connected")
@@ -1540,14 +1612,14 @@ func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []s
 	}
 
 	// Prepare subscriptions using correct streaming symbols
-	var subscriptions []map[string]interface{}
+	var allSubscriptions []map[string]interface{}
 
 	for _, symbol := range symbols {
 		// Convert to streaming symbol format for DXLink
 		var streamingSymbol string
 		if p.isOptionSymbol(symbol) {
 			streamingSymbol = p.convertToStreamerSymbol(symbol)
-			slog.Info(fmt.Sprintf("TastyTrade: Converted option symbol %s -> %s for streaming", symbol, streamingSymbol))
+			slog.Debug(fmt.Sprintf("TastyTrade: Converted option symbol %s -> %s", symbol, streamingSymbol))
 		} else {
 			streamingSymbol = symbol // Stock symbols use as-is
 			slog.Debug(fmt.Sprintf("TastyTrade: Using stock symbol as-is: %s", streamingSymbol))
@@ -1555,41 +1627,58 @@ func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []s
 
 		// Add Quote subscription only if requested
 		if containsString(dataTypes, "Quote") {
-			subscriptions = append(subscriptions, map[string]interface{}{
+			allSubscriptions = append(allSubscriptions, map[string]interface{}{
 				"type":   "Quote",
 				"symbol": streamingSymbol,
 			})
-			slog.Info(fmt.Sprintf("TastyTrade: Added Quote subscription for %s (original: %s)", streamingSymbol, symbol))
 		}
 
 	// Add Greeks subscription for option symbols only if requested
 	if containsString(dataTypes, "Greeks") && p.isOptionSymbol(symbol) {
-		subscriptions = append(subscriptions, map[string]interface{}{
+		allSubscriptions = append(allSubscriptions, map[string]interface{}{
 			"type":   "Greeks",
 			"symbol": streamingSymbol,
 		})
-		slog.Info(fmt.Sprintf("TastyTrade: Added Greeks subscription for %s (original: %s)", streamingSymbol, symbol))
-	} else if containsString(dataTypes, "Greeks") && !p.isOptionSymbol(symbol) {
-		slog.Info(fmt.Sprintf("TastyTrade: Skipping Greeks subscription for non-option symbol %s", symbol))
 	}
 	}
 
-	// Send subscription message
-	subscriptionMsg := map[string]interface{}{
-		"type":    "FEED_SUBSCRIPTION",
-		"channel": 1,
-		"reset":   false,
-		"add":     subscriptions,
-	}
-
-	slog.Info(fmt.Sprintf("TastyTrade: Sending subscription message with %d subscriptions for data_types: %v", len(subscriptions), dataTypes))
+	// Batch subscriptions into chunks of 50 to avoid DXLink limits
+	batchSize := 50
+	totalBatches := (len(allSubscriptions) + batchSize - 1) / batchSize
 	
-	p.streamingState.writeLock.Lock()
-	err := p.streamingState.streamConnection.WriteJSON(subscriptionMsg)
-	p.streamingState.writeLock.Unlock()
-	if err != nil {
-		slog.Error("Failed to send subscription message", "error", err)
-		return false, err
+	slog.Info(fmt.Sprintf("TastyTrade: Sending %d subscriptions in %d batch(es) for data_types: %v", len(allSubscriptions), totalBatches, dataTypes))
+
+	for i := 0; i < len(allSubscriptions); i += batchSize {
+		end := i + batchSize
+		if end > len(allSubscriptions) {
+			end = len(allSubscriptions)
+		}
+		batch := allSubscriptions[i:end]
+		
+		// Send subscription message for this batch
+		subscriptionMsg := map[string]interface{}{
+			"type":    "FEED_SUBSCRIPTION",
+			"channel": 1,
+			"reset":   false,
+			"add":     batch,
+		}
+
+		slog.Debug(fmt.Sprintf("TastyTrade: Sending batch %d/%d with %d subscriptions", (i/batchSize)+1, totalBatches, len(batch)))
+		
+		// Set write deadline to prevent hang on large messages
+		p.streamingState.writeLock.Lock()
+		p.streamingState.streamConnection.SetWriteDeadline(time.Now().Add(30 * time.Second))
+		err := p.streamingState.streamConnection.WriteJSON(subscriptionMsg)
+		p.streamingState.writeLock.Unlock()
+		if err != nil {
+			slog.Error("Failed to send subscription batch", "error", err, "batch", (i/batchSize)+1, "batch_size", len(batch))
+			return false, fmt.Errorf("failed to send subscription batch: %w", err)
+		}
+		
+		// Small delay between batches to avoid overwhelming the server
+		if i+batchSize < len(allSubscriptions) {
+			time.Sleep(100 * time.Millisecond)
+		}
 	}
 
 	// Update subscribed symbols
@@ -1597,7 +1686,7 @@ func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []s
 		p.streamingState.subscribedSymbols[symbol] = true
 	}
 
-	slog.Info(fmt.Sprintf("TastyTrade: Subscribed to %d symbols with %d subscriptions", len(symbols), len(subscriptions)))
+	slog.Info(fmt.Sprintf("TastyTrade: Successfully subscribed to %d symbols with %d subscriptions", len(symbols), len(allSubscriptions)))
 	return true, nil
 }
 
@@ -1711,7 +1800,14 @@ func (p *TastyTradeProvider) SetStreamingCache(cache base.StreamingCache) {
 // Exact conversion of Python _dxlink_streaming_setup method.
 func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 	conn := p.streamingState.streamConnection
+	timeout := 5 * time.Second
 	
+	// Helper to set deadlines
+	setDeadlines := func() {
+		conn.SetWriteDeadline(time.Now().Add(timeout))
+		conn.SetReadDeadline(time.Now().Add(timeout))
+	}
+
 	// 1. SETUP
 	setupMsg := map[string]interface{}{
 		"type":                   "SETUP",
@@ -1721,6 +1817,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 		"acceptKeepaliveTimeout": 60,
 	}
 	
+	setDeadlines()
 	if err := conn.WriteJSON(setupMsg); err != nil {
 		return fmt.Errorf("failed to send SETUP message: %w", err)
 	}
@@ -1728,6 +1825,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 	// Wait for SETUP response
 	p.streamingState.recvLock.Lock()
 	var setupResponse map[string]interface{}
+	setDeadlines()
 	err := conn.ReadJSON(&setupResponse)
 	p.streamingState.recvLock.Unlock()
 	if err != nil {
@@ -1741,6 +1839,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 	// 2. Wait for AUTH_STATE: UNAUTHORIZED
 	p.streamingState.recvLock.Lock()
 	var authState map[string]interface{}
+	setDeadlines()
 	err = conn.ReadJSON(&authState)
 	p.streamingState.recvLock.Unlock()
 	if err != nil {
@@ -1758,6 +1857,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 		"token":   p.quoteToken,
 	}
 	
+	setDeadlines()
 	if err := conn.WriteJSON(authMsg); err != nil {
 		return fmt.Errorf("failed to send AUTH message: %w", err)
 	}
@@ -1765,6 +1865,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 	// Wait for AUTH_STATE: AUTHORIZED
 	p.streamingState.recvLock.Lock()
 	var authSuccess map[string]interface{}
+	setDeadlines()
 	err = conn.ReadJSON(&authSuccess)
 	p.streamingState.recvLock.Unlock()
 	if err != nil {
@@ -1785,6 +1886,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 		},
 	}
 	
+	setDeadlines()
 	if err := conn.WriteJSON(channelMsg); err != nil {
 		return fmt.Errorf("failed to send CHANNEL_REQUEST: %w", err)
 	}
@@ -1792,6 +1894,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 	// Wait for CHANNEL_OPENED
 	p.streamingState.recvLock.Lock()
 	var channelResponse map[string]interface{}
+	setDeadlines()
 	err = conn.ReadJSON(&channelResponse)
 	p.streamingState.recvLock.Unlock()
 	if err != nil {
@@ -1814,6 +1917,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 		},
 	}
 	
+	setDeadlines()
 	if err := conn.WriteJSON(feedSetupMsg); err != nil {
 		return fmt.Errorf("failed to send FEED_SETUP: %w", err)
 	}
@@ -1821,6 +1925,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 	// Wait for FEED_CONFIG
 	p.streamingState.recvLock.Lock()
 	var feedResponse map[string]interface{}
+	setDeadlines()
 	err = conn.ReadJSON(&feedResponse)
 	p.streamingState.recvLock.Unlock()
 	if err != nil {
@@ -1838,6 +1943,7 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 		"type":    "KEEPALIVE",
 		"channel": 0,
 	}
+	setDeadlines()
 	if err := conn.WriteJSON(keepaliveMsg); err != nil {
 		slog.Warn("Failed to send initial keepalive", "error", err)
 	} else {
@@ -1867,7 +1973,7 @@ func (p *TastyTradeProvider) startStreamingTask(ctx context.Context) {
 }
 
 // readerGoroutine performs blocking reads from WebSocket and sends messages/errors to channels
-func (p *TastyTradeProvider) readerGoroutine() {
+func (p *TastyTradeProvider) readerGoroutine(done chan struct{}) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Reader panic recovered", "panic", r)
@@ -1877,7 +1983,25 @@ func (p *TastyTradeProvider) readerGoroutine() {
 			p.streamingState.streamConnection.Close()
 			p.streamingState.streamConnection = nil
 		}
-		close(p.streamingState.messageChan) // Signal processing loop
+		
+		// Safely close message channel if not already closed
+		select {
+		case <-done:
+			// Already done/closed
+		default:
+			// Close message channel to signal processing loop
+			// Use recover to handle potential double close if race condition persists
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Warn("Ignored panic closing messageChan", "panic", r)
+					}
+				}()
+				close(p.streamingState.messageChan)
+			}()
+		}
+		
+		close(done)
 	}()
 
 	for {
@@ -1886,12 +2010,24 @@ func (p *TastyTradeProvider) readerGoroutine() {
 			slog.Debug("Reader shutdown requested")
 			return
 		default:
-			// No timeout here - blocking read
+			// Set read deadline to detect dead connections (70s > 60s keepalive)
 			p.streamingState.recvLock.Lock()
+			if p.streamingState.streamConnection != nil {
+				p.streamingState.streamConnection.SetReadDeadline(time.Now().Add(70 * time.Second))
+			}
 			var message map[string]interface{}
 			err := p.streamingState.streamConnection.ReadJSON(&message)
 			p.streamingState.recvLock.Unlock()
 			if err != nil {
+				// Check for normal closure or timeout
+				if websocket.IsCloseError(err, websocket.CloseNormalClosure, websocket.CloseGoingAway) {
+					slog.Info("TastyTrade: WebSocket closed normally", "error", err)
+				} else if strings.Contains(err.Error(), "i/o timeout") {
+					slog.Error("TastyTrade: WebSocket read timeout - connection dead")
+				} else {
+					slog.Error("TastyTrade: WebSocket read error", "error", err)
+				}
+
 				select {
 				case p.streamingState.errorChan <- err:
 					slog.Debug("Sent error to processing loop")
@@ -1908,131 +2044,89 @@ func (p *TastyTradeProvider) readerGoroutine() {
 	}
 }
 
-// processStreamingData processes incoming streaming data with automatic recovery using channels.
+// processStreamingData processes incoming streaming data - simplified without internal recovery.
+// Recovery is handled externally by the health manager.
 func (p *TastyTradeProvider) processStreamingData(ctx context.Context) {
-	slog.Info("TastyTrade: Starting streaming data processor with channel-based architecture")
+	slog.Info("TastyTrade: Starting streaming data processor")
+	
+	var readerDone chan struct{}
 	
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("TastyTrade: Streaming processor panic recovered", "panic", r)
-			// Mark connection as failed and clean up
-			p.streamingState.isConnected = false
-			if p.streamingState.streamConnection != nil {
-				p.streamingState.streamConnection.Close()
-				p.streamingState.streamConnection = nil
-			}
 		}
+		// Mark connection as failed on exit
+		p.streamingState.isConnected = false
+		if p.streamingState.streamConnection != nil {
+			p.streamingState.streamConnection.Close()
+			p.streamingState.streamConnection = nil
+		}
+		
+		// Wait for reader goroutine to finish
+		// This ensures we don't have a race condition where the old reader
+		// tries to close the channel of a new connection
+		slog.Info("TastyTrade: Waiting for reader goroutine to exit...")
+		select {
+		case <-readerDone:
+			slog.Info("TastyTrade: Reader goroutine exited")
+		case <-time.After(5 * time.Second):
+			slog.Warn("TastyTrade: Timed out waiting for reader goroutine")
+		}
+		
 		slog.Info("TastyTrade: Streaming data processor stopped")
 	}()
-	
-	// Store current subscriptions for recovery
-	currentSubscriptions := make(map[string]bool)
-	recoveryAttempt := 0
-	maxRecoveryAttempts := 5
 	
 	// Start periodic keepalive task
 	keepaliveCtx, keepaliveCancel := context.WithCancel(ctx)
 	defer keepaliveCancel()
 	go p.periodicKeepalive(keepaliveCtx)
 	
+	// Start reader goroutine
+	readerDone = make(chan struct{})
+	go p.readerGoroutine(readerDone)
+	
+	// Simple message processing loop - no recovery logic
 	for {
 		select {
 		case <-ctx.Done():
 			slog.Info("TastyTrade: Streaming processor cancelled")
 			return
+			
 		case <-p.streamingState.shutdownEvent:
 			slog.Info("TastyTrade: Streaming processor shutdown requested")
 			return
-		default:
-			// Main streaming loop: use channels while connected
-			if p.streamingState.isConnected && p.streamingState.streamConnection != nil {
-				// Start reader goroutine
-				go p.readerGoroutine()
-				
-				// Process messages from channels
-				for {
-					select {
-					case <-ctx.Done():
-						return
-					case <-p.streamingState.shutdownEvent:
-						return
-					case message, ok := <-p.streamingState.messageChan:
-						if !ok {
-							// Channel closed - connection lost
-							slog.Info("TastyTrade: Message channel closed, connection lost")
-							p.handleConnectionLoss("Message channel closed", currentSubscriptions)
-							goto recovery
-						}
-						
-						slog.Debug(fmt.Sprintf("TastyTrade: Received message type: %s", message["type"]))
-						
-						// Process different message types
-						switch message["type"] {
-						case "FEED_DATA":
-							feedData, ok := message["data"].([]interface{})
-							if ok {
-								slog.Debug(fmt.Sprintf("TastyTrade: Processing FEED_DATA with %d items", len(feedData)))
-								p.processFeedEvents(feedData)
-							} else {
-								slog.Warn("TastyTrade: FEED_DATA message has no data field or wrong type")
-							}
-						case "KEEPALIVE":
-							slog.Debug("TastyTrade: Received keepalive from server")
-						default:
-							slog.Debug(fmt.Sprintf("TastyTrade: Received message: %s", message["type"]))
-						}
-						
-						// Reset recovery attempt counter on successful data processing
-						recoveryAttempt = 0
-						
-					case err := <-p.streamingState.errorChan:
-						// Connection error from reader
-						slog.Error("TastyTrade: Connection error from reader", "error", err)
-						p.handleConnectionLoss(fmt.Sprintf("Reader error: %v", err), currentSubscriptions)
-						goto recovery
-						
-					case <-time.After(30 * time.Second):
-						// Timeout - check if connection is still alive
-						if !p.streamingState.isConnected {
-							slog.Info("TastyTrade: Connection marked as disconnected during timeout")
-							p.handleConnectionLoss("Connection timeout", currentSubscriptions)
-							goto recovery
-						}
-					}
-				}
-			}
 			
-		recovery:
-			// Attempt recovery
-			if recoveryAttempt < maxRecoveryAttempts {
-				recoveryAttempt++
-				slog.Info(fmt.Sprintf("TastyTrade: Attempting recovery #%d/%d", recoveryAttempt, maxRecoveryAttempts))
-				
-				// Attempt to recover the connection
-				if p.attemptConnectionRecovery(ctx, currentSubscriptions, recoveryAttempt) {
-					slog.Info("TastyTrade: Recovery successful, resuming streaming")
-					continue
-				} else {
-					slog.Error(fmt.Sprintf("TastyTrade: Recovery attempt #%d failed", recoveryAttempt))
-					
-					// Wait before next attempt with exponential backoff
-					delay := time.Duration(min(5*(1<<(recoveryAttempt-1)), 60)) * time.Second
-					slog.Info(fmt.Sprintf("TastyTrade: Waiting %v before next recovery attempt", delay))
-					
-					select {
-					case <-time.After(delay):
-						continue
-					case <-ctx.Done():
-						return
-					case <-p.streamingState.shutdownEvent:
-						return
-					}
-				}
-			} else {
-				// Max recovery attempts reached
-				slog.Error("TastyTrade: Max recovery attempts reached, stopping streaming processor")
+		case message, ok := <-p.streamingState.messageChan:
+			if !ok {
+				// Channel closed - connection lost, exit and let health manager handle recovery
+				slog.Warn("TastyTrade: Message channel closed, connection lost")
 				return
 			}
+			
+			// Process different message types
+			switch message["type"] {
+			case "FEED_DATA":
+				// Record that we received data (for health monitoring)
+				p.BaseProviderImpl.UpdateLastDataTime()
+				if feedData, ok := message["data"].([]interface{}); ok {
+					p.processFeedEvents(feedData)
+				}
+			case "KEEPALIVE":
+				slog.Debug("TastyTrade: Received keepalive from server")
+				p.BaseProviderImpl.UpdateLastDataTime()
+			default:
+				slog.Debug(fmt.Sprintf("TastyTrade: Received message type: %s", message["type"]))
+			}
+			
+		case err := <-p.streamingState.errorChan:
+			// Connection error - exit and let health manager handle recovery
+			slog.Error("TastyTrade: Connection error", "error", err)
+			return
+			
+		case <-time.After(120 * time.Second):
+			// Stale connection check - if no messages for 2 minutes, exit
+			slog.Warn("TastyTrade: No messages received for 2 minutes, connection may be stale")
+			return
 		}
 	}
 }
@@ -2232,67 +2326,6 @@ func (p *TastyTradeProvider) sendToCacheOrQueue(marketData *models.MarketData) {
 	}
 }
 
-// handleConnectionLoss handles connection loss by updating state and preparing for recovery.
-// Exact conversion of Python _handle_connection_loss method.
-func (p *TastyTradeProvider) handleConnectionLoss(reason string, currentSubscriptions map[string]bool) {
-	slog.Warn(fmt.Sprintf("TastyTrade: Connection lost - %s", reason))
-	
-	// Update connection state
-	p.streamingState.isConnected = false
-	p.streamingState.connectionReady = make(chan struct{})
-	
-	// Store current subscriptions for recovery
-	if p.streamingState.subscribedSymbols != nil {
-		for symbol := range p.streamingState.subscribedSymbols {
-			currentSubscriptions[symbol] = true
-		}
-		slog.Info(fmt.Sprintf("TastyTrade: Stored %d subscriptions for recovery", len(currentSubscriptions)))
-	}
-	
-	// Clean up connection
-	if p.streamingState.streamConnection != nil {
-		p.streamingState.streamConnection.Close()
-		p.streamingState.streamConnection = nil
-	}
-}
-
-// attemptConnectionRecovery attempts to recover the streaming connection and restore subscriptions.
-// Exact conversion of Python _attempt_connection_recovery method.
-func (p *TastyTradeProvider) attemptConnectionRecovery(ctx context.Context, currentSubscriptions map[string]bool, attemptNumber int) bool {
-	slog.Info(fmt.Sprintf("TastyTrade: Starting connection recovery attempt #%d", attemptNumber))
-	
-	// Attempt to reconnect
-	success, err := p.ConnectStreaming(ctx)
-	if err != nil || !success {
-		slog.Error("TastyTrade: Connection recovery failed", "error", err)
-		return false
-	}
-	
-	slog.Info("TastyTrade: Connection recovery successful")
-	
-	// Restore subscriptions if we had any
-	if len(currentSubscriptions) > 0 {
-		slog.Info(fmt.Sprintf("TastyTrade: Restoring %d subscriptions", len(currentSubscriptions)))
-		
-		// Convert map back to slice for subscription
-		var symbolsList []string
-		for symbol := range currentSubscriptions {
-			symbolsList = append(symbolsList, symbol)
-		}
-		
-		// Resubscribe to all symbols (both quotes and Greeks)
-		success, err := p.SubscribeToSymbols(ctx, symbolsList, []string{"Quote", "Greeks"})
-		if err != nil || !success {
-			slog.Warn("TastyTrade: Failed to restore some subscriptions", "error", err)
-			// Don't fail recovery just because subscription restoration failed
-		} else {
-			slog.Info(fmt.Sprintf("TastyTrade: Successfully restored %d subscriptions", len(symbolsList)))
-		}
-	}
-	
-	return true
-}
-
 // convertToStreamerSymbol converts standard OCC symbol to TastyTrade DXLink streamer format.
 // Exact conversion of Python _convert_to_streamer_symbol method.
 func (p *TastyTradeProvider) convertToStreamerSymbol(symbol string) string {
@@ -2396,6 +2429,31 @@ func (p *TastyTradeProvider) TestCredentials(ctx context.Context) (map[string]in
 		"success": false,
 		"message": "Invalid credentials or no account info found.",
 	}, nil
+}
+
+// Ping sends a heartbeat message to the provider to verify connection health.
+func (p *TastyTradeProvider) Ping(ctx context.Context) error {
+	if !p.streamingState.isConnected || p.streamingState.streamConnection == nil {
+		return fmt.Errorf("streaming not connected")
+	}
+
+	// Send KEEPALIVE message
+	keepaliveMsg := map[string]interface{}{
+		"type":    "KEEPALIVE",
+		"channel": 0,
+	}
+	
+	p.streamingState.writeLock.Lock()
+	defer p.streamingState.writeLock.Unlock()
+	
+	if err := p.streamingState.streamConnection.WriteJSON(keepaliveMsg); err != nil {
+		return fmt.Errorf("failed to send keepalive: %w", err)
+	}
+	
+	// Note: We don't wait for response here as KEEPALIVE response is handled asynchronously
+	// in the reader goroutine. If the write succeeds, we assume the connection is at least
+	// capable of sending data.
+	return nil
 }
 
 // HealthCheck performs a health check on the TastyTrade provider.
@@ -3608,6 +3666,12 @@ func (p *TastyTradeProvider) getQuoteToken(ctx context.Context) error {
 	endpoint := "/api-quote-tokens"
 	response, err := p.makeAuthenticatedRequest(ctx, "GET", endpoint, nil)
 	if err != nil {
+		// If unauthorized, clear session so next attempt refreshes it
+		if strings.Contains(err.Error(), "401") || strings.Contains(err.Error(), "Unauthorized") {
+			slog.Warn("TastyTrade: Quote token request unauthorized, clearing session to force refresh")
+			p.sessionToken = ""
+			p.sessionExpires = nil
+		}
 		return fmt.Errorf("failed to get quote token: %w", err)
 	}
 

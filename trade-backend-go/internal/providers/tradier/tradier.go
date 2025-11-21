@@ -2145,12 +2145,13 @@ func (t *TradierProvider) DisconnectStreaming(ctx context.Context) (bool, error)
 }
 
 // readerGoroutine performs blocking reads from WebSocket and sends messages/errors to channels
-func (t *TradierProvider) readerGoroutine(ctx context.Context) {
+func (t *TradierProvider) readerGoroutine(ctx context.Context, done chan struct{}) {
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Tradier: Reader panic recovered", "panic", r)
 		}
 		slog.Debug("Tradier: Reader goroutine exiting")
+		close(done)
 	}()
 
 	for {
@@ -2221,16 +2222,28 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 	handlerID := time.Now().UnixNano()
 	slog.Info("Tradier: Stream handler started", "handlerID", handlerID)
 	
+	var readerDone chan struct{}
+	
 	defer func() {
 		if r := recover(); r != nil {
 			slog.Error("Tradier: Stream processor panic recovered", "panic", r, "sessionID", t.sessionID, "handlerID", handlerID)
 		}
+		
+		// Wait for reader goroutine to finish
+		if readerDone != nil {
+			slog.Info("Tradier: Waiting for reader goroutine to exit...", "handlerID", handlerID)
+			select {
+			case <-readerDone:
+				slog.Info("Tradier: Reader goroutine exited", "handlerID", handlerID)
+			case <-time.After(5 * time.Second):
+				slog.Warn("Tradier: Timed out waiting for reader goroutine", "handlerID", handlerID)
+			}
+		}
+		
 		slog.Info("Tradier: Stream processor stopped", "handlerID", handlerID)
 	}()
 
-	currentSubscriptions := make(map[string]bool)
-	recoveryAttempt := 0
-	maxRecoveryAttempts := 3
+
 	readerStarted := false
 	readySignaled := false
 
@@ -2249,7 +2262,8 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 		if t.IsConnected && t.streamConnection != nil {
 			// Start reader only once per connection
 			if !readerStarted {
-				go t.readerGoroutine(ctx)
+				readerDone = make(chan struct{})
+				go t.readerGoroutine(ctx, readerDone)
 				readerStarted = true
 				
 				// Wait a moment for reader to initialize, then signal ready
@@ -2277,18 +2291,16 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 				slog.Info("Tradier: Shutdown (priority check)", "handlerID", handlerID)
 				return
 			case err := <-t.errorChan:
-				// CRITICAL FIX: Check if recovery is already in progress
-				// If so, this error is from the OLD connection being closed - ignore it
+				// If we get an error from the reader, mark disconnected and exit so the health manager can recover.
 				t.streamMutex.RLock()
 				recoveryActive := t.recoveryInProgress
 				t.streamMutex.RUnlock()
 				
 				if recoveryActive {
 					slog.Debug("Tradier: Ignoring error from old connection during recovery", "error", err, "handlerID", handlerID)
-					continue // Ignore errors from old connection
+					continue
 				}
 				
-				// Check if context is cancelled before triggering recovery
 				select {
 				case <-ctx.Done():
 					slog.Debug("Tradier: Ignoring error from cancelled handler", "error", err)
@@ -2296,11 +2308,16 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 				default:
 				}
 				
-				// Connection error from reader - trigger recovery
-				slog.Warn("Tradier: Connection error, attempting recovery", "error", err)
-				t.handleConnectionLoss(fmt.Sprintf("Reader error: %v", err), currentSubscriptions)
-				readerStarted = false
-				goto recovery
+				slog.Warn("Tradier: Reader error, closing connection and exiting stream handler", "error", err)
+				// Update state and cleanup; let external health manager handle reconnection and subscription restoration.
+				t.streamMutex.Lock()
+				t.IsConnected = false
+				if t.streamConnection != nil {
+					_ = t.streamConnection.Close()
+					t.streamConnection = nil
+				}
+				t.streamMutex.Unlock()
+				return
 			default:
 				// No error pending, proceed to check for messages
 			}
@@ -2316,11 +2333,11 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 			case message := <-t.messageChan:
 				// Normal message - process it
 				t.processStreamMessage(message)
-				recoveryAttempt = 0 // reset on successful activity
+
 				continue // CRITICAL FIX: Continue to next iteration instead of falling through to recovery
 
 			case err := <-t.errorChan:
-				// CRITICAL FIX: Check if recovery is already in progress
+				// Reader reported an error while waiting for messages. Clean up and exit so health manager can perform recovery.
 				t.streamMutex.RLock()
 				recoveryActive := t.recoveryInProgress
 				t.streamMutex.RUnlock()
@@ -2330,7 +2347,6 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 					continue
 				}
 				
-				// Error arrived while waiting for message
 				select {
 				case <-ctx.Done():
 					slog.Info("Tradier: Ignoring error from cancelled handler", "error", err, "handlerID", handlerID)
@@ -2338,10 +2354,15 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 				default:
 				}
 				
-				slog.Error("Tradier: Connection error from reader - triggering recovery", "error", err, "handlerID", handlerID)
-				t.handleConnectionLoss(fmt.Sprintf("Reader error: %v", err), currentSubscriptions)
-				readerStarted = false
-				goto recovery
+				slog.Error("Tradier: Reader error detected, cleaning up and exiting stream handler", "error", err, "handlerID", handlerID)
+				t.streamMutex.Lock()
+				t.IsConnected = false
+				if t.streamConnection != nil {
+					_ = t.streamConnection.Close()
+					t.streamConnection = nil
+				}
+				t.streamMutex.Unlock()
+				return
 
 			case <-time.After(90 * time.Second):
 				// Idle timeout - just log, do NOT recover
@@ -2355,54 +2376,12 @@ func (t *TradierProvider) streamHandler(ctx context.Context) {
 			continue
 		}
 
-	recovery:
-		// Check if we should stop (context cancelled or shutdown)
-		select {
-		case <-ctx.Done():
-			slog.Info("Tradier: Context cancelled during recovery, stopping", "handlerID", handlerID)
-			return
-		case <-t.shutdownEvent:
-			slog.Info("Tradier: Shutdown requested during recovery, stopping", "handlerID", handlerID)
-			return
-		default:
-		}
-		
-		if recoveryAttempt >= maxRecoveryAttempts {
-			slog.Error("Tradier: Max recovery attempts exceeded - giving up", "handlerID", handlerID)
-			return
-		}
-
-		recoveryAttempt++
-		slog.Info("Tradier: Attempting recovery", "attempt", recoveryAttempt, "max", maxRecoveryAttempts, "handlerID", handlerID)
-
-		if t.attemptConnectionRecovery(ctx, currentSubscriptions, recoveryAttempt) {
-			slog.Info("Tradier: Recovery successful - resuming streaming", "handlerID", handlerID)
-			readerStarted = false
-			readySignaled = false // Reset ready signal for new connection
-			// IMPORTANT: Exit this handler - the new connection has its own handler
-			slog.Info("Tradier: Exiting old stream handler after successful recovery", "handlerID", handlerID)
-			return
-		}
-
-		// Backoff
-		delay := time.Duration(min(2*(1<<(recoveryAttempt-1)), 30)) * time.Second
-		if !t.lastSubscriptionTime.IsZero() && time.Since(t.lastSubscriptionTime) < 10*time.Second {
-			delay = 500 * time.Millisecond
-			slog.Info("Tradier: Fast retry after recent subscription", "handlerID", handlerID)
-		}
-
-		slog.Info("Tradier: Waiting before next attempt", "delay", delay, "handlerID", handlerID)
-		select {
-		case <-time.After(delay):
-		case <-ctx.Done():
-			slog.Info("Tradier: Context cancelled during backoff", "handlerID", handlerID)
-			return
-		case <-t.shutdownEvent:
-			slog.Info("Tradier: Shutdown during backoff", "handlerID", handlerID)
-			return
-		}
+	// recovery label removed - provider no longer performs internal recovery.
+	// Exit the stream handler here so the external StreamingHealthManager can take recovery actions.
+	return
 	}
 }
+
 
 // processStreamMessage processes individual stream messages
 func (t *TradierProvider) processStreamMessage(message map[string]interface{}) {
@@ -2498,92 +2477,9 @@ func (t *TradierProvider) handleConnectionLoss(reason string, currentSubscriptio
 	}
 }
 
-// attemptConnectionRecovery attempts to recover the streaming connection and restore subscriptions
-func (t *TradierProvider) attemptConnectionRecovery(ctx context.Context, currentSubscriptions map[string]bool, attemptNumber int) bool {
-	slog.Info("Tradier: Starting connection recovery attempt", "attempt", attemptNumber)
-	
-	// CRITICAL FIX: Set recovery flag to prevent old connection errors from triggering new recovery
-	t.streamMutex.Lock()
-	t.recoveryInProgress = true
-	t.streamMutex.Unlock()
-	
-	defer func() {
-		// Clear recovery flag when done
-		t.streamMutex.Lock()
-		t.recoveryInProgress = false
-		t.streamMutex.Unlock()
-	}()
-	
-	// CRITICAL: Check if we should even attempt recovery
-	// If context is already cancelled, don't try to recover
-	select {
-	case <-ctx.Done():
-		slog.Info("Tradier: Context cancelled, skipping recovery")
-		return false
-	default:
-	}
-	
-	// Reset streaming disabled flag to allow reconnection
-	t.streamingDisabled = false
-	t.lastConnectionError = time.Time{}
-	
-	// Create a fresh context for the new connection (not tied to the old handler's context)
-	recoveryCtx := context.Background()
-	
-	// Attempt to reconnect (but avoid recursive recovery)
-	success, err := t.ConnectStreaming(recoveryCtx)
-	if err != nil || !success {
-		slog.Error("Tradier: Connection recovery failed", "error", err)
-		return false
-	}
-	
-	slog.Info("Tradier: Connection recovery successful - new session established")
-	
-	// CRITICAL FIX: Add delay to ensure new connection is fully stable before restoring subscriptions
-	// This prevents subscription from using stale session ID during the transition
-	time.Sleep(500 * time.Millisecond)
-	slog.Info("Tradier: Post-recovery stabilization delay completed")
-	
-	// Restore subscriptions if we had any (without triggering more reconnects)
-	if len(currentSubscriptions) > 0 {
-		slog.Info("Tradier: Restoring subscriptions", "count", len(currentSubscriptions))
-		
-		// Convert map back to slice for subscription
-		var symbolsList []string
-		for symbol := range currentSubscriptions {
-			symbolsList = append(symbolsList, symbol)
-		}
-		
-		// Resubscribe to all symbols with the NEW session ID (SubscribeToSymbols will read current session)
-		success, err := t.SubscribeToSymbols(context.Background(), symbolsList, []string{"quote"})
-		if err != nil || !success {
-			slog.Warn("Tradier: Failed to restore some subscriptions", "error", err)
-			// Don't fail recovery just because subscription restoration failed
-		} else {
-			slog.Info("Tradier: Successfully restored subscriptions", "count", len(symbolsList))
-		}
-	}
-	
-	return true
-}
 
-// startStreamingTask starts the streaming data processing task.
-func (t *TradierProvider) startStreamingTask(ctx context.Context) {
-	taskCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	
-	t.streamingTask = &StreamingTask{
-		cancel: cancel,
-		done:   done,
-	}
-	
-	go func() {
-		defer close(done)
-		t.streamHandler(taskCtx)
-	}()
-	
-	slog.Info("Tradier: Started streaming data processing task")
-}
+
+
 
 // SubscribeToSymbols subscribes to real-time data for symbols.
 // Enhanced version matching Python implementation with better error handling and connection management.
@@ -2598,12 +2494,9 @@ func (t *TradierProvider) SubscribeToSymbols(ctx context.Context, symbols []stri
 	t.streamMutex.RUnlock()
 	
 	if !isConnected || !hasSession || !hasConn {
-		slog.Info("Tradier: Stream not connected, attempting to reconnect...", "connected", isConnected, "hasSession", hasSession, "hasConn", hasConn)
-		if success, err := t.ConnectStreaming(ctx); !success || err != nil {
-			slog.Error("Tradier: Failed to reconnect to Tradier stream. Cannot subscribe.", "error", err)
-			return false, fmt.Errorf("failed to reconnect: %w", err)
-		}
-		slog.Info("Tradier: Successfully reconnected for subscription")
+		// Do not attempt to reconnect inside provider-level subscribe. The external health manager is responsible for reconnection.
+		slog.Error("Tradier: Stream not connected. Subscriptions must be requested when provider is connected")
+		return false, fmt.Errorf("stream not connected")
 	}
 
 	// Wait for connection to be ready (like Python implementation)
@@ -2714,6 +2607,29 @@ func (t *TradierProvider) IsStreamingConnected() bool {
 	return t.IsConnected && 
 		   t.sessionID != "" && 
 		   t.streamConnection != nil
+}
+
+// Ping sends a heartbeat message to verify connection health.
+func (t *TradierProvider) Ping(ctx context.Context) error {
+	t.streamMutex.RLock()
+	conn := t.streamConnection
+	isConnected := t.IsConnected
+	t.streamMutex.RUnlock()
+	
+	if !isConnected || conn == nil {
+		return fmt.Errorf("streaming not connected")
+	}
+	
+	// Send WebSocket ping frame
+	t.writeMutex.Lock()
+	defer t.writeMutex.Unlock()
+	
+	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := conn.WriteControl(websocket.PingMessage, []byte{}, time.Now().Add(10*time.Second)); err != nil {
+		return fmt.Errorf("failed to send ping: %w", err)
+	}
+	
+	return nil
 }
 
 // writeMessage safely writes a message to the WebSocket connection.
