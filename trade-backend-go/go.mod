@@ -1,19 +1,23 @@
 module trade-backend-go
 
-go 1.23.0
+go 1.24.0
 
 toolchain go1.24.1
 
 require (
+	github.com/alpacahq/alpaca-trade-api-go/v3 v3.9.0
 	github.com/gin-gonic/gin v1.11.0
+	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
 	github.com/patrickmn/go-cache v2.1.0+incompatible
 	github.com/spf13/viper v1.17.0
+	golang.org/x/oauth2 v0.33.0
 )
 
 require (
 	cloud.google.com/go v0.118.0 // indirect
-	github.com/alpacahq/alpaca-trade-api-go/v3 v3.9.0 // indirect
+	cloud.google.com/go/compute/metadata v0.6.0 // indirect
 	github.com/bytedance/sonic v1.14.0 // indirect
 	github.com/bytedance/sonic/loader v0.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
@@ -26,8 +30,8 @@ require (
 	github.com/go-playground/validator/v10 v10.27.0 // indirect
 	github.com/goccy/go-json v0.10.2 // indirect
 	github.com/goccy/go-yaml v1.18.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/hashicorp/hcl v1.0.0 // indirect
+	github.com/joho/godotenv v1.5.1 // indirect
 	github.com/josharian/intern v1.0.0 // indirect
 	github.com/json-iterator/go v1.1.12 // indirect
 	github.com/klauspost/cpuid/v2 v2.3.0 // indirect

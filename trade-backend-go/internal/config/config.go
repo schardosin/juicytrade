@@ -65,7 +65,15 @@ func LoadSettings() *Settings {
 	viper.AddConfigPath("../../")
 
 	// Read .env file if it exists (equivalent to load_dotenv())
-	viper.ReadInConfig()
+	if err := viper.ReadInConfig(); err != nil {
+		// It's okay if config file doesn't exist, we can use env vars
+		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+			// Config file was found but another error occurred
+			// We can log it or just proceed if we want to be very permissive, 
+			// but usually a malformed config file is worth noting.
+			// For now, we'll just proceed as env vars might cover it.
+		}
+	}
 
 	// Set defaults - exact same as Python
 	viper.SetDefault("provider", "alpaca")

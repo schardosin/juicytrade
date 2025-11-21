@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"trade-backend-go/internal/api/handlers"
+	"trade-backend-go/internal/auth"
 	"trade-backend-go/internal/config"
 	"trade-backend-go/internal/models"
 	"trade-backend-go/internal/providers"
@@ -25,6 +26,8 @@ import (
 )
 
 func main() {
+	// Load .env file is handled by config package via Viper
+
 	// Load configuration
 	cfg := config.LoadSettings()
 	
@@ -73,6 +76,19 @@ func main() {
 	healthHandler := handlers.NewHealthHandler()
 	marketDataHandler := handlers.NewMarketDataHandler(providerManager)
 	webSocketHandler := handlers.NewWebSocketHandler()
+
+	// Initialize authentication
+	authConfig := auth.LoadConfig()
+	if err := authConfig.Validate(); err != nil {
+		log.Printf("Warning: Authentication configuration error: %v", err)
+	}
+	authHandler := auth.NewAuthHandler(authConfig)
+	
+	// Register auth routes
+	auth.RegisterRoutes(router, authHandler)
+	
+	// Apply authentication middleware
+	router.Use(auth.AuthenticationMiddleware(authConfig))
 	
 	// Setup routes - exact same paths as Python FastAPI
 	router.GET("/", healthHandler.Health)
@@ -1031,63 +1047,7 @@ func main() {
 		})
 	})
 	
-	// Authentication endpoints - exact same paths as Python
-	router.GET("/auth/config", func(c *gin.Context) {
-		// Return basic auth config - for now, auth is disabled in Go backend
-		c.JSON(200, gin.H{
-			"success": true,
-			"data": map[string]interface{}{
-				"method":               "disabled",
-				"enabled":              false,
-				"oauth_provider":       nil,
-				"supports_methods":     []string{"simple", "oauth", "token", "header", "disabled"},
-				"session_cookie_name":  "juicytrade_session",
-			},
-			"message": "Authentication configuration retrieved",
-		})
-	})
-	
-	router.GET("/auth/status", func(c *gin.Context) {
-		// Return auth status - for now, always unauthenticated since auth is disabled
-		c.JSON(200, gin.H{
-			"success": true,
-			"data": map[string]interface{}{
-				"authenticated": false,
-				"method":        "disabled",
-				"user":          nil,
-				"expires_at":    nil,
-			},
-			"message": "Authentication status retrieved",
-		})
-	})
-	
-	router.POST("/auth/login", func(c *gin.Context) {
-		// Login endpoint - for now, return error since auth is disabled
-		c.JSON(400, gin.H{
-			"success": false,
-			"message": "Authentication is disabled",
-		})
-	})
-	
-	router.POST("/auth/logout", func(c *gin.Context) {
-		// Logout endpoint - for now, just return success
-		c.JSON(200, gin.H{
-			"success": true,
-			"data": map[string]interface{}{
-				"success": true,
-				"message": "Logout successful",
-			},
-			"message": "Logout successful",
-		})
-	})
-	
-	router.GET("/auth/user", func(c *gin.Context) {
-		// Get current user - for now, return unauthorized since auth is disabled
-		c.JSON(401, gin.H{
-			"success": false,
-			"message": "Not authenticated",
-		})
-	})
+
 	
 	// Setup endpoints - exact same paths as Python
 	router.GET("/setup/status", func(c *gin.Context) {
