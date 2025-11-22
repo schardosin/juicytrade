@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	"trade-backend-go/internal/models"
@@ -189,15 +190,31 @@ func (pm *ProviderManager) getProvider(operation string) base.Provider {
 	}
 	
 	pm.mutex.RLock()
-	provider, exists := pm.providers[providerName]
-	pm.mutex.RUnlock()
+	defer pm.mutex.RUnlock()
 	
-	if !exists {
-		slog.Error(fmt.Sprintf("Provider '%s' not initialized.", providerName))
-		return nil
+	// Try exact match first (case-sensitive for full instance IDs like "tradier_live_Tradier")
+	if provider, exists := pm.providers[providerName]; exists {
+		return provider
 	}
 	
-	return provider
+	// Fallback: case-insensitive match for backward compatibility with old format
+	// This handles old configs like "tradier" matching "tradier_live_Tradier"
+	providerNameLower := strings.ToLower(providerName)
+	for instanceID, provider := range pm.providers {
+		if strings.ToLower(instanceID) == providerNameLower {
+			return provider
+		}
+		
+		// Also try matching just the provider type (e.g., "tradier" matches "tradier_live_Tradier")
+		// Split by underscore to extract provider type
+		parts := strings.Split(strings.ToLower(instanceID), "_")
+		if len(parts) >= 3 && parts[0] == providerNameLower {
+			return provider
+		}
+	}
+	
+	slog.Error(fmt.Sprintf("Provider '%s' not initialized.", providerName))
+	return nil
 }
 
 // GetProvider gets a provider instance by its instance ID.
@@ -485,6 +502,16 @@ func (pm *ProviderManager) GetAvailableProviders() map[string]map[string]interfa
 // Exact conversion of Python initialize_active_providers method.
 func (pm *ProviderManager) InitializeActiveProviders() {
 	pm.initializeActiveProviders()
+}
+
+// GetProviderTypes gets all available provider types.
+func (pm *ProviderManager) GetProviderTypes() map[string]ProviderType {
+	return GetProviderTypes()
+}
+
+// GetProviderInstances gets all configured provider instances.
+func (pm *ProviderManager) GetProviderInstances() map[string]map[string]interface{} {
+	return pm.GetAvailableProviderInstances()
 }
 
 // GetSubscriptionStatus gets the current subscription status from all providers.

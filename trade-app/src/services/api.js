@@ -507,7 +507,7 @@ export const api = {
   async getIvxData(symbol) {
     try {
       // Use a longer timeout for IVx calculation since it processes multiple expirations
-      const response = await apiClient.get(`${API_BASE_URL}/api/ivx/${symbol}`, {
+      const response = await apiClient.get(`${API_BASE_URL}/ivx/${symbol}`, {
         timeout: 60000 // 60 second timeout for IVx calculations
       });
       // Return the full response.data, not response.data.data

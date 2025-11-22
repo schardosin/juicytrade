@@ -350,12 +350,13 @@ export default {
         wizardData.value.providers = providerInstances;
         
         // Initialize mandatory routes with null values (user must actively select)
+        // NEVER load existing values for mandatory routes - user must reconfigure
         const mandatory = {};
         mandatoryRoutes.forEach(route => {
           mandatory[route] = null;
         });
         
-        // Only load existing config for optional routes
+        // Load existing config ONLY for optional routes (not in mandatory list)
         const optional = {};
         Object.entries(existingConfig).forEach(([key, value]) => {
           if (!mandatoryRoutes.includes(key)) {

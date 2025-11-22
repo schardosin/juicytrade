@@ -263,10 +263,33 @@ export default {
         routingLoading.value = true;
         routingError.value = null;
         
-        const [availableProvidersData, existingConfig] = await Promise.all([
-          api.getAvailableProviders(),
+        // Get provider types to look up capabilities
+        const [providerTypesData, existingConfig] = await Promise.all([
+          api.getProviderTypes(),
           api.getProviderConfig().catch(() => ({}))
         ]);
+        
+        // Build availableProviders from the instances already loaded in parent wizard
+        const availableProvidersData = {};
+        const instances = props.wizardData.providers || {};
+        
+        Object.entries(instances).forEach(([instanceId, instanceData]) => {
+          if (instanceData.active) {
+            const providerType = instanceData.provider_type;
+            const typeInfo = providerTypesData[providerType];
+            
+            if (typeInfo) {
+              availableProvidersData[instanceId] = {
+                capabilities: typeInfo.capabilities,
+                paper: (instanceData.account_type === 'paper'),
+                display_name: instanceData.display_name,
+                provider_type: providerType,
+                account_type: instanceData.account_type,
+                instance_id: instanceId
+              };
+            }
+          }
+        });
         
         availableProviders.value = availableProvidersData;
         
@@ -292,8 +315,9 @@ export default {
     const getAvailableInstancesForService = (serviceKey) => {
       const providers = [];
       
-      Object.entries(availableProviders.value).forEach(([providerName, providerData]) => {
-        const capabilities = providerData.capabilities || {};
+      // Use availableProviders directly (same as Settings does)
+      Object.entries(availableProviders.value).forEach(([instanceId, instanceData]) => {
+        const capabilities = instanceData.capabilities || {};
         
         // Check if provider supports this service (in rest or streaming)
         const supportsService = 
@@ -302,8 +326,8 @@ export default {
           
         if (supportsService) {
           providers.push({
-            label: formatProviderName(providerName, providerData),
-            value: providerName,
+            label: formatProviderName(instanceId, instanceData),
+            value: instanceId,  // Use instance ID as value (e.g., "tastytrade_live_Tasty")
             capabilities: capabilities
           });
         }

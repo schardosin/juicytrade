@@ -84,18 +84,254 @@ func main() {
 	}
 	authHandler := auth.NewAuthHandler(authConfig)
 	
-	// Register auth routes
+	// Setup API group
+	api := router.Group("/api")
+	
+	// Register auth routes under /api for API access
+	auth.RegisterRoutes(api, authHandler)
+	
+	// Also register auth routes at root level for OAuth callbacks (ingress routes /auth to backend)
 	auth.RegisterRoutes(router, authHandler)
 	
-	// Apply authentication middleware
-	router.Use(auth.AuthenticationMiddleware(authConfig))
+	// Setup and configuration endpoints (NO AUTH REQUIRED - for setup wizard)
+	api.GET("/setup/status", func(c *gin.Context) {
+		// Exact conversion of Python get_setup_status logic
+		
+		// Get current provider configuration
+		config := providerManager.GetConfig()
+		
+		// Define mandatory services that must be configured (same as Python)
+		mandatoryServices := []string{
+			"trade_account",
+			"options_chain", 
+			"historical_data",
+			"symbol_lookup",
+			"streaming_quotes",
+		}
+		
+		// Check if we have service routing configuration
+		if len(config) == 0 {
+			c.JSON(200, gin.H{
+				"success": true,
+				"data": map[string]interface{}{
+					"is_setup_complete":         false,
+					"missing_mandatory_services": mandatoryServices,
+					"configured_services":       map[string]interface{}{},
+					"has_providers":             false,
+				},
+				"message": "No service routing configuration found",
+			})
+			return
+		}
+		
+		// Check each mandatory service
+		missingServices := []string{}
+		for _, service := range mandatoryServices {
+			routedProvider, exists := config[service]
+			if !exists || routedProvider == "" {
+				missingServices = append(missingServices, service)
+			}
+		}
+		
+		isSetupComplete := len(missingServices) == 0
+		hasProviders := len(providerManager.GetAvailableProviderInstances()) > 0
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"is_setup_complete":         isSetupComplete,
+				"missing_mandatory_services": missingServices,
+				"configured_services":       config,
+				"has_providers":             hasProviders,
+			},
+			"message": "Setup status retrieved successfully",
+		})
+	})
+	
+	api.GET("/providers/types", func(c *gin.Context) {
+		types := providerManager.GetProviderTypes()
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    types,
+		})
+	})
+	
+	api.GET("/providers/instances", func(c *gin.Context) {
+		// Read directly from credential store to get the latest data
+		credentialStore := providers.NewCredentialStore()
+		instances := credentialStore.GetAllInstances()
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    instances,
+		})
+	})
+	
+	api.POST("/providers/instances/test", func(c *gin.Context) {
+		var request map[string]interface{}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request data: " + err.Error(),
+			})
+			return
+		}
+		
+		providerType, _ := request["provider_type"].(string)
+		accountType, _ := request["account_type"].(string)
+		credentials, _ := request["credentials"].(map[string]interface{})
+		
+		if providerType == "" || accountType == "" {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Missing provider_type or account_type",
+			})
+			return
+		}
+		
+		result := providerManager.TestProviderCredentials(c.Request.Context(), providerType, accountType, credentials)
+		c.JSON(200, result)
+	})
+	
+	// Provider instance management endpoints (CREATE, UPDATE, DELETE, TOGGLE)
+	api.POST("/providers/instances", func(c *gin.Context) {
+		var request map[string]interface{}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request data: " + err.Error(),
+			})
+			return
+		}
+		
+		providerType, _ := request["provider_type"].(string)
+		accountType, _ := request["account_type"].(string)
+		displayName, _ := request["display_name"].(string)
+		credentials, _ := request["credentials"].(map[string]interface{})
+		
+		if providerType == "" || accountType == "" || displayName == "" {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Missing required fields: provider_type, account_type, display_name",
+			})
+			return
+		}
+		
+		// Apply defaults to credentials
+		credentialsWithDefaults := providers.ApplyDefaults(providerType, accountType, credentials)
+		
+		// Generate unique instance ID
+		credentialStore := providers.NewCredentialStore()
+		instanceID := credentialStore.GenerateInstanceID(providerType, accountType, displayName)
+		
+		// Add instance to credential store
+		success := credentialStore.AddInstance(instanceID, providerType, accountType, displayName, credentialsWithDefaults)
+		if !success {
+			c.JSON(500, gin.H{
+				"success": false,
+				"message": "Failed to add provider instance",
+			})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"instance_id": instanceID,
+			},
+			"message": "Provider instance created successfully",
+		})
+	})
+	
+	api.PUT("/providers/instances/:instance_id", func(c *gin.Context) {
+		instanceID := c.Param("instance_id")
+		
+		var request map[string]interface{}
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request data: " + err.Error(),
+			})
+			return
+		}
+		
+		// Build updates map
+		updates := make(map[string]interface{})
+		if displayName, ok := request["display_name"].(string); ok && displayName != "" {
+			updates["display_name"] = displayName
+		}
+		if credentials, ok := request["credentials"].(map[string]interface{}); ok {
+			updates["credentials"] = credentials
+		}
+		
+		credentialStore := providers.NewCredentialStore()
+		success := credentialStore.UpdateInstance(instanceID, updates)
+		if !success {
+			c.JSON(404, gin.H{
+				"success": false,
+				"message": "Provider instance not found",
+			})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"message": "Provider instance updated successfully",
+		})
+	})
+	
+	api.PUT("/providers/instances/:instance_id/toggle", func(c *gin.Context) {
+		instanceID := c.Param("instance_id")
+		
+		credentialStore := providers.NewCredentialStore()
+		newState := credentialStore.ToggleInstance(instanceID)
+		if newState == nil {
+			c.JSON(404, gin.H{
+				"success": false,
+				"message": "Provider instance not found",
+			})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"active": *newState,
+			},
+			"message": "Provider instance toggled successfully",
+		})
+	})
+	
+	api.DELETE("/providers/instances/:instance_id", func(c *gin.Context) {
+		instanceID := c.Param("instance_id")
+		
+		credentialStore := providers.NewCredentialStore()
+		success := credentialStore.DeleteInstance(instanceID)
+		if !success {
+			c.JSON(404, gin.H{
+				"success": false,
+				"message": "Provider instance not found",
+			})
+			return
+		}
+		
+		c.JSON(200, gin.H{
+			"success": true,
+			"message": "Provider instance deleted successfully",
+		})
+	})
+	
+	// Apply authentication middleware to API group (all routes below require auth)
+	api.Use(auth.AuthenticationMiddleware(authConfig))
 	
 	// Setup routes - exact same paths as Python FastAPI
 	router.GET("/", healthHandler.Health)
 	router.GET("/health", healthHandler.HealthCheck)
 	
+	// WebSocket endpoint
+	router.GET("/ws", webSocketHandler.HandleWebSocket)
+	
 	// Symbol-specific endpoints - MUST be first to avoid conflicts
-	router.GET("/symbol/:symbol/range/52week", func(c *gin.Context) {
+	api.GET("/symbol/:symbol/range/52week", func(c *gin.Context) {
 		symbol := c.Param("symbol")
 		
 		// Get 1 year of daily data (same as Python implementation)
@@ -149,7 +385,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/symbol/:symbol/volume/average", func(c *gin.Context) {
+	api.GET("/symbol/:symbol/volume/average", func(c *gin.Context) {
 		symbol := c.Param("symbol")
 		days := 20
 		
@@ -211,11 +447,11 @@ func main() {
 	})
 	
 	// Market data routes - exact same paths as Python
-	router.GET("/prices/stocks", marketDataHandler.GetStockPrices)
-	router.GET("/expiration_dates", marketDataHandler.GetExpirationDates)
+	api.GET("/prices/stocks", marketDataHandler.GetStockPrices)
+	api.GET("/expiration_dates", marketDataHandler.GetExpirationDates)
 	
 	// Account & Portfolio endpoints - exact same paths as Python
-	router.GET("/account", func(c *gin.Context) {
+	api.GET("/account", func(c *gin.Context) {
 		account, err := providerManager.GetAccount(c.Request.Context())
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -240,7 +476,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/positions", func(c *gin.Context) {
+	api.GET("/positions", func(c *gin.Context) {
 		enhancedPositions, err := providerManager.GetPositionsEnhanced(c.Request.Context())
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -273,7 +509,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/orders", func(c *gin.Context) {
+	api.GET("/orders", func(c *gin.Context) {
 		status := c.DefaultQuery("status", "open")
 		
 		orders, err := providerManager.GetOrders(c.Request.Context(), status)
@@ -297,7 +533,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/open_orders", func(c *gin.Context) {
+	api.GET("/open_orders", func(c *gin.Context) {
 		orders, err := providerManager.GetOrders(c.Request.Context(), "open")
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -319,7 +555,7 @@ func main() {
 		})
 	})
 	
-	router.POST("/orders", func(c *gin.Context) {
+	api.POST("/orders", func(c *gin.Context) {
 		var orderRequest map[string]interface{}
 		if err := c.ShouldBindJSON(&orderRequest); err != nil {
 			c.JSON(400, gin.H{
@@ -353,7 +589,7 @@ func main() {
 		})
 	})
 	
-	router.POST("/orders/single-leg", func(c *gin.Context) {
+	api.POST("/orders/single-leg", func(c *gin.Context) {
 		var orderRequest map[string]interface{}
 		if err := c.ShouldBindJSON(&orderRequest); err != nil {
 			fmt.Printf("ERROR: Invalid single-leg order request: %v\n", err)
@@ -388,7 +624,7 @@ func main() {
 		})
 	})
 
-	router.POST("/orders/multi-leg", func(c *gin.Context) {
+	api.POST("/orders/multi-leg", func(c *gin.Context) {
 		var orderRequest map[string]interface{}
 		if err := c.ShouldBindJSON(&orderRequest); err != nil {
 			c.JSON(400, gin.H{
@@ -426,7 +662,7 @@ func main() {
 		})
 	})
 	
-	router.POST("/orders/preview", func(c *gin.Context) {
+	api.POST("/orders/preview", func(c *gin.Context) {
 		var orderRequest map[string]interface{}
 		if err := c.ShouldBindJSON(&orderRequest); err != nil {
 			c.JSON(400, gin.H{
@@ -471,7 +707,7 @@ func main() {
 		})
 	})
 	
-	router.DELETE("/orders/:order_id", func(c *gin.Context) {
+	api.DELETE("/orders/:order_id", func(c *gin.Context) {
 		orderID := c.Param("order_id")
 		if orderID == "" {
 			c.JSON(400, gin.H{
@@ -511,7 +747,7 @@ func main() {
 	})
 	
 	// Symbol lookup endpoint - exact same path as Python
-	router.GET("/symbols/lookup", func(c *gin.Context) {
+	api.GET("/symbols/lookup", func(c *gin.Context) {
 		query := c.Query("q")
 		if query == "" {
 			c.JSON(400, gin.H{
@@ -538,7 +774,7 @@ func main() {
 	})
 	
 	// Options chain endpoints - exact same paths as Python
-	router.GET("/options_chain_basic", func(c *gin.Context) {
+	api.GET("/options_chain_basic", func(c *gin.Context) {
 		symbol := c.Query("symbol")
 		expiry := c.Query("expiry")
 		if symbol == "" || expiry == "" {
@@ -595,7 +831,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/options_chain_smart", func(c *gin.Context) {
+	api.GET("/options_chain_smart", func(c *gin.Context) {
 		symbol := c.Query("symbol")
 		expiry := c.Query("expiry")
 		if symbol == "" || expiry == "" {
@@ -645,7 +881,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/options_greeks", func(c *gin.Context) {
+	api.GET("/options_greeks", func(c *gin.Context) {
 		symbols := c.Query("symbols")
 		if symbols == "" {
 			c.JSON(400, gin.H{
@@ -690,7 +926,7 @@ func main() {
 	})
 	
 	// Historical data endpoints - exact same paths as Python
-	router.GET("/next_market_date", func(c *gin.Context) {
+	api.GET("/next_market_date", func(c *gin.Context) {
 		nextDate, err := providerManager.GetNextMarketDate(c.Request.Context())
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -707,7 +943,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/chart/historical/:symbol", func(c *gin.Context) {
+	api.GET("/chart/historical/:symbol", func(c *gin.Context) {
 		symbol := c.Param("symbol")
 		timeframe := c.DefaultQuery("timeframe", "D")
 		startDate := c.Query("start_date")
@@ -750,7 +986,7 @@ func main() {
 	})
 	
 	// Provider Configuration endpoints - exact same paths as Python
-	router.GET("/providers/config", func(c *gin.Context) {
+	api.GET("/providers/config", func(c *gin.Context) {
 		config := providerManager.GetConfig()
 		c.JSON(200, gin.H{
 			"success": true,
@@ -758,7 +994,7 @@ func main() {
 		})
 	})
 	
-	router.PUT("/providers/config", func(c *gin.Context) {
+	api.PUT("/providers/config", func(c *gin.Context) {
 		var newConfig map[string]interface{}
 		if err := c.ShouldBindJSON(&newConfig); err != nil {
 			c.JSON(400, gin.H{
@@ -768,7 +1004,29 @@ func main() {
 			return
 		}
 		
+		// Log what the UI sent
+		log.Printf("📥 RECEIVED CONFIG FROM UI:")
+		for key, value := range newConfig {
+			log.Printf("  - %s: %v (type: %T)", key, value, value)
+		}
+		
+		// Get available instances for comparison
+		credentialStore := providers.NewCredentialStore()
+		availableInstances := credentialStore.GetAllInstances()
+		log.Printf("📋 AVAILABLE INSTANCES:")
+		for instanceID := range availableInstances {
+			log.Printf("  - %s", instanceID)
+		}
+		
 		success := providerManager.UpdateConfig(newConfig)
+		
+		// Log what actually got saved
+		savedConfig := providerManager.GetConfig()
+		log.Printf("💾 SAVED CONFIG:")
+		for key, value := range savedConfig {
+			log.Printf("  - %s: %s", key, value)
+		}
+		
 		if success {
 			c.JSON(200, gin.H{
 				"success": true,
@@ -783,7 +1041,7 @@ func main() {
 		}
 	})
 	
-	router.POST("/providers/config/reset", func(c *gin.Context) {
+	api.POST("/providers/config/reset", func(c *gin.Context) {
 		providerManager.ResetConfig()
 		c.JSON(200, gin.H{
 			"success": true,
@@ -791,7 +1049,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/providers/available", func(c *gin.Context) {
+	api.GET("/providers/available", func(c *gin.Context) {
 		providers := providerManager.GetAvailableProviders()
 		c.JSON(200, gin.H{
 			"success": true,
@@ -800,312 +1058,7 @@ func main() {
 	})
 	
 	// Provider Types endpoint - exact same path as Python
-	router.GET("/providers/types", func(c *gin.Context) {
-		providerTypes := providers.GetProviderTypes()
-		c.JSON(200, gin.H{
-			"success": true,
-			"data":    providerTypes,
-			"message": "Retrieved provider type definitions",
-		})
-	})
-	
-	// Provider Instance Management endpoints - exact same paths as Python
-	router.GET("/providers/instances", func(c *gin.Context) {
-		instances := providerManager.GetAvailableProviderInstances()
-		c.JSON(200, gin.H{
-			"success": true,
-			"data":    instances,
-			"message": fmt.Sprintf("Retrieved %d provider instances", len(instances)),
-		})
-	})
-	
-	router.POST("/providers/instances", func(c *gin.Context) {
-		var request map[string]interface{}
-		if err := c.ShouldBindJSON(&request); err != nil {
-			c.JSON(400, gin.H{
-				"success": false,
-				"message": "Invalid request data: " + err.Error(),
-			})
-			return
-		}
-		
-		// Extract required fields
-		providerType, _ := request["provider_type"].(string)
-		accountType, _ := request["account_type"].(string)
-		displayName, _ := request["display_name"].(string)
-		credentials, _ := request["credentials"].(map[string]interface{})
-		
-		if providerType == "" || accountType == "" || displayName == "" {
-			c.JSON(400, gin.H{
-				"success": false,
-				"message": "Missing required fields: provider_type, account_type, display_name",
-			})
-			return
-		}
-		
-		// Apply defaults to credentials
-		credentialsWithDefaults := providers.ApplyDefaults(providerType, accountType, credentials)
-		
-		// Generate unique instance ID
-		credentialStore := providers.NewCredentialStore()
-		instanceID := credentialStore.GenerateInstanceID(providerType, accountType, displayName)
-		
-		// Add instance to credential store
-		success := credentialStore.AddInstance(instanceID, providerType, accountType, displayName, credentialsWithDefaults)
-		if !success {
-			c.JSON(500, gin.H{
-				"success": false,
-				"message": "Failed to create provider instance",
-			})
-			return
-		}
-		
-		// Reinitialize providers to include the new instance
-		providerManager.InitializeActiveProviders()
-		
-		c.JSON(200, gin.H{
-			"success": true,
-			"data":    map[string]interface{}{"instance_id": instanceID},
-			"message": fmt.Sprintf("Provider instance '%s' created successfully", displayName),
-		})
-	})
-	
-	router.PUT("/providers/instances/:instance_id", func(c *gin.Context) {
-		instanceID := c.Param("instance_id")
-		
-		var request map[string]interface{}
-		if err := c.ShouldBindJSON(&request); err != nil {
-			c.JSON(400, gin.H{
-				"success": false,
-				"message": "Invalid request data: " + err.Error(),
-			})
-			return
-		}
-		
-		credentialStore := providers.NewCredentialStore()
-		
-		// Check if instance exists
-		instance := credentialStore.GetInstance(instanceID)
-		if instance == nil {
-			c.JSON(404, gin.H{
-				"success": false,
-				"message": "Provider instance not found",
-			})
-			return
-		}
-		
-		// Prepare updates
-		updates := make(map[string]interface{})
-		if displayName, ok := request["display_name"].(string); ok {
-			updates["display_name"] = displayName
-		}
-		
-		if credentials, ok := request["credentials"].(map[string]interface{}); ok {
-			// Get existing credentials and merge with new ones
-			existingCredentials, _ := instance["credentials"].(map[string]interface{})
-			if existingCredentials == nil {
-				existingCredentials = make(map[string]interface{})
-			}
-			
-			// Merge credentials (skip empty sensitive fields)
-			mergedCredentials := make(map[string]interface{})
-			for k, v := range existingCredentials {
-				mergedCredentials[k] = v
-			}
-			for k, v := range credentials {
-				if str, ok := v.(string); ok && (str == "" || str == "••••••••") {
-					continue // Skip empty or masked values
-				}
-				mergedCredentials[k] = v
-			}
-			
-			// Apply defaults
-			providerType, _ := instance["provider_type"].(string)
-			accountType, _ := instance["account_type"].(string)
-			credentialsWithDefaults := providers.ApplyDefaults(providerType, accountType, mergedCredentials)
-			updates["credentials"] = credentialsWithDefaults
-		}
-		
-		// Update instance
-		success := credentialStore.UpdateInstance(instanceID, updates)
-		if !success {
-			c.JSON(500, gin.H{
-				"success": false,
-				"message": "Failed to update provider instance",
-			})
-			return
-		}
-		
-		// Reinitialize providers if credentials were updated
-		if _, hasCredentials := request["credentials"]; hasCredentials {
-			providerManager.InitializeActiveProviders()
-		}
-		
-		c.JSON(200, gin.H{
-			"success": true,
-			"data":    map[string]interface{}{"instance_id": instanceID},
-			"message": "Provider instance updated successfully",
-		})
-	})
-	
-	router.PUT("/providers/instances/:instance_id/toggle", func(c *gin.Context) {
-		instanceID := c.Param("instance_id")
-		
-		credentialStore := providers.NewCredentialStore()
-		newActiveState := credentialStore.ToggleInstance(instanceID)
-		
-		if newActiveState == nil {
-			c.JSON(404, gin.H{
-				"success": false,
-				"message": "Provider instance not found",
-			})
-			return
-		}
-		
-		// Reinitialize providers to reflect the change
-		providerManager.InitializeActiveProviders()
-		
-		action := "deactivated"
-		if *newActiveState {
-			action = "activated"
-		}
-		
-		c.JSON(200, gin.H{
-			"success": true,
-			"data":    map[string]interface{}{"instance_id": instanceID, "active": *newActiveState},
-			"message": fmt.Sprintf("Provider instance %s successfully", action),
-		})
-	})
-	
-	router.DELETE("/providers/instances/:instance_id", func(c *gin.Context) {
-		instanceID := c.Param("instance_id")
-		
-		credentialStore := providers.NewCredentialStore()
-		
-		// Check if instance exists
-		instance := credentialStore.GetInstance(instanceID)
-		if instance == nil {
-			c.JSON(404, gin.H{
-				"success": false,
-				"message": "Provider instance not found",
-			})
-			return
-		}
-		
-		// Delete the instance
-		success := credentialStore.DeleteInstance(instanceID)
-		if !success {
-			c.JSON(500, gin.H{
-				"success": false,
-				"message": "Failed to delete provider instance",
-			})
-			return
-		}
-		
-		// Reinitialize providers to remove the deleted instance
-		providerManager.InitializeActiveProviders()
-		
-		c.JSON(200, gin.H{
-			"success": true,
-			"data":    map[string]interface{}{"instance_id": instanceID},
-			"message": "Provider instance deleted successfully",
-		})
-	})
-	
-	router.POST("/providers/instances/test", func(c *gin.Context) {
-		var request map[string]interface{}
-		if err := c.ShouldBindJSON(&request); err != nil {
-			c.JSON(400, gin.H{
-				"success": false,
-				"message": "Invalid request data: " + err.Error(),
-			})
-			return
-		}
-		
-		providerType, _ := request["provider_type"].(string)
-		accountType, _ := request["account_type"].(string)
-		credentials, _ := request["credentials"].(map[string]interface{})
-		
-		if providerType == "" || accountType == "" {
-			c.JSON(400, gin.H{
-				"success": false,
-				"message": "Missing required fields: provider_type, account_type",
-			})
-			return
-		}
-		
-		// Test the connection using provider manager
-		result := providerManager.TestProviderCredentials(c.Request.Context(), providerType, accountType, credentials)
-		
-		success, _ := result["success"].(bool)
-		message, _ := result["message"].(string)
-		
-		c.JSON(200, gin.H{
-			"success": success,
-			"data":    result,
-			"message": message,
-		})
-	})
-	
-
-	
-	// Setup endpoints - exact same paths as Python
-	router.GET("/setup/status", func(c *gin.Context) {
-		// Exact conversion of Python get_setup_status logic
-		
-		// Get current provider configuration
-		config := providerManager.GetConfig()
-		
-		// Define mandatory services that must be configured (same as Python)
-		mandatoryServices := []string{
-			"trade_account",
-			"options_chain", 
-			"historical_data",
-			"symbol_lookup",
-			"streaming_quotes",
-		}
-		
-		// Check if we have service routing configuration
-		if config == nil || len(config) == 0 {
-			c.JSON(200, gin.H{
-				"success": true,
-				"data": map[string]interface{}{
-					"is_setup_complete":         false,
-					"missing_mandatory_services": mandatoryServices,
-					"configured_services":       map[string]interface{}{},
-					"has_providers":             false,
-				},
-				"message": "No service routing configuration found",
-			})
-			return
-		}
-		
-		// Check each mandatory service
-		missingServices := []string{}
-		for _, service := range mandatoryServices {
-			routedProvider, exists := config[service]
-			if !exists || routedProvider == "" {
-				missingServices = append(missingServices, service)
-			}
-		}
-		
-		isSetupComplete := len(missingServices) == 0
-		hasProviders := len(providerManager.GetAvailableProviderInstances()) > 0
-		
-		c.JSON(200, gin.H{
-			"success": true,
-			"data": map[string]interface{}{
-				"is_setup_complete":         isSetupComplete,
-				"missing_mandatory_services": missingServices,
-				"configured_services":       config,
-				"has_providers":             hasProviders,
-			},
-			"message": "Setup status checked successfully",
-		})
-	})
-	
-	// Subscription status endpoint - exact same path as Python
-	router.GET("/subscriptions/status", func(c *gin.Context) {
+	api.GET("/subscriptions/status", func(c *gin.Context) {
 		status := providerManager.GetSubscriptionStatus()
 		c.JSON(200, gin.H{
 			"success":   true,
@@ -1117,7 +1070,7 @@ func main() {
 	})
 	
 	// IVx (Implied Volatility) endpoints - exact same paths as Python
-	router.GET("/api/ivx/:symbol", func(c *gin.Context) {
+	api.GET("/ivx/:symbol", func(c *gin.Context) {
 		symbol := c.Param("symbol")
 		startTime := time.Now()
 
@@ -1196,7 +1149,7 @@ func main() {
 	})
 	
 	// Watchlist endpoints - exact same paths as Python
-	router.GET("/watchlists", func(c *gin.Context) {
+	api.GET("/watchlists", func(c *gin.Context) {
 		data := watchlistMgr.GetAllWatchlists()
 		c.JSON(200, gin.H{
 			"success": true,
@@ -1205,7 +1158,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/watchlists/active", func(c *gin.Context) {
+	api.GET("/watchlists/active", func(c *gin.Context) {
 		activeWatchlist := watchlistMgr.GetActiveWatchlist()
 		activeWatchlistID := watchlistMgr.GetActiveWatchlistID()
 		
@@ -1227,7 +1180,7 @@ func main() {
 		})
 	})
 	
-	router.PUT("/watchlists/active", func(c *gin.Context) {
+	api.PUT("/watchlists/active", func(c *gin.Context) {
 		var request models.SetActiveWatchlistRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(400, gin.H{
@@ -1257,7 +1210,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/watchlists/:watchlist_id", func(c *gin.Context) {
+	api.GET("/watchlists/:watchlist_id", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
 		watchlist := watchlistMgr.GetWatchlist(watchlistID)
 		
@@ -1276,7 +1229,7 @@ func main() {
 		})
 	})
 	
-	router.POST("/watchlists", func(c *gin.Context) {
+	api.POST("/watchlists", func(c *gin.Context) {
 		var request models.CreateWatchlistRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(400, gin.H{
@@ -1315,7 +1268,7 @@ func main() {
 		})
 	})
 	
-	router.PUT("/watchlists/:watchlist_id", func(c *gin.Context) {
+	api.PUT("/watchlists/:watchlist_id", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
 		
 		var request models.UpdateWatchlistRequest
@@ -1365,7 +1318,7 @@ func main() {
 		})
 	})
 	
-	router.DELETE("/watchlists/:watchlist_id", func(c *gin.Context) {
+	api.DELETE("/watchlists/:watchlist_id", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
 		
 		if err := watchlistMgr.DeleteWatchlist(watchlistID); err != nil {
@@ -1383,7 +1336,7 @@ func main() {
 		})
 	})
 	
-	router.POST("/watchlists/:watchlist_id/symbols", func(c *gin.Context) {
+	api.POST("/watchlists/:watchlist_id/symbols", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
 		
 		var request models.AddSymbolRequest
@@ -1433,7 +1386,7 @@ func main() {
 		})
 	})
 	
-	router.DELETE("/watchlists/:watchlist_id/symbols/:symbol", func(c *gin.Context) {
+	api.DELETE("/watchlists/:watchlist_id/symbols/:symbol", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
 		symbol := c.Param("symbol")
 		
@@ -1458,7 +1411,7 @@ func main() {
 		})
 	})
 	
-	router.POST("/watchlists/search", func(c *gin.Context) {
+	api.POST("/watchlists/search", func(c *gin.Context) {
 		var request models.SearchWatchlistsRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(400, gin.H{
@@ -1489,7 +1442,7 @@ func main() {
 		})
 	})
 	
-	router.GET("/watchlists/symbols/all", func(c *gin.Context) {
+	api.GET("/watchlists/symbols/all", func(c *gin.Context) {
 		symbols := watchlistMgr.GetAllSymbols()
 		
 		c.JSON(200, gin.H{
@@ -1503,7 +1456,7 @@ func main() {
 	})
 	
 	// WebSocket endpoint - exact same path as Python
-	router.GET("/ws", webSocketHandler.HandleWebSocket)
+
 	
 	// Create HTTP server
 	server := &http.Server{

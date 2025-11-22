@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "juicytrade.fullname" . }}-backend
+  labels:
+    {{- include "juicytrade.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backend
+spec:
+  replicas: {{ .Values.backend.replicas }}
+  selector:
+    matchLabels:
+      {{- include "juicytrade.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: backend
+  template:
+    metadata:
+      labels:
+        {{- include "juicytrade.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: backend
+    spec:
+      {{- if or .Values.imagePullSecrets .Values.registryCredentials.create }}
+      imagePullSecrets:
+        {{- if .Values.registryCredentials.create }}
+        - name: {{ .Values.registryCredentials.name }}
+        {{- end }}
+        {{- with .Values.imagePullSecrets }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: backend
+          image: "{{ .Values.backend.image.repository }}:{{ .Values.backend.image.tag }}"
+          imagePullPolicy: {{ .Values.backend.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.backend.service.port }}
+              protocol: TCP
+          env:
+            {{- range $key, $value := .Values.backend.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          volumeMounts:
+            {{- if .Values.backend.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.backend.persistence.mountPath }}
+            {{- end }}
+          resources:
+            {{- toYaml .Values.backend.resources | nindent 12 }}
+      volumes:
+        {{- if .Values.backend.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "juicytrade.fullname" . }}-backend-data
+        {{- end }}

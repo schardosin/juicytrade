@@ -710,7 +710,10 @@ export default {
     };
 
     const confirmDeleteInstance = (instanceId) => {
-      instanceToDelete.value = providerInstances.value[instanceId];
+      instanceToDelete.value = {
+        instance_id: instanceId,
+        ...providerInstances.value[instanceId]
+      };
       showDeleteDialog.value = true;
     };
 
@@ -839,7 +842,7 @@ export default {
           credentials: newProvider.value.credentials
         });
         
-        connectionTestResult.value = result.data;
+        connectionTestResult.value = result;
         
       } catch (error) {
         console.error("Error testing connection:", error);

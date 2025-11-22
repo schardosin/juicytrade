@@ -1,0 +1,6 @@
+apiVersion: v2
+name: juicytrade
+description: A Helm chart for JuicyTrade application (Backend + Frontend)
+type: application
+version: 0.1.0
+appVersion: "1.0.0"

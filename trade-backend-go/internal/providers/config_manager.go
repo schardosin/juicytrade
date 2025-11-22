@@ -130,17 +130,20 @@ func (cm *ConfigManager) GetConfig() map[string]string {
 // UpdateConfig updates the configuration with new values.
 // Exact conversion of Python update_config method.
 func (cm *ConfigManager) UpdateConfig(newConfig map[string]interface{}) bool {
-	validatedConfig := copyMap(cm.config)
-	
-	// Get available provider instances
+	// Get available provider instances (reload to get latest)
+	cm.credentialStore = NewCredentialStore() // Reload to get latest instances
 	availableInstances := cm.credentialStore.GetAllInstances()
+	
+	// Start with a fresh config based on new_config keys (don't copy old config)
+	// This ensures we don't keep default values when user is setting up for the first time
+	validatedConfig := make(map[string]string)
 	
 	for key, value := range newConfig {
 		if _, exists := DefaultRouting[key]; exists {
-			// Allow null values for optional configurations
-			if value == nil {
+			// Allow null/empty values for optional configurations
+			if value == nil || value == "" {
 				validatedConfig[key] = ""
-				slog.Info(fmt.Sprintf("Set %s to null", key))
+				slog.Info(fmt.Sprintf("Set %s to empty/null", key))
 				continue
 			}
 			
@@ -150,15 +153,8 @@ func (cm *ConfigManager) UpdateConfig(newConfig map[string]interface{}) bool {
 				continue
 			}
 			
-			// Check if it's a legacy provider name (for backward compatibility)
-			if cm.isLegacyProvider(valueStr) {
-				if cm.validateLegacyProvider(key, valueStr) {
-					validatedConfig[key] = valueStr
-				} else {
-					slog.Warn(fmt.Sprintf("Invalid legacy provider/capability: %s:%s", key, valueStr))
-				}
-			} else if _, exists := availableInstances[valueStr]; exists {
-				// Check if it's a new provider instance ID
+			// Check if it's a new provider instance ID (check this FIRST, before legacy)
+			if _, exists := availableInstances[valueStr]; exists {
 				instanceData := availableInstances[valueStr]
 				providerType, _ := instanceData["provider_type"].(string)
 				
@@ -171,26 +167,49 @@ func (cm *ConfigManager) UpdateConfig(newConfig map[string]interface{}) bool {
 					if key == "streaming_quotes" || key == "streaming_greeks" {
 						if contains(capabilities.Streaming, key) {
 							validatedConfig[key] = valueStr
+							slog.Info(fmt.Sprintf("Set %s to instance %s", key, valueStr))
 						} else {
 							slog.Warn(fmt.Sprintf("Provider instance %s doesn't support streaming capability: %s", valueStr, key))
 						}
 					} else if contains(capabilities.Rest, key) {
 						validatedConfig[key] = valueStr
+						slog.Info(fmt.Sprintf("Set %s to instance %s", key, valueStr))
 					} else {
 						slog.Warn(fmt.Sprintf("Provider instance %s doesn't support REST capability: %s", valueStr, key))
 					}
 				} else {
 					slog.Warn(fmt.Sprintf("Unknown provider type for instance %s: %s", valueStr, providerType))
 				}
+			} else if cm.isLegacyProvider(valueStr) {
+				// Check if it's a legacy provider name (for backward compatibility)
+				if cm.validateLegacyProvider(key, valueStr) {
+					validatedConfig[key] = valueStr
+					slog.Info(fmt.Sprintf("Set %s to legacy provider %s", key, valueStr))
+				} else {
+					slog.Warn(fmt.Sprintf("Invalid legacy provider/capability: %s:%s", key, valueStr))
+				}
 			} else {
-				slog.Warn(fmt.Sprintf("Unknown provider or instance: %s", valueStr))
+				slog.Warn(fmt.Sprintf("Unknown provider or instance: %s for key %s", valueStr, key))
 			}
 		} else {
 			slog.Warn(fmt.Sprintf("Invalid config key: %s", key))
 		}
 	}
 	
+	// Merge with existing config for keys not in new_config
+	// This preserves settings that weren't changed
+	for key := range DefaultRouting {
+		if _, exists := validatedConfig[key]; !exists {
+			if existingValue, exists := cm.config[key]; exists {
+				validatedConfig[key] = existingValue
+			} else {
+				validatedConfig[key] = ""
+			}
+		}
+	}
+	
 	cm.config = validatedConfig
+	slog.Info(fmt.Sprintf("Updated provider config: %v", validatedConfig))
 	cm.saveConfig()
 	return true
 }
