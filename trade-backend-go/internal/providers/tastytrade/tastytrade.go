@@ -1590,6 +1590,29 @@ func (p *TastyTradeProvider) EnsureHealthyConnection(ctx context.Context) error 
 
 
 
+// writeJSONWithTimeout writes a JSON message with a timeout and locking.
+func (p *TastyTradeProvider) writeJSONWithTimeout(v interface{}) error {
+	p.streamingState.writeLock.Lock()
+	defer p.streamingState.writeLock.Unlock()
+
+	if p.streamingState.streamConnection == nil {
+		return fmt.Errorf("connection is nil")
+	}
+
+	// Set write deadline for this operation
+	if err := p.streamingState.streamConnection.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("failed to set write deadline: %w", err)
+	}
+
+	if err := p.streamingState.streamConnection.WriteJSON(v); err != nil {
+		return err
+	}
+
+	// Reset deadline (optional, but good practice if we want to leave it clean)
+	// p.streamingState.streamConnection.SetWriteDeadline(time.Time{})
+	return nil
+}
+
 // SubscribeToSymbols subscribes to real-time data for symbols via DXLink.
 // Batches subscriptions into chunks of 50 to avoid server-side limits.
 func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
@@ -1665,12 +1688,8 @@ func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []s
 
 		slog.Debug(fmt.Sprintf("TastyTrade: Sending batch %d/%d with %d subscriptions", (i/batchSize)+1, totalBatches, len(batch)))
 		
-		// Set write deadline to prevent hang on large messages
-		p.streamingState.writeLock.Lock()
-		p.streamingState.streamConnection.SetWriteDeadline(time.Now().Add(30 * time.Second))
-		err := p.streamingState.streamConnection.WriteJSON(subscriptionMsg)
-		p.streamingState.writeLock.Unlock()
-		if err != nil {
+		// Use helper to write with timeout
+		if err := p.writeJSONWithTimeout(subscriptionMsg); err != nil {
 			slog.Error("Failed to send subscription batch", "error", err, "batch", (i/batchSize)+1, "batch_size", len(batch))
 			return false, fmt.Errorf("failed to send subscription batch: %w", err)
 		}
@@ -1747,10 +1766,8 @@ func (p *TastyTradeProvider) UnsubscribeFromSymbols(ctx context.Context, symbols
 		"remove":  subscriptions,
 	}
 
-	p.streamingState.writeLock.Lock()
-	err := p.streamingState.streamConnection.WriteJSON(unsubscriptionMsg)
-	p.streamingState.writeLock.Unlock()
-	if err != nil {
+	// Use helper to write with timeout
+	if err := p.writeJSONWithTimeout(unsubscriptionMsg); err != nil {
 		slog.Error("Failed to send unsubscription message", "error", err)
 		return false, err
 	}
@@ -1794,6 +1811,42 @@ func (p *TastyTradeProvider) SetStreamingCache(cache base.StreamingCache) {
 		p.initStreamingState()
 	}
 	p.streamingState.streamingCache = cache
+}
+
+// periodicKeepalive sends periodic DXLink keepalive messages to maintain connection (like Python implementation)
+func (p *TastyTradeProvider) periodicKeepalive(ctx context.Context) {
+	slog.Info("TastyTrade: Starting periodic keepalive task")
+	
+	ticker := time.NewTicker(30 * time.Second)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Info("TastyTrade: Periodic keepalive task cancelled")
+			return
+		case <-ticker.C:
+			// Only send keepalive if we're connected
+			if p.streamingState.isConnected && p.streamingState.streamConnection != nil {
+				keepaliveMsg := map[string]interface{}{
+					"type":    "KEEPALIVE",
+					"channel": 0,
+				}
+				
+				// Use helper to write with timeout
+				if err := p.writeJSONWithTimeout(keepaliveMsg); err != nil {
+					slog.Warn("TastyTrade: Periodic keepalive failed", "error", err)
+					// Don't trigger recovery here - let the main loop handle it
+					return
+				}
+				slog.Debug("TastyTrade: Periodic DXLink keepalive sent")
+			} else {
+				// Not connected, stop keepalive task
+				slog.Debug("TastyTrade: Not connected, stopping keepalive task")
+				return
+			}
+		}
+	}
 }
 
 // dxlinkStreamingSetup executes DXLink setup sequence for streaming connection.
@@ -2131,43 +2184,7 @@ func (p *TastyTradeProvider) processStreamingData(ctx context.Context) {
 	}
 }
 
-// periodicKeepalive sends periodic DXLink keepalive messages to maintain connection (like Python implementation)
-func (p *TastyTradeProvider) periodicKeepalive(ctx context.Context) {
-	slog.Info("TastyTrade: Starting periodic keepalive task")
-	
-	ticker := time.NewTicker(30 * time.Second)
-	defer ticker.Stop()
-	
-	for {
-		select {
-		case <-ctx.Done():
-			slog.Info("TastyTrade: Periodic keepalive task cancelled")
-			return
-		case <-ticker.C:
-			// Only send keepalive if we're connected
-			if p.streamingState.isConnected && p.streamingState.streamConnection != nil {
-				keepaliveMsg := map[string]interface{}{
-					"type":    "KEEPALIVE",
-					"channel": 0,
-				}
-				
-				p.streamingState.writeLock.Lock()
-				err := p.streamingState.streamConnection.WriteJSON(keepaliveMsg)
-				p.streamingState.writeLock.Unlock()
-				if err != nil {
-					slog.Warn("TastyTrade: Periodic keepalive failed", "error", err)
-					// Don't trigger recovery here - let the main loop handle it
-					return
-				}
-				slog.Debug("TastyTrade: Periodic DXLink keepalive sent")
-			} else {
-				// Not connected, stop keepalive task
-				slog.Debug("TastyTrade: Not connected, stopping keepalive task")
-				return
-			}
-		}
-	}
-}
+
 
 
 // processFeedEvents processes FEED_DATA events and sends to streaming cache or queue.

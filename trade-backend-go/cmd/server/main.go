@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"net/http"
 	"os"
 	"os/signal"
@@ -61,6 +60,7 @@ func main() {
 
 	// Initialize IVx services
 	ivxCache := ivx.NewCache()
+	ivxService := ivx.NewService(providerManager, ivxCache)
 	
 	// Initialize watchlist manager
 	watchlistMgr := watchlist.GetManager()
@@ -75,7 +75,8 @@ func main() {
 	// Initialize handlers
 	healthHandler := handlers.NewHealthHandler()
 	marketDataHandler := handlers.NewMarketDataHandler(providerManager)
-	webSocketHandler := handlers.NewWebSocketHandler()
+	// Initialize WebSocket handler with IVx service
+	wsHandler := handlers.NewWebSocketHandler(ivxService)
 
 	// Initialize authentication
 	authConfig := auth.LoadConfig()
@@ -328,7 +329,7 @@ func main() {
 	router.GET("/health", healthHandler.HealthCheck)
 	
 	// WebSocket endpoint
-	router.GET("/ws", webSocketHandler.HandleWebSocket)
+	router.GET("/ws", wsHandler.HandleWebSocket)
 	
 	// Symbol-specific endpoints - MUST be first to avoid conflicts
 	api.GET("/symbol/:symbol/range/52week", func(c *gin.Context) {
@@ -1059,10 +1060,29 @@ func main() {
 	
 	// Provider Types endpoint - exact same path as Python
 	api.GET("/subscriptions/status", func(c *gin.Context) {
-		status := providerManager.GetSubscriptionStatus()
+		providerStatus := providerManager.GetSubscriptionStatus()
+		wsStats := wsHandler.GetConnectionStats()
+		
+		// Create response map and add both provider and WebSocket data
+		responseData := map[string]interface{}{
+			// Provider data
+			"quote_subscriptions":        providerStatus.QuoteSubscriptions,
+			"greeks_subscriptions":       providerStatus.GreeksSubscriptions,
+			"total_quote_subscriptions":  providerStatus.TotalQuoteSubscriptions,
+			"total_greeks_subscriptions": providerStatus.TotalGreeksSubscriptions,
+			"is_connected":               providerStatus.IsConnected,
+			"quote_providers":            providerStatus.QuoteProviders,
+			"greeks_providers":           providerStatus.GreeksProviders,
+		}
+		
+		// Add WebSocket data (includes IVx subscriptions)
+		for k, v := range wsStats {
+			responseData[k] = v
+		}
+		
 		c.JSON(200, gin.H{
 			"success":   true,
-			"data":      status,
+			"data":      responseData,
 			"error":     nil,
 			"message":   "Retrieved subscription status",
 			"timestamp": time.Now().Format(time.RFC3339),
@@ -1070,83 +1090,38 @@ func main() {
 	})
 	
 	// IVx (Implied Volatility) endpoints - exact same paths as Python
+	// IVx endpoint removed in favor of WebSocket streaming
+	/*
 	api.GET("/ivx/:symbol", func(c *gin.Context) {
 		symbol := c.Param("symbol")
-		startTime := time.Now()
-
 		log.Printf("📊 API request for IVx data for %s", symbol)
 
-		// Check cache first
-		cachedData := ivxCache.Get(symbol)
-		if cachedData != nil {
-			log.Printf("📦 Returning cached IVx data for %s (%d expirations)", symbol, len(cachedData))
-			response := models.NewApiResponse(true, models.IVxResponse{
-				Symbol:    symbol,
-				Expirations: cachedData,
-				Cached:    true,
-			}, nil, stringPtr(fmt.Sprintf("Retrieved cached IVx data for %s (%d expirations)", symbol, len(cachedData))))
-			c.JSON(200, response)
-			return
-		}
-
-		// Calculate fresh data
-		log.Printf("🔄 Calculating fresh IVx data for %s", symbol)
-
-		// Get all available expirations
-		expirationDatesRaw, err := providerManager.GetExpirationDates(c.Request.Context(), symbol)
-		if err != nil || len(expirationDatesRaw) == 0 {
-		response := models.NewApiResponse(false, models.IVxResponse{
-			Symbol:     symbol,
-			Expirations: []models.IVxExpiration{},
-		}, stringPtr("No expiration dates available"), stringPtr(fmt.Sprintf("No expiration dates available for %s", symbol)))
-			c.JSON(404, response)
-			return
-		}
-
-		// expirationDatesRaw is already []map[string]interface{}, no conversion needed
-		expirationDates := expirationDatesRaw
-
-		if len(expirationDates) == 0 {
-			response := models.NewApiResponse(false, models.IVxResponse{
+		response, err := ivxService.GetIVxForSymbol(c.Request.Context(), symbol)
+		if err != nil {
+			log.Printf("❌ Error calculating IVx for %s: %v", symbol, err)
+			
+			// Return 404 if no data found, similar to original behavior
+			errorResponse := models.NewApiResponse(false, models.IVxResponse{
 				Symbol:     symbol,
 				Expirations: []models.IVxExpiration{},
-			}, stringPtr("No valid expiration dates available"), stringPtr(fmt.Sprintf("No valid expiration dates available for %s", symbol)))
-			c.JSON(404, response)
+			}, stringPtr(err.Error()), stringPtr(fmt.Sprintf("Error calculating IVx: %v", err)))
+			c.JSON(404, errorResponse)
 			return
 		}
 
-		// Get underlying price with fallback logic (same as Python)
-		underlyingPrice, err := getUnderlyingPrice(c.Request.Context(), providerManager, symbol)
-		if err != nil || underlyingPrice == nil {
-			log.Printf("❌ No valid price available for %s: %v", symbol, err)
-			response := models.NewApiResponse(false, models.IVxResponse{
-				Symbol:     symbol,
-				Expirations: []models.IVxExpiration{},
-			}, stringPtr("No valid price available"), stringPtr(fmt.Sprintf("No valid price available for %s", symbol)))
-			c.JSON(404, response)
-			return
+		// Wrap in standard API response if not already (GetIVxForSymbol returns IVxResponse struct, we need ApiResponse wrapper)
+		// Note: GetIVxForSymbol returns *models.IVxResponse, but we need to wrap it in models.ApiResponse
+		// The original code constructed ApiResponse manually.
+		
+		msg := fmt.Sprintf("Calculated IVx data for %s (%d expirations)", symbol, len(response.Expirations))
+		if response.CalculationTime != nil {
+			msg += fmt.Sprintf(" in %.2fs", *response.CalculationTime)
 		}
-
-		// Process expirations in parallel
-		ivxResults := processExpirationsParallel(c.Request.Context(), expirationDates, providerManager, *underlyingPrice, symbol)
-
-		calculationTime := time.Since(startTime).Seconds()
-
-		// Cache the results if we have any
-		if len(ivxResults) > 0 {
-			ivxCache.Set(symbol, ivxResults)
-			log.Printf("💾 Cached IVx data for %s (%d expirations)", symbol, len(ivxResults))
-		}
-
-		response := models.NewApiResponse(true, models.IVxResponse{
-			Symbol:          symbol,
-			Expirations:     ivxResults,
-			Cached:          false,
-			CalculationTime: &calculationTime,
-		}, nil, stringPtr(fmt.Sprintf("Calculated IVx data for %s (%d expirations) in %.2fs", symbol, len(ivxResults), calculationTime)))
-
-		c.JSON(200, response)
+		
+		apiResponse := models.NewApiResponse(true, *response, nil, stringPtr(msg))
+		c.JSON(200, apiResponse)
 	})
+	*/
 	
 	// Watchlist endpoints - exact same paths as Python
 	api.GET("/watchlists", func(c *gin.Context) {
@@ -1578,235 +1553,4 @@ func getUnderlyingPrice(ctx context.Context, providerManager *providers.Provider
 	return underlyingPrice, nil
 }
 
-// processExpirationsParallel processes multiple expirations concurrently using goroutines
-func processExpirationsParallel(ctx context.Context, expirationDates []map[string]interface{}, providerManager *providers.ProviderManager, underlyingPrice float64, symbol string) []models.IVxExpiration {
-	if len(expirationDates) == 0 {
-		return []models.IVxExpiration{}
-	}
 
-	// Use a semaphore for concurrency control (similar to Python's semaphore)
-	concurrencyLimit := 10 // Increased from 5 to reduce batching pauses
-	semaphore := make(chan struct{}, concurrencyLimit)
-	results := make(chan *models.IVxExpiration, len(expirationDates))
-
-	// Worker function to process a single expiration
-	processExpiration := func(expirationDate map[string]interface{}) {
-		defer func() { <-semaphore }() // Release semaphore
-
-		// Extract date string and other info
-		dateStr, ok := expirationDate["date"].(string)
-		if !ok || dateStr == "" {
-			log.Printf("⚠️ Expiration missing 'date' field: %+v", expirationDate)
-			results <- nil
-			return
-		}
-
-		dateStrSymbol, _ := expirationDate["symbol"].(string)
-		if dateStrSymbol == "" {
-			dateStrSymbol = symbol
-		}
-
-		// Get basic options chain (same as Python - step 1)
-		optionsChain, err := providerManager.GetOptionsChainBasic(ctx, dateStrSymbol, dateStr, &underlyingPrice, 20, nil, &symbol)
-		if err != nil {
-			log.Printf("❌ Error getting options chain for %s %s: %v", symbol, dateStr, err)
-			results <- nil
-			return
-		}
-
-		if len(optionsChain) == 0 {
-			log.Printf("⚠️ No options chain for %s %s", symbol, dateStr)
-			results <- nil
-			return
-		}
-
-		// Find ATM strike (same as Python - step 2)
-		atmStrike := 0.0
-		minDiff := math.MaxFloat64
-		for _, contract := range optionsChain {
-			if contract != nil {
-				diff := math.Abs(contract.StrikePrice - underlyingPrice)
-				if diff < minDiff {
-					minDiff = diff
-					atmStrike = contract.StrikePrice
-				}
-			}
-		}
-
-		if atmStrike == 0 {
-			log.Printf("⚠️ Could not find ATM strike for %s %s", symbol, dateStr)
-			results <- nil
-			return
-		}
-
-		// Find ATM call and put contracts (same as Python - step 3)
-		var atmCall, atmPut *models.OptionContract
-		for _, contract := range optionsChain {
-			if contract != nil && contract.StrikePrice == atmStrike {
-				if contract.Type == "call" {
-					atmCall = contract
-				} else if contract.Type == "put" {
-					atmPut = contract
-				}
-			}
-		}
-
-		if atmCall == nil || atmPut == nil {
-			log.Printf("⚠️ Could not find ATM call/put for %s %s at strike %.2f", symbol, dateStr, atmStrike)
-			results <- nil
-			return
-		}
-
-		// Get live greeks/IV data for ATM options (same as Python - step 4)
-		symbolsToFetch := []string{atmCall.Symbol, atmPut.Symbol}
-		
-		// Python uses get_streaming_greeks_batch, but Go doesn't have this method yet
-		// For now, use the regular GetOptionsGreeksBatch method
-		greeksResults, err := providerManager.GetOptionsGreeksBatch(ctx, symbolsToFetch)
-		if err != nil {
-			log.Printf("❌ Error fetching greeks for %s %s: %v", symbol, dateStr, err)
-			results <- nil
-			return
-		}
-
-		// Extract valid IVs (same as Python - step 5)
-		var validIVs []float64
-		for _, greeks := range greeksResults {
-			if greeks != nil {
-				if iv, ok := greeks["implied_volatility"].(float64); ok && iv > 0 {
-					validIVs = append(validIVs, iv)
-				}
-			}
-		}
-
-		if len(validIVs) == 0 {
-			log.Printf("⚠️ Failed to get IV for ATM options for %s %s", symbol, dateStr)
-			results <- nil
-			return
-		}
-
-		// Calculate IVx (average of ATM call and put IV - same as Python)
-		ivx := 0.0
-		for _, iv := range validIVs {
-			ivx += iv
-		}
-		ivx /= float64(len(validIVs))
-
-		// Calculate DTE with Eastern Time logic (same as Python)
-		dte, isExpired := calculateDaysToExpiration(dateStr)
-		if dte <= 0 && !isExpired {
-			log.Printf("⚠️ Skipping truly expired expiration %s %s (DTE: %.4f)", symbol, dateStr, dte)
-			results <- nil
-			return
-		}
-
-		// For very small DTE (expired 0DTE), ensure minimum calculation value
-		if dte < 0.0001 {
-			dte = 0.0001
-		}
-
-		// Calculate expected move with time precision (same as Python)
-		expectedMove := underlyingPrice * ivx * math.Sqrt(dte/365)
-
-		// Adjust IVx for expired options (same as Python)
-		adjustedIVx := ivx
-		calculationMethod := "atm_iv_average"
-		if isExpired {
-			// For expired options, IVx should be near zero since there's no time value
-			adjustedIVx = 0.001 // Very small value (0.1%)
-			expectedMove = underlyingPrice * adjustedIVx * math.Sqrt(dte/365)
-			calculationMethod = "atm_iv_average_expired_adjusted"
-		}
-
-		// Create result (same format as Python)
-		result := &models.IVxExpiration{
-			ExpirationDate:      dateStr,
-			DaysToExpiration:    dte,
-			IVxPercent:          math.Round(adjustedIVx*100*100) / 100, // Round to 2 decimal places
-			ExpectedMoveDollars: math.Round(expectedMove*100) / 100,    // Round to 2 decimal places
-			CalculationMethod:   calculationMethod,
-			OptionsCount:        len(optionsChain),
-			IsExpired:           isExpired,
-		}
-
-		results <- result
-	}
-
-	// Start goroutines for all expirations
-	for _, exp := range expirationDates {
-		semaphore <- struct{}{} // Acquire semaphore
-		go processExpiration(exp)
-	}
-
-	// Collect results
-	var ivxResults []models.IVxExpiration
-	for i := 0; i < len(expirationDates); i++ {
-		result := <-results
-		if result != nil {
-			ivxResults = append(ivxResults, *result)
-		}
-	}
-
-	close(results)
-
-	return ivxResults
-}
-
-// calculateDaysToExpiration calculates DTE with Eastern Time logic (same as Python)
-func calculateDaysToExpiration(expirationDate string) (float64, bool) {
-	// Parse expiration date
-	expDate, err := time.Parse("2006-01-02", expirationDate)
-	if err != nil {
-		log.Printf("❌ Error parsing expiration date %s: %v", expirationDate, err)
-		return 0, false
-	}
-
-	// Always use Eastern Time for all date calculations (fixes UTC/EST server issues)
-	et, err := time.LoadLocation("America/New_York")
-	if err != nil {
-		log.Printf("❌ Error loading Eastern timezone: %v", err)
-		return 0, false
-	}
-
-	now := time.Now().In(et)
-	today := now.Truncate(24 * time.Hour)
-	expDate = expDate.In(et)
-
-	// For same-day expiration (0DTE), calculate fractional time to 4:00 PM ET
-	if expDate.Equal(today) {
-		// Market close is 4:00 PM ET
-		marketClose := time.Date(today.Year(), today.Month(), today.Day(), 16, 0, 0, 0, et)
-
-		// If after market close, use minimal time for expired 0DTE calculation
-		if now.After(marketClose) {
-			log.Printf("📅 0DTE after market close for %s - using minimal time for expired calculation", expirationDate)
-			return 0.0001, true // Very small value (about 0.1 hours) to show expired but calculate IVx
-		} else {
-			// Calculate fractional time remaining until market close
-			timeRemaining := marketClose.Sub(now)
-			dteHours := timeRemaining.Hours()
-			dte := dteHours / 24 // Convert to fractional days
-
-			log.Printf("📅 0DTE calculation for %s: %.2f hours = %.4f days remaining", expirationDate, dteHours, dte)
-			return dte, false
-		}
-	} else {
-		// For future expirations, use standard day calculation but add time precision
-		fullDays := expDate.Sub(today).Hours() / 24
-
-		// Add fractional day based on current time (assume 4:00 PM ET expiration)
-		marketCloseToday := time.Date(today.Year(), today.Month(), today.Day(), 16, 0, 0, 0, et)
-		if now.Before(marketCloseToday) {
-			timeRemainingToday := marketCloseToday.Sub(now)
-			fractionalDay := timeRemainingToday.Hours() / 24
-			fullDays += fractionalDay
-		}
-
-		// Ensure future dates have positive DTE
-		if fullDays <= 0 {
-			fullDays = 0.0001 // Minimal value for edge cases
-		}
-
-		return fullDays, false
-	}
-}

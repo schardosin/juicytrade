@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"trade-backend-go/internal/models"
+	"trade-backend-go/internal/services/ivx"
 	"trade-backend-go/internal/streaming"
 
 	"github.com/gin-gonic/gin"
@@ -21,16 +22,18 @@ type WebSocketHandler struct {
 	clients         map[*websocket.Conn]*WebSocketClient
 	clientsMutex    sync.RWMutex
 	streamingMgr    *streaming.StreamingManager
+	ivxService      *ivx.Service
 	shutdownChan    chan struct{}
 }
 
 // WebSocketClient represents a connected WebSocket client
 type WebSocketClient struct {
-	conn          *websocket.Conn
-	subscriptions map[string]bool
-	lastPing      time.Time
-	mutex         sync.RWMutex
-	writeMutex    sync.Mutex // Protects concurrent writes to WebSocket connection
+	conn             *websocket.Conn
+	subscriptions    map[string]bool
+	ivxSubscriptions map[string]context.CancelFunc // Tracks IVx streaming goroutines
+	lastPing         time.Time
+	mutex            sync.RWMutex
+	writeMutex       sync.Mutex // Protects concurrent writes to WebSocket connection
 }
 
 // WebSocketMessage represents incoming WebSocket messages
@@ -53,7 +56,7 @@ type WebSocketResponse struct {
 }
 
 // NewWebSocketHandler creates a new WebSocket handler
-func NewWebSocketHandler() *WebSocketHandler {
+func NewWebSocketHandler(ivxService *ivx.Service) *WebSocketHandler {
 	handler := &WebSocketHandler{
 		upgrader: websocket.Upgrader{
 			CheckOrigin: func(r *http.Request) bool {
@@ -65,6 +68,7 @@ func NewWebSocketHandler() *WebSocketHandler {
 		},
 		clients:      make(map[*websocket.Conn]*WebSocketClient),
 		streamingMgr: streaming.GetStreamingManager(),
+		ivxService:   ivxService,
 		shutdownChan: make(chan struct{}),
 	}
 
@@ -93,9 +97,10 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 
 	// Create client
 	client := &WebSocketClient{
-		conn:          conn,
-		subscriptions: make(map[string]bool),
-		lastPing:      time.Now(),
+		conn:             conn,
+		subscriptions:    make(map[string]bool),
+		ivxSubscriptions: make(map[string]context.CancelFunc),
+		lastPing:         time.Now(),
 	}
 
 	// Register client
@@ -131,6 +136,15 @@ func (h *WebSocketHandler) handleClient(client *WebSocketClient) {
 		h.clientsMutex.Lock()
 		delete(h.clients, client.conn)
 		h.clientsMutex.Unlock()
+
+		// Cancel all IVx subscriptions for this client
+		client.mutex.Lock()
+		for symbol, cancelFunc := range client.ivxSubscriptions {
+			cancelFunc()
+			slog.Info("Canceling IVx subscription on disconnect", "symbol", symbol)
+		}
+		client.ivxSubscriptions = make(map[string]context.CancelFunc) // Clear map
+		client.mutex.Unlock()
 
 		client.conn.Close()
 		slog.Info("WebSocket client disconnected", "remote_addr", client.conn.RemoteAddr())
@@ -192,6 +206,14 @@ func (h *WebSocketHandler) handleMessage(client *WebSocketClient, msg WebSocketM
 	case "unsubscribe":
 		// Handle unsubscription request
 		h.handleUnsubscribe(client, msg.Symbols)
+	
+	case "subscribe_ivx":
+		// Handle IVx subscription request (continuous streaming)
+		h.handleSubscribeIVx(client, msg.Symbols)
+
+	case "get_ivx_data":
+		// Handle IVx on-demand request (single snapshot)
+		h.handleGetIVxData(client, msg.Symbols)
 
 	case "get_subscriptions":
 		// Handle get subscriptions request
@@ -212,6 +234,151 @@ func (h *WebSocketHandler) handleMessage(client *WebSocketClient, msg WebSocketM
 		h.sendToClient(client.conn, response)
 	}
 }
+
+// handleSubscribeIVx handles IVx subscription requests (continuous streaming)
+// Follows REPLACE pattern like regular subscriptions - cancels existing IVx, starts new ones
+func (h *WebSocketHandler) handleSubscribeIVx(client *WebSocketClient, symbols []string) {
+	if len(symbols) == 0 {
+		return
+	}
+
+	// 1. Cancel ALL existing IVx subscriptions (replace pattern)
+	client.mutex.Lock()
+	for existingSymbol, cancelFunc := range client.ivxSubscriptions {
+		cancelFunc()
+		slog.Info("Canceling existing IVx subscription", "symbol", existingSymbol, "reason", "replace")
+		// Also remove from regular subscriptions
+		delete(client.subscriptions, existingSymbol)
+	}
+	// Clear the IVx subscriptions map
+	client.ivxSubscriptions = make(map[string]context.CancelFunc)
+	client.mutex.Unlock()
+
+	// 2. Start new IVx subscriptions for requested symbols
+	for _, symbol := range symbols {
+		// Create context for this IVx subscription
+		ctx, cancel := context.WithCancel(context.Background())
+
+		// Add to regular subscriptions (same as regular subscribe)
+		client.mutex.Lock()
+		client.subscriptions[symbol] = true           // Unified subscription tracking
+		client.ivxSubscriptions[symbol] = cancel      // Track cancel function for IVx goroutine
+		client.mutex.Unlock()
+
+		// Start IVx streaming goroutine
+		go func(sym string, cancelFunc context.CancelFunc) {
+			defer func() {
+				// Cleanup on exit - remove ONLY the IVx cancel function
+				// The subscription itself is managed by unsubscribe/keepalive
+				client.mutex.Lock()
+				delete(client.ivxSubscriptions, sym)
+				client.mutex.Unlock()
+				slog.Info("IVx subscription stopped", "symbol", sym)
+			}()
+
+			ticker := time.NewTicker(5 * time.Minute)
+			defer ticker.Stop()
+
+			// Run immediately once, then on ticker
+			for {
+				updates := make(chan ivx.StreamUpdate)
+				streamCtx, streamCancel := context.WithCancel(ctx)
+				
+				// Start streaming in background
+				go h.ivxService.GetIVxStream(streamCtx, sym, updates)
+
+				// Forward updates to client
+				for update := range updates {
+					// Check if client is still connected
+					h.clientsMutex.RLock()
+					_, exists := h.clients[client.conn]
+					h.clientsMutex.RUnlock()
+					if !exists {
+						streamCancel()
+						return
+					}
+
+					// Only send status and updates, NOT the final complete data for streaming
+					var msgType string
+					switch update.Type {
+					case "status":
+						msgType = "ivx_status"
+					case "data":
+						msgType = "ivx_update"
+					case "complete":
+						continue // Skip complete message for streaming
+					case "error":
+						msgType = "error"
+					default:
+						msgType = "unknown"
+					}
+
+					response := map[string]interface{}{
+						"type":      msgType,
+						"symbol":    sym,
+						"data":      update.Payload,
+						"timestamp": time.Now().UnixMilli(),
+					}
+
+					if err := h.sendToClientRaw(client.conn, response); err != nil {
+						slog.Error("Failed to send IVx update", "error", err, "symbol", sym)
+						streamCancel()
+						return
+					}
+				}
+				streamCancel()
+
+				// Wait for next tick, shutdown signal, or cancellation
+				select {
+				case <-ticker.C:
+					continue
+				case <-ctx.Done():
+					return
+				case <-h.shutdownChan:
+					return
+				}
+			}
+		}(symbol, cancel)
+	}
+
+	slog.Info("IVx subscriptions registered", "symbols", symbols, "client", client.conn.RemoteAddr())
+}
+
+// handleGetIVxData handles IVx on-demand requests (single snapshot)
+func (h *WebSocketHandler) handleGetIVxData(client *WebSocketClient, symbols []string) {
+	if len(symbols) == 0 {
+		return
+	}
+
+	for _, symbol := range symbols {
+		go func(sym string) {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+
+			response, err := h.ivxService.GetIVxSnapshot(ctx, sym)
+			if err != nil {
+				errResponse := map[string]interface{}{
+					"type":      "error",
+					"symbol":    sym,
+					"message":   err.Error(),
+					"timestamp": time.Now().UnixMilli(),
+				}
+				h.sendToClientRaw(client.conn, errResponse)
+				return
+			}
+
+			successResponse := map[string]interface{}{
+				"type":      "ivx_data",
+				"symbol":    sym,
+				"data":      response,
+				"timestamp": time.Now().UnixMilli(),
+			}
+			h.sendToClientRaw(client.conn, successResponse)
+		}(symbol)
+	}
+}
+
+// ... (rest of the file remains same)
 
 // handleSubscribe handles symbol subscription requests
 // Exact conversion of Python subscription logic
@@ -261,7 +428,7 @@ func (h *WebSocketHandler) handleSmartSubscription(client *WebSocketClient, stoc
 	allSymbols = append(allSymbols, stockSymbols...)
 	allSymbols = append(allSymbols, optionSymbols...)
 
-	// Replace all client subscriptions (smart replace)
+	// Replace all client subscriptions (smart replace) - does NOT affect IVx
 	client.mutex.Lock()
 	client.subscriptions = make(map[string]bool)
 	for _, symbol := range allSymbols {
@@ -290,8 +457,27 @@ func (h *WebSocketHandler) handleSmartSubscription(client *WebSocketClient, stoc
 // handleKeepalive handles keepalive requests
 // Exact conversion of Python _handle_keepalive method
 func (h *WebSocketHandler) handleKeepalive(client *WebSocketClient, symbols []string) {
-	// Update client subscriptions with keepalive symbols
+	// Create a set of keepalive symbols for quick lookup
+	keepaliveSet := make(map[string]bool)
+	for _, symbol := range symbols {
+		keepaliveSet[symbol] = true
+	}
+
+	// Update client subscriptions with keepalive symbols AND cancel IVx for removed symbols
 	client.mutex.Lock()
+	
+	// Find symbols that were subscribed but are NOT in the keepalive list
+	for existingSymbol := range client.subscriptions {
+		if !keepaliveSet[existingSymbol] {
+			// Symbol was removed - cancel IVx goroutine if running
+			if cancelFunc, exists := client.ivxSubscriptions[existingSymbol]; exists {
+				cancelFunc()
+				slog.Info("Canceling IVx goroutine", "symbol", existingSymbol, "reason", "not_in_keepalive")
+			}
+		}
+	}
+	
+	// Replace subscriptions with keepalive list (Python backend behavior)
 	client.subscriptions = make(map[string]bool)
 	for _, symbol := range symbols {
 		client.subscriptions[symbol] = true
@@ -327,10 +513,15 @@ func (h *WebSocketHandler) handleUnsubscribe(client *WebSocketClient, symbols []
 		return
 	}
 
-	// Remove symbols from client subscriptions
+	// Remove symbols from subscriptions AND cancel any IVx goroutines
 	client.mutex.Lock()
 	for _, symbol := range symbols {
 		delete(client.subscriptions, symbol)
+		// Also cancel IVx goroutine if running for this symbol
+		if cancelFunc, exists := client.ivxSubscriptions[symbol]; exists {
+			cancelFunc()
+			slog.Info("Canceling IVx goroutine", "symbol", symbol, "reason", "unsubscribe")
+		}
 	}
 	client.mutex.Unlock()
 
@@ -568,16 +759,43 @@ func (h *WebSocketHandler) GetConnectionStats() map[string]interface{} {
 	defer h.clientsMutex.RUnlock()
 
 	totalSubscriptions := 0
-	for _, client := range h.clients {
+	totalIvxSubscriptions := 0
+	clientSubscriptions := make(map[string][]string)
+	clientIvxSubscriptions := make(map[string][]string)
+
+	for conn, client := range h.clients {
+		clientAddr := conn.RemoteAddr().String()
+		
 		client.mutex.RLock()
-		totalSubscriptions += len(client.subscriptions)
+		// Regular subscriptions
+		if len(client.subscriptions) > 0 {
+			symbols := make([]string, 0, len(client.subscriptions))
+			for symbol := range client.subscriptions {
+				symbols = append(symbols, symbol)
+				totalSubscriptions++
+			}
+			clientSubscriptions[clientAddr] = symbols
+		}
+		
+		// IVx subscriptions
+		if len(client.ivxSubscriptions) > 0 {
+			ivxSymbols := make([]string, 0, len(client.ivxSubscriptions))
+			for symbol := range client.ivxSubscriptions {
+				ivxSymbols = append(ivxSymbols, symbol)
+				totalIvxSubscriptions++
+			}
+			clientIvxSubscriptions[clientAddr] = ivxSymbols
+		}
 		client.mutex.RUnlock()
 	}
 
 	return map[string]interface{}{
-		"connected_clients":    len(h.clients),
-		"total_subscriptions":  totalSubscriptions,
-		"streaming_status":     h.streamingMgr.GetSubscriptionStatus(),
+		"connected_clients":       len(h.clients),
+		"total_subscriptions":     totalSubscriptions,
+		"total_ivx_subscriptions": totalIvxSubscriptions,
+		"client_subscriptions":    clientSubscriptions,
+		"client_ivx_subscriptions": clientIvxSubscriptions,
+		"streaming_status":        h.streamingMgr.GetSubscriptionStatus(),
 	}
 }
 

@@ -43,8 +43,18 @@ export function useMarketData() {
   };
 
   /**
-   * Get reactive IVx data for a symbol - NEW API-based approach
+   * Get reactive IVx data for a symbol - STREAMING-based approach (RECOMMENDED)
+   * Uses WebSocket streaming with automatic subscription management
+   * Same pattern as getOptionGreeks() for consistency
+   */
+  const getIvxDataStreaming = (symbol) => {
+    return smartMarketDataStore.getIvxDataStreaming(symbol);
+  };
+
+  /**
+   * Get reactive IVx data for a symbol - LEGACY API-based approach
    * Uses TTL caching for optimal performance
+   * DEPRECATED: Use getIvxDataStreaming() instead
    */
   const getIvxData = (symbol) => {
     return smartMarketDataStore.getIvxData(symbol);
@@ -274,7 +284,8 @@ export function useMarketData() {
     getStockPrice,
     getOptionPrice,
     getOptionGreeks,
-    getIvxData,
+    getIvxDataStreaming, // NEW: Streaming-based IVx (recommended)
+    getIvxData, // LEGACY: API-based IVx (deprecated)
 
     // Auto-updating data (Periodic)
     getBalance,

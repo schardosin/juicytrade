@@ -218,7 +218,8 @@ export default {
     
     const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
-    const { getIvxData } = useMarketData();    const {
+    const { getIvxDataStreaming } = useMarketData();
+    const {
       showOrderConfirmation,
       showOrderResult,
       orderData,
@@ -290,7 +291,8 @@ export default {
     );
 
     // Get IVx data for current symbol (after globalSymbolState is initialized)
-    const rawIvxData = getIvxData(
+    // Using streaming-based approach for real-time updates
+    const rawIvxData = getIvxDataStreaming(
       computed(() => {
         return globalSymbolState.currentSymbol;
       })

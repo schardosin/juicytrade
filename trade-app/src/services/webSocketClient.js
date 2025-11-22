@@ -325,11 +325,43 @@ class WebSocketStreamingClient {
   }
 
   onIvxUpdate(callback) {
-    this.addCallback('ivx_partial_data', callback);
+    // Register callback for all IVx message types
+    this.addCallback('ivx_status', callback);
+    this.addCallback('ivx_update', callback);
+    this.addCallback('ivx_complete', callback);
+    this.addCallback('error', callback);
   }
 
   onIvxStatus(callback) {
     this.addCallback('ivx_status', callback);
+  }
+
+  async subscribeToIvx(symbols) {
+    await this.connect();
+    if (!Array.isArray(symbols)) {
+      symbols = [symbols];
+    }
+    this.worker.postMessage({ 
+      command: 'message', 
+      message: { 
+        type: 'subscribe_ivx', 
+        symbols 
+      } 
+    });
+  }
+
+  async unsubscribeFromIvx(symbols) {
+    await this.connect();
+    if (!Array.isArray(symbols)) {
+      symbols = [symbols];
+    }
+    this.worker.postMessage({ 
+      command: 'message', 
+      message: { 
+        type: 'unsubscribe_ivx', 
+        symbols 
+      } 
+    });
   }
   
   addCallback(type, callback) {
@@ -361,11 +393,17 @@ class WebSocketStreamingClient {
     if (callbacks) {
       callbacks.forEach(callback => {
         try {
-          // Pass the whole message for price_update, greeks_update, subscription_confirmed, and ivx_partial_data
-          // and just the data for others, which matches the legacy client's behavior.
-          const dataToSend = (message.type === 'price_update' || message.type === 'greeks_update' || message.type === 'subscription_confirmed' || message.type === 'ivx_partial_data')
-            ? message
-            : message.data;
+          // Pass the whole message for price_update, greeks_update, subscription_confirmed, and all IVx message types
+          // For IVx messages (ivx_status, ivx_update, ivx_complete, error), pass the whole message
+          const dataToSend = (
+            message.type === 'price_update' || 
+            message.type === 'greeks_update' || 
+            message.type === 'subscription_confirmed' ||
+            message.type === 'ivx_status' ||
+            message.type === 'ivx_update' ||
+            message.type === 'ivx_complete' ||
+            message.type === 'error'
+          ) ? message : message.data;
           callback(dataToSend);
         } catch (error) {
           console.error(`Error in callback for message type ${message.type}:`, error);
