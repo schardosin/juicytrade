@@ -703,11 +703,11 @@ export default {
       const config = reactiveProviderConfig.value;
       const providers = reactiveAvailableProviders.value;
       
-      if (!config || !providers) return "Unknown";
+      if (!config || !providers) return "--";
       
       const providerName = config[serviceKey];
       if (!providerName || typeof providerName !== 'string' || !providers[providerName]) {
-        return "Unknown";
+        return "--";
       }
       
       const providerData = providers[providerName];

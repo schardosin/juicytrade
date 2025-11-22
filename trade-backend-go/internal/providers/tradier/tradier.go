@@ -962,30 +962,50 @@ func (t *TradierProvider) GetOrders(ctx context.Context, status string) ([]*mode
 		return nil, fmt.Errorf("failed to get orders: %w", err)
 	}
 	
+	// Tradier can return "orders": "" (empty string) when no orders exist
+	// So we use interface{} for Orders field to handle both cases
 	var response struct {
-		Orders struct {
-			Order interface{} `json:"order"`
-		} `json:"orders"`
+		Orders interface{} `json:"orders"`
 	}
 	
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		return nil, fmt.Errorf("failed to parse orders response: %w", err)
 	}
 	
-	// Handle both single order (object) and multiple orders (array)
+	// Handle the orders field which can be string, object, or null
 	var orders []map[string]interface{}
-	switch v := response.Orders.Order.(type) {
+	
+	switch ordersVal := response.Orders.(type) {
+	case string:
+		// Tradier returns "" (empty string) when no orders exist
+		if ordersVal == "" {
+			return []*models.Order{}, nil
+		}
 	case map[string]interface{}:
-		orders = []map[string]interface{}{v}
-	case []interface{}:
-		for _, item := range v {
-			if order, ok := item.(map[string]interface{}); ok {
-				orders = append(orders, order)
+		// Orders is an object with an "order" field
+		if orderField, ok := ordersVal["order"]; ok {
+			switch v := orderField.(type) {
+			case map[string]interface{}:
+				orders = []map[string]interface{}{v}
+			case []interface{}:
+				for _, item := range v {
+					if order, ok := item.(map[string]interface{}); ok {
+						orders = append(orders, order)
+					}
+				}
+			case string:
+				// order field is empty string
+				if v == "" {
+					return []*models.Order{}, nil
+				}
 			}
 		}
+	case nil:
+		// Handle null case
+		return []*models.Order{}, nil
 	}
 	
-	var result []*models.Order
+	result := []*models.Order{} // Initialize as empty slice, not nil
 	for _, order := range orders {
 		orderStatus, _ := order["status"].(string)
 		

@@ -513,14 +513,19 @@ func main() {
 	api.GET("/orders", func(c *gin.Context) {
 		status := c.DefaultQuery("status", "open")
 		
+		log.Printf("📊 GET /orders - status=%s from IP=%s", status, c.ClientIP())
+		
 		orders, err := providerManager.GetOrders(c.Request.Context(), status)
 		if err != nil {
+			log.Printf("❌ GET /orders - Error: %v (status=%s)", err, status)
 			c.JSON(500, gin.H{
 				"success": false,
 				"message": err.Error(),
 			})
 			return
 		}
+		
+		log.Printf("✅ GET /orders - Retrieved %d orders (status=%s)", len(orders), status)
 		
 		responseData := map[string]interface{}{
 			"orders":       orders,

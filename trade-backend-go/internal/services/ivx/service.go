@@ -96,28 +96,55 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 
 	// 2. Get all symbols to fetch (base + weekly variants like SPXW)
 	symbolsToFetch := s.getSymbolsToFetch(symbol)
-	// slog.Info("Fetching options for symbols", "base", symbol, "all", symbolsToFetch) // Removed slog as it's not imported
+	log.Printf("Fetching IVx for symbols: %v", symbolsToFetch)
 
-	// 3. Fetch options chain for all symbols
-	var allContracts []*models.OptionContract
+	// 3. Fetch available expirations for all symbols
+	allExpirations := make(map[string]bool) // Use map to deduplicate
 	for _, sym := range symbolsToFetch {
-		contracts, err := s.providerManager.GetOptionsChainBasic(ctx, sym, "", &underlyingPrice, 0, nil, nil)
+		expirations, err := s.providerManager.GetExpirationDates(ctx, sym)
 		if err != nil {
-			// slog.Warn("Failed to get options chain", "symbol", sym, "error", err) // Removed slog as it's not imported
-			log.Printf("Failed to get options chain for %s: %v", sym, err) // Using log.Printf as a fallback
+			log.Printf("Failed to get expirations for %s: %v", sym, err)
 			continue
 		}
-		allContracts = append(allContracts, contracts...)
-		// slog.Info("Fetched contracts", "symbol", sym, "count", len(contracts)) // Removed slog as it's not imported
-		log.Printf("Fetched %d contracts for %s", len(contracts), sym) // Using log.Printf as a fallback
+		
+		// Extract expiration dates from response
+		for _, expData := range expirations {
+			if date, ok := expData["date"].(string); ok && date != "" {
+				allExpirations[date] = true
+			}
+		}
 	}
 
-	if len(allContracts) == 0 {
-		updates <- StreamUpdate{Type: "error", Payload: "No contracts found for any symbol"}
+	if len(allExpirations) == 0 {
+		updates <- StreamUpdate{Type: "error", Payload: "No expirations found for any symbol"}
 		return
 	}
 
-	updates <- StreamUpdate{Type: "status", Payload: fmt.Sprintf("Found %d total contracts", len(allContracts))}
+	log.Printf("Found %d unique expirations to process", len(allExpirations))
+	updates <- StreamUpdate{Type: "status", Payload: fmt.Sprintf("Found %d expirations. Fetching options chain...", len(allExpirations))}
+
+	// 4. Fetch options chain for each expiration and symbol combination
+	var allContracts []*models.OptionContract
+	for expiration := range allExpirations {
+		for _, sym := range symbolsToFetch {
+			contracts, err := s.providerManager.GetOptionsChainBasic(ctx, sym, expiration, &underlyingPrice, 0, nil, nil)
+			if err != nil {
+				log.Printf("Failed to get options chain for %s expiration %s: %v", sym, expiration, err)
+				continue
+			}
+			if len(contracts) > 0 {
+				allContracts = append(allContracts, contracts...)
+				log.Printf("Fetched %d contracts for %s expiring %s", len(contracts), sym, expiration)
+			}
+		}
+	}
+
+	if len(allContracts) == 0 {
+		updates <- StreamUpdate{Type: "error", Payload: "No contracts found for any expiration"}
+		return
+	}
+
+	updates <- StreamUpdate{Type: "status", Payload: fmt.Sprintf("Found %d total contracts across all expirations", len(allContracts))}
 
 	// 4. Group contracts by expiration
 	expirationMap := make(map[string][]*models.OptionContract)

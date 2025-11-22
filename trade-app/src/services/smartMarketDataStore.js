@@ -2969,6 +2969,16 @@ class SmartMarketDataStore {
     // Configure additional data sources (moved from main.js)
     this.configureAdditionalDataSources();
 
+    // CRITICAL FIX: Trigger initial fetch of provider data for TopBar
+    // Provider data uses on-demand strategy, so we need to explicitly fetch it
+    // This ensures TopBar shows provider info immediately on app load
+    this.getData("providers.available").catch(err => {
+      console.warn("⚠️ Failed to load available providers:", err.message);
+    });
+    this.getData("providers.config").catch(err => {
+      console.warn("⚠️ Failed to load provider config:", err.message);
+    });
+
     // Start health monitoring
     this.startHealthMonitoring();
 
