@@ -91,3 +91,16 @@ coverage/
 .nuxt/
 firebase-debug.log
 
+# Sensitive configuration and data files
+provider_credentials*.json
+provider_config.json
+watchlist.json
+data/
+SPY_*.json
+*.json
+!package.json
+!package-lock.json
+!go.mod
+!go.sum
+!tsconfig.json
+!vite.config.js
