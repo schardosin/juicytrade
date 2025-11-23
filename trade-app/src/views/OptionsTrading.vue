@@ -1897,12 +1897,12 @@ export default {
   
   /* Adjust options chain for mobile */
   .options-chain-wrapper {
-    padding: 8px !important;
+    padding: 0 !important;
   }
   
   /* Mobile-optimized trading panels */
   .options-section {
-    padding: 8px;
+    padding: 8;
   }
   
   .shares-section {

@@ -1463,12 +1463,12 @@ export default {
 
   /* Adjust font sizes for very small screens */
   .strike-price {
-    font-size: var(--font-size-sm); /* Slightly smaller */
+    font-size: var(--font-size-md); /* Slightly smaller */
   }
 
   .greek-cell,
   .price-cell {
-    font-size: var(--font-size-xs); /* Smaller for tight spaces */
+    font-size: var(--font-size-base); /* Smaller for tight spaces */
     padding: 2px; /* Reduced padding */
   }
 
@@ -1478,11 +1478,11 @@ export default {
 
   /* Reduce touch target slightly for very small screens */
   .price-cell {
-    min-height: 28px; /* Smaller but still touch-friendly */
+    min-height: 38px; /* Smaller but still touch-friendly */
   }
 
   .option-data.mobile-layout {
-    min-height: 36px; /* Smaller but still usable */
+    min-height: 46px; /* Smaller but still usable */
   }
 
   /* Adjust ITM labels for small screens */
@@ -1493,7 +1493,7 @@ export default {
 
   /* Adjust expiration header for small screens */
   .date-label {
-    font-size: var(--font-size-sm); /* Smaller */
+    font-size: var(--font-size-base); /* Smaller */
   }
 
   .days-label {
