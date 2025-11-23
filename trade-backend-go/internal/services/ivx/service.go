@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"sort"
+	"sync"
 	"time"
 
 	"trade-backend-go/internal/models"
@@ -85,12 +86,15 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 		return
 	}
 
-	if quote.Bid == nil || quote.Ask == nil {
-		updates <- StreamUpdate{Type: "error", Payload: "Invalid quote data"}
+	var underlyingPrice float64
+	if quote.Bid != nil && quote.Ask != nil && *quote.Bid > 0 && *quote.Ask > 0 {
+		underlyingPrice = (*quote.Bid + *quote.Ask) / 2
+	} else if quote.Last != nil && *quote.Last > 0 {
+		underlyingPrice = *quote.Last
+	} else {
+		updates <- StreamUpdate{Type: "error", Payload: "Invalid quote data: missing bid/ask and last price"}
 		return
 	}
-
-	underlyingPrice := (*quote.Bid + *quote.Ask) / 2
 	updates <- StreamUpdate{Type: "status", Payload: fmt.Sprintf("Underlying price: %.2f", underlyingPrice)}
 
 	// 2. Get all symbols to fetch (base + weekly variants like SPXW)
@@ -116,7 +120,9 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 	}
 
 	if len(allContracts) == 0 {
-		updates <- StreamUpdate{Type: "error", Payload: "No contracts found"}
+		errorMsg := fmt.Sprintf("No options contracts found for %s. Symbol may not have options available or data unavailable from provider.", symbol)
+		log.Printf("❌ IVx failed for %s: no contracts from any symbol (%v)", symbol, symbolsToFetch)
+		updates <- StreamUpdate{Type: "error", Payload: errorMsg}
 		return
 	}
 
@@ -188,41 +194,75 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 		return
 	}
 
+	// Sort validExpirations by date (earliest first) so batches process nearest exps first
+	sort.Slice(validExpirations, func(i, j int) bool {
+		return validExpirations[i].dateStr < validExpirations[j].dateStr
+	})
+
 	log.Printf("✅ Found %d valid expirations with ATM strikes", len(validExpirations))
 	updates <- StreamUpdate{Type: "status", Payload: fmt.Sprintf("Found %d valid expirations. Fetching Greeks...", len(validExpirations))}
 
-	// 6. Collect ALL ATM symbols for batch Greeks fetch (one call for all expirations!)
-	var symbolsForGreeks []string
-	for _, data := range validExpirations {
-		symbolsForGreeks = append(symbolsForGreeks, data.atmCall.Symbol, data.atmPut.Symbol)
-	}
-
-	log.Printf("📡 Batch fetching Greeks for %d symbols (%d expirations)...", len(symbolsForGreeks), len(validExpirations))
-	
-	// 7. Fetch ALL Greeks in ONE batch (major optimization: 50+ calls → 1 call)
-	batchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-	greeksMap, err := s.providerManager.GetOptionsGreeksBatch(batchCtx, symbolsForGreeks)
-	cancel()
-	
-	if err != nil {
-		log.Printf("⚠️ Error fetching Greeks batch: %v", err)
-	}
-	if greeksMap == nil {
-		greeksMap = make(map[string]map[string]interface{})
-	}
-
-	log.Printf("✅ Greeks fetched, calculating IVx for %d expirations...", len(validExpirations))
-
-	// 8. Calculate IVx for all expirations (all Greeks already available)
+	// Process in concurrent batches of expirations (e.g., 2 exps per batch → 4 symbols)
+	// Each batch fetches its own Greeks, calculates, and streams "data" immediately
+	expBatchSize := 2 // Expirations per batch (adjust for ~4 symbols)
 	var allResults []models.IVxExpiration
-	for _, data := range validExpirations {
-		ivxResult := s.calculator.CalculateIVxForExpiration(data.dateStr, data.optionsChain, underlyingPrice, greeksMap)
-		if ivxResult != nil {
-			// Stream individual result immediately
-			updates <- StreamUpdate{Type: "data", Payload: ivxResult}
-			allResults = append(allResults, *ivxResult)
+	var resultsMutex sync.Mutex
+	var wg sync.WaitGroup
+
+	// Semaphore to limit concurrent batches (e.g., 5 max)
+	maxConcurrent := 5
+	sem := make(chan struct{}, maxConcurrent)
+
+	for i := 0; i < len(validExpirations); i += expBatchSize {
+		end := i + expBatchSize
+		if end > len(validExpirations) {
+			end = len(validExpirations)
 		}
+		batchData := validExpirations[i:end]
+
+		wg.Add(1)
+		go func(batch []*expData) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			// Collect symbols for this batch
+			var batchSymbols []string
+			for _, data := range batch {
+				batchSymbols = append(batchSymbols, data.atmCall.Symbol, data.atmPut.Symbol)
+			}
+
+			// Fetch Greeks for this batch only
+			batchCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			localGreeks, err := s.providerManager.GetOptionsGreeksBatch(batchCtx, batchSymbols)
+			if err != nil {
+				log.Printf("⚠️ Batch fetch error for symbols %v: %v (skipping batch)", batchSymbols, err)
+				return
+			}
+			if localGreeks == nil {
+				localGreeks = make(map[string]map[string]interface{})
+			}
+
+			// Calculate and stream for this batch immediately
+			for _, data := range batch {
+				ivxResult := s.calculator.CalculateIVxForExpiration(data.dateStr, data.optionsChain, underlyingPrice, localGreeks)
+				if ivxResult != nil {
+					// Stream individual result as soon as calculated
+					updates <- StreamUpdate{Type: "data", Payload: ivxResult}
+
+					// Collect for final
+					resultsMutex.Lock()
+					allResults = append(allResults, *ivxResult)
+					resultsMutex.Unlock()
+				} else {
+					log.Printf("⚠️ Skipping exp %s: no valid IVs (likely timeout or no Greeks)", data.dateStr)
+				}
+			}
+		}(batchData)
 	}
+
+	wg.Wait()
 
 	log.Printf("✅ Completed IVx calculation for %d/%d expirations", len(allResults), len(validExpirations))
 

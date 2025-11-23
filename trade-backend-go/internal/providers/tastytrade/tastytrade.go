@@ -527,7 +527,7 @@ func (p *TastyTradeProvider) GetOptionsChainBasic(ctx context.Context, symbol, e
 // GetOptionsGreeksBatch gets Greeks for multiple option symbols using streaming.
 // Exact conversion of Python get_streaming_greeks_batch method.
 func (p *TastyTradeProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbols []string) (map[string]map[string]interface{}, error) {
-	return p.getStreamingGreeksBatch(ctx, optionSymbols, 5)
+	return p.getStreamingGreeksBatch(ctx, optionSymbols, 2)
 }
 
 // getStreamingGreeksBatch subscribes to a list of option symbols and waits for their greeks data.

@@ -77,7 +77,9 @@
             <span v-if="expiration.ivxData?.ivx_percent" class="iv-label">
               IVx: {{ formatIvxPercent(expiration.ivxData.ivx_percent) }}% (≈${{ formatIvxMove(expiration.ivxData.expected_move_dollars) }})
             </span>
-            <!-- Keep space blank if no data - no loading, no error states -->
+            <span v-else class="iv-label iv-placeholder">
+              IVx: --% (≈$--)
+            </span>
           </div>
 
           <!-- Loading Indicator for this expiration -->

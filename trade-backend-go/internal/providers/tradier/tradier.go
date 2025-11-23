@@ -224,8 +224,19 @@ func (t *TradierProvider) GetExpirationDates(ctx context.Context, symbol string)
 		"Accept":        "application/json",
 	}
 	
+	// Determine API symbol to use (handle SPXW -> SPX, NDXP -> NDX, etc.)
+	apiSymbol := symbol
+	// Check if the requested symbol is a known weekly variant
+	// We need to reverse lookup in weeklyMap: if symbol is a value, use the key
+	for underlying, weekly := range weeklyMap {
+		if symbol == weekly {
+			apiSymbol = underlying
+			break
+		}
+	}
+	
 	params := make(map[string]string)
-	params["symbol"] = symbol
+	params["symbol"] = apiSymbol
 	params["includeAllRoots"] = "true"
 	params["expirationType"] = "true"
 	params["strikes"] = "true"
@@ -292,6 +303,44 @@ func (t *TradierProvider) GetExpirationDates(ctx context.Context, symbol string)
 // GetOptionsChainBasic gets basic options chain data.
 // Exact conversion of Python get_options_chain_basic method.
 func (t *TradierProvider) GetOptionsChainBasic(ctx context.Context, symbol, expiry string, underlyingPrice *float64, strikeCount int, optionType, underlyingSymbol *string) ([]*models.OptionContract, error) {
+	// If no expiry specified, fetch all expirations and combine results
+	// This matches TastyTrade behavior for consistency
+	if expiry == "" {
+		slog.Info("Tradier: Fetching full chain (all expirations)", "symbol", symbol)
+		
+		// Get all expirations
+		expirations, err := t.GetExpirationDates(ctx, symbol)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get expirations: %w", err)
+		}
+		
+		// Fetch chain for each expiration and combine
+		var allContracts []*models.OptionContract
+		for _, expData := range expirations {
+			expDate, ok := expData["date"].(string)
+			if !ok || expDate == "" {
+				continue
+			}
+			
+			// Recursive call with specific expiration (no strike filtering here)
+			contracts, err := t.GetOptionsChainBasic(ctx, symbol, expDate, underlyingPrice, 0, optionType, underlyingSymbol)
+			if err != nil {
+				slog.Warn("Tradier: Failed to get chain for expiry", "symbol", symbol, "expiry", expDate, "error", err)
+				continue
+			}
+			allContracts = append(allContracts, contracts...)
+		}
+		
+		// Apply strike filtering to combined results if requested
+		if underlyingPrice != nil && strikeCount > 0 && len(allContracts) > 0 {
+			allContracts = t.filterByStrikeCount(allContracts, *underlyingPrice, strikeCount)
+		}
+		
+		slog.Info("Tradier: Fetched full chain", "symbol", symbol, "contracts", len(allContracts), "expirations", len(expirations))
+		return allContracts, nil
+	}
+	
+	// Original implementation for specific expiry
 	endpoint := fmt.Sprintf("%s/v1/markets/options/chains", t.baseURL)
 	
 	headers := map[string]string{
@@ -299,18 +348,26 @@ func (t *TradierProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 		"Accept":        "application/json",
 	}
 	
-	// Determine API symbol to use
+	// Determine API symbol to use (handle SPXW -> SPX, NDXP -> NDX, etc.)
 	apiSymbol := symbol
 	if underlyingSymbol != nil {
 		apiSymbol = *underlyingSymbol
-	} else if len(symbol) > 3 && strings.HasSuffix(symbol, "W") || strings.HasSuffix(symbol, "P") {
-		apiSymbol = symbol[:len(symbol)-1]
+	} else {
+		// Check if the requested symbol is a known weekly variant
+		// We need to reverse lookup in weeklyMap: if symbol is a value, use the key
+		for underlying, weekly := range weeklyMap {
+			if symbol == weekly {
+				apiSymbol = underlying
+				break
+			}
+		}
 	}
 	
 	params := make(map[string]string)
 	params["symbol"] = apiSymbol
 	params["expiration"] = expiry
 	params["greeks"] = "false"
+	params["includeAllRoots"] = "true" // Ensure we get all roots (e.g. SPXW for SPX)
 	
 	resp, err := t.client.Get(ctx, endpoint, headers, params)
 	if err != nil {
