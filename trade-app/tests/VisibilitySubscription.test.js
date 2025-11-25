@@ -71,12 +71,27 @@ describe('Visibility-Based Subscription', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    
+    // Reset IntersectionObserver mock
+    window.IntersectionObserver = vi.fn((callback, options) => ({
+      observe: vi.fn(),
+      unobserve: vi.fn(),
+      disconnect: vi.fn(),
+      trigger: (entries) => callback(entries, this)
+    }));
+    
     vi.useFakeTimers();
   });
 
   afterEach(() => {
     vi.useRealTimers();
     if (wrapper) wrapper.unmount();
+  });
+
+  afterEach(() => {
+    if (wrapper) {
+      wrapper.unmount();
+    }
   });
 
   it('initializes IntersectionObserver on mount', () => {
@@ -89,13 +104,17 @@ describe('Visibility-Based Subscription', () => {
 
   it('observes option rows', async () => {
     wrapper = mount(CollapsibleOptionsChain, {
-      props: defaultProps
+      props: defaultProps,
+      attachTo: document.body
     });
     
-    // Wait for DOM update and observation
+    // Wait for mount and observer setupion
     await nextTick();
     vi.advanceTimersByTime(100); // Wait for observation timeout
     
+    console.log('HTML:', wrapper.html());
+    
+    const mockObserve = window.IntersectionObserver.mock.results[0].value.observe;
     expect(mockObserve).toHaveBeenCalled();
   });
 
@@ -229,6 +248,9 @@ describe('Visibility-Based Subscription', () => {
     await nextTick();
     
     // Check that smartMarketDataStore.registerSymbolUsage was NOT called yet
+    // Note: We need to be careful about other calls. 
+    // The component might register the underlying symbol on mount if not handled elsewhere.
+    // We filter for the specific option symbols we are testing.
     const registerCalls = smartMarketDataStore.registerSymbolUsage.mock.calls;
     const optionRegisterCalls = registerCalls.filter(call => call[0].includes('SPY_240119'));
     
@@ -254,5 +276,81 @@ describe('Visibility-Based Subscription', () => {
       'SPY_240119P00450000', 
       expect.stringContaining('CollapsibleOptionsChain')
     );
+  });
+
+  it('scrolls ATM strike into view on expansion', async () => {
+    // Mock scrollIntoView
+    const mockScrollIntoView = vi.fn();
+    
+    // Mock document.getElementById to return an element with querySelector
+    const mockElement = {
+      querySelector: vi.fn().mockReturnValue({
+        scrollIntoView: mockScrollIntoView
+      })
+    };
+    
+    // Mock getElementById specifically for this test
+    const getElementByIdSpy = vi.spyOn(document, 'getElementById').mockReturnValue(mockElement);
+    
+    wrapper = mount(CollapsibleOptionsChain, {
+      props: {
+        ...defaultProps,
+        expandedExpirations: new Set() // Start collapsed
+      },
+      attachTo: document.body
+    });
+    
+    // Expand expiration
+    const header = wrapper.find('.expiration-header');
+    await header.trigger('click');
+    
+    // Wait for timeout (300ms)
+    await vi.runAllTimersAsync();
+    
+    expect(getElementByIdSpy).toHaveBeenCalled();
+    expect(mockElement.querySelector).toHaveBeenCalledWith('.at-the-money');
+    expect(mockScrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
+  });
+
+  it('retries scrolling to ATM if data loads later', async () => {
+    // Mock scrollIntoView
+    const mockScrollIntoView = vi.fn();
+    
+    // Mock document.getElementById
+    const mockElement = {
+      querySelector: vi.fn().mockReturnValue({
+        scrollIntoView: mockScrollIntoView
+      })
+    };
+    
+    // Initially return null (not found/not loaded)
+    const getElementByIdSpy = vi.spyOn(document, 'getElementById').mockReturnValue(null);
+    
+    wrapper = mount(CollapsibleOptionsChain, {
+      props: {
+        ...defaultProps,
+        expandedExpirations: new Set()
+      },
+      attachTo: document.body
+    });
+    
+    // Expand expiration
+    const header = wrapper.find('.expiration-header');
+    await header.trigger('click');
+    
+    // Wait for timeout (300ms) - should try to scroll but fail
+    await vi.runAllTimersAsync();
+    
+    expect(getElementByIdSpy).toHaveBeenCalled();
+    expect(mockScrollIntoView).not.toHaveBeenCalled();
+    
+    // Now simulate data loaded -> element appears
+    getElementByIdSpy.mockReturnValue(mockElement);
+    
+    // Trigger update (e.g. by changing a prop or forcing update)
+    await wrapper.setProps({ loading: true }); // Dummy update to trigger onUpdated
+    await wrapper.setProps({ loading: false });
+    
+    expect(mockScrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
   });
 });

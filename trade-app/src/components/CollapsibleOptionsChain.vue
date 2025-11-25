@@ -100,6 +100,7 @@
             expanded: expiration.isExpanded,
             collapsed: !expiration.isExpanded,
           }"
+          :id="`exp-content-${expiration.uniqueKey.replace(/[^a-zA-Z0-9-_]/g, '')}`"
         >
           <div class="content-wrapper">
             <!-- Options Chain for this expiration -->
@@ -129,7 +130,7 @@
                   v-for="strike in getStrikesForExpiration(expiration)"
                   :key="`${expiration.date}-${strike}`"
                   class="option-row"
-                  :class="{ 'at-the-money': isAtTheMoney(strike) }"
+                  :class="{ 'at-the-money': isAtTheMoney(strike, expiration) }"
                   :data-symbols="[getCallOption(expiration, strike)?.symbol, getPutOption(expiration, strike)?.symbol].filter(Boolean).join(',')"
                   :ref="el => { if (el) observeRow(el) }"
                 >
@@ -176,7 +177,7 @@
                   <div class="strike-cell">
                     <!-- ITM label above the line (left side) -->
                     <div
-                      v-if="isAtTheMoney(strike)"
+                      v-if="isAtTheMoney(strike, expiration)"
                       class="itm-label itm-above"
                     >
                       ITM
@@ -186,7 +187,7 @@
 
                     <!-- ITM label below the line (right side) -->
                     <div
-                      v-if="isAtTheMoney(strike)"
+                      v-if="isAtTheMoney(strike, expiration)"
                       class="itm-label itm-below"
                     >
                       ITM
@@ -257,7 +258,7 @@
 </template>
 
 <script>
-import { ref, computed, reactive, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, reactive, watch, onMounted, onUnmounted, onUpdated, nextTick } from "vue";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { useMobileDetection } from "../composables/useMobileDetection.js";
@@ -348,6 +349,22 @@ export default {
     const visibleSymbols = new Set();
     let observer = null;
     let visibilityTimeout = null;
+    
+    // Scroll handling
+    const pendingScrolls = ref(new Set());
+    
+    const scrollToATM = (uniqueKey) => {
+      const safeKey = uniqueKey.replace(/[^a-zA-Z0-9-_]/g, '');
+      const content = document.getElementById(`exp-content-${safeKey}`);
+      if (content) {
+        const atmRow = content.querySelector('.at-the-money');
+        if (atmRow) {
+          atmRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          return true;
+        }
+      }
+      return false;
+    };
 
     // Debounce function for visibility updates
     const emitVisibleSymbols = () => {
@@ -509,6 +526,7 @@ export default {
       if (wasExpanded) {
         // Update local state immediately so UI collapses
         expandedSet.value.delete(uniqueKey);
+        pendingScrolls.value.delete(uniqueKey);
 
         // Emit collapse event so parent can sync its state
         emit("expiration-collapsed", uniqueKey);
@@ -535,9 +553,19 @@ export default {
       } else {
         // Update local state immediately so UI expands
         expandedSet.value.add(uniqueKey);
+        pendingScrolls.value.add(uniqueKey);
 
         // Emit expand event so parent can sync its state and possibly start loading
         emit("expiration-expanded", uniqueKey, expiration);
+
+        // Scroll to ATM strike after expansion
+        setTimeout(() => {
+          if (pendingScrolls.value.has(uniqueKey)) {
+            if (scrollToATM(uniqueKey)) {
+              pendingScrolls.value.delete(uniqueKey);
+            }
+          }
+        }, 300); // Wait for transition (usually 300ms) and render
       }
     };
 
@@ -682,15 +710,12 @@ export default {
       }
     };
 
-    const isAtTheMoney = (strike) => {
+    const isAtTheMoney = (strike, expiration) => {
       if (!props.underlyingPrice) return false;
       
-      // Get all available strikes for any loaded expiration
-      const strikes = getStrikesForExpiration(
-        expirationGroups.value.find(
-          (exp) => exp.hasLoaded && exp.optionsData.length > 0
-        ) || { optionsData: [] }
-      );
+      // Get strikes for THIS expiration to ensure accuracy
+      // (Different expirations might have different strike intervals)
+      const strikes = getStrikesForExpiration(expiration);
       if (strikes.length === 0) return false;
 
       // Sort strikes to ensure proper ordering
@@ -858,6 +883,17 @@ export default {
       setupObserver();
       // Ensure we observe existing elements that might have been missed during render
       observeElements();
+    });
+
+    onUpdated(() => {
+      // Check if we have any pending scrolls that can now be fulfilled
+      if (pendingScrolls.value.size > 0) {
+        pendingScrolls.value.forEach(key => {
+          if (scrollToATM(key)) {
+            pendingScrolls.value.delete(key);
+          }
+        });
+      }
     });
 
     // Watch for expansion changes to re-observe elements
