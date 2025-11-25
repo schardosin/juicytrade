@@ -10,10 +10,6 @@
           class="strike-count-select"
           @change="onStrikeCountChange"
         >
-          <option value="10">10 strikes</option>
-          <option value="20">20 strikes</option>
-          <option value="30">30 strikes</option>
-          <option value="40">40 strikes</option>
           <option value="50">50 strikes</option>
           <option value="60">60 strikes</option>
           <option value="70">70 strikes</option>
@@ -297,7 +293,7 @@ export default {
     },
     currentStrikeCount: {
       type: Number,
-      default: 20,
+      default: 30,
     },
     ivxData: {
       type: Object,
@@ -323,7 +319,7 @@ export default {
     const { isMobile, isTablet, isDesktop } = useMobileDetection();
 
     // Reactive state - sync with parent's current strike count
-    const strikeCount = ref(props.currentStrikeCount || 20);
+    const strikeCount = ref(props.currentStrikeCount || 30);
     const liveOptionPrices = reactive(new Map());
     const liveOptionGreeks = reactive(new Map());
 
@@ -352,6 +348,7 @@ export default {
     
     // Scroll handling
     const pendingScrolls = ref(new Set());
+    const isAutoScrolling = ref(false);
     
     const scrollToATM = (uniqueKey) => {
       const safeKey = uniqueKey.replace(/[^a-zA-Z0-9-_]/g, '');
@@ -439,10 +436,17 @@ export default {
     // Observe elements
     const observeElements = () => {
       if (!observer) return;
+      if (isAutoScrolling.value) return;
       
       // Find all option rows with data-symbols attribute
       const elements = document.querySelectorAll('.option-row[data-symbols]');
       elements.forEach(el => observer.observe(el));
+    };
+
+    const observeRow = (el) => {
+      if (observer && el && !isAutoScrolling.value) {
+        observer.observe(el);
+      }
     };
 
     // Computed properties
@@ -554,6 +558,7 @@ export default {
         // Update local state immediately so UI expands
         expandedSet.value.add(uniqueKey);
         pendingScrolls.value.add(uniqueKey);
+        isAutoScrolling.value = true;
 
         // Emit expand event so parent can sync its state and possibly start loading
         emit("expiration-expanded", uniqueKey, expiration);
@@ -563,6 +568,12 @@ export default {
           if (pendingScrolls.value.has(uniqueKey)) {
             if (scrollToATM(uniqueKey)) {
               pendingScrolls.value.delete(uniqueKey);
+              
+              // Allow some time for the scroll to complete before enabling observation
+              setTimeout(() => {
+                isAutoScrolling.value = false;
+                observeElements();
+              }, 500);
             }
           }
         }, 300); // Wait for transition (usually 300ms) and render
@@ -891,6 +902,14 @@ export default {
         pendingScrolls.value.forEach(key => {
           if (scrollToATM(key)) {
             pendingScrolls.value.delete(key);
+            
+            // If we were auto-scrolling, finish it now
+            if (isAutoScrolling.value) {
+              setTimeout(() => {
+                isAutoScrolling.value = false;
+                observeElements();
+              }, 500);
+            }
           }
         });
       }
@@ -902,11 +921,7 @@ export default {
       setTimeout(observeElements, 100);
     }, { deep: true });
 
-    const observeRow = (el) => {
-      if (observer && el) {
-        observer.observe(el);
-      }
-    };
+
 
     return {
       // Mobile detection

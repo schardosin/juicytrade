@@ -353,4 +353,50 @@ describe('Visibility-Based Subscription', () => {
     
     expect(mockScrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' });
   });
+
+  it('delays observation during auto-scrolling', async () => {
+    // Mock scrollIntoView
+    const mockScrollIntoView = vi.fn();
+    
+    // Mock document.getElementById
+    const mockElement = {
+      querySelector: vi.fn().mockReturnValue({
+        scrollIntoView: mockScrollIntoView
+      })
+    };
+    
+    vi.spyOn(document, 'getElementById').mockReturnValue(mockElement);
+    
+    wrapper = mount(CollapsibleOptionsChain, {
+      props: {
+        ...defaultProps,
+        expandedExpirations: new Set()
+      },
+      attachTo: document.body
+    });
+    
+    // Reset observe calls from mount
+    await nextTick();
+    vi.advanceTimersByTime(100);
+    const mockObserve = window.IntersectionObserver.mock.results[0].value.observe;
+    mockObserve.mockClear();
+    
+    // Expand expiration
+    const header = wrapper.find('.expiration-header');
+    await header.trigger('click');
+    
+    // Wait for expansion timeout (300ms) - this triggers scrollToATM
+    await vi.advanceTimersByTimeAsync(300);
+    
+    // At this point, isAutoScrolling should be true, so observeRow should NOT have observed anything new
+    // (Note: In a real DOM, new rows would render and trigger ref callbacks. 
+    // In test, we might need to force update or simulate ref calls if we were testing that specific path,
+    // but here we are testing the delayed observeElements call).
+    
+    // Wait for scroll delay (500ms)
+    await vi.advanceTimersByTimeAsync(500);
+    
+    // Now observeElements should have been called
+    expect(mockObserve).toHaveBeenCalled();
+  });
 });

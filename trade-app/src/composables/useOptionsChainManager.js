@@ -17,7 +17,7 @@ const loadPersistedStrikeCount = () => {
   } catch (error) {
     console.warn("Failed to load persisted strike count:", error);
   }
-  return 20; // Default fallback
+  return 50; // Default fallback
 };
 
 // Save strike count to localStorage
