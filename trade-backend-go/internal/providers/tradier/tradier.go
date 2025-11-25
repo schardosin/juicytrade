@@ -36,6 +36,13 @@ type StreamingTask struct {
 	done   chan struct{}
 }
 
+// CachedMarketData stores the latest bid, ask, and last prices for a symbol
+type CachedMarketData struct {
+	Bid  interface{}
+	Ask  interface{}
+	Last interface{}
+}
+
 type TradierProvider struct {
 	*base.BaseProviderImpl
 	accountID         string
@@ -65,6 +72,8 @@ type TradierProvider struct {
 	shutdownEvent       chan struct{}
 	writeLock           sync.Mutex
 	recvLock            sync.Mutex
+	marketDataCache     map[string]*CachedMarketData
+	cacheMutex          sync.RWMutex
 }
 
 // NewTradierProvider creates a new Tradier provider instance.
@@ -83,6 +92,7 @@ func NewTradierProvider(accountID, apiKey, baseURL, streamURL string) *TradierPr
 		messageChan:       make(chan map[string]interface{}, 100), // Buffered to avoid blocking reader
 		errorChan:         make(chan error, 1),
 		shutdownEvent:     make(chan struct{}),
+		marketDataCache:   make(map[string]*CachedMarketData),
 	}
 }
 
@@ -2217,6 +2227,13 @@ func (t *TradierProvider) DisconnectStreaming(ctx context.Context) (bool, error)
 		delete(t.subscribedSymbols, symbol)
 	}
 
+	// Clear market data cache
+	t.cacheMutex.Lock()
+	for symbol := range t.marketDataCache {
+		delete(t.marketDataCache, symbol)
+	}
+	t.cacheMutex.Unlock()
+
 	slog.Info("Tradier: Successfully disconnected from streaming")
 	return true, nil
 }
@@ -2471,7 +2488,7 @@ func (t *TradierProvider) processStreamMessage(message map[string]interface{}) {
 	slog.Debug("Tradier: Received message", "type", msgType, "data", message)
 
 	switch msgType {
-	case "quote":
+	case "quote", "trade":
 		symbol, _ := message["symbol"].(string)
 		
 		// Validate subscription
@@ -2487,21 +2504,51 @@ func (t *TradierProvider) processStreamMessage(message map[string]interface{}) {
 		timestamp := ""
 		if biddate, ok := message["biddate"].(string); ok {
 			timestamp = biddate
+		} else if date, ok := message["date"].(string); ok {
+			timestamp = date
 		} else if ts, ok := message["timestamp"].(string); ok {
 			timestamp = ts
 		}
 
+		// Update local cache to ensure we always send bid, ask, and last
+		t.cacheMutex.Lock()
+		if _, exists := t.marketDataCache[symbol]; !exists {
+			t.marketDataCache[symbol] = &CachedMarketData{}
+		}
+		cache := t.marketDataCache[symbol]
+
+		// Update cache with new values if they exist
+		if bid := message["bid"]; bid != nil {
+			cache.Bid = bid
+		}
+		if ask := message["ask"]; ask != nil {
+			cache.Ask = ask
+		}
+		if last := message["last"]; last != nil {
+			cache.Last = last
+		} else if price := message["price"]; price != nil && msgType == "trade" {
+			// Fallback to price if last is missing in trade event
+			cache.Last = price
+		}
+
+		// Construct price data from cache
 		priceData := map[string]interface{}{
-			"bid":       message["bid"],
-			"ask":       message["ask"],
-			"last":      message["last"],
+			"bid":       cache.Bid,
+			"ask":       cache.Ask,
+			"last":      cache.Last,
 			"volume":    message["volume"],
 			"timestamp": timestamp,
 		}
+		
+		// If volume is missing in message (e.g. quote), try to get from cache or keep nil?
+		// User didn't ask to cache volume, but trade usually has volume (size/cvol).
+		// Let's stick to what was requested: bid, ask, last.
+		
+		t.cacheMutex.Unlock()
 
 		marketData := &models.MarketData{
 			Symbol:    symbol,
-			DataType:  "quote",
+			DataType:  "quote", // Normalize to quote for internal consumption
 			Timestamp: timestamp,
 			Data:      priceData,
 		}
@@ -2612,7 +2659,7 @@ func (t *TradierProvider) SubscribeToSymbols(ctx context.Context, symbols []stri
 	payload := map[string]interface{}{
 		"symbols":   symbols,
 		"sessionid": currentSessionID,
-		"filter":    []string{"quote"},
+		"filter":    []string{"quote", "trade"},
 	}
 
 	payloadBytes, err := json.Marshal(payload)
@@ -2843,8 +2890,14 @@ func (t *TradierProvider) parseOptionSymbol(symbol string) *ParsedOption {
 				optType = "put"
 			}
 			
+			// Handle special case: NDXP weekly options have NDX as underlying
+			underlying := root
+			if root == "NDXP" {
+				underlying = "NDX"
+			}
+			
 			return &ParsedOption{
-				Underlying: root,
+				Underlying: underlying,
 				Type:       optType,
 				Strike:     strikePrice,
 				Expiry:     expiryDate,

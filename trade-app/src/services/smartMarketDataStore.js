@@ -1384,18 +1384,34 @@ class SmartMarketDataStore {
     const { symbol } = data;
     if (!symbol) return;
 
-    // Extract bid/ask first
+    // Extract bid/ask/last from data
     const bid = data.data?.bid;
     const ask = data.data?.ask;
     const last = data.data?.last;
 
-    // Prioritize mid price calculation from bid/ask when both are available
+    // Calculate price with proper fallback logic for "NaN" strings
     let finalPrice = null;
-    if (bid && ask) {
-      finalPrice = (bid + ask) * 0.5;
+    
+    // Parse bid/ask/last as numbers and check validity
+    const bidNum = parseFloat(bid);
+    const askNum = parseFloat(ask);
+    const lastNum = parseFloat(last);
+
+    if (!isNaN(bidNum) && !isNaN(askNum) && bidNum > 0 && askNum > 0) {
+      // Use mid price when both bid and ask are valid numbers
+      finalPrice = (bidNum + askNum) * 0.5;
+    } else if (!isNaN(lastNum) && lastNum > 0) {
+      // Fall back to last price when bid/ask unavailable (e.g., NDX off-hours)
+      finalPrice = lastNum;
     } else {
-      // Fall back to other price fields if bid/ask not available
-      finalPrice = data.price || last || data.data?.mid;
+      // Final fallback to any available price field
+      finalPrice = data.price || data.data?.mid;
+      if (finalPrice) {
+        finalPrice = parseFloat(finalPrice);
+        if (isNaN(finalPrice)) {
+          finalPrice = null;
+        }
+      }
     }
 
     if (!finalPrice) return; // Skip if no valid price

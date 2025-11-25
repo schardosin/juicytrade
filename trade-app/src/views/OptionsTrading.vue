@@ -55,6 +55,7 @@
               @expiration-expanded="onExpirationExpanded"
               @expiration-collapsed="onExpirationCollapsed"
               @strike-count-changed="onStrikeCountChanged"
+              @visible-symbols-changed="onVisibleSymbolsChanged"
             />
           </div>
         </div>

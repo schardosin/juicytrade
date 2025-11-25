@@ -13,7 +13,12 @@
           <option value="10">10 strikes</option>
           <option value="20">20 strikes</option>
           <option value="30">30 strikes</option>
+          <option value="40">40 strikes</option>
           <option value="50">50 strikes</option>
+          <option value="60">60 strikes</option>
+          <option value="70">70 strikes</option>
+          <option value="80">80 strikes</option>
+          <option value="90">90 strikes</option>
           <option value="100">100 strikes</option>
         </select>
       </div>
@@ -125,6 +130,8 @@
                   :key="`${expiration.date}-${strike}`"
                   class="option-row"
                   :class="{ 'at-the-money': isAtTheMoney(strike) }"
+                  :data-symbols="[getCallOption(expiration, strike)?.symbol, getPutOption(expiration, strike)?.symbol].filter(Boolean).join(',')"
+                  :ref="el => { if (el) observeRow(el) }"
                 >
                   <!-- Call Side -->
                   <div class="call-side">
@@ -300,6 +307,7 @@ export default {
     "expiration-expanded",
     "expiration-collapsed",
     "strike-count-changed",
+    "visible-symbols-changed",
   ],
   setup(props, { emit }) {
     const { getOptionPrice, getOptionGreeks } = useMarketData();
@@ -335,6 +343,90 @@ export default {
     // Component registration system
     const componentId = `CollapsibleOptionsChain-${Math.random().toString(36).substr(2, 9)}`;
     const registeredSymbols = new Set();
+
+    // Visibility tracking
+    const visibleSymbols = new Set();
+    let observer = null;
+    let visibilityTimeout = null;
+
+    // Debounce function for visibility updates
+    const emitVisibleSymbols = () => {
+      if (visibilityTimeout) clearTimeout(visibilityTimeout);
+      
+      visibilityTimeout = setTimeout(() => {
+        emit("visible-symbols-changed", Array.from(visibleSymbols));
+      }, 150); // 150ms debounce
+    };
+
+    // Intersection Observer callback
+    const handleIntersection = (entries) => {
+      let changed = false;
+      
+      entries.forEach(entry => {
+        const symbolsStr = entry.target.dataset.symbols;
+        if (!symbolsStr) return;
+        
+        const symbols = symbolsStr.split(',');
+        
+        if (entry.isIntersecting) {
+          symbols.forEach(symbol => {
+            if (!visibleSymbols.has(symbol)) {
+              visibleSymbols.add(symbol);
+              
+              // Register symbol usage when it becomes visible
+              smartMarketDataStore.registerSymbolUsage(symbol, componentId);
+              registeredSymbols.add(symbol);
+              
+              // Initialize live data refs if needed
+              if (!liveOptionPrices.has(symbol)) {
+                liveOptionPrices.set(symbol, getOptionPrice(symbol));
+              }
+              if (!liveOptionGreeks.has(symbol)) {
+                liveOptionGreeks.set(symbol, getOptionGreeks(symbol));
+              }
+              
+              changed = true;
+            }
+          });
+        } else {
+          symbols.forEach(symbol => {
+            if (visibleSymbols.has(symbol)) {
+              visibleSymbols.delete(symbol);
+              
+              // Unregister symbol usage when it becomes hidden
+              smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
+              registeredSymbols.delete(symbol);
+              
+              changed = true;
+            }
+          });
+        }
+      });
+      
+      if (changed) {
+        emitVisibleSymbols();
+      }
+    };
+
+    // Setup observer
+    const setupObserver = () => {
+      if (observer) observer.disconnect();
+      
+      observer = new IntersectionObserver(handleIntersection, {
+        root: null, // viewport
+        rootMargin: "100px", // pre-load 100px before viewport
+        threshold: 0 // trigger as soon as 1 pixel is visible
+      });
+    };
+
+    // Observe elements
+    const observeElements = () => {
+      if (!observer) return;
+      
+      // Find all option rows with data-symbols attribute
+      const elements = document.querySelectorAll('.option-row[data-symbols]');
+      elements.forEach(el => observer.observe(el));
+    };
 
     // Computed properties
     const expirationGroups = computed(() => {
@@ -425,10 +517,20 @@ export default {
         if (expiration.optionsData && expiration.optionsData.length > 0) {
           expiration.optionsData.forEach(option => {
             if (option.symbol) {
+              // Unregister from smart store
+              if (registeredSymbols.has(option.symbol)) {
+                smartMarketDataStore.unregisterSymbolUsage(option.symbol, componentId);
+                registeredSymbols.delete(option.symbol);
+              }
+              
               liveOptionPrices.delete(option.symbol);
               liveOptionGreeks.delete(option.symbol);
+              // Remove from visible symbols tracking
+              visibleSymbols.delete(option.symbol);
             }
           });
+          // Emit update to notify parent of visibility change
+          emitVisibleSymbols();
         }
       } else {
         // Update local state immediately so UI expands
@@ -474,13 +576,9 @@ export default {
     const getLivePrice = (symbol) => {
       if (!symbol) return null;
 
-      if (!liveOptionPrices.has(symbol)) {
-        // Ensure symbol is registered (only once per component)
-        ensureSymbolRegistration(symbol);
-        
-        // Call getOptionPrice only once to set up the subscription
-        liveOptionPrices.set(symbol, getOptionPrice(symbol));
-      }
+      // CRITICAL FIX: Do NOT auto-register here.
+      // Registration is now handled by IntersectionObserver (handleIntersection).
+      // If the symbol is not visible, we just return what we have (or null).
       
       const livePrice = liveOptionPrices.get(symbol)?.value;
       return livePrice;
@@ -518,13 +616,8 @@ export default {
     const getLiveGreeks = (symbol) => {
       if (!symbol) return null;
 
-      if (!liveOptionGreeks.has(symbol)) {
-        // Ensure symbol is registered (only once per component)
-        ensureSymbolRegistration(symbol);
-        
-        // Call getOptionGreeks only once to set up the subscription
-        liveOptionGreeks.set(symbol, getOptionGreeks(symbol));
-      }
+      // CRITICAL FIX: Do NOT auto-register here.
+      // Registration is now handled by IntersectionObserver.
       
       const liveGreeks = liveOptionGreeks.get(symbol)?.value;
       return liveGreeks;
@@ -753,7 +846,31 @@ export default {
     // Clean up when the component is unmounted
     onUnmounted(() => {
       cleanupComponentRegistrations();
+      if (observer) {
+        observer.disconnect();
+      }
+      if (visibilityTimeout) {
+        clearTimeout(visibilityTimeout);
+      }
     });
+
+    onMounted(() => {
+      setupObserver();
+      // Ensure we observe existing elements that might have been missed during render
+      observeElements();
+    });
+
+    // Watch for expansion changes to re-observe elements
+    watch(expandedSet, () => {
+      // Wait for DOM update
+      setTimeout(observeElements, 100);
+    }, { deep: true });
+
+    const observeRow = (el) => {
+      if (observer && el) {
+        observer.observe(el);
+      }
+    };
 
     return {
       // Mobile detection
@@ -793,6 +910,7 @@ export default {
       getIvxForExpiration,
       formatIvxPercent,
       formatIvxMove,
+      observeRow,
     };
   },
 };
