@@ -479,6 +479,58 @@ export default {
         const optionsData = props.optionsDataByExpiration[uniqueKey] || [];
         const hasLoaded = optionsData.length > 0;
 
+        // Precompute strike maps to avoid repeated finds during render
+        // Group options by exact strike_price
+        const byStrike = new Map();
+        for (const opt of optionsData) {
+          const strike = opt.strike_price;
+          let entry = byStrike.get(strike);
+          if (!entry) {
+            entry = { call: null, put: null };
+            byStrike.set(strike, entry);
+          }
+          if (opt.type === 'call' || opt.type === 'c') {
+            entry.call = opt;
+          } else if (opt.type === 'put' || opt.type === 'p') {
+            entry.put = opt;
+          }
+        }
+
+        // Sorted strikes
+        const strikes = Array.from(byStrike.keys()).sort((a, b) => a - b);
+
+        // Compute ATM upper strike (first strike above underlying)
+        let atmUpperStrike = null;
+        if (props.underlyingPrice != null && strikes.length > 0) {
+          for (let i = 0; i < strikes.length; i++) {
+            if (strikes[i] > props.underlyingPrice) {
+              atmUpperStrike = strikes[i];
+              break;
+            }
+          }
+          // If none above, use last strike as fallback
+          if (atmUpperStrike == null) {
+            atmUpperStrike = strikes[strikes.length - 1];
+          }
+        }
+
+        // Determine visible strike window around ATM according to strikeCount
+        let visibleStrikes = strikes;
+        if (atmUpperStrike != null && strikes.length > 0 && strikeCount.value > 0) {
+          const atmIndex = strikes.indexOf(atmUpperStrike);
+          const halfDown = Math.floor(strikeCount.value / 2);
+          const halfUp = strikeCount.value - halfDown;
+          let start = Math.max(0, atmIndex - halfDown);
+          let end = Math.min(strikes.length, atmIndex + halfUp);
+          // Ensure window has desired size when near boundaries
+          const needed = strikeCount.value - (end - start);
+          if (needed > 0) {
+            start = Math.max(0, start - needed);
+            end = Math.min(strikes.length, end + Math.max(0, strikeCount.value - (end - start)));
+          }
+          visibleStrikes = strikes.slice(start, end);
+        }
+
         // Use local expandedSet so UI updates immediately on user clicks.
         const isExpandedLocal = expandedSet.value.has(uniqueKey);
         const isLoading = isExpandedLocal && !hasLoaded;
@@ -502,6 +554,11 @@ export default {
           isLoading,
           hasLoaded,
           optionsData,
+          // Precomputed helpers for performance
+          strikes,
+          visibleStrikes,
+          byStrike,
+          atmUpperStrike,
           isMonthly,
           isQuarterly,
           isEOM,
@@ -582,25 +639,31 @@ export default {
 
     // Option data methods (similar to original OptionsChain)
     const getStrikesForExpiration = (expiration) => {
-      if (!expiration.optionsData.length) return [];
-
-      const strikes = [
-        ...new Set(expiration.optionsData.map((opt) => opt.strike_price)),
-      ];
-      return strikes.sort((a, b) => a - b);
+      // Prefer precomputed visible strike window; fallback to full strikes
+      if (expiration && Array.isArray(expiration.visibleStrikes)) return expiration.visibleStrikes;
+      if (expiration && Array.isArray(expiration.strikes)) return expiration.strikes;
+      return [];
     };
 
     const getCallOption = (expiration, strike) => {
+      if (expiration && expiration.byStrike) {
+        const entry = expiration.byStrike.get(strike);
+        if (entry && entry.call) return entry.call;
+      }
+      // Fallback to search if map missing
       return expiration.optionsData.find(
-        (opt) =>
-          (opt.type === "call" || opt.type === "c") && Math.abs(opt.strike_price - strike) < 0.01
+        (opt) => (opt.type === "call" || opt.type === "c") && Math.abs(opt.strike_price - strike) < 0.01
       );
     };
 
     const getPutOption = (expiration, strike) => {
+      if (expiration && expiration.byStrike) {
+        const entry = expiration.byStrike.get(strike);
+        if (entry && entry.put) return entry.put;
+      }
+      // Fallback to search if map missing
       return expiration.optionsData.find(
-        (opt) =>
-          (opt.type === "put" || opt.type === "p") && Math.abs(opt.strike_price - strike) < 0.01
+        (opt) => (opt.type === "put" || opt.type === "p") && Math.abs(opt.strike_price - strike) < 0.01
       );
     };
 
@@ -723,28 +786,18 @@ export default {
 
     const isAtTheMoney = (strike, expiration) => {
       if (!props.underlyingPrice) return false;
-      
-      // Get strikes for THIS expiration to ensure accuracy
-      // (Different expirations might have different strike intervals)
+      if (expiration && expiration.atmUpperStrike != null) {
+        return strike === expiration.atmUpperStrike;
+      }
+      // Fallback computation if precomputed not available
       const strikes = getStrikesForExpiration(expiration);
       if (strikes.length === 0) return false;
-
-      // Sort strikes to ensure proper ordering
-      const sortedStrikes = strikes.sort((a, b) => a - b);
-      
-      // Find the first strike that is above the underlying price
-      // The ATM line should appear at this strike to create the visual effect
-      // of the line being between the strikes that contain the current price
-      let upperStrike = null;
-      for (let i = 0; i < sortedStrikes.length; i++) {
-        if (sortedStrikes[i] > props.underlyingPrice) {
-          upperStrike = sortedStrikes[i];
-          break;
+      for (let i = 0; i < strikes.length; i++) {
+        if (strikes[i] > props.underlyingPrice) {
+          return strike === strikes[i];
         }
       }
-      
-      // The ATM line appears at the upper strike (the first strike above the underlying price)
-      return strike === upperStrike;
+      return strike === strikes[strikes.length - 1];
     };
 
     // ITM/OTM detection functions
