@@ -180,6 +180,7 @@ import { useTradeNavigation } from "../composables/useTradeNavigation.js";
 import { useMobileDetection } from "../composables/useMobileDetection.js";
 import api from "../services/api";
 import authService from "../services/authService";
+import { mapToRootSymbol, isWeeklySymbol, mapToWeeklySymbol } from "../utils/symbolMapping.js";
 // webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
 // import webSocketClient from "../services/webSocketClient";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
@@ -504,11 +505,23 @@ export default {
       return checkedCount > 0 && checkedCount < allMobilePositions.value.length;
     });
 
-    // Helper function to get symbol group (handles SPX/SPXW grouping)
+    // Helper function to get symbol group (handles weekly symbols grouping)
     const getSymbolGroup = (symbol) => {
-      if (symbol === "SPX" || symbol === "SPXW") {
-        return ["SPX", "SPXW"];
+      if (!symbol) return [symbol];
+
+      // If symbol is a weekly variant (e.g., SPXW, NDXP), include both it and its root
+      if (isWeeklySymbol(symbol)) {
+        const rootSymbol = mapToRootSymbol(symbol);
+        return [symbol, rootSymbol];
       }
+
+      // If symbol is a root with a weekly equivalent (e.g., SPX, NDX), include both
+      const weeklySymbol = mapToWeeklySymbol(symbol);
+      if (weeklySymbol !== symbol) {
+        return [symbol, weeklySymbol];
+      }
+
+      // No weekly equivalent
       return [symbol];
     };
 

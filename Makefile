@@ -6,7 +6,7 @@ TAG ?= latest
 PLATFORM ?= linux/amd64
 
 # Targets
-.PHONY: all build push build-backend push-backend build-frontend push-frontend help
+.PHONY: all build push build-backend push-backend run-backend build-frontend push-frontend run-frontend help
 
 all: build ## Build all images
 
@@ -23,6 +23,10 @@ push-backend: ## Push the backend Docker image to registry
 	@echo "Pushing backend image..."
 	docker push $(REGISTRY)/$(BACKEND_IMAGE):$(TAG)
 
+run-backend: ## Run the Go backend locally
+	@echo "Starting Go backend..."
+	cd trade-backend-go && go run cmd/server/main.go
+
 # Frontend
 build-frontend: ## Build the frontend Docker image
 	@echo "Building frontend image..."
@@ -31,6 +35,10 @@ build-frontend: ## Build the frontend Docker image
 push-frontend: ## Push the frontend Docker image to registry
 	@echo "Pushing frontend image..."
 	docker push $(REGISTRY)/$(FRONTEND_IMAGE):$(TAG)
+
+run-frontend: ## Run the frontend locally
+	@echo "Starting frontend..."
+	cd trade-app && npm run dev
 
 help: ## Display this help message
 	@echo "Usage: make [target]"

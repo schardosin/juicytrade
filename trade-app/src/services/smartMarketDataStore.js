@@ -10,6 +10,7 @@ import webSocketClient from "./webSocketClient.js";
 import api, { setServicesStoppingState } from "./api.js";
 import MarketHoursUtil from "../utils/marketHours.js";
 import authService from "./authService.js";
+import { mapToRootSymbol, isWeeklySymbol, mapToWeeklySymbol } from "../utils/symbolMapping.js";
 
 /**
  * Data Health Monitor - Monitors the health of all data sources
@@ -1574,11 +1575,23 @@ class SmartMarketDataStore {
         return null;
       }
 
-      // Helper function to get symbol group (handles SPX/SPXW grouping)
+      // Helper function to get symbol group (handles weekly symbols grouping)
       const getSymbolGroup = (sym) => {
-        if (sym === "SPX" || sym === "SPXW") {
-          return ["SPX", "SPXW"];
+        if (!sym) return [sym];
+
+        // If symbol is a weekly variant (e.g., SPXW, NDXP), include both it and its root
+        if (isWeeklySymbol(sym)) {
+          const rootSymbol = mapToRootSymbol(sym);
+          return [sym, rootSymbol];
         }
+
+        // If symbol is a root with a weekly equivalent (e.g., SPX, NDX), include both
+        const weeklySymbol = mapToWeeklySymbol(sym);
+        if (weeklySymbol !== sym) {
+          return [sym, weeklySymbol];
+        }
+
+        // No weekly equivalent
         return [sym];
       };
 

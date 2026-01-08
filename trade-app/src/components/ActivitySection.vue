@@ -215,7 +215,7 @@ import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 import { detectStrategy } from "../utils/optionsStrategies";
 import notificationService from "../services/notificationService";
 import api from "../services/api"; // Keep for cancelOrder method
-import { mapToRootSymbol } from "../utils/symbolMapping.js";
+import { mapToRootSymbol, isWeeklySymbol, mapToWeeklySymbol } from "../utils/symbolMapping.js";
 
 export default {
   name: "ActivitySection",
@@ -650,11 +650,23 @@ export default {
       return symbol && symbol.length > 10 && /[CP]\d{8}$/.test(symbol);
     };
 
-    // Helper function to get symbol group (handles SPX/SPXW grouping)
+    // Helper function to get symbol group (handles weekly symbols grouping)
     const getSymbolGroup = (symbol) => {
-      if (symbol === "SPX" || symbol === "SPXW") {
-        return ["SPX", "SPXW"];
+      if (!symbol) return [symbol];
+
+      // If symbol is a weekly variant (e.g., SPXW, NDXP), include both it and its root
+      if (isWeeklySymbol(symbol)) {
+        const rootSymbol = mapToRootSymbol(symbol);
+        return [symbol, rootSymbol];
       }
+
+      // If symbol is a root with a weekly equivalent (e.g., SPX, NDX), include both
+      const weeklySymbol = mapToWeeklySymbol(symbol);
+      if (weeklySymbol !== symbol) {
+        return [symbol, weeklySymbol];
+      }
+
+      // No weekly equivalent
       return [symbol];
     };
 
