@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"trade-backend-go/internal/models"
+	"trade-backend-go/internal/providers"
+	"trade-backend-go/internal/providers/base"
 	"trade-backend-go/internal/services/ivx"
 	"trade-backend-go/internal/streaming"
 
@@ -18,12 +20,12 @@ import (
 // WebSocketHandler handles WebSocket connections for real-time streaming
 // Exact conversion of Python WebSocket streaming functionality
 type WebSocketHandler struct {
-	upgrader        websocket.Upgrader
-	clients         map[*websocket.Conn]*WebSocketClient
-	clientsMutex    sync.RWMutex
-	streamingMgr    *streaming.StreamingManager
-	ivxService      *ivx.Service
-	shutdownChan    chan struct{}
+	upgrader     websocket.Upgrader
+	clients      map[*websocket.Conn]*WebSocketClient
+	clientsMutex sync.RWMutex
+	streamingMgr *streaming.StreamingManager
+	ivxService   *ivx.Service
+	shutdownChan chan struct{}
 }
 
 // WebSocketClient represents a connected WebSocket client
@@ -38,11 +40,11 @@ type WebSocketClient struct {
 
 // WebSocketMessage represents incoming WebSocket messages
 type WebSocketMessage struct {
-	Type          string   `json:"type"`
+	Type          string                 `json:"type"`
 	Data          map[string]interface{} `json:"data,omitempty"`
-	Symbols       []string `json:"symbols,omitempty"`
-	StockSymbols  []string `json:"stock_symbols,omitempty"`
-	OptionSymbols []string `json:"option_symbols,omitempty"`
+	Symbols       []string               `json:"symbols,omitempty"`
+	StockSymbols  []string               `json:"stock_symbols,omitempty"`
+	OptionSymbols []string               `json:"option_symbols,omitempty"`
 }
 
 // WebSocketResponse represents outgoing WebSocket messages
@@ -117,9 +119,9 @@ func (h *WebSocketHandler) HandleWebSocket(c *gin.Context) {
 		Message:   "WebSocket connected successfully",
 		Timestamp: time.Now().UnixMilli(),
 		Data: map[string]interface{}{
-			"status":     "connected",
-			"server":     "juicytrade-go",
-			"streaming":  "enabled",
+			"status":    "connected",
+			"server":    "juicytrade-go",
+			"streaming": "enabled",
 		},
 	}
 	h.sendToClient(conn, welcomeMsg)
@@ -206,7 +208,7 @@ func (h *WebSocketHandler) handleMessage(client *WebSocketClient, msg WebSocketM
 	case "unsubscribe":
 		// Handle unsubscription request
 		h.handleUnsubscribe(client, msg.Symbols)
-	
+
 	case "subscribe_ivx":
 		// Handle IVx subscription request (continuous streaming)
 		h.handleSubscribeIVx(client, msg.Symbols)
@@ -261,8 +263,8 @@ func (h *WebSocketHandler) handleSubscribeIVx(client *WebSocketClient, symbols [
 
 		// Add to regular subscriptions (same as regular subscribe)
 		client.mutex.Lock()
-		client.subscriptions[symbol] = true           // Unified subscription tracking
-		client.ivxSubscriptions[symbol] = cancel      // Track cancel function for IVx goroutine
+		client.subscriptions[symbol] = true      // Unified subscription tracking
+		client.ivxSubscriptions[symbol] = cancel // Track cancel function for IVx goroutine
 		client.mutex.Unlock()
 
 		// Start IVx streaming goroutine
@@ -283,7 +285,7 @@ func (h *WebSocketHandler) handleSubscribeIVx(client *WebSocketClient, symbols [
 			for {
 				updates := make(chan ivx.StreamUpdate)
 				streamCtx, streamCancel := context.WithCancel(ctx)
-				
+
 				// Start streaming in background
 				go h.ivxService.GetIVxStream(streamCtx, sym, updates)
 
@@ -465,7 +467,7 @@ func (h *WebSocketHandler) handleKeepalive(client *WebSocketClient, symbols []st
 
 	// Update client subscriptions with keepalive symbols AND cancel IVx for removed symbols
 	client.mutex.Lock()
-	
+
 	// Find symbols that were subscribed but are NOT in the keepalive list
 	for existingSymbol := range client.subscriptions {
 		if !keepaliveSet[existingSymbol] {
@@ -476,7 +478,7 @@ func (h *WebSocketHandler) handleKeepalive(client *WebSocketClient, symbols []st
 			}
 		}
 	}
-	
+
 	// Replace subscriptions with keepalive list (Python backend behavior)
 	client.subscriptions = make(map[string]bool)
 	for _, symbol := range symbols {
@@ -662,15 +664,15 @@ func (h *WebSocketHandler) sendToClientRaw(conn *websocket.Conn, message map[str
 	h.clientsMutex.RLock()
 	client, exists := h.clients[conn]
 	h.clientsMutex.RUnlock()
-	
+
 	if !exists {
 		return nil // Client disconnected
 	}
-	
+
 	// Serialize writes to prevent concurrent write panic
 	client.writeMutex.Lock()
 	defer client.writeMutex.Unlock()
-	
+
 	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return conn.WriteJSON(message)
 }
@@ -681,15 +683,15 @@ func (h *WebSocketHandler) sendToClient(conn *websocket.Conn, response WebSocket
 	h.clientsMutex.RLock()
 	client, exists := h.clients[conn]
 	h.clientsMutex.RUnlock()
-	
+
 	if !exists {
 		return nil // Client disconnected
 	}
-	
+
 	// Serialize writes to prevent concurrent write panic
 	client.writeMutex.Lock()
 	defer client.writeMutex.Unlock()
-	
+
 	conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	return conn.WriteJSON(response)
 }
@@ -735,7 +737,7 @@ func (h *WebSocketHandler) healthCheck() {
 		conn.SetWriteDeadline(now.Add(10 * time.Second))
 		err := conn.WriteMessage(websocket.PingMessage, nil)
 		client.writeMutex.Unlock()
-		
+
 		if err != nil {
 			slog.Error("Failed to ping WebSocket client", "error", err)
 			disconnectedClients = append(disconnectedClients, conn)
@@ -765,7 +767,7 @@ func (h *WebSocketHandler) GetConnectionStats() map[string]interface{} {
 
 	for conn, client := range h.clients {
 		clientAddr := conn.RemoteAddr().String()
-		
+
 		client.mutex.RLock()
 		// Regular subscriptions
 		if len(client.subscriptions) > 0 {
@@ -776,7 +778,7 @@ func (h *WebSocketHandler) GetConnectionStats() map[string]interface{} {
 			}
 			clientSubscriptions[clientAddr] = symbols
 		}
-		
+
 		// IVx subscriptions
 		if len(client.ivxSubscriptions) > 0 {
 			ivxSymbols := make([]string, 0, len(client.ivxSubscriptions))
@@ -790,12 +792,12 @@ func (h *WebSocketHandler) GetConnectionStats() map[string]interface{} {
 	}
 
 	return map[string]interface{}{
-		"connected_clients":       len(h.clients),
-		"total_subscriptions":     totalSubscriptions,
-		"total_ivx_subscriptions": totalIvxSubscriptions,
-		"client_subscriptions":    clientSubscriptions,
+		"connected_clients":        len(h.clients),
+		"total_subscriptions":      totalSubscriptions,
+		"total_ivx_subscriptions":  totalIvxSubscriptions,
+		"client_subscriptions":     clientSubscriptions,
 		"client_ivx_subscriptions": clientIvxSubscriptions,
-		"streaming_status":        h.streamingMgr.GetSubscriptionStatus(),
+		"streaming_status":         h.streamingMgr.GetSubscriptionStatus(),
 	}
 }
 
@@ -811,4 +813,76 @@ func (h *WebSocketHandler) Shutdown() {
 		conn.Close()
 	}
 	h.clients = make(map[*websocket.Conn]*WebSocketClient)
+
+	// Stop account stream if running
+	tradeProvider := providers.GlobalProviderManager.GetProviderByService("trade_account")
+	if tradeProvider != nil {
+		tradeProvider.StopAccountStream()
+	}
+}
+
+// StartAccountStream initializes the account events WebSocket stream for the provider
+func (h *WebSocketHandler) StartAccountStream(provider base.Provider) error {
+	if provider == nil {
+		slog.Error("Cannot start account stream: provider is nil")
+		return nil
+	}
+
+	provider.SetOrderEventCallback(func(event *models.OrderEvent) {
+		h.BroadcastOrderEvent(event)
+	})
+
+	return provider.StartAccountStream(context.Background())
+}
+
+// BroadcastOrderEvent broadcasts an order event to all connected clients
+func (h *WebSocketHandler) BroadcastOrderEvent(event *models.OrderEvent) {
+	if event == nil {
+		slog.Warn("[ORDER-EVENT] BroadcastOrderEvent called with nil event")
+		return
+	}
+
+	orderID := event.GetIDAsString()
+
+	slog.Info("[ORDER-EVENT] Broadcasting order event to clients",
+		"orderID", orderID,
+		"status", event.Status,
+		"symbol", event.Symbol,
+		"account", event.Account,
+		"connectedClients", len(h.clients))
+
+	response := map[string]interface{}{
+		"type":      "order_event",
+		"data":      event,
+		"timestamp": time.Now().UnixMilli(),
+	}
+
+	h.clientsMutex.RLock()
+	defer h.clientsMutex.RUnlock()
+
+	sentCount := 0
+	for conn := range h.clients {
+		if err := h.sendToClientRaw(conn, response); err != nil {
+			slog.Error("[ORDER-EVENT] Failed to send order event to client", "error", err, "orderID", event.ID, "client", conn.RemoteAddr())
+		} else {
+			sentCount++
+			slog.Info("[ORDER-EVENT] Sent order event to client", "orderID", event.ID, "client", conn.RemoteAddr())
+		}
+	}
+
+	slog.Info("[ORDER-EVENT] Order event broadcast complete", "orderID", event.ID, "sentTo", sentCount, "totalClients", len(h.clients))
+}
+
+// GetAccountStreamStatus returns the status of the account stream
+func (h *WebSocketHandler) GetAccountStreamStatus() map[string]interface{} {
+	status := map[string]interface{}{
+		"running": false,
+	}
+
+	tradeProvider := providers.GlobalProviderManager.GetProviderByService("trade_account")
+	if tradeProvider != nil {
+		status["running"] = tradeProvider.IsAccountStreamConnected()
+	}
+
+	return status
 }

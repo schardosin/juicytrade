@@ -12,6 +12,7 @@
 import { watch, onMounted, onUnmounted } from "vue";
 import { useRoute } from "vue-router";
 import { useSelectedLegs } from "./composables/useSelectedLegs.js";
+import { useOrderEvents } from "./composables/useOrderEvents.js";
 import NotificationContainer from "./components/notifications/NotificationContainer.vue";
 import SystemRecoveryIndicator from "./components/SystemRecoveryIndicator.vue";
 import webSocketClient from "./services/webSocketClient.js";
@@ -25,6 +26,9 @@ export default {
   setup() {
     const route = useRoute();
     const { clearAll } = useSelectedLegs();
+
+    // Global order events listener - always active for toast notifications
+    useOrderEvents();
 
     // Clear selected legs when navigating between views
     watch(

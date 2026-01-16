@@ -952,6 +952,12 @@ export default {
       optionsManager.updateStrikeCount(newStrikeCount);
     };
 
+    const onVisibleSymbolsChanged = (visibleSymbols) => {
+      // Handle visible symbols change from CollapsibleOptionsChain
+      // This event is emitted when the user expands/collapses expirations
+      // Currently no action needed, but method must exist to satisfy template
+    };
+
     const onPriceAdjusted = (data) => {
       adjustedNetCredit.value = data.adjustedNetCredit;
     };
@@ -1469,6 +1475,7 @@ export default {
       onExpirationExpanded,
       onExpirationCollapsed,
       onStrikeCountChanged,
+      onVisibleSymbolsChanged,
       onPriceAdjusted,
       adjustedNetCredit,
       additionalQuoteData,

@@ -332,6 +332,16 @@ class WebSocketStreamingClient {
     this.addCallback('error', callback);
   }
 
+  onOrderEvent(callback) {
+    this.addCallback('order_event', callback);
+    return () => {
+      const callbacks = this.callbacks.get('order_event');
+      if (callbacks) {
+        callbacks.delete(callback);
+      }
+    };
+  }
+
   onIvxStatus(callback) {
     this.addCallback('ivx_status', callback);
   }
@@ -390,15 +400,15 @@ class WebSocketStreamingClient {
     }
     
     const callbacks = this.callbacks.get(message.type);
+    
     if (callbacks) {
-      callbacks.forEach(callback => {
+      callbacks.forEach((callback) => {
         try {
-          // Pass the whole message for price_update, greeks_update, subscription_confirmed, and all IVx message types
-          // For IVx messages (ivx_status, ivx_update, ivx_complete, error), pass the whole message
           const dataToSend = (
             message.type === 'price_update' || 
             message.type === 'greeks_update' || 
             message.type === 'subscription_confirmed' ||
+            message.type === 'order_event' ||
             message.type === 'ivx_status' ||
             message.type === 'ivx_update' ||
             message.type === 'ivx_complete' ||
@@ -406,7 +416,7 @@ class WebSocketStreamingClient {
           ) ? message : message.data;
           callback(dataToSend);
         } catch (error) {
-          console.error(`Error in callback for message type ${message.type}:`, error);
+          console.error(`[WEBSOCKET] Error in callback for message type ${message.type}:`, error);
         }
       });
     }

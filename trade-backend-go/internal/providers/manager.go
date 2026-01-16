@@ -31,7 +31,7 @@ func NewProviderManager() *ProviderManager {
 		credentialStore: NewCredentialStore(),
 		configManager:   NewConfigManager(),
 	}
-	
+
 	pm.initializeActiveProviders()
 	return pm
 }
@@ -40,37 +40,37 @@ func NewProviderManager() *ProviderManager {
 // Exact conversion of Python _initialize_active_providers method.
 func (pm *ProviderManager) initializeActiveProviders() {
 	slog.Info("🔄 Initializing active provider instances...")
-	
+
 	// Clear existing providers
 	pm.mutex.Lock()
 	pm.providers = make(map[string]base.Provider)
 	pm.mutex.Unlock()
-	
+
 	// Get active instances from credential store
 	activeInstances := pm.credentialStore.GetActiveInstances()
-	
+
 	if len(activeInstances) == 0 {
 		slog.Warn("⚠️ No active provider instances found. Please configure provider instances through the API.")
 		return
 	}
-	
+
 	// Initialize each active instance
 	for instanceID, instanceData := range activeInstances {
 		providerType, _ := instanceData["provider_type"].(string)
 		accountType, _ := instanceData["account_type"].(string)
 		credentials, _ := instanceData["credentials"].(map[string]interface{})
 		displayName, _ := instanceData["display_name"].(string)
-		
+
 		if displayName == "" {
 			displayName = instanceID
 		}
-		
+
 		// Apply default values to credentials
 		credentials = ApplyDefaults(providerType, accountType, credentials)
-		
+
 		// Create provider instance
 		provider := pm.createProviderInstance(providerType, accountType, credentials)
-		
+
 		if provider != nil {
 			pm.mutex.Lock()
 			pm.providers[instanceID] = provider
@@ -80,7 +80,7 @@ func (pm *ProviderManager) initializeActiveProviders() {
 			slog.Error(fmt.Sprintf("❌ Failed to create provider instance: %s", instanceID))
 		}
 	}
-	
+
 	slog.Info(fmt.Sprintf("🎯 Initialized %d active provider instances", len(pm.providers)))
 }
 
@@ -94,9 +94,9 @@ func (pm *ProviderManager) createProviderInstance(providerType, accountType stri
 		baseURL, _ := credentials["base_url"].(string)
 		dataURL, _ := credentials["data_url"].(string)
 		usePaper := (accountType == "paper")
-		
+
 		return alpaca.NewAlpacaProvider(apiKey, apiSecret, baseURL, dataURL, usePaper)
-		
+
 	case "tastytrade":
 		accountID, _ := credentials["account_id"].(string)
 		baseURL, _ := credentials["base_url"].(string)
@@ -105,21 +105,21 @@ func (pm *ProviderManager) createProviderInstance(providerType, accountType stri
 		refreshToken, _ := credentials["refresh_token"].(string)
 		authCode, _ := credentials["authorization_code"].(string)
 		redirectURI, _ := credentials["redirect_uri"].(string)
-		
+
 		return tastytrade.NewTastyTradeProvider(accountID, baseURL, clientID, clientSecret, refreshToken, authCode, redirectURI)
-		
+
 	case "tradier":
 		accountID, _ := credentials["account_id"].(string)
 		apiKey, _ := credentials["api_key"].(string)
 		baseURL, _ := credentials["base_url"].(string)
 		streamURL, _ := credentials["stream_url"].(string)
-		
-		return tradier.NewTradierProvider(accountID, apiKey, baseURL, streamURL)
-		
+
+		return tradier.NewTradierProvider(accountID, apiKey, baseURL, streamURL, accountType)
+
 	// TODO: Add other providers (public)
 	// case "public":
 	//     return public.NewPublicProvider(...)
-	
+
 	default:
 		slog.Error(fmt.Sprintf("❌ Unknown provider type: %s", providerType))
 		return nil
@@ -130,10 +130,10 @@ func (pm *ProviderManager) createProviderInstance(providerType, accountType stri
 // Exact conversion of Python get_available_provider_instances method.
 func (pm *ProviderManager) GetAvailableProviderInstances() map[string]map[string]interface{} {
 	instances := make(map[string]map[string]interface{})
-	
+
 	pm.mutex.RLock()
 	defer pm.mutex.RUnlock()
-	
+
 	for instanceID := range pm.providers {
 		instanceData := pm.credentialStore.GetInstance(instanceID)
 		if instanceData != nil {
@@ -147,7 +147,7 @@ func (pm *ProviderManager) GetAvailableProviderInstances() map[string]map[string
 			}
 		}
 	}
-	
+
 	return instances
 }
 
@@ -156,17 +156,17 @@ func (pm *ProviderManager) GetAvailableProviderInstances() map[string]map[string
 func (pm *ProviderManager) TestProviderCredentials(ctx context.Context, providerType, accountType string, credentials map[string]interface{}) map[string]interface{} {
 	// Apply defaults to credentials
 	testCredentials := ApplyDefaults(providerType, accountType, credentials)
-	
+
 	// Create temporary provider instance
 	provider := pm.createProviderInstance(providerType, accountType, testCredentials)
-	
+
 	if provider == nil {
 		return map[string]interface{}{
 			"success": false,
 			"message": fmt.Sprintf("Failed to create %s provider instance", providerType),
 		}
 	}
-	
+
 	// Test credentials using the provider's test method
 	result, err := provider.TestCredentials(ctx)
 	if err != nil {
@@ -183,20 +183,20 @@ func (pm *ProviderManager) TestProviderCredentials(ctx context.Context, provider
 func (pm *ProviderManager) getProvider(operation string) base.Provider {
 	config := pm.configManager.GetConfig()
 	providerName, exists := config[operation]
-	
+
 	if !exists || providerName == "" {
 		slog.Error(fmt.Sprintf("No provider configured for operation: %s", operation))
 		return nil
 	}
-	
+
 	pm.mutex.RLock()
 	defer pm.mutex.RUnlock()
-	
+
 	// Try exact match first (case-sensitive for full instance IDs like "tradier_live_Tradier")
 	if provider, exists := pm.providers[providerName]; exists {
 		return provider
 	}
-	
+
 	// Fallback: case-insensitive match for backward compatibility with old format
 	// This handles old configs like "tradier" matching "tradier_live_Tradier"
 	providerNameLower := strings.ToLower(providerName)
@@ -204,7 +204,7 @@ func (pm *ProviderManager) getProvider(operation string) base.Provider {
 		if strings.ToLower(instanceID) == providerNameLower {
 			return provider
 		}
-		
+
 		// Also try matching just the provider type (e.g., "tradier" matches "tradier_live_Tradier")
 		// Split by underscore to extract provider type
 		parts := strings.Split(strings.ToLower(instanceID), "_")
@@ -212,7 +212,7 @@ func (pm *ProviderManager) getProvider(operation string) base.Provider {
 			return provider
 		}
 	}
-	
+
 	slog.Error(fmt.Sprintf("Provider '%s' not initialized.", providerName))
 	return nil
 }
@@ -223,13 +223,19 @@ func (pm *ProviderManager) GetProvider(instanceID string) base.Provider {
 	pm.mutex.RLock()
 	provider, exists := pm.providers[instanceID]
 	pm.mutex.RUnlock()
-	
+
 	if !exists {
 		slog.Error(fmt.Sprintf("Provider instance '%s' not found or not initialized.", instanceID))
 		return nil
 	}
-	
+
 	return provider
+}
+
+// GetProviderByService gets a provider for a specific service operation (e.g., "trade_account", "options_chain")
+// Returns the provider instance mapped to that service in the config.
+func (pm *ProviderManager) GetProviderByService(serviceName string) base.Provider {
+	return pm.getProvider(serviceName)
 }
 
 // === Market Data Methods - Exact conversions ===
@@ -241,7 +247,7 @@ func (pm *ProviderManager) GetExpirationDates(ctx context.Context, symbol string
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for options_chain")
 	}
-	
+
 	return provider.GetExpirationDates(ctx, symbol)
 }
 
@@ -252,7 +258,7 @@ func (pm *ProviderManager) GetStockQuote(ctx context.Context, symbol string) (*m
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for stock_quotes")
 	}
-	
+
 	return provider.GetStockQuote(ctx, symbol)
 }
 
@@ -263,7 +269,7 @@ func (pm *ProviderManager) GetStockQuotes(ctx context.Context, symbols []string)
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for stock_quotes")
 	}
-	
+
 	return provider.GetStockQuotes(ctx, symbols)
 }
 
@@ -274,7 +280,7 @@ func (pm *ProviderManager) GetOptionsChainBasic(ctx context.Context, symbol, exp
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for options_chain")
 	}
-	
+
 	return provider.GetOptionsChainBasic(ctx, symbol, expiry, underlyingPrice, strikeCount, optionType, underlyingSymbol)
 }
 
@@ -285,7 +291,7 @@ func (pm *ProviderManager) GetOptionsGreeksBatch(ctx context.Context, optionSymb
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for options_chain")
 	}
-	
+
 	return provider.GetOptionsGreeksBatch(ctx, optionSymbols)
 }
 
@@ -296,7 +302,7 @@ func (pm *ProviderManager) GetOptionsChainSmart(ctx context.Context, symbol, exp
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for options_chain")
 	}
-	
+
 	return provider.GetOptionsChainSmart(ctx, symbol, expiry, underlyingPrice, atmRange, includeGreeks, strikesOnly)
 }
 
@@ -309,7 +315,7 @@ func (pm *ProviderManager) GetPositions(ctx context.Context) ([]*models.Position
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for trade_account")
 	}
-	
+
 	return provider.GetPositions(ctx)
 }
 
@@ -320,7 +326,7 @@ func (pm *ProviderManager) GetPositionsEnhanced(ctx context.Context) (*models.En
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for trade_account")
 	}
-	
+
 	return provider.GetPositionsEnhanced(ctx)
 }
 
@@ -331,7 +337,7 @@ func (pm *ProviderManager) GetOrders(ctx context.Context, status string) ([]*mod
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for trade_account")
 	}
-	
+
 	return provider.GetOrders(ctx, status)
 }
 
@@ -342,7 +348,7 @@ func (pm *ProviderManager) GetAccount(ctx context.Context) (*models.Account, err
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for trade_account")
 	}
-	
+
 	return provider.GetAccount(ctx)
 }
 
@@ -353,7 +359,7 @@ func (pm *ProviderManager) PlaceOrder(ctx context.Context, orderData map[string]
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for trade_account")
 	}
-	
+
 	return provider.PlaceOrder(ctx, orderData)
 }
 
@@ -364,7 +370,7 @@ func (pm *ProviderManager) PlaceMultiLegOrder(ctx context.Context, orderData map
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for trade_account")
 	}
-	
+
 	return provider.PlaceMultiLegOrder(ctx, orderData)
 }
 
@@ -375,7 +381,7 @@ func (pm *ProviderManager) PreviewOrder(ctx context.Context, orderData map[strin
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for trade_account")
 	}
-	
+
 	return provider.PreviewOrder(ctx, orderData)
 }
 
@@ -386,7 +392,7 @@ func (pm *ProviderManager) CancelOrder(ctx context.Context, orderID string) (boo
 	if provider == nil {
 		return false, fmt.Errorf("no provider configured for trade_account")
 	}
-	
+
 	return provider.CancelOrder(ctx, orderID)
 }
 
@@ -399,7 +405,7 @@ func (pm *ProviderManager) LookupSymbols(ctx context.Context, query string) ([]*
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for symbol_lookup")
 	}
-	
+
 	return provider.LookupSymbols(ctx, query)
 }
 
@@ -410,13 +416,13 @@ func (pm *ProviderManager) GetHistoricalBars(ctx context.Context, symbol, timefr
 	if provider == nil {
 		return nil, fmt.Errorf("no provider configured for historical_data")
 	}
-	
+
 	// Map weekly symbols to their standard equivalents for historical data
 	chartSymbol := pm.mapSymbolForHistoricalData(symbol)
 	if chartSymbol != symbol {
 		slog.Info(fmt.Sprintf("📊 Mapping symbol for historical data: %s → %s", symbol, chartSymbol))
 	}
-	
+
 	return provider.GetHistoricalBars(ctx, chartSymbol, timeframe, startDate, endDate, limit)
 }
 
@@ -427,7 +433,7 @@ func (pm *ProviderManager) GetNextMarketDate(ctx context.Context) (string, error
 	if provider == nil {
 		return "", fmt.Errorf("no provider configured for market_calendar")
 	}
-	
+
 	return provider.GetNextMarketDate(ctx)
 }
 
@@ -435,10 +441,10 @@ func (pm *ProviderManager) GetNextMarketDate(ctx context.Context) (string, error
 // Exact conversion of Python health_check method.
 func (pm *ProviderManager) HealthCheck(ctx context.Context) map[string]interface{} {
 	healthStatus := make(map[string]interface{})
-	
+
 	pm.mutex.RLock()
 	defer pm.mutex.RUnlock()
-	
+
 	for name, provider := range pm.providers {
 		result, err := provider.TestCredentials(ctx)
 		if err != nil {
@@ -450,7 +456,7 @@ func (pm *ProviderManager) HealthCheck(ctx context.Context) map[string]interface
 			healthStatus[name] = result
 		}
 	}
-	
+
 	return healthStatus
 }
 
@@ -464,7 +470,7 @@ func (pm *ProviderManager) mapSymbolForHistoricalData(symbol string) string {
 		// "NDXP": "NDX",  // Example: NDX Weeklys (if they exist)
 		// "RUTW": "RUT",  // Example: RUT Weeklys (if they exist)
 	}
-	
+
 	// Return mapped symbol or original if no mapping exists
 	if mapped, exists := weeklySymbolMap[symbol]; exists {
 		return mapped
@@ -519,24 +525,24 @@ func (pm *ProviderManager) GetProviderInstances() map[string]map[string]interfac
 func (pm *ProviderManager) GetSubscriptionStatus() *models.SubscriptionStatusResponse {
 	pm.mutex.RLock()
 	defer pm.mutex.RUnlock()
-	
+
 	// Collect subscription data from all providers
 	quoteSubscriptions := make([]string, 0)
 	greeksSubscriptions := make([]string, 0)
 	quoteProviders := make([]string, 0)
 	greeksProviders := make([]string, 0)
 	isConnected := false
-	
+
 	// Iterate through all providers to collect subscription information
 	for instanceID, provider := range pm.providers {
 		// Check if provider is connected
 		if provider.IsStreamingConnected() {
 			isConnected = true
 		}
-		
+
 		// Get subscribed symbols from this provider
 		subscribedSymbols := provider.GetSubscribedSymbols()
-		
+
 		// Separate stock and option symbols (similar to Python logic)
 		for symbol, subscribed := range subscribedSymbols {
 			if subscribed {
@@ -544,7 +550,7 @@ func (pm *ProviderManager) GetSubscriptionStatus() *models.SubscriptionStatusRes
 					// Option symbols go to both quotes and Greeks
 					quoteSubscriptions = append(quoteSubscriptions, symbol)
 					greeksSubscriptions = append(greeksSubscriptions, symbol)
-					
+
 					// Add to Greeks providers if not already present
 					if !pm.containsString(greeksProviders, instanceID) {
 						greeksProviders = append(greeksProviders, instanceID)
@@ -553,7 +559,7 @@ func (pm *ProviderManager) GetSubscriptionStatus() *models.SubscriptionStatusRes
 					// Stock symbols go to quotes only
 					quoteSubscriptions = append(quoteSubscriptions, symbol)
 				}
-				
+
 				// Add to quote providers if not already present
 				if !pm.containsString(quoteProviders, instanceID) {
 					quoteProviders = append(quoteProviders, instanceID)
@@ -561,11 +567,11 @@ func (pm *ProviderManager) GetSubscriptionStatus() *models.SubscriptionStatusRes
 			}
 		}
 	}
-	
+
 	// Remove duplicates from subscriptions
 	quoteSubscriptions = pm.removeDuplicateStrings(quoteSubscriptions)
 	greeksSubscriptions = pm.removeDuplicateStrings(greeksSubscriptions)
-	
+
 	return &models.SubscriptionStatusResponse{
 		QuoteSubscriptions:       quoteSubscriptions,
 		GreeksSubscriptions:      greeksSubscriptions,
@@ -585,7 +591,7 @@ func (pm *ProviderManager) isOptionSymbol(symbol string) bool {
 	if len(symbol) <= 10 {
 		return false
 	}
-	
+
 	// Check for 'C' or 'P' (call/put indicators)
 	hasCallPut := false
 	for _, char := range symbol {
@@ -597,7 +603,7 @@ func (pm *ProviderManager) isOptionSymbol(symbol string) bool {
 	if !hasCallPut {
 		return false
 	}
-	
+
 	// Check if last 8 characters contain digits (strike price)
 	lastEight := symbol[len(symbol)-8:]
 	hasDigits := false
@@ -607,7 +613,7 @@ func (pm *ProviderManager) isOptionSymbol(symbol string) bool {
 			break
 		}
 	}
-	
+
 	return hasDigits
 }
 
@@ -625,14 +631,14 @@ func (pm *ProviderManager) containsString(slice []string, item string) bool {
 func (pm *ProviderManager) removeDuplicateStrings(slice []string) []string {
 	keys := make(map[string]bool)
 	result := make([]string, 0)
-	
+
 	for _, item := range slice {
 		if !keys[item] {
 			keys[item] = true
 			result = append(result, item)
 		}
 	}
-	
+
 	return result
 }
 

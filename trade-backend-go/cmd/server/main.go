@@ -29,31 +29,31 @@ func main() {
 
 	// Load configuration
 	cfg := config.LoadSettings()
-	
+
 	// Set Gin mode based on config
 	if cfg.LogLevel == "DEBUG" {
 		gin.SetMode(gin.DebugMode)
 	} else {
 		gin.SetMode(gin.ReleaseMode)
 	}
-	
+
 	// Create Gin router
 	router := gin.Default()
-	
+
 	// Add CORS middleware (same as Python FastAPI CORS)
 	router.Use(func(c *gin.Context) {
 		c.Header("Access-Control-Allow-Origin", "*")
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Accept, Authorization")
-		
+
 		if c.Request.Method == "OPTIONS" {
 			c.AbortWithStatus(204)
 			return
 		}
-		
+
 		c.Next()
 	})
-	
+
 	// Initialize provider manager (same as Python provider_manager)
 	providers.InitializeProviderManager()
 	providerManager := providers.GlobalProviderManager
@@ -61,7 +61,7 @@ func main() {
 	// Initialize IVx services
 	ivxCache := ivx.NewCache()
 	ivxService := ivx.NewService(providerManager, ivxCache)
-	
+
 	// Initialize watchlist manager
 	watchlistMgr := watchlist.GetManager()
 
@@ -71,12 +71,36 @@ func main() {
 	if err := streamingMgr.Connect(ctx); err != nil {
 		log.Printf("Warning: Failed to initialize streaming: %v", err)
 	}
-	
+
 	// Initialize handlers
 	healthHandler := handlers.NewHealthHandler()
 	marketDataHandler := handlers.NewMarketDataHandler(providerManager)
 	// Initialize WebSocket handler with IVx service
 	wsHandler := handlers.NewWebSocketHandler(ivxService)
+
+	// Start account events WebSocket stream if Tradier provider is configured
+	go func() {
+		// Give other services time to initialize
+		time.Sleep(2 * time.Second)
+
+		log.Printf("📡 Attempting to start account events stream...")
+
+		// Get the trade account provider using GetProviderByService which looks up by service name
+		tradeProvider := providerManager.GetProviderByService("trade_account")
+		if tradeProvider == nil {
+			log.Printf("⚠️ No trade_account provider configured - account stream will not start")
+			return
+		}
+
+		log.Printf("📡 Starting account events stream for provider: %s", tradeProvider.GetName())
+
+		if err := wsHandler.StartAccountStream(tradeProvider); err != nil {
+			log.Printf("⚠️ Failed to start account stream: %v", err)
+			return
+		}
+
+		log.Printf("✅ Account events WebSocket stream started")
+	}()
 
 	// Initialize authentication
 	authConfig := auth.LoadConfig()
@@ -84,47 +108,47 @@ func main() {
 		log.Printf("Warning: Authentication configuration error: %v", err)
 	}
 	authHandler := auth.NewAuthHandler(authConfig)
-	
+
 	// Setup API group
 	api := router.Group("/api")
-	
+
 	// Register auth routes under /api for API access
 	auth.RegisterRoutes(api, authHandler)
-	
+
 	// Also register auth routes at root level for OAuth callbacks (ingress routes /auth to backend)
 	auth.RegisterRoutes(router, authHandler)
-	
+
 	// Setup and configuration endpoints (NO AUTH REQUIRED - for setup wizard)
 	api.GET("/setup/status", func(c *gin.Context) {
 		// Exact conversion of Python get_setup_status logic
-		
+
 		// Get current provider configuration
 		config := providerManager.GetConfig()
-		
+
 		// Define mandatory services that must be configured (same as Python)
 		mandatoryServices := []string{
 			"trade_account",
-			"options_chain", 
+			"options_chain",
 			"historical_data",
 			"symbol_lookup",
 			"streaming_quotes",
 		}
-		
+
 		// Check if we have service routing configuration
 		if len(config) == 0 {
 			c.JSON(200, gin.H{
 				"success": true,
 				"data": map[string]interface{}{
-					"is_setup_complete":         false,
+					"is_setup_complete":          false,
 					"missing_mandatory_services": mandatoryServices,
-					"configured_services":       map[string]interface{}{},
-					"has_providers":             false,
+					"configured_services":        map[string]interface{}{},
+					"has_providers":              false,
 				},
 				"message": "No service routing configuration found",
 			})
 			return
 		}
-		
+
 		// Check each mandatory service
 		missingServices := []string{}
 		for _, service := range mandatoryServices {
@@ -133,22 +157,22 @@ func main() {
 				missingServices = append(missingServices, service)
 			}
 		}
-		
+
 		isSetupComplete := len(missingServices) == 0
 		hasProviders := len(providerManager.GetAvailableProviderInstances()) > 0
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
-				"is_setup_complete":         isSetupComplete,
+				"is_setup_complete":          isSetupComplete,
 				"missing_mandatory_services": missingServices,
-				"configured_services":       config,
-				"has_providers":             hasProviders,
+				"configured_services":        config,
+				"has_providers":              hasProviders,
 			},
 			"message": "Setup status retrieved successfully",
 		})
 	})
-	
+
 	api.GET("/providers/types", func(c *gin.Context) {
 		types := providerManager.GetProviderTypes()
 		c.JSON(200, gin.H{
@@ -156,7 +180,7 @@ func main() {
 			"data":    types,
 		})
 	})
-	
+
 	api.GET("/providers/instances", func(c *gin.Context) {
 		// Read directly from credential store to get the latest data
 		credentialStore := providers.NewCredentialStore()
@@ -166,7 +190,7 @@ func main() {
 			"data":    instances,
 		})
 	})
-	
+
 	api.POST("/providers/instances/test", func(c *gin.Context) {
 		var request map[string]interface{}
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -176,11 +200,11 @@ func main() {
 			})
 			return
 		}
-		
+
 		providerType, _ := request["provider_type"].(string)
 		accountType, _ := request["account_type"].(string)
 		credentials, _ := request["credentials"].(map[string]interface{})
-		
+
 		if providerType == "" || accountType == "" {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -188,11 +212,11 @@ func main() {
 			})
 			return
 		}
-		
+
 		result := providerManager.TestProviderCredentials(c.Request.Context(), providerType, accountType, credentials)
 		c.JSON(200, result)
 	})
-	
+
 	// Provider instance management endpoints (CREATE, UPDATE, DELETE, TOGGLE)
 	api.POST("/providers/instances", func(c *gin.Context) {
 		var request map[string]interface{}
@@ -203,12 +227,12 @@ func main() {
 			})
 			return
 		}
-		
+
 		providerType, _ := request["provider_type"].(string)
 		accountType, _ := request["account_type"].(string)
 		displayName, _ := request["display_name"].(string)
 		credentials, _ := request["credentials"].(map[string]interface{})
-		
+
 		if providerType == "" || accountType == "" || displayName == "" {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -216,14 +240,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		// Apply defaults to credentials
 		credentialsWithDefaults := providers.ApplyDefaults(providerType, accountType, credentials)
-		
+
 		// Generate unique instance ID
 		credentialStore := providers.NewCredentialStore()
 		instanceID := credentialStore.GenerateInstanceID(providerType, accountType, displayName)
-		
+
 		// Add instance to credential store
 		success := credentialStore.AddInstance(instanceID, providerType, accountType, displayName, credentialsWithDefaults)
 		if !success {
@@ -233,7 +257,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -242,10 +266,10 @@ func main() {
 			"message": "Provider instance created successfully",
 		})
 	})
-	
+
 	api.PUT("/providers/instances/:instance_id", func(c *gin.Context) {
 		instanceID := c.Param("instance_id")
-		
+
 		var request map[string]interface{}
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(400, gin.H{
@@ -254,7 +278,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		// Build updates map
 		updates := make(map[string]interface{})
 		if displayName, ok := request["display_name"].(string); ok && displayName != "" {
@@ -263,7 +287,7 @@ func main() {
 		if credentials, ok := request["credentials"].(map[string]interface{}); ok {
 			updates["credentials"] = credentials
 		}
-		
+
 		credentialStore := providers.NewCredentialStore()
 		success := credentialStore.UpdateInstance(instanceID, updates)
 		if !success {
@@ -273,16 +297,16 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"message": "Provider instance updated successfully",
 		})
 	})
-	
+
 	api.PUT("/providers/instances/:instance_id/toggle", func(c *gin.Context) {
 		instanceID := c.Param("instance_id")
-		
+
 		credentialStore := providers.NewCredentialStore()
 		newState := credentialStore.ToggleInstance(instanceID)
 		if newState == nil {
@@ -292,7 +316,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -301,10 +325,10 @@ func main() {
 			"message": "Provider instance toggled successfully",
 		})
 	})
-	
+
 	api.DELETE("/providers/instances/:instance_id", func(c *gin.Context) {
 		instanceID := c.Param("instance_id")
-		
+
 		credentialStore := providers.NewCredentialStore()
 		success := credentialStore.DeleteInstance(instanceID)
 		if !success {
@@ -314,34 +338,34 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"message": "Provider instance deleted successfully",
 		})
 	})
-	
+
 	// Apply authentication middleware to API group (all routes below require auth)
 	api.Use(auth.AuthenticationMiddleware(authConfig))
-	
+
 	// Setup routes - exact same paths as Python FastAPI
 	router.GET("/", healthHandler.Health)
 	router.GET("/health", healthHandler.HealthCheck)
-	
+
 	// WebSocket endpoint
 	router.GET("/ws", wsHandler.HandleWebSocket)
-	
+
 	// Symbol-specific endpoints - MUST be first to avoid conflicts
 	api.GET("/symbol/:symbol/range/52week", func(c *gin.Context) {
 		symbol := c.Param("symbol")
-		
+
 		// Get 1 year of daily data (same as Python implementation)
 		endDate := time.Now()
 		startDate := endDate.AddDate(-1, 0, 0) // 1 year ago
-		
+
 		startDateStr := startDate.Format("2006-01-02")
 		endDateStr := endDate.Format("2006-01-02")
-		
+
 		bars, err := providerManager.GetHistoricalBars(c.Request.Context(), symbol, "D", &startDateStr, &endDateStr, 365)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -350,7 +374,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if len(bars) == 0 {
 			c.JSON(404, gin.H{
 				"success": false,
@@ -358,7 +382,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		// Calculate 52-week high and low
 		var high, low float64
 		for i, bar := range bars {
@@ -373,36 +397,36 @@ func main() {
 				}
 			}
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
-				"symbol":     symbol,
-				"high_52w":   high,
-				"low_52w":    low,
+				"symbol":      symbol,
+				"high_52w":    high,
+				"low_52w":     low,
 				"data_points": len(bars),
 			},
 			"message": fmt.Sprintf("Retrieved 52-week range for %s", symbol),
 		})
 	})
-	
+
 	api.GET("/symbol/:symbol/volume/average", func(c *gin.Context) {
 		symbol := c.Param("symbol")
 		days := 20
-		
+
 		if daysStr := c.Query("days"); daysStr != "" {
 			if _, err := fmt.Sscanf(daysStr, "%d", &days); err != nil {
 				days = 20
 			}
 		}
-		
+
 		// Get historical data for the specified number of days (same as Python implementation)
 		endDate := time.Now()
 		startDate := endDate.AddDate(0, 0, -days*2) // Get double to account for weekends/holidays
-		
+
 		startDateStr := startDate.Format("2006-01-02")
 		endDateStr := endDate.Format("2006-01-02")
-		
+
 		bars, err := providerManager.GetHistoricalBars(c.Request.Context(), symbol, "D", &startDateStr, &endDateStr, days*2)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -411,7 +435,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if len(bars) == 0 {
 			c.JSON(404, gin.H{
 				"success": false,
@@ -419,7 +443,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		// Calculate average volume
 		var totalVolume float64
 		validBars := 0
@@ -429,12 +453,12 @@ func main() {
 				validBars++
 			}
 		}
-		
+
 		var averageVolume float64
 		if validBars > 0 {
 			averageVolume = totalVolume / float64(validBars)
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -446,11 +470,11 @@ func main() {
 			"message": fmt.Sprintf("Retrieved %d-day average volume for %s", days, symbol),
 		})
 	})
-	
+
 	// Market data routes - exact same paths as Python
 	api.GET("/prices/stocks", marketDataHandler.GetStockPrices)
 	api.GET("/expiration_dates", marketDataHandler.GetExpirationDates)
-	
+
 	// Account & Portfolio endpoints - exact same paths as Python
 	api.GET("/account", func(c *gin.Context) {
 		account, err := providerManager.GetAccount(c.Request.Context())
@@ -461,7 +485,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if account == nil {
 			c.JSON(404, gin.H{
 				"success": false,
@@ -469,14 +493,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    account,
 			"message": "Retrieved account information",
 		})
 	})
-	
+
 	api.GET("/positions", func(c *gin.Context) {
 		enhancedPositions, err := providerManager.GetPositionsEnhanced(c.Request.Context())
 		if err != nil {
@@ -489,7 +513,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if enhancedPositions == nil {
 			c.JSON(404, gin.H{
 				"success":   false,
@@ -500,7 +524,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success":   true,
 			"data":      enhancedPositions,
@@ -509,12 +533,12 @@ func main() {
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
 	})
-	
+
 	api.GET("/orders", func(c *gin.Context) {
 		status := c.DefaultQuery("status", "open")
-		
+
 		log.Printf("📊 GET /orders - status=%s from IP=%s", status, c.ClientIP())
-		
+
 		orders, err := providerManager.GetOrders(c.Request.Context(), status)
 		if err != nil {
 			log.Printf("❌ GET /orders - Error: %v (status=%s)", err, status)
@@ -524,21 +548,21 @@ func main() {
 			})
 			return
 		}
-		
+
 		log.Printf("✅ GET /orders - Retrieved %d orders (status=%s)", len(orders), status)
-		
+
 		responseData := map[string]interface{}{
 			"orders":       orders,
 			"total_orders": len(orders),
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    responseData,
 			"message": fmt.Sprintf("Retrieved %d orders with status '%s'", len(orders), status),
 		})
 	})
-	
+
 	api.GET("/open_orders", func(c *gin.Context) {
 		orders, err := providerManager.GetOrders(c.Request.Context(), "open")
 		if err != nil {
@@ -548,19 +572,19 @@ func main() {
 			})
 			return
 		}
-		
+
 		responseData := map[string]interface{}{
 			"orders":       orders,
 			"total_orders": len(orders),
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    responseData,
 			"message": fmt.Sprintf("Retrieved %d open orders", len(orders)),
 		})
 	})
-	
+
 	api.POST("/orders", func(c *gin.Context) {
 		var orderRequest map[string]interface{}
 		if err := c.ShouldBindJSON(&orderRequest); err != nil {
@@ -570,7 +594,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		order, err := providerManager.PlaceOrder(c.Request.Context(), orderRequest)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -579,7 +603,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if order == nil {
 			c.JSON(500, gin.H{
 				"success": false,
@@ -587,14 +611,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    order,
 			"message": "Order placed successfully.",
 		})
 	})
-	
+
 	api.POST("/orders/single-leg", func(c *gin.Context) {
 		var orderRequest map[string]interface{}
 		if err := c.ShouldBindJSON(&orderRequest); err != nil {
@@ -605,7 +629,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		order, err := providerManager.PlaceOrder(c.Request.Context(), orderRequest)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -614,7 +638,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if order == nil {
 			c.JSON(500, gin.H{
 				"success": false,
@@ -622,7 +646,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    order,
@@ -639,9 +663,9 @@ func main() {
 			})
 			return
 		}
-		
+
 		log.Printf("DEBUG: Multi-leg order request received: %+v", orderRequest)
-		
+
 		order, err := providerManager.PlaceMultiLegOrder(c.Request.Context(), orderRequest)
 		if err != nil {
 			log.Printf("ERROR: PlaceMultiLegOrder failed: %v (type: %T)", err, err)
@@ -652,7 +676,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if order == nil {
 			c.JSON(500, gin.H{
 				"success": false,
@@ -660,14 +684,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    order,
 			"message": "Multi-leg order placed successfully.",
 		})
 	})
-	
+
 	api.POST("/orders/preview", func(c *gin.Context) {
 		var orderRequest map[string]interface{}
 		if err := c.ShouldBindJSON(&orderRequest); err != nil {
@@ -677,7 +701,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		previewResult, err := providerManager.PreviewOrder(c.Request.Context(), orderRequest)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -686,7 +710,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if previewResult == nil {
 			c.JSON(500, gin.H{
 				"success": false,
@@ -694,7 +718,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		// Check if the preview result indicates an error status
 		if status, ok := previewResult["status"].(string); ok && status == "error" {
 			// Return 422 for validation errors (same as Python implementation)
@@ -705,14 +729,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    previewResult,
 			"message": "Order preview completed successfully.",
 		})
 	})
-	
+
 	api.DELETE("/orders/:order_id", func(c *gin.Context) {
 		orderID := c.Param("order_id")
 		if orderID == "" {
@@ -722,7 +746,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		result, err := providerManager.CancelOrder(c.Request.Context(), orderID)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -731,7 +755,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if !result {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -739,19 +763,19 @@ func main() {
 			})
 			return
 		}
-		
+
 		responseData := map[string]interface{}{
 			"order_id": orderID,
 			"status":   "cancelled",
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    responseData,
 			"message": fmt.Sprintf("Order %s cancelled successfully", orderID),
 		})
 	})
-	
+
 	// Symbol lookup endpoint - exact same path as Python
 	api.GET("/symbols/lookup", func(c *gin.Context) {
 		query := c.Query("q")
@@ -762,7 +786,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		results, err := providerManager.LookupSymbols(c.Request.Context(), query)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -771,14 +795,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    map[string]interface{}{"symbols": results},
 			"message": fmt.Sprintf("Found %d symbols matching '%s'", len(results), query),
 		})
 	})
-	
+
 	// Options chain endpoints - exact same paths as Python
 	api.GET("/options_chain_basic", func(c *gin.Context) {
 		symbol := c.Query("symbol")
@@ -790,7 +814,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		var underlyingPrice *float64
 		if priceStr := c.Query("underlying_price"); priceStr != "" {
 			var price float64
@@ -803,24 +827,24 @@ func main() {
 			}
 			underlyingPrice = &price
 		}
-		
+
 		strikeCount := 20
 		if countStr := c.Query("strike_count"); countStr != "" {
 			if _, err := fmt.Sscanf(countStr, "%d", &strikeCount); err != nil {
 				strikeCount = 20
 			}
 		}
-		
+
 		var optionType *string
 		if typeStr := c.Query("type"); typeStr != "" {
 			optionType = &typeStr
 		}
-		
+
 		var underlyingSymbol *string
 		if symStr := c.Query("underlying_symbol"); symStr != "" {
 			underlyingSymbol = &symStr
 		}
-		
+
 		contracts, err := providerManager.GetOptionsChainBasic(c.Request.Context(), symbol, expiry, underlyingPrice, strikeCount, optionType, underlyingSymbol)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -829,14 +853,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    contracts,
 			"message": fmt.Sprintf("Retrieved %d basic option contracts (%d strikes around ATM, no price data)", len(contracts), strikeCount),
 		})
 	})
-	
+
 	api.GET("/options_chain_smart", func(c *gin.Context) {
 		symbol := c.Query("symbol")
 		expiry := c.Query("expiry")
@@ -847,7 +871,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		var underlyingPrice *float64
 		if priceStr := c.Query("underlying_price"); priceStr != "" {
 			var price float64
@@ -860,17 +884,17 @@ func main() {
 			}
 			underlyingPrice = &price
 		}
-		
+
 		atmRange := 20
 		if rangeStr := c.Query("atm_range"); rangeStr != "" {
 			if _, err := fmt.Sscanf(rangeStr, "%d", &atmRange); err != nil {
 				atmRange = 20
 			}
 		}
-		
+
 		includeGreeks := c.Query("include_greeks") == "true"
 		strikesOnly := c.Query("strikes_only") == "true"
-		
+
 		contracts, err := providerManager.GetOptionsChainSmart(c.Request.Context(), symbol, expiry, underlyingPrice, atmRange, includeGreeks, strikesOnly)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -879,14 +903,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    contracts,
 			"message": fmt.Sprintf("Retrieved %d smart option contracts (no price data)", len(contracts)),
 		})
 	})
-	
+
 	api.GET("/options_greeks", func(c *gin.Context) {
 		symbols := c.Query("symbols")
 		if symbols == "" {
@@ -896,14 +920,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		symbolList := []string{}
 		for _, s := range strings.Split(symbols, ",") {
 			if trimmed := strings.TrimSpace(s); trimmed != "" {
 				symbolList = append(symbolList, trimmed)
 			}
 		}
-		
+
 		if len(symbolList) == 0 {
 			c.JSON(200, gin.H{
 				"success": true,
@@ -912,7 +936,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		greeksData, err := providerManager.GetOptionsGreeksBatch(c.Request.Context(), symbolList)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -921,7 +945,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -930,7 +954,7 @@ func main() {
 			"message": fmt.Sprintf("Retrieved Greeks for %d option symbols", len(symbolList)),
 		})
 	})
-	
+
 	// Historical data endpoints - exact same paths as Python
 	api.GET("/next_market_date", func(c *gin.Context) {
 		nextDate, err := providerManager.GetNextMarketDate(c.Request.Context())
@@ -941,27 +965,27 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    map[string]interface{}{"next_market_date": nextDate},
 			"message": "Retrieved next market date",
 		})
 	})
-	
+
 	api.GET("/chart/historical/:symbol", func(c *gin.Context) {
 		symbol := c.Param("symbol")
 		timeframe := c.DefaultQuery("timeframe", "D")
 		startDate := c.Query("start_date")
 		endDate := c.Query("end_date")
 		limit := 500
-		
+
 		if limitStr := c.Query("limit"); limitStr != "" {
 			if _, err := fmt.Sscanf(limitStr, "%d", &limit); err != nil {
 				limit = 500
 			}
 		}
-		
+
 		var startPtr, endPtr *string
 		if startDate != "" {
 			startPtr = &startDate
@@ -969,7 +993,7 @@ func main() {
 		if endDate != "" {
 			endPtr = &endDate
 		}
-		
+
 		bars, err := providerManager.GetHistoricalBars(c.Request.Context(), symbol, timeframe, startPtr, endPtr, limit)
 		if err != nil {
 			c.JSON(500, gin.H{
@@ -978,7 +1002,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -990,7 +1014,7 @@ func main() {
 			"message": fmt.Sprintf("Retrieved %d bars for %s", len(bars), symbol),
 		})
 	})
-	
+
 	// Provider Configuration endpoints - exact same paths as Python
 	api.GET("/providers/config", func(c *gin.Context) {
 		config := providerManager.GetConfig()
@@ -999,7 +1023,7 @@ func main() {
 			"data":    config,
 		})
 	})
-	
+
 	api.PUT("/providers/config", func(c *gin.Context) {
 		var newConfig map[string]interface{}
 		if err := c.ShouldBindJSON(&newConfig); err != nil {
@@ -1009,13 +1033,13 @@ func main() {
 			})
 			return
 		}
-		
+
 		// Log what the UI sent
 		log.Printf("📥 RECEIVED CONFIG FROM UI:")
 		for key, value := range newConfig {
 			log.Printf("  - %s: %v (type: %T)", key, value, value)
 		}
-		
+
 		// Get available instances for comparison
 		credentialStore := providers.NewCredentialStore()
 		availableInstances := credentialStore.GetAllInstances()
@@ -1023,16 +1047,16 @@ func main() {
 		for instanceID := range availableInstances {
 			log.Printf("  - %s", instanceID)
 		}
-		
+
 		success := providerManager.UpdateConfig(newConfig)
-		
+
 		// Log what actually got saved
 		savedConfig := providerManager.GetConfig()
 		log.Printf("💾 SAVED CONFIG:")
 		for key, value := range savedConfig {
 			log.Printf("  - %s: %s", key, value)
 		}
-		
+
 		if success {
 			c.JSON(200, gin.H{
 				"success": true,
@@ -1046,7 +1070,7 @@ func main() {
 			})
 		}
 	})
-	
+
 	api.POST("/providers/config/reset", func(c *gin.Context) {
 		providerManager.ResetConfig()
 		c.JSON(200, gin.H{
@@ -1054,7 +1078,7 @@ func main() {
 			"message": "Provider config reset to default.",
 		})
 	})
-	
+
 	api.GET("/providers/available", func(c *gin.Context) {
 		providers := providerManager.GetAvailableProviders()
 		c.JSON(200, gin.H{
@@ -1062,12 +1086,12 @@ func main() {
 			"data":    providers,
 		})
 	})
-	
+
 	// Provider Types endpoint - exact same path as Python
 	api.GET("/subscriptions/status", func(c *gin.Context) {
 		providerStatus := providerManager.GetSubscriptionStatus()
 		wsStats := wsHandler.GetConnectionStats()
-		
+
 		// Create response map and add both provider and WebSocket data
 		responseData := map[string]interface{}{
 			// Provider data
@@ -1079,12 +1103,12 @@ func main() {
 			"quote_providers":            providerStatus.QuoteProviders,
 			"greeks_providers":           providerStatus.GreeksProviders,
 		}
-		
+
 		// Add WebSocket data (includes IVx subscriptions)
 		for k, v := range wsStats {
 			responseData[k] = v
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success":   true,
 			"data":      responseData,
@@ -1093,41 +1117,41 @@ func main() {
 			"timestamp": time.Now().Format(time.RFC3339),
 		})
 	})
-	
+
 	// IVx (Implied Volatility) endpoints - exact same paths as Python
 	// IVx endpoint removed in favor of WebSocket streaming
 	/*
-	api.GET("/ivx/:symbol", func(c *gin.Context) {
-		symbol := c.Param("symbol")
-		log.Printf("📊 API request for IVx data for %s", symbol)
+		api.GET("/ivx/:symbol", func(c *gin.Context) {
+			symbol := c.Param("symbol")
+			log.Printf("📊 API request for IVx data for %s", symbol)
 
-		response, err := ivxService.GetIVxForSymbol(c.Request.Context(), symbol)
-		if err != nil {
-			log.Printf("❌ Error calculating IVx for %s: %v", symbol, err)
-			
-			// Return 404 if no data found, similar to original behavior
-			errorResponse := models.NewApiResponse(false, models.IVxResponse{
-				Symbol:     symbol,
-				Expirations: []models.IVxExpiration{},
-			}, stringPtr(err.Error()), stringPtr(fmt.Sprintf("Error calculating IVx: %v", err)))
-			c.JSON(404, errorResponse)
-			return
-		}
+			response, err := ivxService.GetIVxForSymbol(c.Request.Context(), symbol)
+			if err != nil {
+				log.Printf("❌ Error calculating IVx for %s: %v", symbol, err)
 
-		// Wrap in standard API response if not already (GetIVxForSymbol returns IVxResponse struct, we need ApiResponse wrapper)
-		// Note: GetIVxForSymbol returns *models.IVxResponse, but we need to wrap it in models.ApiResponse
-		// The original code constructed ApiResponse manually.
-		
-		msg := fmt.Sprintf("Calculated IVx data for %s (%d expirations)", symbol, len(response.Expirations))
-		if response.CalculationTime != nil {
-			msg += fmt.Sprintf(" in %.2fs", *response.CalculationTime)
-		}
-		
-		apiResponse := models.NewApiResponse(true, *response, nil, stringPtr(msg))
-		c.JSON(200, apiResponse)
-	})
+				// Return 404 if no data found, similar to original behavior
+				errorResponse := models.NewApiResponse(false, models.IVxResponse{
+					Symbol:     symbol,
+					Expirations: []models.IVxExpiration{},
+				}, stringPtr(err.Error()), stringPtr(fmt.Sprintf("Error calculating IVx: %v", err)))
+				c.JSON(404, errorResponse)
+				return
+			}
+
+			// Wrap in standard API response if not already (GetIVxForSymbol returns IVxResponse struct, we need ApiResponse wrapper)
+			// Note: GetIVxForSymbol returns *models.IVxResponse, but we need to wrap it in models.ApiResponse
+			// The original code constructed ApiResponse manually.
+
+			msg := fmt.Sprintf("Calculated IVx data for %s (%d expirations)", symbol, len(response.Expirations))
+			if response.CalculationTime != nil {
+				msg += fmt.Sprintf(" in %.2fs", *response.CalculationTime)
+			}
+
+			apiResponse := models.NewApiResponse(true, *response, nil, stringPtr(msg))
+			c.JSON(200, apiResponse)
+		})
 	*/
-	
+
 	// Watchlist endpoints - exact same paths as Python
 	api.GET("/watchlists", func(c *gin.Context) {
 		data := watchlistMgr.GetAllWatchlists()
@@ -1137,11 +1161,11 @@ func main() {
 			"message": fmt.Sprintf("Retrieved %d watchlists", data.TotalWatchlists),
 		})
 	})
-	
+
 	api.GET("/watchlists/active", func(c *gin.Context) {
 		activeWatchlist := watchlistMgr.GetActiveWatchlist()
 		activeWatchlistID := watchlistMgr.GetActiveWatchlistID()
-		
+
 		if activeWatchlist == nil {
 			c.JSON(404, gin.H{
 				"success": false,
@@ -1149,7 +1173,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -1159,7 +1183,7 @@ func main() {
 			"message": "Retrieved active watchlist",
 		})
 	})
-	
+
 	api.PUT("/watchlists/active", func(c *gin.Context) {
 		var request models.SetActiveWatchlistRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -1169,7 +1193,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if err := watchlistMgr.SetActiveWatchlist(request.WatchlistID); err != nil {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -1177,9 +1201,9 @@ func main() {
 			})
 			return
 		}
-		
+
 		activeWatchlist := watchlistMgr.GetActiveWatchlist()
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -1189,11 +1213,11 @@ func main() {
 			"message": fmt.Sprintf("Active watchlist set to '%s'", request.WatchlistID),
 		})
 	})
-	
+
 	api.GET("/watchlists/:watchlist_id", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
 		watchlist := watchlistMgr.GetWatchlist(watchlistID)
-		
+
 		if watchlist == nil {
 			c.JSON(404, gin.H{
 				"success": false,
@@ -1201,14 +1225,14 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    watchlist,
 			"message": fmt.Sprintf("Retrieved watchlist '%s'", watchlistID),
 		})
 	})
-	
+
 	api.POST("/watchlists", func(c *gin.Context) {
 		var request models.CreateWatchlistRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -1218,7 +1242,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if err := request.Validate(); err != nil {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -1226,7 +1250,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		watchlistID, err := watchlistMgr.CreateWatchlist(request.Name, request.Symbols)
 		if err != nil {
 			c.JSON(400, gin.H{
@@ -1235,9 +1259,9 @@ func main() {
 			})
 			return
 		}
-		
+
 		watchlist := watchlistMgr.GetWatchlist(watchlistID)
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -1247,10 +1271,10 @@ func main() {
 			"message": fmt.Sprintf("Watchlist '%s' created successfully", request.Name),
 		})
 	})
-	
+
 	api.PUT("/watchlists/:watchlist_id", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
-		
+
 		var request models.UpdateWatchlistRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(400, gin.H{
@@ -1259,7 +1283,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if err := request.Validate(); err != nil {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -1267,7 +1291,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		updated, err := watchlistMgr.UpdateWatchlist(watchlistID, request.Name, request.Symbols)
 		if err != nil {
 			c.JSON(400, gin.H{
@@ -1276,7 +1300,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if !updated {
 			c.JSON(200, gin.H{
 				"success": true,
@@ -1285,9 +1309,9 @@ func main() {
 			})
 			return
 		}
-		
+
 		watchlist := watchlistMgr.GetWatchlist(watchlistID)
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -1297,10 +1321,10 @@ func main() {
 			"message": fmt.Sprintf("Watchlist '%s' updated successfully", watchlistID),
 		})
 	})
-	
+
 	api.DELETE("/watchlists/:watchlist_id", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
-		
+
 		if err := watchlistMgr.DeleteWatchlist(watchlistID); err != nil {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -1308,17 +1332,17 @@ func main() {
 			})
 			return
 		}
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data":    map[string]interface{}{"watchlist_id": watchlistID, "deleted": true},
 			"message": fmt.Sprintf("Watchlist '%s' deleted successfully", watchlistID),
 		})
 	})
-	
+
 	api.POST("/watchlists/:watchlist_id/symbols", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
-		
+
 		var request models.AddSymbolRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
 			c.JSON(400, gin.H{
@@ -1327,7 +1351,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if err := request.Validate(); err != nil {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -1335,7 +1359,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		// Basic symbol validation
 		if !watchlistMgr.ValidateSymbol(request.Symbol) {
 			c.JSON(400, gin.H{
@@ -1344,7 +1368,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if err := watchlistMgr.AddSymbol(watchlistID, request.Symbol); err != nil {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -1352,9 +1376,9 @@ func main() {
 			})
 			return
 		}
-		
+
 		watchlist := watchlistMgr.GetWatchlist(watchlistID)
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -1365,11 +1389,11 @@ func main() {
 			"message": fmt.Sprintf("Symbol '%s' added to watchlist", request.Symbol),
 		})
 	})
-	
+
 	api.DELETE("/watchlists/:watchlist_id/symbols/:symbol", func(c *gin.Context) {
 		watchlistID := c.Param("watchlist_id")
 		symbol := c.Param("symbol")
-		
+
 		if err := watchlistMgr.RemoveSymbol(watchlistID, symbol); err != nil {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -1377,9 +1401,9 @@ func main() {
 			})
 			return
 		}
-		
+
 		watchlist := watchlistMgr.GetWatchlist(watchlistID)
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -1390,7 +1414,7 @@ func main() {
 			"message": fmt.Sprintf("Symbol '%s' removed from watchlist", symbol),
 		})
 	})
-	
+
 	api.POST("/watchlists/search", func(c *gin.Context) {
 		var request models.SearchWatchlistsRequest
 		if err := c.ShouldBindJSON(&request); err != nil {
@@ -1400,7 +1424,7 @@ func main() {
 			})
 			return
 		}
-		
+
 		if err := request.Validate(); err != nil {
 			c.JSON(400, gin.H{
 				"success": false,
@@ -1408,9 +1432,9 @@ func main() {
 			})
 			return
 		}
-		
+
 		results := watchlistMgr.SearchWatchlists(request.Query)
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -1421,10 +1445,10 @@ func main() {
 			"message": fmt.Sprintf("Found %d watchlists matching '%s'", len(results), request.Query),
 		})
 	})
-	
+
 	api.GET("/watchlists/symbols/all", func(c *gin.Context) {
 		symbols := watchlistMgr.GetAllSymbols()
-		
+
 		c.JSON(200, gin.H{
 			"success": true,
 			"data": map[string]interface{}{
@@ -1434,16 +1458,57 @@ func main() {
 			"message": fmt.Sprintf("Retrieved %d unique symbols from all watchlists", len(symbols)),
 		})
 	})
-	
+
 	// WebSocket endpoint - exact same path as Python
 
-	
+	// Debug endpoint to check account stream status
+	api.GET("/debug/account-stream/status", func(c *gin.Context) {
+		status := wsHandler.GetAccountStreamStatus()
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    status,
+			"message": "Account stream status retrieved",
+		})
+	})
+
+	// Debug endpoint to simulate an order event (for testing frontend integration)
+	api.POST("/debug/account-stream/test-event", func(c *gin.Context) {
+		var request models.OrderEvent
+		if err := c.ShouldBindJSON(&request); err != nil {
+			c.JSON(400, gin.H{
+				"success": false,
+				"message": "Invalid request: " + err.Error(),
+			})
+			return
+		}
+
+		// Set defaults if not provided
+		if request.ID == "" {
+			request.ID = "TEST-" + fmt.Sprintf("%d", time.Now().Unix())
+		}
+		if request.Status == "" {
+			request.Status = "filled"
+		}
+		if request.Account == "" {
+			request.Account = "TEST_ACCOUNT"
+		}
+
+		log.Printf("🧪 [DEBUG] Simulating order event: %+v", request)
+		wsHandler.BroadcastOrderEvent(&request)
+
+		c.JSON(200, gin.H{
+			"success": true,
+			"data":    request,
+			"message": "Test order event broadcast to all clients",
+		})
+	})
+
 	// Create HTTP server
 	server := &http.Server{
 		Addr:    fmt.Sprintf("%s:%d", cfg.Host, cfg.Port),
 		Handler: router,
 	}
-	
+
 	// Start server in a goroutine
 	go func() {
 		log.Printf("Starting server on %s:%d", cfg.Host, cfg.Port)
@@ -1451,21 +1516,21 @@ func main() {
 			log.Fatalf("Failed to start server: %v", err)
 		}
 	}()
-	
+
 	// Wait for interrupt signal to gracefully shutdown the server
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 	log.Println("Shutting down server...")
-	
+
 	// Graceful shutdown with timeout (same as Python)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	if err := server.Shutdown(ctx); err != nil {
 		log.Fatal("Server forced to shutdown:", err)
 	}
-	
+
 	log.Println("Server exited")
 }
 
@@ -1557,5 +1622,3 @@ func getUnderlyingPrice(ctx context.Context, providerManager *providers.Provider
 
 	return underlyingPrice, nil
 }
-
-

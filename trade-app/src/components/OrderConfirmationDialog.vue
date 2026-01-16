@@ -349,12 +349,10 @@ export default {
       previewError.value = null;
       
       try {
-        console.log("Fetching order preview...");
         const result = await orderService.previewOrder(props.orderData);
         
         if (result.success) {
           previewData.value = result.preview;
-          console.log("Order preview successful:", result.preview);
         } else {
           previewError.value = result.message || "Preview failed";
           previewData.value = result.preview; // Keep preview data to access validation_errors

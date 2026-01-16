@@ -29,7 +29,6 @@ class OrderService {
           preview: result,
         };
       } else if (result.status === 'ok' || result.success !== false) {
-        console.log("OrderService: Order preview successful:", result);
         return {
           success: true,
           preview: result,
@@ -63,7 +62,6 @@ class OrderService {
   async placeOrder(orderData) {
     try {
       const orderPayload = this.buildOrderPayload(orderData);
-      console.log("OrderService: Placing order with payload:", orderPayload);
 
       // Determine order type and route accordingly
       const orderType = this.determineOrderType(orderPayload.legs);
@@ -76,7 +74,6 @@ class OrderService {
       }
 
       if (result.success) {
-        console.log("OrderService: Order placed successfully:", result);
         return {
           success: true,
           order: result.data,

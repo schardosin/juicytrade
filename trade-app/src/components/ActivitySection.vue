@@ -211,6 +211,7 @@ import { useRouter } from "vue-router";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useTradeNavigation } from "../composables/useTradeNavigation.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
+import { useOrderEvents } from "../composables/useOrderEvents.js";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
 import { detectStrategy } from "../utils/optionsStrategies";
 import notificationService from "../services/notificationService";
@@ -238,6 +239,16 @@ export default {
     // Smart Market Data integration - same pattern as BottomTradingPanel
     const { getOptionPrice: getSmartOptionPrice } = useSmartMarketData();
     const liveOptionPrices = reactive(new Map());
+
+    // Order events handling - refresh orders when order events are received
+    // Note: showToasts=false because App.vue handles global toast notifications
+    const { setupOrderEventListener, cleanupOrderEventListener } = useOrderEvents({
+      showToasts: false,
+      onOrderUpdate: () => {
+        // Refresh orders when any order event is received
+        fetchOrders();
+      },
+    });
 
     const orders = ref([]);
     const selectedSymbolFilter = ref(props.currentSymbol);
@@ -831,15 +842,12 @@ export default {
       }
 
       try {
-        console.log("Cancelling order:", order.id);
         hideContextMenu();
 
         // Call the API to cancel the order
         const response = await api.cancelOrder(order.id);
 
         if (response.success) {
-          console.log("Order cancelled successfully:", response);
-
           // Show success notification
           notificationService.showSuccess(
             `Order #${order.id} has been cancelled successfully`,
@@ -1090,6 +1098,8 @@ export default {
       fetchOrders();
       // Add global context menu handler
       document.addEventListener("contextmenu", handleGlobalContextMenu);
+      // Set up order event listener for real-time updates
+      setupOrderEventListener();
     });
 
     // Clean up event listeners and subscriptions
@@ -1097,6 +1107,8 @@ export default {
       document.removeEventListener("contextmenu", handleGlobalContextMenu);
       // Clean up all component registrations
       cleanupComponentRegistrations();
+      // Clean up order event listener
+      cleanupOrderEventListener();
     });
 
     return {

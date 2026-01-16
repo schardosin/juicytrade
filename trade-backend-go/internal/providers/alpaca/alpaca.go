@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,39 +18,44 @@ import (
 	"github.com/alpacahq/alpaca-trade-api-go/v3/alpaca"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata"
 	"github.com/alpacahq/alpaca-trade-api-go/v3/marketdata/stream"
+	"github.com/gorilla/websocket"
 )
 
 // AlpacaProvider implements the Provider interface for Alpaca.
 // This is an exact conversion of the Python AlpacaProvider class.
 type AlpacaProvider struct {
 	*base.BaseProviderImpl
-	
+
 	// Credentials - exact same as Python
 	APIKey    string
 	APISecret string
 	BaseURL   string
 	DataURL   string
 	UsePaper  bool
-	
+
 	// HTTP client for API requests
 	httpClient *utils.HTTPClient
-	
+
 	// Caching - exact same TTL as Python
-	quoteCache      *utils.QuoteCache      // 15min TTL
-	expirationCache *utils.ExpirationCache // Daily TTL
+	quoteCache      *utils.QuoteCache        // 15min TTL
+	expirationCache *utils.ExpirationCache   // Daily TTL
 	symbolCache     *utils.SymbolLookupCache // 6 hours TTL
-	
+
 	// Streaming components using Alpaca SDK
-	stockStream         *stream.StocksClient
-	optionStream        *stream.OptionClient
-	tradingClient       *alpaca.Client
-	
+	stockStream   *stream.StocksClient
+	optionStream  *stream.OptionClient
+	tradingClient *alpaca.Client
+
 	// Connection management
 	connecting          bool
 	disableOptionStream bool
 	streamMutex         sync.Mutex
 	subscribedSymbols   map[string]bool
 	streamingQueue      chan *models.MarketData
+
+	// Account event streaming
+	orderEventCallback func(*models.OrderEvent)
+	ctxCancel          context.CancelFunc
 }
 
 // NewAlpacaProvider creates a new Alpaca provider instance.
@@ -69,14 +75,14 @@ func NewAlpacaProvider(apiKey, apiSecret, baseURL, dataURL string, usePaper bool
 		subscribedSymbols: make(map[string]bool),
 		streamingQueue:    make(chan *models.MarketData, 1000),
 	}
-	
+
 	// Initialize trading client for account operations
 	provider.tradingClient = alpaca.NewClient(alpaca.ClientOpts{
 		APIKey:    apiKey,
 		APISecret: apiSecret,
 		BaseURL:   baseURL,
 	})
-	
+
 	provider.LogInfo("Alpaca provider initialized successfully")
 	return provider
 }
@@ -85,13 +91,13 @@ func NewAlpacaProvider(apiKey, apiSecret, baseURL, dataURL string, usePaper bool
 // Matches the Python provider factory logic.
 func NewAlpacaProviderFromConfig(cfg *config.Settings) *AlpacaProvider {
 	var apiKey, apiSecret, baseURL string
-	
+
 	// Determine which credentials to use based on paper/live setting
 	// This logic matches the Python provider selection
 	if cfg.Provider == "alpaca" {
 		// For now, default to paper trading - this would be configurable
 		usePaper := true // This should come from config
-		
+
 		if usePaper {
 			apiKey = cfg.AlpacaAPIKeyPaper
 			apiSecret = cfg.AlpacaAPISecretPaper
@@ -101,10 +107,10 @@ func NewAlpacaProviderFromConfig(cfg *config.Settings) *AlpacaProvider {
 			apiSecret = cfg.AlpacaAPISecretLive
 			baseURL = cfg.AlpacaBaseURLLive
 		}
-		
+
 		return NewAlpacaProvider(apiKey, apiSecret, baseURL, cfg.AlpacaDataURL, usePaper)
 	}
-	
+
 	return nil
 }
 
@@ -114,35 +120,35 @@ func NewAlpacaProviderFromConfig(cfg *config.Settings) *AlpacaProvider {
 // Exact conversion of Python get_stock_quote method.
 func (ap *AlpacaProvider) GetStockQuote(ctx context.Context, symbol string) (*models.StockQuote, error) {
 	url := fmt.Sprintf("%s/v2/stocks/quotes/latest", ap.DataURL)
-	
+
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	params := map[string]string{
 		"symbols": symbol,
 	}
-	
+
 	resp, err := ap.httpClient.Get(ctx, url, headers, params)
 	if err != nil {
 		ap.LogError(fmt.Sprintf("get_stock_quote for %s", symbol), err)
 		return nil, err
 	}
-	
+
 	var response struct {
 		Quotes map[string]struct {
 			AskPrice *float64 `json:"ap"`
 			BidPrice *float64 `json:"bp"`
 		} `json:"quotes"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		ap.LogError("unmarshal stock quote response", err)
 		return nil, err
 	}
-	
+
 	if quote, exists := response.Quotes[symbol]; exists {
 		return &models.StockQuote{
 			Symbol:    symbol,
@@ -151,7 +157,7 @@ func (ap *AlpacaProvider) GetStockQuote(ctx context.Context, symbol string) (*mo
 			Timestamp: time.Now().Format(time.RFC3339),
 		}, nil
 	}
-	
+
 	return nil, fmt.Errorf("quote not found for symbol %s", symbol)
 }
 
@@ -159,35 +165,35 @@ func (ap *AlpacaProvider) GetStockQuote(ctx context.Context, symbol string) (*mo
 // Exact conversion of Python get_stock_quotes method.
 func (ap *AlpacaProvider) GetStockQuotes(ctx context.Context, symbols []string) (map[string]*models.StockQuote, error) {
 	url := fmt.Sprintf("%s/v2/stocks/quotes/latest", ap.DataURL)
-	
+
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	params := map[string]string{
 		"symbols": strings.Join(symbols, ","),
 	}
-	
+
 	resp, err := ap.httpClient.Get(ctx, url, headers, params)
 	if err != nil {
 		ap.LogError(fmt.Sprintf("get_stock_quotes for %v", symbols), err)
 		return nil, err
 	}
-	
+
 	var response struct {
 		Quotes map[string]struct {
 			AskPrice *float64 `json:"ap"`
 			BidPrice *float64 `json:"bp"`
 		} `json:"quotes"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		ap.LogError("unmarshal stock quotes response", err)
 		return nil, err
 	}
-	
+
 	result := make(map[string]*models.StockQuote)
 	for symbol, quote := range response.Quotes {
 		result[symbol] = &models.StockQuote{
@@ -197,7 +203,7 @@ func (ap *AlpacaProvider) GetStockQuotes(ctx context.Context, symbols []string) 
 			Timestamp: time.Now().Format(time.RFC3339),
 		}
 	}
-	
+
 	return result, nil
 }
 
@@ -209,9 +215,9 @@ func (ap *AlpacaProvider) GetExpirationDates(ctx context.Context, symbol string)
 		ap.LogInfo(fmt.Sprintf("Using cached expiration dates for %s (%d dates)", symbol, len(cachedDates)))
 		return cachedDates, nil
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("Cache miss - fetching expiration dates for %s from API", symbol))
-	
+
 	// Use BaseURL (trading API) for options contracts endpoint
 	// Remove any trailing /v2 from BaseURL to avoid duplication
 	baseURL := strings.TrimSuffix(ap.BaseURL, "/v2")
@@ -221,55 +227,55 @@ func (ap *AlpacaProvider) GetExpirationDates(ctx context.Context, symbol string)
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	params := map[string]string{
-		"underlying_symbols":    symbol,
-		"status":               "active",
-		"expiration_date_gte":  time.Now().Format("2006-01-02"),
+		"underlying_symbols":  symbol,
+		"status":              "active",
+		"expiration_date_gte": time.Now().Format("2006-01-02"),
 	}
-	
+
 	expirationDates := make(map[string]bool)
 	pageToken := ""
-	
+
 	for {
 		if pageToken != "" {
 			params["page_token"] = pageToken
 		}
-		
+
 		resp, err := ap.httpClient.Get(ctx, url, headers, params)
 		if err != nil {
 			ap.LogError(fmt.Sprintf("get_expiration_dates API call for %s", symbol), err)
 			break
 		}
-		
+
 		var response struct {
 			OptionContracts []struct {
 				ExpirationDate string `json:"expiration_date"`
 			} `json:"option_contracts"`
 			NextPageToken *string `json:"next_page_token"`
 		}
-		
+
 		if err := json.Unmarshal(resp.Body, &response); err != nil {
 			ap.LogError("unmarshal expiration dates response", err)
 			break
 		}
-		
+
 		for _, contract := range response.OptionContracts {
 			expirationDates[contract.ExpirationDate] = true
 		}
-		
+
 		if response.NextPageToken == nil || *response.NextPageToken == "" {
 			break
 		}
 		pageToken = *response.NextPageToken
 	}
-	
+
 	// Convert to sorted slice (same as Python)
 	sortedDates := make([]string, 0, len(expirationDates))
 	for date := range expirationDates {
 		sortedDates = append(sortedDates, date)
 	}
-	
+
 	// Sort dates (Go's sort is lexicographic which works for YYYY-MM-DD)
 	// This matches Python's sorted() behavior
 	for i := 0; i < len(sortedDates)-1; i++ {
@@ -279,7 +285,7 @@ func (ap *AlpacaProvider) GetExpirationDates(ctx context.Context, symbol string)
 			}
 		}
 	}
-	
+
 	// Create enhanced dates structure (same as Python)
 	enhancedDates := make([]map[string]interface{}, len(sortedDates))
 	for i, date := range sortedDates {
@@ -289,12 +295,12 @@ func (ap *AlpacaProvider) GetExpirationDates(ctx context.Context, symbol string)
 			"type":   "unknown",
 		}
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("Retrieved %d total expiration dates for %s", len(enhancedDates), symbol))
-	
+
 	// Cache the results (same as Python)
 	ap.expirationCache.SetExpirationDates(symbol, enhancedDates)
-	
+
 	return enhancedDates, nil
 }
 
@@ -307,7 +313,7 @@ func (ap *AlpacaProvider) transformPosition(rawPosition interface{}) *models.Pos
 	var symbol, qty, marketValue, costBasis, unrealizedPL, unrealizedPLPC string
 	var currentPrice, avgEntryPrice, assetClass string
 	var lastdayPrice *string
-	
+
 	switch pos := rawPosition.(type) {
 	case struct {
 		Symbol         string
@@ -334,7 +340,7 @@ func (ap *AlpacaProvider) transformPosition(rawPosition interface{}) *models.Pos
 	default:
 		return nil
 	}
-	
+
 	// Parse numeric values
 	qtyFloat, _ := strconv.ParseFloat(qty, 64)
 	marketValueFloat, _ := strconv.ParseFloat(marketValue, 64)
@@ -342,7 +348,7 @@ func (ap *AlpacaProvider) transformPosition(rawPosition interface{}) *models.Pos
 	unrealizedPLFloat, _ := strconv.ParseFloat(unrealizedPL, 64)
 	currentPriceFloat, _ := strconv.ParseFloat(currentPrice, 64)
 	avgEntryPriceFloat, _ := strconv.ParseFloat(avgEntryPrice, 64)
-	
+
 	// Parse unrealized P/L percentage
 	var unrealizedPLPCFloat *float64
 	if unrealizedPLPC != "" {
@@ -350,7 +356,7 @@ func (ap *AlpacaProvider) transformPosition(rawPosition interface{}) *models.Pos
 			unrealizedPLPCFloat = &val
 		}
 	}
-	
+
 	// Parse lastday price (if 0, set to nil as it indicates same-day trade)
 	var lastdayPriceFloat *float64
 	if lastdayPrice != nil && *lastdayPrice != "" {
@@ -358,28 +364,28 @@ func (ap *AlpacaProvider) transformPosition(rawPosition interface{}) *models.Pos
 			lastdayPriceFloat = &val
 		}
 	}
-	
+
 	// Determine side
 	side := "long"
 	if qtyFloat < 0 {
 		side = "short"
 	}
-	
+
 	position := &models.Position{
-		Symbol:          symbol,
-		Qty:             qtyFloat,
-		Side:            side,
-		MarketValue:     marketValueFloat,
-		CostBasis:       costBasisFloat,
-		UnrealizedPL:    unrealizedPLFloat,
-		UnrealizedPLPC:  unrealizedPLPCFloat,
-		CurrentPrice:    currentPriceFloat,
-		AvgEntryPrice:   avgEntryPriceFloat,
-		AssetClass:      assetClass,
-		LastdayPrice:    lastdayPriceFloat,
-		DateAcquired:    nil, // Alpaca does not provide this field
+		Symbol:         symbol,
+		Qty:            qtyFloat,
+		Side:           side,
+		MarketValue:    marketValueFloat,
+		CostBasis:      costBasisFloat,
+		UnrealizedPL:   unrealizedPLFloat,
+		UnrealizedPLPC: unrealizedPLPCFloat,
+		CurrentPrice:   currentPriceFloat,
+		AvgEntryPrice:  avgEntryPriceFloat,
+		AssetClass:     assetClass,
+		LastdayPrice:   lastdayPriceFloat,
+		DateAcquired:   nil, // Alpaca does not provide this field
 	}
-	
+
 	// Parse option-specific information if it's an option
 	if assetClass == "us_option" {
 		optionInfo := ap.parseOptionSymbol(symbol)
@@ -398,7 +404,7 @@ func (ap *AlpacaProvider) transformPosition(rawPosition interface{}) *models.Pos
 			}
 		}
 	}
-	
+
 	return position
 }
 
@@ -413,7 +419,7 @@ func (ap *AlpacaProvider) transformAccount(rawAccount interface{}) *models.Accou
 	var createdAt, multiplier string
 	var longMarketValue, shortMarketValue, initialMargin, maintenanceMargin string
 	var daytradeCount, optionsApprovedLevel, optionsTradingLevel int
-	
+
 	switch acc := rawAccount.(type) {
 	case struct {
 		ID                    string
@@ -468,12 +474,12 @@ func (ap *AlpacaProvider) transformAccount(rawAccount interface{}) *models.Accou
 	default:
 		return nil
 	}
-	
+
 	// Parse numeric values
 	var buyingPowerFloat, cashFloat, portfolioValueFloat, equityFloat *float64
 	var dayTradingBuyingPowerFloat, regtBuyingPowerFloat, optionsBuyingPowerFloat *float64
 	var longMarketValueFloat, shortMarketValueFloat, initialMarginFloat, maintenanceMarginFloat *float64
-	
+
 	if buyingPower != "" {
 		if val, err := strconv.ParseFloat(buyingPower, 64); err == nil {
 			buyingPowerFloat = &val
@@ -529,37 +535,37 @@ func (ap *AlpacaProvider) transformAccount(rawAccount interface{}) *models.Accou
 			maintenanceMarginFloat = &val
 		}
 	}
-	
+
 	// Default currency if empty
 	if currency == "" {
 		currency = "USD"
 	}
-	
+
 	return &models.Account{
-		AccountID:              id,
-		AccountNumber:          &accountNumber,
-		Status:                 status,
-		Currency:               currency,
-		BuyingPower:            buyingPowerFloat,
-		Cash:                   cashFloat,
-		PortfolioValue:         portfolioValueFloat,
-		Equity:                 equityFloat,
-		DayTradingBuyingPower:  dayTradingBuyingPowerFloat,
-		RegtBuyingPower:        regtBuyingPowerFloat,
-		OptionsBuyingPower:     optionsBuyingPowerFloat,
-		PatternDayTrader:       &patternDayTrader,
-		TradingBlocked:         &tradingBlocked,
-		TransfersBlocked:       &transfersBlocked,
-		AccountBlocked:         &accountBlocked,
-		CreatedAt:              &createdAt,
-		Multiplier:             &multiplier,
-		LongMarketValue:        longMarketValueFloat,
-		ShortMarketValue:       shortMarketValueFloat,
-		InitialMargin:          initialMarginFloat,
-		MaintenanceMargin:      maintenanceMarginFloat,
-		DaytradeCount:          &daytradeCount,
-		OptionsApprovedLevel:   &optionsApprovedLevel,
-		OptionsTradingLevel:    &optionsTradingLevel,
+		AccountID:             id,
+		AccountNumber:         &accountNumber,
+		Status:                status,
+		Currency:              currency,
+		BuyingPower:           buyingPowerFloat,
+		Cash:                  cashFloat,
+		PortfolioValue:        portfolioValueFloat,
+		Equity:                equityFloat,
+		DayTradingBuyingPower: dayTradingBuyingPowerFloat,
+		RegtBuyingPower:       regtBuyingPowerFloat,
+		OptionsBuyingPower:    optionsBuyingPowerFloat,
+		PatternDayTrader:      &patternDayTrader,
+		TradingBlocked:        &tradingBlocked,
+		TransfersBlocked:      &transfersBlocked,
+		AccountBlocked:        &accountBlocked,
+		CreatedAt:             &createdAt,
+		Multiplier:            &multiplier,
+		LongMarketValue:       longMarketValueFloat,
+		ShortMarketValue:      shortMarketValueFloat,
+		InitialMargin:         initialMarginFloat,
+		MaintenanceMargin:     maintenanceMarginFloat,
+		DaytradeCount:         &daytradeCount,
+		OptionsApprovedLevel:  &optionsApprovedLevel,
+		OptionsTradingLevel:   &optionsTradingLevel,
 	}
 }
 
@@ -590,14 +596,14 @@ func (ap *AlpacaProvider) transformOptionContract(contract OptionContractRespons
 	closePrice := contract.ClosePrice
 	volumeStr := contract.Volume
 	openInterestStr := contract.OpenInterest
-	
+
 	// Parse strike price
 	strikePrice, err := strconv.ParseFloat(strikeStr, 64)
 	if err != nil {
 		ap.LogError(fmt.Sprintf("parse strike price for %s", symbol), err)
 		return nil
 	}
-	
+
 	// Parse bid/ask/close prices
 	var bidPrice, askPrice, closePriceFloat *float64
 	if bid != nil && *bid != "" {
@@ -615,7 +621,7 @@ func (ap *AlpacaProvider) transformOptionContract(contract OptionContractRespons
 			closePriceFloat = &price
 		}
 	}
-	
+
 	// Parse volume and open interest from strings
 	var volume, openInterest *int
 	if volumeStr != nil && *volumeStr != "" {
@@ -628,7 +634,7 @@ func (ap *AlpacaProvider) transformOptionContract(contract OptionContractRespons
 			openInterest = &val
 		}
 	}
-	
+
 	return &models.OptionContract{
 		Symbol:           symbol,
 		UnderlyingSymbol: underlyingSymbol,
@@ -654,46 +660,46 @@ func (ap *AlpacaProvider) IsMarketOpen(ctx context.Context) (bool, error) {
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	today := time.Now().Format("20060102") // YYYYMMDD format
 	params := map[string]string{
 		"start": today,
 		"end":   today,
 	}
-	
+
 	resp, err := ap.httpClient.Get(ctx, url, headers, params)
 	if err != nil {
 		ap.LogError("is_market_open API call", err)
 		return false, nil // Assume closed on error for safety
 	}
-	
+
 	var response []struct {
 		Date  string `json:"date"`
 		Open  string `json:"open"`
 		Close string `json:"close"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		ap.LogError("unmarshal market calendar response", err)
 		return false, nil
 	}
-	
+
 	if len(response) == 0 {
 		return false, nil // Not a trading day
 	}
-	
+
 	marketDay := response[0]
 	todayFormatted := time.Now().Format("2006-01-02")
-	
+
 	if marketDay.Date != todayFormatted {
 		return false, nil
 	}
-	
+
 	// Parse market hours (EST)
 	if marketDay.Open == "" || marketDay.Close == "" {
 		return false, nil
 	}
-	
+
 	// Get current time in EST
 	est, err := time.LoadLocation("America/New_York")
 	if err != nil {
@@ -701,10 +707,10 @@ func (ap *AlpacaProvider) IsMarketOpen(ctx context.Context) (bool, error) {
 	}
 	nowEST := time.Now().In(est)
 	currentTime := nowEST.Format("15:04")
-	
+
 	// Check if current time is within market hours
 	isOpen := marketDay.Open <= currentTime && currentTime <= marketDay.Close
-	
+
 	ap.LogInfo(fmt.Sprintf("Market status check: Current EST time %s, Market hours %s-%s, Open: %v", currentTime, marketDay.Open, marketDay.Close, isOpen))
 	return isOpen, nil
 }
@@ -715,18 +721,18 @@ func (ap *AlpacaProvider) GetLatestOptionQuotes(ctx context.Context, symbols []s
 	if len(symbols) == 0 {
 		return make(map[string]map[string]interface{}), nil
 	}
-	
+
 	// Check if market is open
 	marketOpen, err := ap.IsMarketOpen(ctx)
 	if err != nil {
 		marketOpen = true // Assume open on error
 	}
-	
+
 	if !marketOpen {
 		// Market is closed - check cache first
 		cachedResults := make(map[string]map[string]interface{})
 		var symbolsToFetch []string
-		
+
 		for _, symbol := range symbols {
 			if cachedQuote, found := ap.quoteCache.GetQuote(symbol); found {
 				cachedResults[symbol] = cachedQuote
@@ -734,11 +740,11 @@ func (ap *AlpacaProvider) GetLatestOptionQuotes(ctx context.Context, symbols []s
 				symbolsToFetch = append(symbolsToFetch, symbol)
 			}
 		}
-		
+
 		if len(cachedResults) > 0 {
 			ap.LogInfo(fmt.Sprintf("Market closed - using cached quotes for %d symbols", len(cachedResults)))
 		}
-		
+
 		// Fetch fresh data for symbols not in cache
 		if len(symbolsToFetch) > 0 {
 			freshResults := ap.fetchFreshQuotes(ctx, symbolsToFetch)
@@ -748,10 +754,10 @@ func (ap *AlpacaProvider) GetLatestOptionQuotes(ctx context.Context, symbols []s
 				cachedResults[symbol] = quote
 			}
 		}
-		
+
 		return cachedResults, nil
 	}
-	
+
 	// Market is open - always fetch fresh data
 	ap.LogInfo(fmt.Sprintf("Market open - fetching fresh quotes for %d symbols", len(symbols)))
 	return ap.fetchFreshQuotes(ctx, symbols), nil
@@ -763,21 +769,21 @@ func (ap *AlpacaProvider) fetchFreshQuotes(ctx context.Context, symbols []string
 	if len(symbols) == 0 {
 		return make(map[string]map[string]interface{})
 	}
-	
+
 	// Alpaca API has a limit of 100 symbols per request
 	batchSize := 100
 	allResults := make(map[string]map[string]interface{})
-	
+
 	for i := 0; i < len(symbols); i += batchSize {
 		end := min(i+batchSize, len(symbols))
 		batchSymbols := symbols[i:end]
 		batchResult := ap.getLatestOptionQuotesBatch(ctx, batchSymbols)
-		
+
 		for symbol, quote := range batchResult {
 			allResults[symbol] = quote
 		}
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("Fetched fresh quotes for %d option symbols", len(allResults)))
 	return allResults
 }
@@ -788,39 +794,39 @@ func (ap *AlpacaProvider) getLatestOptionQuotesBatch(ctx context.Context, symbol
 	if len(symbols) == 0 {
 		return make(map[string]map[string]interface{})
 	}
-	
+
 	url := fmt.Sprintf("%s/v1beta1/options/quotes/latest", ap.DataURL)
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	params := map[string]string{
 		"symbols": strings.Join(symbols, ","),
 	}
-	
+
 	resp, err := ap.httpClient.Get(ctx, url, headers, params)
 	if err != nil {
 		ap.LogError("get_latest_option_quotes_batch API call", err)
 		return make(map[string]map[string]interface{})
 	}
-	
+
 	var response struct {
 		Quotes map[string]struct {
-			BidPrice *float64 `json:"bp"`
-			AskPrice *float64 `json:"ap"`
-			BidSize  *int     `json:"bs"`
-			AskSize  *int     `json:"as"`
-			Timestamp string  `json:"t"`
+			BidPrice  *float64 `json:"bp"`
+			AskPrice  *float64 `json:"ap"`
+			BidSize   *int     `json:"bs"`
+			AskSize   *int     `json:"as"`
+			Timestamp string   `json:"t"`
 		} `json:"quotes"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		ap.LogError("unmarshal option quotes batch response", err)
 		return make(map[string]map[string]interface{})
 	}
-	
+
 	result := make(map[string]map[string]interface{})
 	for symbol, quoteData := range response.Quotes {
 		result[symbol] = map[string]interface{}{
@@ -831,7 +837,7 @@ func (ap *AlpacaProvider) getLatestOptionQuotesBatch(ctx context.Context, symbol
 			"timestamp": quoteData.Timestamp,
 		}
 	}
-	
+
 	return result
 }
 
@@ -842,7 +848,7 @@ func (ap *AlpacaProvider) getQuantityFromOrderData(data map[string]interface{}) 
 	ap.LogInfo(fmt.Sprintf("getQuantityFromOrderData - Full orderData: %+v", data))
 	ap.LogInfo(fmt.Sprintf("getQuantityFromOrderData - qty field value: %+v (type: %T)", data["qty"], data["qty"]))
 	ap.LogInfo(fmt.Sprintf("getQuantityFromOrderData - quantity field value: %+v (type: %T)", data["quantity"], data["quantity"]))
-	
+
 	// Try "qty" first (Python uses this)
 	if val, ok := data["qty"].(float64); ok {
 		ap.LogInfo(fmt.Sprintf("getQuantityFromOrderData - Extracted qty as float64: %f -> %d", val, int(val)))
@@ -852,7 +858,7 @@ func (ap *AlpacaProvider) getQuantityFromOrderData(data map[string]interface{}) 
 		ap.LogInfo(fmt.Sprintf("getQuantityFromOrderData - Extracted qty as int: %d", val))
 		return val
 	}
-	
+
 	// Try "quantity" as fallback (frontend sends this)
 	if val, ok := data["quantity"].(float64); ok {
 		ap.LogInfo(fmt.Sprintf("getQuantityFromOrderData - Extracted quantity as float64: %f -> %d", val, int(val)))
@@ -862,7 +868,7 @@ func (ap *AlpacaProvider) getQuantityFromOrderData(data map[string]interface{}) 
 		ap.LogInfo(fmt.Sprintf("getQuantityFromOrderData - Extracted quantity as int: %d", val))
 		return val
 	}
-	
+
 	// Try to parse from string
 	if val, ok := data["qty"].(string); ok {
 		if parsed, err := strconv.Atoi(val); err == nil {
@@ -876,7 +882,7 @@ func (ap *AlpacaProvider) getQuantityFromOrderData(data map[string]interface{}) 
 			return parsed
 		}
 	}
-	
+
 	// Default to 1 for multi-leg orders
 	ap.LogInfo("getQuantityFromOrderData - No qty found, defaulting to 1")
 	return 1
@@ -918,63 +924,63 @@ func (ap *AlpacaProvider) parseOptionSymbol(symbol string) map[string]interface{
 	// Option symbol format: [UNDERLYING][YYMMDD][C/P][STRIKE:8]
 	// The key insight is that the last 15 characters are always:
 	// [YYMMDD:6][C/P:1][STRIKE:8] = 15 characters total
-	
+
 	if len(symbol) < 15 {
 		return nil
 	}
-	
+
 	// The option part is always the last 15 characters
 	optionPart := symbol[len(symbol)-15:]
 	underlying := symbol[:len(symbol)-15]
-	
+
 	if underlying == "" {
 		return nil
 	}
-	
+
 	// Parse the option part
-	datePart := optionPart[:6]  // YYMMDD
-	optionType := optionPart[6] // C or P
+	datePart := optionPart[:6]   // YYMMDD
+	optionType := optionPart[6]  // C or P
 	strikePart := optionPart[7:] // 8-digit strike
-	
+
 	// Validate option type
 	if optionType != 'C' && optionType != 'P' {
 		return nil
 	}
-	
+
 	// Validate strike part is 8 digits
 	if len(strikePart) != 8 {
 		return nil
 	}
-	
+
 	// Check if strike part is all digits
 	for _, char := range strikePart {
 		if char < '0' || char > '9' {
 			return nil
 		}
 	}
-	
+
 	// Parse expiry date
 	year, _ := strconv.Atoi(datePart[:2])
 	month, _ := strconv.Atoi(datePart[2:4])
 	day, _ := strconv.Atoi(datePart[4:6])
-	
+
 	// Validate date components
 	if month < 1 || month > 12 || day < 1 || day > 31 {
 		return nil
 	}
-	
+
 	year += 2000 // Convert YY to YYYY
 	expiryDate := fmt.Sprintf("%04d-%02d-%02d", year, month, day)
-	
+
 	// Parse strike price (divide by 1000 to get actual price)
 	strikeInt, _ := strconv.Atoi(strikePart)
 	strikePrice := float64(strikeInt) / 1000.0
-	
+
 	optionTypeStr := "call"
 	if optionType == 'P' {
 		optionTypeStr = "put"
 	}
-	
+
 	return map[string]interface{}{
 		"underlying": underlying,
 		"type":       optionTypeStr,
@@ -993,7 +999,7 @@ func (ap *AlpacaProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 	if underlyingSymbol != nil && *underlyingSymbol != "" {
 		apiSymbol = *underlyingSymbol
 	}
-	
+
 	// Remove any trailing /v2 from BaseURL to avoid duplication
 	baseURL := strings.TrimSuffix(ap.BaseURL, "/v2")
 	url := fmt.Sprintf("%s/v2/options/contracts", baseURL)
@@ -1002,47 +1008,47 @@ func (ap *AlpacaProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	params := map[string]string{
 		"underlying_symbols": apiSymbol,
 		"expiration_date":    expiry,
 		"root_symbol":        symbol,
 		"limit":              "1000",
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("GetOptionsChainBasic - URL: %s, Params: %v", url, params))
-	
+
 	resp, err := ap.httpClient.Get(ctx, url, headers, params)
 	if err != nil {
 		ap.LogError(fmt.Sprintf("get_options_chain_basic API call for %s %s", symbol, expiry), err)
 		return nil, err
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("GetOptionsChainBasic - Response status: %d, Body length: %d bytes", resp.StatusCode, len(resp.Body)))
-	
+
 	var response struct {
 		OptionContracts []OptionContractResponse `json:"option_contracts"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		ap.LogError("unmarshal options chain response", err)
 		ap.LogInfo(fmt.Sprintf("Failed to unmarshal response body: %s", string(resp.Body[:min(500, len(resp.Body))])))
 		return nil, err
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("GetOptionsChainBasic - Received %d option contracts from API", len(response.OptionContracts)))
-	
+
 	// First pass: transform contracts and identify missing quotes
 	var allContracts []*models.OptionContract
 	var symbolsNeedingQuotes []string
-	
+
 	ap.LogInfo(fmt.Sprintf("Starting transformation of %d contracts", len(response.OptionContracts)))
-	
+
 	for i, contract := range response.OptionContracts {
 		optionContract := ap.transformOptionContract(contract)
 		if optionContract != nil {
 			allContracts = append(allContracts, optionContract)
-			
+
 			// Check if bid/ask are missing
 			if (optionContract.Bid == nil || optionContract.Ask == nil) && optionContract.Symbol != "" {
 				symbolsNeedingQuotes = append(symbolsNeedingQuotes, optionContract.Symbol)
@@ -1056,7 +1062,7 @@ func (ap *AlpacaProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 			ap.LogInfo(fmt.Sprintf("First contract transformed: %+v", optionContract))
 		}
 	}
-	
+
 	// Second pass: fetch latest quotes for contracts with missing bid/ask (only when market is closed)
 	if len(symbolsNeedingQuotes) > 0 {
 		marketOpen, err := ap.IsMarketOpen(ctx)
@@ -1087,11 +1093,11 @@ func (ap *AlpacaProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 			ap.LogInfo(fmt.Sprintf("Market open - skipping quote fetch for %d contracts (relying on live stream)", len(symbolsNeedingQuotes)))
 		}
 	}
-	
+
 	if len(allContracts) == 0 {
 		return allContracts, nil
 	}
-	
+
 	// If no underlying price provided, try to get current stock quote
 	if underlyingPrice == nil {
 		stockQuote, err := ap.GetStockQuote(ctx, symbol)
@@ -1121,18 +1127,18 @@ func (ap *AlpacaProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 			}
 		}
 	}
-	
+
 	// Get all unique strikes and sort them
 	strikeMap := make(map[float64]bool)
 	for _, c := range allContracts {
 		strikeMap[c.StrikePrice] = true
 	}
-	
+
 	var strikes []float64
 	for strike := range strikeMap {
 		strikes = append(strikes, strike)
 	}
-	
+
 	// Sort strikes
 	for i := 0; i < len(strikes)-1; i++ {
 		for j := i + 1; j < len(strikes); j++ {
@@ -1141,11 +1147,11 @@ func (ap *AlpacaProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 			}
 		}
 	}
-	
+
 	// Find the ATM strike (closest to underlying price)
 	minDiff := abs(*underlyingPrice - strikes[0])
 	atmIndex := 0
-	
+
 	for i, strike := range strikes {
 		diff := abs(*underlyingPrice - strike)
 		if diff < minDiff {
@@ -1153,20 +1159,20 @@ func (ap *AlpacaProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 			atmIndex = i
 		}
 	}
-	
+
 	// Calculate how many strikes to take on each side
 	strikesPerSide := strikeCount / 2
-	
+
 	// Get the range of strikes around ATM
 	startIndex := max(0, atmIndex-strikesPerSide)
 	endIndex := min(len(strikes), atmIndex+strikesPerSide+1)
-	
+
 	// Select strikes in the range
 	selectedStrikes := make(map[float64]bool)
 	for i := startIndex; i < endIndex; i++ {
 		selectedStrikes[strikes[i]] = true
 	}
-	
+
 	// Filter contracts to only include selected strikes
 	var result []*models.OptionContract
 	for _, contract := range allContracts {
@@ -1174,7 +1180,7 @@ func (ap *AlpacaProvider) GetOptionsChainBasic(ctx context.Context, symbol, expi
 			result = append(result, contract)
 		}
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("Basic options chain for %s %s: %d contracts around ATM $%.2f", symbol, expiry, len(result), *underlyingPrice))
 	return result, nil
 }
@@ -1185,87 +1191,87 @@ func (ap *AlpacaProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbo
 	if len(optionSymbols) == 0 {
 		return make(map[string]map[string]interface{}), nil
 	}
-	
+
 	url := fmt.Sprintf("%s/v1beta1/options/snapshots", ap.DataURL)
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	// Process in batches of 100 (API limit)
 	batchSize := 100
 	allGreeks := make(map[string]map[string]interface{})
-	
+
 	for i := 0; i < len(optionSymbols); i += batchSize {
 		end := min(i+batchSize, len(optionSymbols))
 		batchSymbols := optionSymbols[i:end]
 		symbolsParam := strings.Join(batchSymbols, ",")
-		
+
 		params := map[string]string{
 			"symbols": symbolsParam,
 		}
-		
+
 		resp, err := ap.httpClient.Get(ctx, url, headers, params)
 		if err != nil {
 			ap.LogError("get_options_greeks_batch API call", err)
 			continue
 		}
-		
+
 		var response struct {
 			Snapshots map[string]struct {
 				Greeks struct {
-					Delta              *float64 `json:"delta"`
-					Gamma              *float64 `json:"gamma"`
-					Theta              *float64 `json:"theta"`
-					Vega               *float64 `json:"vega"`
+					Delta *float64 `json:"delta"`
+					Gamma *float64 `json:"gamma"`
+					Theta *float64 `json:"theta"`
+					Vega  *float64 `json:"vega"`
 				} `json:"greeks"`
 				ImpliedVolatility *float64 `json:"impliedVolatility"`
 			} `json:"snapshots"`
 		}
-		
+
 		if err := json.Unmarshal(resp.Body, &response); err != nil {
 			ap.LogError("unmarshal greeks batch response", err)
 			continue
 		}
-		
+
 		for symbol, snapshot := range response.Snapshots {
 			greeksData := make(map[string]interface{})
-			
+
 			if snapshot.Greeks.Delta != nil {
 				greeksData["delta"] = *snapshot.Greeks.Delta
 			} else {
 				greeksData["delta"] = nil
 			}
-			
+
 			if snapshot.Greeks.Gamma != nil {
 				greeksData["gamma"] = *snapshot.Greeks.Gamma
 			} else {
 				greeksData["gamma"] = nil
 			}
-			
+
 			if snapshot.Greeks.Theta != nil {
 				greeksData["theta"] = *snapshot.Greeks.Theta
 			} else {
 				greeksData["theta"] = nil
 			}
-			
+
 			if snapshot.Greeks.Vega != nil {
 				greeksData["vega"] = *snapshot.Greeks.Vega
 			} else {
 				greeksData["vega"] = nil
 			}
-			
+
 			if snapshot.ImpliedVolatility != nil {
 				greeksData["implied_volatility"] = *snapshot.ImpliedVolatility
 			} else {
 				greeksData["implied_volatility"] = nil
 			}
-			
+
 			allGreeks[symbol] = greeksData
 		}
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("Retrieved Greeks for %d option symbols", len(allGreeks)))
 	return allGreeks, nil
 }
@@ -1292,37 +1298,37 @@ func (ap *AlpacaProvider) GetNextMarketDate(ctx context.Context) (string, error)
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	today := time.Now().Format("2006-01-02")
 	nextYear := time.Now().AddDate(1, 0, 0).Format("2006-01-02")
-	
+
 	params := map[string]string{
 		"start": today,
 		"end":   nextYear,
 	}
-	
+
 	resp, err := ap.httpClient.Get(ctx, url, headers, params)
 	if err != nil {
 		ap.LogError("get_next_market_date API call", err)
 		return today, nil // Fallback to today
 	}
-	
+
 	var response []struct {
 		Date string `json:"date"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		ap.LogError("unmarshal next market date response", err)
 		return today, nil
 	}
-	
+
 	// Find first date >= today
 	for _, day := range response {
 		if day.Date >= today {
 			return day.Date, nil
 		}
 	}
-	
+
 	// Fallback to today
 	return today, nil
 }
@@ -1335,7 +1341,7 @@ func (ap *AlpacaProvider) GetHistoricalBars(ctx context.Context, symbol, timefra
 	// Use IEX data feed instead of SIP to avoid subscription issues
 	// The Python code uses StockHistoricalDataClient which handles this automatically
 	// We need to use the IEX endpoint: /v2/stocks/{symbol}/bars with feed=iex parameter
-	
+
 	// Map timeframe to Alpaca format
 	timeframeMap := map[string]string{
 		"1m":  "1Min",
@@ -1348,21 +1354,21 @@ func (ap *AlpacaProvider) GetHistoricalBars(ctx context.Context, symbol, timefra
 		"W":   "1Week",
 		"M":   "1Month",
 	}
-	
+
 	alpacaTimeframe, ok := timeframeMap[timeframe]
 	if !ok {
 		alpacaTimeframe = "1Day" // Default to daily
 	}
-	
+
 	// Build URL - use DataURL for market data with IEX feed
 	url := fmt.Sprintf("%s/v2/stocks/%s/bars", ap.DataURL, symbol)
-	
+
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	// Set default start date if not provided
 	now := time.Now()
 	var start string
@@ -1378,7 +1384,7 @@ func (ap *AlpacaProvider) GetHistoricalBars(ctx context.Context, symbol, timefra
 			start = now.AddDate(-1, 0, 0).Format("2006-01-02")
 		}
 	}
-	
+
 	params := map[string]string{
 		"timeframe":  alpacaTimeframe,
 		"start":      start,
@@ -1386,20 +1392,20 @@ func (ap *AlpacaProvider) GetHistoricalBars(ctx context.Context, symbol, timefra
 		"adjustment": "raw",
 		"feed":       "iex", // Use IEX feed to avoid SIP subscription requirement
 	}
-	
+
 	// Only add end date if provided
 	if endDate != nil && *endDate != "" {
 		params["end"] = *endDate
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("Requesting Alpaca bars for %s, timeframe: %s, start: %s, limit: %d (using IEX feed)", symbol, timeframe, start, limit))
-	
+
 	resp, err := ap.httpClient.Get(ctx, url, headers, params)
 	if err != nil {
 		ap.LogError(fmt.Sprintf("get_historical_bars for %s %s", symbol, timeframe), err)
 		return nil, err
 	}
-	
+
 	var response struct {
 		Bars []struct {
 			Timestamp string  `json:"t"`
@@ -1410,15 +1416,15 @@ func (ap *AlpacaProvider) GetHistoricalBars(ctx context.Context, symbol, timefra
 			Volume    int64   `json:"v"`
 		} `json:"bars"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &response); err != nil {
 		ap.LogError("unmarshal historical bars response", err)
 		return nil, err
 	}
-	
+
 	// Transform to Lightweight Charts format
 	result := make([]map[string]interface{}, 0, len(response.Bars))
-	
+
 	for _, bar := range response.Bars {
 		// Parse timestamp
 		timestamp, err := time.Parse(time.RFC3339, bar.Timestamp)
@@ -1426,7 +1432,7 @@ func (ap *AlpacaProvider) GetHistoricalBars(ctx context.Context, symbol, timefra
 			ap.LogError(fmt.Sprintf("parse timestamp %s", bar.Timestamp), err)
 			continue
 		}
-		
+
 		// Format time based on timeframe
 		var timeStr string
 		if timeframe == "1m" || timeframe == "5m" || timeframe == "15m" || timeframe == "30m" || timeframe == "1h" || timeframe == "4h" {
@@ -1436,7 +1442,7 @@ func (ap *AlpacaProvider) GetHistoricalBars(ctx context.Context, symbol, timefra
 			// Daily+ - date only
 			timeStr = timestamp.Format("2006-01-02")
 		}
-		
+
 		result = append(result, map[string]interface{}{
 			"time":   timeStr,
 			"open":   bar.Open,
@@ -1446,7 +1452,7 @@ func (ap *AlpacaProvider) GetHistoricalBars(ctx context.Context, symbol, timefra
 			"volume": bar.Volume,
 		})
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("Transformed %d bars for %s (%s)", len(result), symbol, timeframe))
 	return result, nil
 }
@@ -1455,21 +1461,21 @@ func (ap *AlpacaProvider) GetPositions(ctx context.Context) ([]*models.Position,
 	// Remove any trailing /v2 from BaseURL to avoid duplication
 	baseURL := strings.TrimSuffix(ap.BaseURL, "/v2")
 	url := fmt.Sprintf("%s/v2/positions", baseURL)
-	
+
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("GetPositions - BaseURL: %s, Cleaned: %s, Full URL: %s", ap.BaseURL, baseURL, url))
-	
+
 	resp, err := ap.httpClient.Get(ctx, url, headers, nil)
 	if err != nil {
 		ap.LogError("get_positions API call", err)
 		return nil, err
 	}
-	
+
 	var positions []struct {
 		Symbol         string  `json:"symbol"`
 		Qty            string  `json:"qty"`
@@ -1482,12 +1488,12 @@ func (ap *AlpacaProvider) GetPositions(ctx context.Context) ([]*models.Position,
 		AssetClass     string  `json:"asset_class"`
 		LastdayPrice   *string `json:"lastday_price"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &positions); err != nil {
 		ap.LogError("unmarshal positions response", err)
 		return nil, err
 	}
-	
+
 	var result []*models.Position
 	for _, pos := range positions {
 		// Parse numeric values
@@ -1497,7 +1503,7 @@ func (ap *AlpacaProvider) GetPositions(ctx context.Context) ([]*models.Position,
 		unrealizedPL, _ := strconv.ParseFloat(pos.UnrealizedPL, 64)
 		currentPrice, _ := strconv.ParseFloat(pos.CurrentPrice, 64)
 		avgEntryPrice, _ := strconv.ParseFloat(pos.AvgEntryPrice, 64)
-		
+
 		// Parse unrealized P/L percentage
 		var unrealizedPLPC *float64
 		if pos.UnrealizedPLPC != "" {
@@ -1505,7 +1511,7 @@ func (ap *AlpacaProvider) GetPositions(ctx context.Context) ([]*models.Position,
 				unrealizedPLPC = &val
 			}
 		}
-		
+
 		// Parse lastday price (if 0, set to nil as it indicates same-day trade)
 		var lastdayPrice *float64
 		if pos.LastdayPrice != nil && *pos.LastdayPrice != "" {
@@ -1513,28 +1519,28 @@ func (ap *AlpacaProvider) GetPositions(ctx context.Context) ([]*models.Position,
 				lastdayPrice = &val
 			}
 		}
-		
+
 		// Determine side
 		side := "long"
 		if qty < 0 {
 			side = "short"
 		}
-		
+
 		position := &models.Position{
-			Symbol:          pos.Symbol,
-			Qty:             qty,
-			Side:            side,
-			MarketValue:     marketValue,
-			CostBasis:       costBasis,
-			UnrealizedPL:    unrealizedPL,
-			UnrealizedPLPC:  unrealizedPLPC,
-			CurrentPrice:    currentPrice,
-			AvgEntryPrice:   avgEntryPrice,
-			AssetClass:      pos.AssetClass,
-			LastdayPrice:    lastdayPrice,
-			DateAcquired:    nil,
+			Symbol:         pos.Symbol,
+			Qty:            qty,
+			Side:           side,
+			MarketValue:    marketValue,
+			CostBasis:      costBasis,
+			UnrealizedPL:   unrealizedPL,
+			UnrealizedPLPC: unrealizedPLPC,
+			CurrentPrice:   currentPrice,
+			AvgEntryPrice:  avgEntryPrice,
+			AssetClass:     pos.AssetClass,
+			LastdayPrice:   lastdayPrice,
+			DateAcquired:   nil,
 		}
-		
+
 		// Parse option-specific information if it's an option
 		if pos.AssetClass == "us_option" {
 			optionInfo := ap.parseOptionSymbol(pos.Symbol)
@@ -1553,10 +1559,10 @@ func (ap *AlpacaProvider) GetPositions(ctx context.Context) ([]*models.Position,
 				}
 			}
 		}
-		
+
 		result = append(result, position)
 	}
-	
+
 	return result, nil
 }
 
@@ -1566,7 +1572,7 @@ func (ap *AlpacaProvider) GetPositionsEnhanced(ctx context.Context) (*models.Enh
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Convert to enhanced format using base provider logic
 	return ap.ConvertPositionsToEnhanced(positions), nil
 }
@@ -1575,15 +1581,15 @@ func (ap *AlpacaProvider) GetOrders(ctx context.Context, status string) ([]*mode
 	// Remove any trailing /v2 from BaseURL to avoid duplication
 	baseURL := strings.TrimSuffix(ap.BaseURL, "/v2")
 	url := fmt.Sprintf("%s/v2/orders", baseURL)
-	
+
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	params := map[string]string{}
-	
+
 	// Map status filter
 	switch strings.ToLower(status) {
 	case "open":
@@ -1601,41 +1607,41 @@ func (ap *AlpacaProvider) GetOrders(ctx context.Context, status string) ([]*mode
 			params["status"] = status
 		}
 	}
-	
+
 	resp, err := ap.httpClient.Get(ctx, url, headers, params)
 	if err != nil {
 		ap.LogError(fmt.Sprintf("get_orders with status %s", status), err)
 		return nil, err
 	}
-	
+
 	var orders []struct {
-		ID              string   `json:"id"`
-		Symbol          string   `json:"symbol"`
-		AssetClass      string   `json:"asset_class"`
-		Side            string   `json:"side"`
-		OrderType       string   `json:"order_type"`
-		Qty             *string  `json:"qty"`
-		FilledQty       *string  `json:"filled_qty"`
-		LimitPrice      *string  `json:"limit_price"`
-		StopPrice       *string  `json:"stop_price"`
-		FilledAvgPrice  *string  `json:"filled_avg_price"` // Alpaca uses filled_avg_price
-		Status          string   `json:"status"`
-		TimeInForce     string   `json:"time_in_force"`
-		SubmittedAt     string   `json:"submitted_at"`
-		FilledAt        *string  `json:"filled_at"`
-		Legs            []struct {
+		ID             string  `json:"id"`
+		Symbol         string  `json:"symbol"`
+		AssetClass     string  `json:"asset_class"`
+		Side           string  `json:"side"`
+		OrderType      string  `json:"order_type"`
+		Qty            *string `json:"qty"`
+		FilledQty      *string `json:"filled_qty"`
+		LimitPrice     *string `json:"limit_price"`
+		StopPrice      *string `json:"stop_price"`
+		FilledAvgPrice *string `json:"filled_avg_price"` // Alpaca uses filled_avg_price
+		Status         string  `json:"status"`
+		TimeInForce    string  `json:"time_in_force"`
+		SubmittedAt    string  `json:"submitted_at"`
+		FilledAt       *string `json:"filled_at"`
+		Legs           []struct {
 			Symbol   string `json:"symbol"`
 			Side     string `json:"side"`
 			Qty      string `json:"qty"`
 			RatioQty string `json:"ratio_qty"`
 		} `json:"legs"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &orders); err != nil {
 		ap.LogError("unmarshal orders response", err)
 		return nil, err
 	}
-	
+
 	var result []*models.Order
 	for _, order := range orders {
 		// Use transformOrderFromResponse to properly handle multi-leg orders
@@ -1644,7 +1650,7 @@ func (ap *AlpacaProvider) GetOrders(ctx context.Context, status string) ([]*mode
 			result = append(result, transformedOrder)
 		}
 	}
-	
+
 	return result, nil
 }
 
@@ -1653,21 +1659,21 @@ func (ap *AlpacaProvider) GetAccount(ctx context.Context) (*models.Account, erro
 	// We need to reinitialize it with the correct BaseURL
 	baseURL := strings.TrimSuffix(ap.BaseURL, "/v2")
 	ap.LogInfo(fmt.Sprintf("GetAccount - BaseURL: %s, Cleaned: %s", ap.BaseURL, baseURL))
-	
+
 	// Reinitialize trading client with correct BaseURL
 	ap.tradingClient = alpaca.NewClient(alpaca.ClientOpts{
 		APIKey:    ap.APIKey,
 		APISecret: ap.APISecret,
 		BaseURL:   baseURL,
 	})
-	
+
 	// Use the Alpaca SDK's trading client
 	account, err := ap.tradingClient.GetAccount()
 	if err != nil {
 		ap.LogError(fmt.Sprintf("get_account API call (BaseURL: %s)", baseURL), err)
 		return nil, err
 	}
-	
+
 	// Transform SDK account object to our model
 	accountNumber := account.AccountNumber
 	status := string(account.Status)
@@ -1677,7 +1683,7 @@ func (ap *AlpacaProvider) GetAccount(ctx context.Context) (*models.Account, erro
 	}
 	createdAt := account.CreatedAt.Format(time.RFC3339)
 	multiplierStr := account.Multiplier.String()
-	
+
 	// Convert decimal values to float64 pointers
 	buyingPower := account.BuyingPower.InexactFloat64()
 	cash := account.Cash.InexactFloat64()
@@ -1690,37 +1696,37 @@ func (ap *AlpacaProvider) GetAccount(ctx context.Context) (*models.Account, erro
 	initialMargin := account.InitialMargin.InexactFloat64()
 	maintenanceMargin := account.MaintenanceMargin.InexactFloat64()
 	daytradeCount := int(account.DaytradeCount)
-	
+
 	// These fields don't exist in Alpaca SDK, set to nil
 	var optionsBuyingPower *float64
 	var optionsApprovedLevel *int
 	var optionsTradingLevel *int
-	
+
 	return &models.Account{
-		AccountID:              account.ID,
-		AccountNumber:          &accountNumber,
-		Status:                 status,
-		Currency:               currency,
-		BuyingPower:            &buyingPower,
-		Cash:                   &cash,
-		PortfolioValue:         &portfolioValue,
-		Equity:                 &equity,
-		DayTradingBuyingPower:  &dayTradingBuyingPower,
-		RegtBuyingPower:        &regtBuyingPower,
-		OptionsBuyingPower:     optionsBuyingPower,
-		PatternDayTrader:       &account.PatternDayTrader,
-		TradingBlocked:         &account.TradingBlocked,
-		TransfersBlocked:       &account.TransfersBlocked,
-		AccountBlocked:         &account.AccountBlocked,
-		CreatedAt:              &createdAt,
-		Multiplier:             &multiplierStr,
-		LongMarketValue:        &longMarketValue,
-		ShortMarketValue:       &shortMarketValue,
-		InitialMargin:          &initialMargin,
-		MaintenanceMargin:      &maintenanceMargin,
-		DaytradeCount:          &daytradeCount,
-		OptionsApprovedLevel:   optionsApprovedLevel,
-		OptionsTradingLevel:    optionsTradingLevel,
+		AccountID:             account.ID,
+		AccountNumber:         &accountNumber,
+		Status:                status,
+		Currency:              currency,
+		BuyingPower:           &buyingPower,
+		Cash:                  &cash,
+		PortfolioValue:        &portfolioValue,
+		Equity:                &equity,
+		DayTradingBuyingPower: &dayTradingBuyingPower,
+		RegtBuyingPower:       &regtBuyingPower,
+		OptionsBuyingPower:    optionsBuyingPower,
+		PatternDayTrader:      &account.PatternDayTrader,
+		TradingBlocked:        &account.TradingBlocked,
+		TransfersBlocked:      &account.TransfersBlocked,
+		AccountBlocked:        &account.AccountBlocked,
+		CreatedAt:             &createdAt,
+		Multiplier:            &multiplierStr,
+		LongMarketValue:       &longMarketValue,
+		ShortMarketValue:      &shortMarketValue,
+		InitialMargin:         &initialMargin,
+		MaintenanceMargin:     &maintenanceMargin,
+		DaytradeCount:         &daytradeCount,
+		OptionsApprovedLevel:  optionsApprovedLevel,
+		OptionsTradingLevel:   optionsTradingLevel,
 	}, nil
 }
 
@@ -1728,22 +1734,22 @@ func (ap *AlpacaProvider) PlaceOrder(ctx context.Context, orderData map[string]i
 	// Exact conversion of Python place_order method
 	orderType := orderData["order_type"].(string)
 	side := orderData["side"].(string)
-	
+
 	// Extract side prefix (e.g., "buy_to_open" -> "buy")
 	sideParts := strings.Split(side, "_")
 	sidePrefix := sideParts[0]
-	
+
 	// Remove any trailing /v2 from BaseURL to avoid duplication
 	baseURL := strings.TrimSuffix(ap.BaseURL, "/v2")
 	url := fmt.Sprintf("%s/v2/orders", baseURL)
-	
+
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 		"content-type":        "application/json",
 	}
-	
+
 	// Build request body based on order type
 	requestBody := map[string]interface{}{
 		"symbol":        orderData["symbol"],
@@ -1752,44 +1758,44 @@ func (ap *AlpacaProvider) PlaceOrder(ctx context.Context, orderData map[string]i
 		"time_in_force": orderData["time_in_force"],
 		"type":          orderType,
 	}
-	
+
 	// Add limit price for limit orders
 	if orderType == "limit" {
 		if limitPrice, ok := orderData["limit_price"]; ok {
 			requestBody["limit_price"] = limitPrice
 		}
 	}
-	
+
 	// Make API call - Post expects interface{}, not []byte
 	resp, err := ap.httpClient.Post(ctx, url, requestBody, headers)
 	if err != nil {
 		ap.LogError("place_order API call", err)
 		return nil, err
 	}
-	
+
 	// Parse response
 	var orderResponse struct {
-		ID              string   `json:"id"`
-		Symbol          string   `json:"symbol"`
-		AssetClass      string   `json:"asset_class"`
-		Side            string   `json:"side"`
-		OrderType       string   `json:"order_type"`
-		Qty             *string  `json:"qty"`
-		FilledQty       *string  `json:"filled_qty"`
-		LimitPrice      *string  `json:"limit_price"`
-		StopPrice       *string  `json:"stop_price"`
-		FilledAvgPrice  *string  `json:"filled_avg_price"`
-		Status          string   `json:"status"`
-		TimeInForce     string   `json:"time_in_force"`
-		SubmittedAt     string   `json:"submitted_at"`
-		FilledAt        *string  `json:"filled_at"`
+		ID             string  `json:"id"`
+		Symbol         string  `json:"symbol"`
+		AssetClass     string  `json:"asset_class"`
+		Side           string  `json:"side"`
+		OrderType      string  `json:"order_type"`
+		Qty            *string `json:"qty"`
+		FilledQty      *string `json:"filled_qty"`
+		LimitPrice     *string `json:"limit_price"`
+		StopPrice      *string `json:"stop_price"`
+		FilledAvgPrice *string `json:"filled_avg_price"`
+		Status         string  `json:"status"`
+		TimeInForce    string  `json:"time_in_force"`
+		SubmittedAt    string  `json:"submitted_at"`
+		FilledAt       *string `json:"filled_at"`
 	}
-	
+
 	if err := json.Unmarshal(resp.Body, &orderResponse); err != nil {
 		ap.LogError("unmarshal place_order response", err)
 		return nil, err
 	}
-	
+
 	// Transform to our model
 	return ap.transformOrderFromResponse(orderResponse), nil
 }
@@ -1797,25 +1803,25 @@ func (ap *AlpacaProvider) PlaceOrder(ctx context.Context, orderData map[string]i
 func (ap *AlpacaProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[string]interface{}) (*models.Order, error) {
 	// Exact conversion of Python place_multi_leg_order method
 	orderType := orderData["order_type"].(string)
-	
+
 	// DEBUG: Log incoming order data
 	ap.LogInfo(fmt.Sprintf("PlaceMultiLegOrder - Incoming orderData: %+v", orderData))
-	
+
 	// Remove any trailing /v2 from BaseURL to avoid duplication
 	baseURL := strings.TrimSuffix(ap.BaseURL, "/v2")
 	url := fmt.Sprintf("%s/v2/orders", baseURL)
-	
+
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 		"content-type":        "application/json",
 	}
-	
+
 	// Build legs array
 	legs := orderData["legs"].([]interface{})
 	orderLegs := make([]map[string]interface{}, 0, len(legs))
-	
+
 	// Extract the quantity from the first leg (all legs should have the same qty for a standard multi-leg order)
 	var legQty int = 1
 	if len(legs) > 0 {
@@ -1833,17 +1839,17 @@ func (ap *AlpacaProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[
 			}
 		}
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("PlaceMultiLegOrder - Extracted qty from legs: %d", legQty))
-	
+
 	for _, leg := range legs {
 		legMap := leg.(map[string]interface{})
 		side := legMap["side"].(string)
-		
+
 		// Extract side prefix (e.g., "buy_to_open" -> "buy")
 		sideParts := strings.Split(side, "_")
 		sidePrefix := sideParts[0]
-		
+
 		// IMPORTANT: For Alpaca, ratio_qty must be relatively prime (GCD = 1)
 		// So we set ratio_qty to 1 for each leg, and use the actual quantity in the order qty field
 		orderLegs = append(orderLegs, map[string]interface{}{
@@ -1852,29 +1858,29 @@ func (ap *AlpacaProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[
 			"ratio_qty": 1, // Always 1 for standard multi-leg orders (ratio between legs)
 		})
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("PlaceMultiLegOrder - Using order qty: %d, ratio_qty: 1 for each leg", legQty))
-	
+
 	// Build request body
 	requestBody := map[string]interface{}{
-		"qty":           legQty,  // Use the qty extracted from legs
+		"qty":           legQty, // Use the qty extracted from legs
 		"order_class":   "mleg",
 		"time_in_force": orderData["time_in_force"],
 		"type":          orderType,
 		"legs":          orderLegs,
 	}
-	
+
 	// Add limit price for limit orders
 	if orderType == "limit" {
 		if limitPrice, ok := orderData["limit_price"]; ok {
 			requestBody["limit_price"] = limitPrice
 		}
 	}
-	
+
 	// DEBUG: Log the full request body being sent to Alpaca
 	requestBodyJSON, _ := json.MarshalIndent(requestBody, "", "  ")
 	ap.LogInfo(fmt.Sprintf("PlaceMultiLegOrder - Request body to Alpaca:\n%s", string(requestBodyJSON)))
-	
+
 	// Make API call - Post expects interface{}, not []byte
 	ap.LogInfo(fmt.Sprintf("PlaceMultiLegOrder - About to call Alpaca API at %s", url))
 	resp, err := ap.httpClient.Post(ctx, url, requestBody, headers)
@@ -1896,31 +1902,31 @@ func (ap *AlpacaProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[
 		ap.LogError("place_multi_leg_order API call", err)
 		return nil, fmt.Errorf("alpaca API error: %w", err)
 	}
-	
+
 	// Parse response - Alpaca returns legs with ratio_qty field
 	var orderResponse struct {
-		ID              string   `json:"id"`
-		Symbol          string   `json:"symbol"`
-		AssetClass      string   `json:"asset_class"`
-		Side            string   `json:"side"`
-		OrderType       string   `json:"order_type"`
-		Qty             *string  `json:"qty"`
-		FilledQty       *string  `json:"filled_qty"`
-		LimitPrice      *string  `json:"limit_price"`
-		StopPrice       *string  `json:"stop_price"`
-		FilledAvgPrice  *string  `json:"filled_avg_price"`
-		Status          string   `json:"status"`
-		TimeInForce     string   `json:"time_in_force"`
-		SubmittedAt     string   `json:"submitted_at"`
-		FilledAt        *string  `json:"filled_at"`
-		Legs            []struct {
+		ID             string  `json:"id"`
+		Symbol         string  `json:"symbol"`
+		AssetClass     string  `json:"asset_class"`
+		Side           string  `json:"side"`
+		OrderType      string  `json:"order_type"`
+		Qty            *string `json:"qty"`
+		FilledQty      *string `json:"filled_qty"`
+		LimitPrice     *string `json:"limit_price"`
+		StopPrice      *string `json:"stop_price"`
+		FilledAvgPrice *string `json:"filled_avg_price"`
+		Status         string  `json:"status"`
+		TimeInForce    string  `json:"time_in_force"`
+		SubmittedAt    string  `json:"submitted_at"`
+		FilledAt       *string `json:"filled_at"`
+		Legs           []struct {
 			Symbol   string `json:"symbol"`
 			Side     string `json:"side"`
 			Qty      string `json:"qty"`
 			RatioQty string `json:"ratio_qty"` // Alpaca uses ratio_qty in response
 		} `json:"legs"`
 	}
-	
+
 	ap.LogInfo(fmt.Sprintf("PlaceMultiLegOrder - About to unmarshal response body (length: %d)", len(resp.Body)))
 	if err := json.Unmarshal(resp.Body, &orderResponse); err != nil {
 		ap.LogError("unmarshal place_multi_leg_order response", err)
@@ -1928,7 +1934,7 @@ func (ap *AlpacaProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[
 		return nil, err
 	}
 	ap.LogInfo(fmt.Sprintf("PlaceMultiLegOrder - Successfully unmarshaled response, order ID: %s, status: %s, legs: %d", orderResponse.ID, orderResponse.Status, len(orderResponse.Legs)))
-	
+
 	// Transform to our model
 	return ap.transformOrderFromResponse(orderResponse), nil
 }
@@ -1956,31 +1962,31 @@ func (ap *AlpacaProvider) CancelOrder(ctx context.Context, orderID string) (bool
 	// Exact conversion of Python cancel_order method
 	baseURL := strings.TrimSuffix(ap.BaseURL, "/v2")
 	url := fmt.Sprintf("%s/v2/orders/%s", baseURL, orderID)
-	
+
 	headers := map[string]string{
 		"APCA-API-KEY-ID":     ap.APIKey,
 		"APCA-API-SECRET-KEY": ap.APISecret,
 		"accept":              "application/json",
 	}
-	
+
 	resp, err := ap.httpClient.Delete(ctx, url, headers)
 	if err != nil {
 		ap.LogError(fmt.Sprintf("cancel_order %s", orderID), err)
 		return false, err
 	}
-	
+
 	// Check if the response indicates success (204 No Content or 200 OK)
 	if resp.StatusCode == 204 || resp.StatusCode == 200 {
 		return true, nil
 	}
-	
+
 	return false, fmt.Errorf("failed to cancel order: HTTP %d", resp.StatusCode)
 }
 
 // transformOrderFromResponse transforms order response to our standard model
 func (ap *AlpacaProvider) transformOrderFromResponse(orderResponse interface{}) *models.Order {
 	ap.LogInfo(fmt.Sprintf("transformOrderFromResponse - Input type: %T", orderResponse))
-	
+
 	// Handle different response types
 	var id, symbol, assetClass, side, orderType, status, timeInForce, submittedAt string
 	var qty, filledQty *string
@@ -1992,25 +1998,25 @@ func (ap *AlpacaProvider) transformOrderFromResponse(orderResponse interface{}) 
 		Qty      string `json:"qty"`
 		RatioQty string `json:"ratio_qty"`
 	}
-	
+
 	// Type switch to handle different response structures
 	switch resp := orderResponse.(type) {
 	case struct {
-		ID              string   `json:"id"`
-		Symbol          string   `json:"symbol"`
-		AssetClass      string   `json:"asset_class"`
-		Side            string   `json:"side"`
-		OrderType       string   `json:"order_type"`
-		Qty             *string  `json:"qty"`
-		FilledQty       *string  `json:"filled_qty"`
-		LimitPrice      *string  `json:"limit_price"`
-		StopPrice       *string  `json:"stop_price"`
-		FilledAvgPrice  *string  `json:"filled_avg_price"`
-		Status          string   `json:"status"`
-		TimeInForce     string   `json:"time_in_force"`
-		SubmittedAt     string   `json:"submitted_at"`
-		FilledAt        *string  `json:"filled_at"`
-		Legs            []struct {
+		ID             string  `json:"id"`
+		Symbol         string  `json:"symbol"`
+		AssetClass     string  `json:"asset_class"`
+		Side           string  `json:"side"`
+		OrderType      string  `json:"order_type"`
+		Qty            *string `json:"qty"`
+		FilledQty      *string `json:"filled_qty"`
+		LimitPrice     *string `json:"limit_price"`
+		StopPrice      *string `json:"stop_price"`
+		FilledAvgPrice *string `json:"filled_avg_price"`
+		Status         string  `json:"status"`
+		TimeInForce    string  `json:"time_in_force"`
+		SubmittedAt    string  `json:"submitted_at"`
+		FilledAt       *string `json:"filled_at"`
+		Legs           []struct {
 			Symbol   string `json:"symbol"`
 			Side     string `json:"side"`
 			Qty      string `json:"qty"`
@@ -2037,7 +2043,7 @@ func (ap *AlpacaProvider) transformOrderFromResponse(orderResponse interface{}) 
 		ap.LogInfo(fmt.Sprintf("transformOrderFromResponse - No matching type, returning nil for type: %T", orderResponse))
 		return nil
 	}
-	
+
 	// Parse quantities
 	var qtyFloat, filledQtyFloat float64
 	if qty != nil {
@@ -2046,7 +2052,7 @@ func (ap *AlpacaProvider) transformOrderFromResponse(orderResponse interface{}) 
 	if filledQty != nil {
 		filledQtyFloat, _ = strconv.ParseFloat(*filledQty, 64)
 	}
-	
+
 	// Parse prices
 	var limitPriceFloat, stopPriceFloat, avgFillPriceFloat *float64
 	if limitPrice != nil && *limitPrice != "" {
@@ -2064,7 +2070,7 @@ func (ap *AlpacaProvider) transformOrderFromResponse(orderResponse interface{}) 
 			avgFillPriceFloat = &price
 		}
 	}
-	
+
 	// Transform legs if present
 	var orderLegs []models.OrderLeg
 	if len(legs) > 0 {
@@ -2078,12 +2084,12 @@ func (ap *AlpacaProvider) transformOrderFromResponse(orderResponse interface{}) 
 			})
 		}
 	}
-	
+
 	// Use "Multi-leg" as symbol if it's a multi-leg order
 	if symbol == "" && len(orderLegs) > 0 {
 		symbol = "Multi-leg"
 	}
-	
+
 	return &models.Order{
 		ID:           id,
 		Symbol:       symbol,
@@ -2106,25 +2112,25 @@ func (ap *AlpacaProvider) transformOrderFromResponse(orderResponse interface{}) 
 func (ap *AlpacaProvider) ConnectStreaming(ctx context.Context) (bool, error) {
 	ap.streamMutex.Lock()
 	defer ap.streamMutex.Unlock()
-	
+
 	// Prevent multiple concurrent connection attempts
 	if ap.connecting {
 		ap.LogInfo("Connection attempt already in progress, waiting...")
 		return ap.IsConnected, nil
 	}
-	
+
 	ap.connecting = true
 	defer func() { ap.connecting = false }()
-	
+
 	// Ensure clean state before connecting
 	if ap.IsConnected {
 		ap.LogInfo("Already connected, disconnecting first for clean reconnection")
 		ap.disconnectStreamingInternal()
 		time.Sleep(1 * time.Second)
 	}
-	
+
 	ap.LogInfo("Initializing streaming connections...")
-	
+
 	// Initialize streaming clients (they will be started when subscribing)
 	// Create option stream if not disabled
 	if !ap.disableOptionStream {
@@ -2133,13 +2139,13 @@ func (ap *AlpacaProvider) ConnectStreaming(ctx context.Context) (bool, error) {
 			stream.WithCredentials(ap.APIKey, ap.APISecret),
 		)
 	}
-	
+
 	// Create stock stream using IEX (not SIP) to match user's subscription
 	ap.stockStream = stream.NewStocksClient(
 		marketdata.IEX,
 		stream.WithCredentials(ap.APIKey, ap.APISecret),
 	)
-	
+
 	ap.IsConnected = true
 	ap.LogInfo("Streaming connections initialized (will connect on subscription)")
 	return true, nil
@@ -2148,7 +2154,7 @@ func (ap *AlpacaProvider) ConnectStreaming(ctx context.Context) (bool, error) {
 func (ap *AlpacaProvider) DisconnectStreaming(ctx context.Context) (bool, error) {
 	ap.streamMutex.Lock()
 	defer ap.streamMutex.Unlock()
-	
+
 	return ap.disconnectStreamingInternal(), nil
 }
 
@@ -2157,7 +2163,7 @@ func (ap *AlpacaProvider) disconnectStreamingInternal() bool {
 	// They disconnect automatically when garbage collected
 	ap.stockStream = nil
 	ap.optionStream = nil
-	
+
 	ap.IsConnected = false
 	ap.LogInfo("Streaming connection closed")
 	return true
@@ -2167,31 +2173,31 @@ func (ap *AlpacaProvider) SubscribeToSymbols(ctx context.Context, symbols []stri
 	// For Alpaca, we hit connection limits easily, so we should NOT use streaming for options chain data
 	// Instead, just track the subscriptions without actually connecting to streams
 	// The frontend will poll for updates via REST API instead
-	
+
 	ap.LogInfo(fmt.Sprintf("Alpaca: Tracking %d symbols (streaming disabled to avoid connection limits)", len(symbols)))
-	
+
 	// Just track the symbols without connecting to streams
 	for _, symbol := range symbols {
 		ap.subscribedSymbols[symbol] = true
 	}
-	
+
 	return true, nil
 }
 
 func (ap *AlpacaProvider) UnsubscribeFromSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
 	ap.LogInfo(fmt.Sprintf("Unsubscribing from %d symbols", len(symbols)))
-	
+
 	// Remove symbols from tracking
 	for _, symbol := range symbols {
 		delete(ap.subscribedSymbols, symbol)
 	}
-	
+
 	// If no symbols remain, close all streams
 	if len(ap.subscribedSymbols) == 0 {
 		ap.LogInfo("No symbols remaining - closing all streams")
 		return ap.DisconnectStreaming(ctx)
 	}
-	
+
 	// Otherwise, only update tracking and do NOT attempt to reconnect or restart streams.
 	// Connection lifecycle and subscription restoration are managed by the external StreamingHealthManager.
 	ap.LogInfo(fmt.Sprintf("Updated subscription tracking; %d symbols remain", len(ap.subscribedSymbols)))
@@ -2215,7 +2221,7 @@ func (ap *AlpacaProvider) stockQuoteHandler(quote stream.Quote) {
 			"ask": quote.AskPrice,
 		},
 	}
-	
+
 	// Send to queue (non-blocking)
 	select {
 	case ap.streamingQueue <- marketData:
@@ -2242,7 +2248,7 @@ func (ap *AlpacaProvider) optionQuoteHandler(quote stream.OptionQuote) {
 			"ask": quote.AskPrice,
 		},
 	}
-	
+
 	// Send to queue (non-blocking)
 	select {
 	case ap.streamingQueue <- marketData:
@@ -2254,12 +2260,12 @@ func (ap *AlpacaProvider) optionQuoteHandler(quote stream.OptionQuote) {
 
 func (ap *AlpacaProvider) TestCredentials(ctx context.Context) (map[string]interface{}, error) {
 	ap.LogInfo(fmt.Sprintf("Testing Alpaca credentials (paper: %v)", ap.UsePaper))
-	
+
 	// Test credentials by getting account information
 	account, err := ap.GetAccount(ctx)
 	if err != nil {
 		errorMsg := strings.ToLower(err.Error())
-		
+
 		// Categorize different types of errors
 		if strings.Contains(errorMsg, "401") || strings.Contains(errorMsg, "unauthorized") || strings.Contains(errorMsg, "forbidden") {
 			return map[string]interface{}{
@@ -2294,7 +2300,7 @@ func (ap *AlpacaProvider) TestCredentials(ctx context.Context) (map[string]inter
 				"details":        map[string]interface{}{"error": err.Error()},
 			}, nil
 		}
-		
+
 		return map[string]interface{}{
 			"success":        false,
 			"message":        fmt.Sprintf("Connection test failed: %s", err.Error()),
@@ -2303,30 +2309,185 @@ func (ap *AlpacaProvider) TestCredentials(ctx context.Context) (map[string]inter
 			"details":        map[string]interface{}{"error": err.Error()},
 		}, nil
 	}
-	
+
 	accountType := "Paper Trading"
 	if !ap.UsePaper {
 		accountType = "Live Trading"
 	}
-	
+
 	acctNum := "<nil>"
 	if account.AccountNumber != nil {
 		acctNum = *account.AccountNumber
 	}
 	ap.LogInfo(fmt.Sprintf("Alpaca credentials valid - Account: %s, Status: %s", acctNum, account.Status))
-	
+
 	return map[string]interface{}{
 		"success": true,
 		"message": fmt.Sprintf("Alpaca connection successful (%s)", accountType),
 		"details": map[string]interface{}{
-			"account_number":       account.AccountNumber,
-			"account_status":       account.Status,
-			"account_type":         accountType,
-			"currency":             account.Currency,
-			"buying_power":         account.BuyingPower,
-			"equity":               account.Equity,
-			"pattern_day_trader":   account.PatternDayTrader,
-			"trading_blocked":      account.TradingBlocked,
+			"account_number":     account.AccountNumber,
+			"account_status":     account.Status,
+			"account_type":       accountType,
+			"currency":           account.Currency,
+			"buying_power":       account.BuyingPower,
+			"equity":             account.Equity,
+			"pattern_day_trader": account.PatternDayTrader,
+			"trading_blocked":    account.TradingBlocked,
 		},
 	}, nil
+}
+
+// ======================== Order Event Streaming Methods ========================
+
+// StartAccountStream starts the Alpaca trade updates stream
+func (ap *AlpacaProvider) StartAccountStream(ctx context.Context) error {
+	streamCtx, cancel := context.WithCancel(ctx)
+	ap.ctxCancel = cancel
+
+	go ap.streamTradeUpdates(streamCtx)
+
+	ap.LogInfo("Alpaca order event stream started")
+	return nil
+}
+
+func (ap *AlpacaProvider) streamTradeUpdates(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		default:
+			if err := ap.streamTradeUpdatesOnce(ctx); err != nil {
+				ap.LogError("Trade updates stream error", err)
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(5 * time.Second):
+					continue
+				}
+			}
+			return
+		}
+	}
+}
+
+func (ap *AlpacaProvider) streamTradeUpdatesOnce(ctx context.Context) error {
+	url := ap.BaseURL
+	if ap.UsePaper {
+		url = "https://paper-api.alpaca.markets"
+	}
+	url = strings.TrimSuffix(url, "/v2")
+	wsURL := strings.Replace(url, "https://", "wss://", 1) + "/stream"
+
+	header := http.Header{}
+	header.Set("APCA-API-KEY-ID", ap.APIKey)
+	header.Set("APCA-API-SECRET-KEY", ap.APISecret)
+
+	conn, _, err := websocket.DefaultDialer.DialContext(ctx, wsURL, header)
+	if err != nil {
+		return fmt.Errorf("failed to connect to Alpaca stream: %w", err)
+	}
+	defer conn.Close()
+
+	subscribeMsg := map[string]interface{}{
+		"action": "subscribe",
+		"trades": []string{"*"},
+	}
+	if err := conn.WriteJSON(subscribeMsg); err != nil {
+		return fmt.Errorf("failed to subscribe to trades: %w", err)
+	}
+
+	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+	conn.SetPingHandler(func(appData string) error {
+		return conn.WriteControl(websocket.PongMessage, []byte(appData), time.Now().Add(10*time.Second))
+	})
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		default:
+			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
+			_, messageBytes, err := conn.ReadMessage()
+			if err != nil {
+				if websocket.IsCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
+					return nil
+				}
+				return fmt.Errorf("read error: %w", err)
+			}
+
+			var message map[string]interface{}
+			if err := json.Unmarshal(messageBytes, &message); err != nil {
+				continue
+			}
+
+			if trades, ok := message["trades"].([]interface{}); ok {
+				for _, t := range trades {
+					if tradeData, ok := t.(map[string]interface{}); ok {
+						orderEvent := ap.parseAlpacaTradeEvent(tradeData)
+						if orderEvent != nil && ap.orderEventCallback != nil {
+							ap.orderEventCallback(orderEvent)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+func (ap *AlpacaProvider) parseAlpacaTradeEvent(trade map[string]interface{}) *models.OrderEvent {
+	symbol, _ := trade["T"].(string)
+	event, _ := trade["e"].(string)
+
+	statusMap := map[string]string{
+		"new":     "new",
+		"fill":    "filled",
+		"partial": "partially_filled",
+		"cancel":  "canceled",
+		"expire":  "expired",
+		"reject":  "rejected",
+	}
+
+	var qty, price, timestamp string
+	if v, ok := trade["q"].(string); ok {
+		qty = v
+	}
+	if v, ok := trade["p"].(string); ok {
+		price = v
+	}
+	if v, ok := trade["t"].(string); ok {
+		timestamp = v
+	}
+
+	qtyFloat, _ := strconv.ParseFloat(qty, 64)
+	priceFloat, _ := strconv.ParseFloat(price, 64)
+
+	return &models.OrderEvent{
+		ID:              trade["i"],
+		Event:           event,
+		Status:          statusMap[event],
+		Symbol:          symbol,
+		Quantity:        qtyFloat,
+		Price:           priceFloat,
+		TransactionDate: timestamp,
+		Account:         "",
+	}
+}
+
+// StopAccountStream stops the Alpaca trade updates stream
+func (ap *AlpacaProvider) StopAccountStream() {
+	if ap.ctxCancel != nil {
+		ap.ctxCancel()
+		ap.ctxCancel = nil
+	}
+	ap.LogInfo("Alpaca order event stream stopped")
+}
+
+// SetOrderEventCallback sets the callback for receiving order events
+func (ap *AlpacaProvider) SetOrderEventCallback(cb func(*models.OrderEvent)) {
+	ap.orderEventCallback = cb
+}
+
+// IsAccountStreamConnected checks if account stream is connected
+func (ap *AlpacaProvider) IsAccountStreamConnected() bool {
+	return ap.ctxCancel != nil
 }
