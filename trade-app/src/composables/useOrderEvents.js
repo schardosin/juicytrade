@@ -74,11 +74,11 @@ function globalHandleOrderEvent(message) {
 
     switch (normalizedEvent) {
         case 'order_submitted':
-            title = `Order Submitted`;
+            title = `✓ Broker Accepted Order`;
             const priceInfo = price > 0 ? ` @ $${price.toFixed(2)}` : '';
             messageText = symbol !== 'N/A' 
-                ? `Order ${symbol} submitted${priceInfo} (${orderType})`
-                : `Order${orderInfo} submitted${priceInfo} (${orderType})`;
+                ? `${symbol}${priceInfo} (${orderType})`
+                : `Order${orderInfo}${priceInfo} (${orderType})`;
             break;
             
         case 'order_filled':
@@ -109,14 +109,14 @@ function globalHandleOrderEvent(message) {
             break;
             
         case 'order_cancelled':
-            title = `Order Canceled`;
+            title = `✓ Broker Accepted Cancellation`;
             const remaining = eventData.remaining_quantity || eventData.remainingQuantity || 0;
             if (remaining > 0) {
                 messageText = `Order${orderInfo} canceled (${remaining} remaining)`;
             } else {
                 messageText = symbol !== 'N/A' 
-                    ? `Order ${symbol} was canceled` 
-                    : `Order${orderInfo} was canceled`;
+                    ? `${symbol} order canceled` 
+                    : `Order${orderInfo} canceled`;
             }
             break;
             

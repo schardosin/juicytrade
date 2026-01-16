@@ -57,10 +57,10 @@ export function useOrderManagement(options = {}) {
       const result = await orderService.placeOrder(confirmedOrderData);
 
       if (result.success) {
-        // Show success notification
-        notificationService.showSuccess(
-          result.message || "Order placed successfully!",
-          "Order Success"
+        // Show info notification (client-side confirmation)
+        notificationService.showInfo(
+          "Order sent to broker, awaiting confirmation...",
+          "Order Sent"
         );
 
         // Store result for any components that might need it

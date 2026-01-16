@@ -848,10 +848,10 @@ export default {
         const response = await api.cancelOrder(order.id);
 
         if (response.success) {
-          // Show success notification
-          notificationService.showSuccess(
-            `Order #${order.id} has been cancelled successfully`,
-            "Order Cancelled"
+          // Show info notification - actual confirmation will come from broker via WebSocket
+          notificationService.showInfo(
+            `Cancellation request sent to broker for order #${order.id}...`,
+            "Cancel Requested"
           );
 
           // Refresh orders to show updated status
