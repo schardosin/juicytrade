@@ -112,7 +112,7 @@ type StreamingManager struct {
 	isConnected         bool
 	shutdownEvent       chan struct{}
 	lock                sync.RWMutex
-	
+
 	// Health monitoring
 	healthManager *StreamingHealthManager
 }
@@ -122,7 +122,7 @@ func NewStreamingManager() *StreamingManager {
 	healthManager := GetHealthManager()
 	cache := NewLatestValueCache()
 	cache.SetHealthManager(healthManager)
-	
+
 	return &StreamingManager{
 		quoteProviders:      make(map[string]base.Provider),
 		greeksProviders:     make(map[string]base.Provider),
@@ -141,7 +141,7 @@ func (sm *StreamingManager) Connect(ctx context.Context) error {
 	defer sm.lock.Unlock()
 
 	slog.Info("Starting streaming manager connection...")
-	
+
 	// Get provider configuration (same as Python)
 	providerConfig := providers.GlobalProviderManager.GetConfig()
 
@@ -196,10 +196,10 @@ func (sm *StreamingManager) Connect(ctx context.Context) error {
 	}
 
 	slog.Info("Streaming manager connected", "active_providers", activeProviders)
-	
+
 	// Start health monitoring
 	sm.healthManager.StartMonitoring(ctx)
-	
+
 	return nil
 }
 
@@ -351,8 +351,8 @@ func (sm *StreamingManager) UpdateGlobalSubscriptions(ctx context.Context, clien
 
 // isOptionSymbol checks if symbol is an option symbol.
 func (sm *StreamingManager) isOptionSymbol(symbol string) bool {
-	return len(symbol) > 10 && 
-		(containsChar(symbol, 'C') || containsChar(symbol, 'P')) && 
+	return len(symbol) > 10 &&
+		(containsChar(symbol, 'C') || containsChar(symbol, 'P')) &&
 		hasDigitsInLast8(symbol)
 }
 
@@ -421,11 +421,11 @@ func (sm *StreamingManager) updateQuoteSubscriptions(ctx context.Context, symbol
 		for symbol := range symbols {
 			allSymbols = append(allSymbols, symbol)
 		}
-		
-		slog.Info("Subscribing quotes to symbols", 
-			"new_count", len(symbolsToAdd), 
+
+		slog.Info("Subscribing quotes to symbols",
+			"new_count", len(symbolsToAdd),
 			"total_count", len(allSymbols))
-		
+
 		// Pass ALL symbols to providers - they handle replace vs add internally
 		if err := sm.subscribeQuotesSafe(ctx, allSymbols); err != nil {
 			return err
@@ -488,11 +488,11 @@ func (sm *StreamingManager) updateGreeksSubscriptions(ctx context.Context, optio
 		for symbol := range optionSymbols {
 			allSymbols = append(allSymbols, symbol)
 		}
-		
-		slog.Info("Subscribing Greeks to symbols", 
-			"new_count", len(symbolsToAdd), 
+
+		slog.Info("Subscribing Greeks to symbols",
+			"new_count", len(symbolsToAdd),
 			"total_count", len(allSymbols))
-		
+
 		// Pass ALL symbols to providers - they handle replace vs add internally
 		if err := sm.subscribeGreeksSafe(ctx, allSymbols); err != nil {
 			return err
@@ -518,7 +518,7 @@ func (sm *StreamingManager) subscribeQuotesSafe(ctx context.Context, symbols []s
 	for providerName, provider := range sm.quoteProviders {
 		// Convert symbols to provider format if needed
 		providerSymbols := sm.convertSymbolsToProviderFormat(symbols, providerName)
-		
+
 		// Update health manager with current subscriptions for recovery
 		sm.healthManager.UpdateSubscriptions(providerName, symbols)
 
@@ -535,7 +535,7 @@ func (sm *StreamingManager) subscribeQuotesSafe(ctx context.Context, symbols []s
 			slog.Error("Error subscribing quotes on provider", "provider", providerName, "error", err)
 			continue
 		}
-		
+
 		slog.Debug("Subscribed to quotes on provider", "provider", providerName, "symbols", len(symbols))
 	}
 	return nil
@@ -547,13 +547,13 @@ func (sm *StreamingManager) unsubscribeQuotesSafe(ctx context.Context, symbols [
 	for providerName, provider := range sm.quoteProviders {
 		// Convert symbols to provider format if needed
 		providerSymbols := sm.convertSymbolsToProviderFormat(symbols, providerName)
-		
+
 		_, err := provider.UnsubscribeFromSymbols(ctx, providerSymbols, []string{"Quote"})
 		if err != nil {
 			slog.Error("Error unsubscribing quotes on provider", "provider", providerName, "error", err)
 			continue
 		}
-		
+
 		slog.Debug("Unsubscribed from quotes on provider", "provider", providerName, "symbols", len(symbols))
 	}
 	return nil
@@ -572,7 +572,7 @@ func (sm *StreamingManager) subscribeGreeksSafe(ctx context.Context, symbols []s
 
 		// Update subscriptions FIRST before attempting to subscribe
 		sm.healthManager.UpdateSubscriptions(providerName, symbols)
-		
+
 		// Ensure connection is healthy before subscribing (Python-style)
 		if healthyProvider, ok := provider.(interface{ EnsureHealthyConnection(context.Context) error }); ok {
 			if err := healthyProvider.EnsureHealthyConnection(ctx); err != nil {
@@ -587,7 +587,7 @@ func (sm *StreamingManager) subscribeGreeksSafe(ctx context.Context, symbols []s
 			slog.Error("Error subscribing Greeks on provider", "provider", providerName, "error", err)
 			continue
 		}
-		
+
 		slog.Info("Subscribed to Greeks-only streaming on provider", "provider", providerName, "symbols", len(symbols))
 	}
 
@@ -604,13 +604,13 @@ func (sm *StreamingManager) unsubscribeGreeksSafe(ctx context.Context, symbols [
 	for providerName, provider := range sm.greeksProviders {
 		// Convert symbols to provider format if needed
 		providerSymbols := sm.convertSymbolsToProviderFormat(symbols, providerName)
-		
+
 		_, err := provider.UnsubscribeFromSymbols(ctx, providerSymbols, []string{"Greeks"})
 		if err != nil {
 			slog.Error("Error unsubscribing Greeks on provider", "provider", providerName, "error", err)
 			continue
 		}
-		
+
 		slog.Info("Unsubscribed from Greeks-only streaming on provider", "provider", providerName, "symbols", len(symbols))
 	}
 	return nil
@@ -689,10 +689,10 @@ func (sm *StreamingManager) GetHealthStats() map[string]interface{} {
 	healthStatus := sm.healthManager.GetHealthStatus()
 
 	return map[string]interface{}{
-		"is_connected":      sm.isConnected,
-		"quote_providers":   quoteProviders,
-		"greeks_providers":  greeksProviders,
-		"total_providers":   len(allProviders),
+		"is_connected":     sm.isConnected,
+		"quote_providers":  quoteProviders,
+		"greeks_providers": greeksProviders,
+		"total_providers":  len(allProviders),
 		"subscription_counts": map[string]int{
 			"quotes": len(sm.quoteSubscriptions),
 			"greeks": len(sm.greeksSubscriptions),
@@ -706,13 +706,28 @@ func (sm *StreamingManager) GetHealthStats() map[string]interface{} {
 func (sm *StreamingManager) Disconnect(ctx context.Context) error {
 	sm.lock.Lock()
 	defer sm.lock.Unlock()
+	return sm.disconnectInternal(ctx)
+}
 
+// disconnectInternal performs the disconnect without acquiring the lock (must be called with lock held)
+func (sm *StreamingManager) disconnectInternal(ctx context.Context) error {
 	slog.Info("Disconnecting streaming manager...")
-	
+
 	// Stop health monitoring
+	slog.Info("🔄 [Disconnect] Stopping health monitoring...")
 	sm.healthManager.StopMonitoring()
-	
-	close(sm.shutdownEvent)
+	slog.Info("✅ [Disconnect] Health monitoring stopped")
+
+	// Safely close shutdown event channel
+	slog.Info("🔄 [Disconnect] Closing shutdown event...")
+	select {
+	case <-sm.shutdownEvent:
+		// Already closed
+		slog.Debug("Shutdown event already closed")
+	default:
+		close(sm.shutdownEvent)
+	}
+	slog.Info("✅ [Disconnect] Shutdown event closed")
 
 	// Disconnect all providers (avoiding duplicates)
 	allProviders := make(map[string]base.Provider)
@@ -723,10 +738,13 @@ func (sm *StreamingManager) Disconnect(ctx context.Context) error {
 		allProviders[name] = provider
 	}
 
+	slog.Info("🔄 [Disconnect] Disconnecting providers...", "count", len(allProviders))
 	for name, provider := range allProviders {
+		slog.Info("🔄 [Disconnect] Disconnecting provider", "provider", name)
 		if _, err := provider.DisconnectStreaming(ctx); err != nil {
 			slog.Error("Error disconnecting provider", "provider", name, "error", err)
 		}
+		slog.Info("✅ [Disconnect] Provider disconnected", "provider", name)
 	}
 
 	// Clear all state
@@ -736,15 +754,20 @@ func (sm *StreamingManager) Disconnect(ctx context.Context) error {
 	sm.greeksSubscriptions = make(map[string]bool)
 	sm.isConnected = false
 
-	slog.Info("Streaming manager disconnected")
+	slog.Info("✅ [Disconnect] Streaming manager disconnected")
 	return nil
 }
 
 // RestartWithNewConfig restarts streaming connections with new configuration while preserving subscriptions.
-// Exact conversion of Python restart_with_new_config method.
+// This method returns immediately and performs reconnection asynchronously.
 func (sm *StreamingManager) RestartWithNewConfig(ctx context.Context) error {
+	slog.Info("🔄 [RestartWithNewConfig] Acquiring lock...")
 	sm.lock.Lock()
-	defer sm.lock.Unlock()
+	slog.Info("✅ [RestartWithNewConfig] Lock acquired")
+	defer func() {
+		sm.lock.Unlock()
+		slog.Info("✅ [RestartWithNewConfig] Lock released")
+	}()
 
 	slog.Info("Restarting streaming manager with new configuration...")
 
@@ -761,43 +784,64 @@ func (sm *StreamingManager) RestartWithNewConfig(ctx context.Context) error {
 
 	slog.Info("Preserving subscriptions", "quotes", len(currentQuoteSubscriptions), "greeks", len(currentGreeksSubscriptions))
 
-	// Disconnect all current connections
-	if err := sm.Disconnect(ctx); err != nil {
-		return fmt.Errorf("failed to disconnect: %w", err)
+	// Disconnect all current connections synchronously (should be fast)
+	// Use internal method since we already hold the lock
+	slog.Info("🔄 [RestartWithNewConfig] Calling disconnectInternal...")
+	if err := sm.disconnectInternal(ctx); err != nil {
+		slog.Warn("Error during disconnect", "error", err)
 	}
+	slog.Info("✅ [RestartWithNewConfig] Disconnect completed")
 
 	// Reset shutdown event for reconnection
 	sm.shutdownEvent = make(chan struct{})
 
-	// Reconnect with new configuration
+	// Return immediately, perform reconnection asynchronously
+	slog.Info("🔄 [RestartWithNewConfig] Starting async reconnection...")
+	go sm.asyncReconnectWithSubscriptions(ctx, currentQuoteSubscriptions, currentGreeksSubscriptions)
+
+	slog.Info("✅ [RestartWithNewConfig] Returning immediately")
+	return nil
+}
+
+// asyncReconnectWithSubscriptions handles reconnection and subscription restoration in background.
+func (sm *StreamingManager) asyncReconnectWithSubscriptions(
+	ctx context.Context,
+	quoteSubs map[string]bool,
+	greeksSubs map[string]bool,
+) {
+	// Reconnect with new configuration (may take time)
 	if err := sm.Connect(ctx); err != nil {
-		slog.Error("Failed to reconnect streaming manager with new configuration", "error", err)
-		return err
+		slog.Error("Failed to reconnect streaming manager", "error", err)
+		return
 	}
 
-	// Restore subscriptions if we had any
-	if len(currentQuoteSubscriptions) > 0 || len(currentGreeksSubscriptions) > 0 {
-		slog.Info("Restoring previous subscriptions...")
+	// Restore subscriptions asynchronously
+	if len(quoteSubs) > 0 || len(greeksSubs) > 0 {
+		slog.Info("Restoring subscriptions asynchronously...", "quotes", len(quoteSubs), "greeks", len(greeksSubs))
+
+		restoreCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
 
 		// Restore quote subscriptions
-		if len(currentQuoteSubscriptions) > 0 {
-			if err := sm.updateQuoteSubscriptions(ctx, currentQuoteSubscriptions); err != nil {
-				return fmt.Errorf("failed to restore quote subscriptions: %w", err)
+		if len(quoteSubs) > 0 {
+			if err := sm.updateQuoteSubscriptions(restoreCtx, quoteSubs); err != nil {
+				slog.Error("Failed to restore quote subscriptions", "error", err)
+			} else {
+				slog.Info("Restored quote subscriptions", "count", len(quoteSubs))
 			}
 		}
 
 		// Restore Greeks subscriptions
-		if len(currentGreeksSubscriptions) > 0 {
-			if err := sm.updateGreeksSubscriptions(ctx, currentGreeksSubscriptions); err != nil {
-				return fmt.Errorf("failed to restore Greeks subscriptions: %w", err)
+		if len(greeksSubs) > 0 {
+			if err := sm.updateGreeksSubscriptions(restoreCtx, greeksSubs); err != nil {
+				slog.Error("Failed to restore Greeks subscriptions", "error", err)
+			} else {
+				slog.Info("Restored Greeks subscriptions", "count", len(greeksSubs))
 			}
 		}
 
-		slog.Info("Restored subscriptions", "quotes", len(currentQuoteSubscriptions), "greeks", len(currentGreeksSubscriptions))
+		slog.Info("Subscription restoration completed")
 	}
-
-	slog.Info("Streaming manager restarted successfully with new configuration")
-	return nil
 }
 
 // GetLatestCache returns the latest value cache

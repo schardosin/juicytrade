@@ -1559,10 +1559,26 @@ func (p *TastyTradeProvider) DisconnectStreaming(ctx context.Context) (bool, err
 		close(p.streamingState.shutdownEvent)
 	}
 
-	// Cancel streaming task
+	// Cancel streaming task (with timeout to avoid blocking forever)
 	if p.streamingState.streamingTask != nil {
 		p.streamingState.streamingTask.cancel()
-		<-p.streamingState.streamingTask.done
+
+		// Wait for task to finish with timeout (non-blocking)
+		done := make(chan struct{})
+		go func() {
+			if p.streamingState.streamingTask != nil {
+				<-p.streamingState.streamingTask.done
+			}
+			close(done)
+		}()
+
+		// Wait up to 2 seconds for graceful shutdown
+		select {
+		case <-done:
+			slog.Info("TastyTrade: Streaming task exited gracefully")
+		case <-time.After(2 * time.Second):
+			slog.Warn("TastyTrade: Streaming task did not exit in time, continuing...")
+		}
 	}
 
 	// Close connection

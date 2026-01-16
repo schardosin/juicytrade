@@ -821,6 +821,33 @@ func (h *WebSocketHandler) Shutdown() {
 	}
 }
 
+// StopAccountStream stops the account events stream for the current provider
+func (h *WebSocketHandler) StopAccountStream() {
+	tradeProvider := providers.GlobalProviderManager.GetProviderByService("trade_account")
+	if tradeProvider != nil {
+		slog.Info("Stopping account stream for provider", "provider", tradeProvider.GetName())
+		tradeProvider.StopAccountStream()
+	}
+}
+
+// RestartAccountStream restarts the account stream with a new provider
+func (h *WebSocketHandler) RestartAccountStream(provider base.Provider) error {
+	if provider == nil {
+		slog.Error("Cannot restart account stream: provider is nil")
+		return nil
+	}
+
+	slog.Info("Restarting account stream with new provider", "provider", provider.GetName())
+
+	// Set the callback first
+	provider.SetOrderEventCallback(func(event *models.OrderEvent) {
+		h.BroadcastOrderEvent(event)
+	})
+
+	// Start the stream
+	return provider.StartAccountStream(context.Background())
+}
+
 // StartAccountStream initializes the account events WebSocket stream for the provider
 func (h *WebSocketHandler) StartAccountStream(provider base.Provider) error {
 	if provider == nil {

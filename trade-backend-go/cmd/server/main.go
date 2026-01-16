@@ -1048,6 +1048,11 @@ func main() {
 			log.Printf("  - %s", instanceID)
 		}
 
+		// Stop old account stream before updating config
+		log.Printf("🔄 Stopping old account stream...")
+		wsHandler.StopAccountStream()
+
+		// Update config
 		success := providerManager.UpdateConfig(newConfig)
 
 		// Log what actually got saved
@@ -1058,11 +1063,45 @@ func main() {
 		}
 
 		if success {
+			log.Printf("🔄 [1/5] Config saved successfully")
+
+			// Restart streaming with new config
+			log.Printf("🔄 [2/5] Calling RestartWithNewConfig...")
+			streamingCtx := c.Request.Context()
+			if err := streamingMgr.RestartWithNewConfig(streamingCtx); err != nil {
+				log.Printf("⚠️ Failed to restart streaming: %v", err)
+			}
+			log.Printf("✅ [3/5] RestartWithNewConfig returned")
+
+			// Get new trade provider before sending response
+			newTradeProvider := providerManager.GetProviderByService("trade_account")
+			if newTradeProvider != nil {
+				log.Printf("✅ [4/5] New trade provider: %s", newTradeProvider.GetName())
+			} else {
+				log.Printf("⚠️ No trade_account provider configured after update")
+			}
+
+			// Send response immediately, restart account stream in background
+			log.Printf("📤 [5/5] Sending HTTP response...")
 			c.JSON(200, gin.H{
 				"success": true,
 				"message": "Provider config updated successfully.",
-				"data":    map[string]interface{}{"streaming_restarted": false},
+				"data":    map[string]interface{}{"streaming_restarted": true},
 			})
+			log.Printf("✅ HTTP response sent")
+
+			// Restart account stream asynchronously (doesn't block HTTP response)
+			// This makes blocking API calls to fetch initial state
+			go func() {
+				log.Printf("🔄 Starting account stream in background...")
+				if newTradeProvider != nil {
+					if err := wsHandler.RestartAccountStream(newTradeProvider); err != nil {
+						log.Printf("⚠️ Failed to restart account stream: %v", err)
+					} else {
+						log.Printf("✅ Account stream started with provider: %s", newTradeProvider.GetName())
+					}
+				}
+			}()
 		} else {
 			c.JSON(500, gin.H{
 				"success": false,
