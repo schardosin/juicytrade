@@ -3761,12 +3761,24 @@ func (c *AccountStreamClient) handleMessage(message []byte) {
 			"type", orderEvent.Type)
 	}
 
-	c.mu.RLock()
-	callback := c.eventCallback
-	c.mu.RUnlock()
+	// Normalize the event based on status transitions
+	normalizedEvent, shouldEmit := models.GetGlobalNormalizer().NormalizeEvent(&orderEvent)
 
-	if callback != nil {
-		callback(&orderEvent)
+	// Only emit if we have a normalized event
+	if shouldEmit && normalizedEvent != "" {
+		orderEvent.NormalizedEvent = normalizedEvent
+
+		c.mu.RLock()
+		callback := c.eventCallback
+		c.mu.RUnlock()
+
+		if callback != nil {
+			slog.Info("[ORDER-EVENT] Emitting normalized event",
+				"orderID", orderEvent.ID,
+				"normalizedEvent", normalizedEvent,
+				"status", orderEvent.Status)
+			callback(&orderEvent)
+		}
 	}
 }
 

@@ -4670,10 +4670,23 @@ func (p *TastyTradeProvider) handleAccountStreamMessage(message map[string]inter
 	switch msgType {
 	case "Order":
 		// Handle order events
-		if orderEvent := p.parseAccountStreamOrderEvent(message); orderEvent != nil {
+		orderEvent := p.parseAccountStreamOrderEvent(message)
+		if orderEvent != nil {
 			slog.Info("TastyTrade: Parsed order event from Account Streamer", "id", orderEvent.GetIDAsString(), "status", orderEvent.Status, "symbol", orderEvent.Symbol)
-			if p.streamingState != nil && p.streamingState.orderEventCallback != nil {
-				p.streamingState.orderEventCallback(orderEvent)
+
+			// Normalize the event based on status transitions
+			normalizedEvent, shouldEmit := models.GetGlobalNormalizer().NormalizeEvent(orderEvent)
+
+			if shouldEmit && normalizedEvent != "" {
+				orderEvent.NormalizedEvent = normalizedEvent
+
+				if p.streamingState != nil && p.streamingState.orderEventCallback != nil {
+					slog.Info("TastyTrade: Emitting normalized event",
+						"orderID", orderEvent.ID,
+						"normalizedEvent", normalizedEvent,
+						"status", orderEvent.Status)
+					p.streamingState.orderEventCallback(orderEvent)
+				}
 			}
 		}
 
@@ -4701,23 +4714,74 @@ func (p *TastyTradeProvider) parseAccountStreamOrderEvent(message map[string]int
 		return nil
 	}
 
-	// Map TastyTrade status to our standard status
+	// Map TastyTrade status to our standard status (normalized to match Tradier format)
+	// Standard statuses: pending, open, filled, canceled, rejected, partially_filled, expired
+	// TastyTrade sends various statuses that we normalize to our standard format
 	statusMap := map[string]string{
-		"Received":         "new",
-		"routed":           "open",
-		" Routed":          "open",
-		"Live":             "open",
-		"Filled":           "filled",
-		"filled":           "filled",
+		// Initial order states → pending (matches Tradier's "pending")
+		"Received":     "pending",
+		"received":     "pending",
+		"routed":       "pending",
+		"Routed":       "pending", // Capitalized variant
+		" Routed":      "pending", // With leading space
+		"queued":       "pending",
+		"Live":         "pending",
+		"live":         "pending",
+		"working":      "pending",
+		"confirm":      "pending",
+		"confirmation": "pending",
+		"submitted":    "pending",
+		"Submit":       "pending",
+		"placed":       "pending",
+		"New":          "pending",
+		"new":          "pending",
+		"INIT":         "pending",
+		"INITIAL":      "pending",
+		"APPROVED":     "pending",
+		"APPROVAL":     "pending",
+
+		// Open states → open (order is live in market, no toast needed)
+		"Open":   "open",
+		"open":   "open",
+		"ROUTED": "open", // Capitalized variant (only for when order is fully open)
+
+		// Filled states → filled
+		"Filled":   "filled",
+		"filled":   "filled",
+		"FILL":     "filled",
+		"complete": "filled",
+		"COMPLETE": "filled",
+
+		// Partially filled → partially_filled
 		"Partially Filled": "partially_filled",
+		"partially_filled": "partially_filled",
+		"PARTIAL":          "partially_filled",
+		"partial":          "partially_filled",
+
+		// Canceled states → canceled
 		"Canceled":         "canceled",
 		"canceled":         "canceled",
 		"Cancelled":        "canceled", // UK spelling
+		"CANCEL":           "canceled",
+		"cancel":           "canceled",
 		"Cancel Received":  "canceled",
 		"Cancel Requested": "canceled",
-		"Expired":          "expired",
-		"Rejected":         "rejected",
-		"rejected":         "rejected",
+		"cancel_received":  "canceled",
+		"cancel_requested": "canceled",
+		"CANCEL_RECEIVED":  "canceled",
+		"CANCEL_REQUESTED": "canceled",
+
+		// Rejected states → rejected
+		"Rejected": "rejected",
+		"rejected": "rejected",
+		"REJECT":   "rejected",
+		"REJECTED": "rejected",
+
+		// Expired states → expired
+		"Expired": "expired",
+		"expired": "expired",
+		"EXPIRED": "expired",
+		"expire":  "expired",
 	}
 
 	// Get order ID
@@ -4732,11 +4796,12 @@ func (p *TastyTradeProvider) parseAccountStreamOrderEvent(message map[string]int
 
 	// Get status
 	rawStatus, _ := data["status"].(string)
-	slog.Debug("TastyTrade: Raw order status", "order_id", id, "status", rawStatus)
 	status := statusMap[rawStatus]
 	if status == "" {
-		slog.Warn("TastyTrade: Unknown order status, adding to mapping", "status", rawStatus)
+		slog.Warn("TastyTrade: Unknown order status", "rawStatus", rawStatus, "orderID", id)
 		status = "unknown"
+	} else {
+		slog.Debug("TastyTrade: Mapped status", "rawStatus", rawStatus, "normalizedStatus", status, "orderID", id)
 	}
 
 	// Get symbol - TastyTrade uses "underlying-symbol" for orders

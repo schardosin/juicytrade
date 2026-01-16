@@ -2388,13 +2388,18 @@ func (ap *AlpacaProvider) streamTradeUpdatesOnce(ctx context.Context) error {
 	}
 	defer conn.Close()
 
+	// Subscribe to trade_updates stream (for order events)
 	subscribeMsg := map[string]interface{}{
-		"action": "subscribe",
-		"trades": []string{"*"},
+		"action": "listen",
+		"data": map[string]interface{}{
+			"streams": []string{"trade_updates"},
+		},
 	}
 	if err := conn.WriteJSON(subscribeMsg); err != nil {
-		return fmt.Errorf("failed to subscribe to trades: %w", err)
+		return fmt.Errorf("failed to subscribe to trade_updates: %w", err)
 	}
+
+	ap.LogInfo("Subscribed to Alpaca trade_updates stream")
 
 	conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 	conn.SetPingHandler(func(appData string) error {
@@ -2420,56 +2425,159 @@ func (ap *AlpacaProvider) streamTradeUpdatesOnce(ctx context.Context) error {
 				continue
 			}
 
-			if trades, ok := message["trades"].([]interface{}); ok {
-				for _, t := range trades {
-					if tradeData, ok := t.(map[string]interface{}); ok {
-						orderEvent := ap.parseAlpacaTradeEvent(tradeData)
-						if orderEvent != nil && ap.orderEventCallback != nil {
-							ap.orderEventCallback(orderEvent)
-						}
-					}
+			// Handle trade_updates messages
+			if stream, ok := message["stream"].(string); ok && stream == "trade_updates" {
+				if data, ok := message["data"].(map[string]interface{}); ok {
+					ap.processAlpacaTradeUpdate(data)
+				} else {
+					ap.LogInfo("Alpaca: No data in trade_update message")
 				}
 			}
 		}
 	}
 }
 
-func (ap *AlpacaProvider) parseAlpacaTradeEvent(trade map[string]interface{}) *models.OrderEvent {
-	symbol, _ := trade["T"].(string)
-	event, _ := trade["e"].(string)
+func (ap *AlpacaProvider) processAlpacaTradeUpdate(data map[string]interface{}) {
+	// Extract event type
+	eventType, _ := data["event"].(string)
 
+	// Extract order data
+	orderData, ok := data["order"].(map[string]interface{})
+	if !ok {
+		ap.LogInfo("Alpaca: No order data in trade_update")
+		return
+	}
+
+	orderEvent := ap.parseAlpacaOrderEvent(orderData, eventType)
+	if orderEvent != nil {
+		// Normalize the event based on status transitions
+		normalizedEvent, shouldEmit := models.GetGlobalNormalizer().NormalizeEvent(orderEvent)
+
+		if shouldEmit && normalizedEvent != "" {
+			orderEvent.NormalizedEvent = normalizedEvent
+
+			if ap.orderEventCallback != nil {
+				ap.LogInfo(fmt.Sprintf("Alpaca: Emitting normalized event - orderID: %s, normalizedEvent: %s, status: %s",
+					orderEvent.ID, normalizedEvent, orderEvent.Status))
+				ap.orderEventCallback(orderEvent)
+			}
+		}
+	}
+}
+
+func (ap *AlpacaProvider) parseAlpacaOrderEvent(orderData map[string]interface{}, eventType string) *models.OrderEvent {
+	// Get order ID
+	var id interface{}
+	if idVal, ok := orderData["id"].(string); ok {
+		id = idVal
+	} else if idVal, ok := orderData["id"].(float64); ok {
+		id = fmt.Sprintf("%.0f", idVal)
+	}
+
+	// Get symbol
+	symbol, _ := orderData["symbol"].(string)
+
+	// Get status from order data
+	orderStatus, _ := orderData["status"].(string)
+
+	// Map status to our standard format
 	statusMap := map[string]string{
-		"new":     "new",
-		"fill":    "filled",
-		"partial": "partially_filled",
-		"cancel":  "canceled",
-		"expire":  "expired",
-		"reject":  "rejected",
+		"new":            "pending",
+		"accepted":       "pending",
+		"pending_new":    "pending",
+		"open":           "open",
+		"fill":           "filled",
+		"filled":         "filled",
+		"partial":        "partially_filled",
+		"partial_fill":   "partially_filled",
+		"cancel":         "canceled",
+		"canceled":       "canceled",
+		"pending_cancel": "canceled",
+		"expire":         "expired",
+		"expired":        "expired",
+		"rejected":       "rejected",
+		"done_for_day":   "expired",
+		"stopped":        "expired",
+		"suspended":      "expired",
 	}
 
-	var qty, price, timestamp string
-	if v, ok := trade["q"].(string); ok {
-		qty = v
+	// Use order status if available, otherwise derive from event type
+	status := statusMap[orderStatus]
+	if status == "" {
+		status = statusMap[eventType]
 	}
-	if v, ok := trade["p"].(string); ok {
-		price = v
-	}
-	if v, ok := trade["t"].(string); ok {
-		timestamp = v
+	if status == "" {
+		// Fallback: derive from event type
+		switch eventType {
+		case "new", "accepted", "pending_new":
+			status = "pending"
+		case "fill":
+			status = "filled"
+		case "partial_fill":
+			status = "partially_filled"
+		case "cancel", "canceled":
+			status = "canceled"
+		case "expired":
+			status = "expired"
+		case "rejected":
+			status = "rejected"
+		default:
+			status = "open"
+		}
 	}
 
-	qtyFloat, _ := strconv.ParseFloat(qty, 64)
-	priceFloat, _ := strconv.ParseFloat(price, 64)
+	// Get quantities
+	qtyStr, _ := orderData["qty"].(string)
+	filledQtyStr, _ := orderData["filled_qty"].(string)
+	qty, _ := strconv.ParseFloat(qtyStr, 64)
+	filledQty, _ := strconv.ParseFloat(filledQtyStr, 64)
+	remainingQty := qty - filledQty
+	if remainingQty < 0 {
+		remainingQty = 0
+	}
+
+	// Get price
+	priceStr, _ := orderData["limit_price"].(string)
+	price, _ := strconv.ParseFloat(priceStr, 64)
+
+	// Get filled average price
+	avgPriceStr, _ := orderData["filled_avg_price"].(string)
+	avgPrice, _ := strconv.ParseFloat(avgPriceStr, 64)
+
+	// Get timestamps
+	var transactionDate, createDate string
+	if filledAt, ok := orderData["filled_at"].(string); ok && filledAt != "" {
+		transactionDate = filledAt
+	} else if updatedAt, ok := orderData["updated_at"].(string); ok && updatedAt != "" {
+		transactionDate = updatedAt
+	} else if createdAt, ok := orderData["created_at"].(string); ok && createdAt != "" {
+		transactionDate = createdAt
+	}
+
+	if createdAt, ok := orderData["created_at"].(string); ok {
+		createDate = createdAt
+	}
+
+	// Get order type
+	orderType, _ := orderData["type"].(string)
+
+	// Get side
+	side, _ := orderData["side"].(string)
 
 	return &models.OrderEvent{
-		ID:              trade["i"],
-		Event:           event,
-		Status:          statusMap[event],
-		Symbol:          symbol,
-		Quantity:        qtyFloat,
-		Price:           priceFloat,
-		TransactionDate: timestamp,
-		Account:         "",
+		ID:                id,
+		Event:             "order",
+		Status:            status,
+		Type:              orderType,
+		Symbol:            symbol,
+		Side:              side,
+		Quantity:          qty,
+		ExecutedQuantity:  filledQty,
+		RemainingQuantity: remainingQty,
+		Price:             price,
+		AvgFillPrice:      avgPrice,
+		TransactionDate:   transactionDate,
+		CreateDate:        createDate,
 	}
 }
 

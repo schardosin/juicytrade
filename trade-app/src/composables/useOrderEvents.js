@@ -9,10 +9,6 @@ let globalListenerActive = false;
 const consumers = new Set();
 let toastsEnabled = false; // Only one consumer should enable toasts
 
-// Debounce state - wait for final status before showing toast
-const pendingEvents = new Map(); // orderId -> { event, timeoutId }
-const DEBOUNCE_MS = 150; // Wait 150ms for final status
-
 function getStatusNotificationType(status) {
     const statusLower = status?.toLowerCase() || '';
 
@@ -34,7 +30,7 @@ function globalHandleOrderEvent(message) {
     if (eventData.event === 'heartbeat') return;
 
     const orderId = eventData.id || eventData.ID;
-    const status = eventData.status || eventData.Status;
+    const normalizedEvent = eventData.normalized_event || eventData.normalizedEvent || '';
 
     // Skip child orders (Tradier sends separate events for each leg with parent_id)
     const parentId = eventData.parent_id || eventData.parentId;
@@ -52,53 +48,7 @@ function globalHandleOrderEvent(message) {
         return;
     }
 
-    // Terminal statuses that should immediately override pending states
-    const terminalStatuses = ['filled', 'canceled', 'cancelled', 'rejected', 'expired'];
-    const isTerminalStatus = terminalStatuses.includes(status?.toLowerCase());
-    
-    const orderKey = String(orderId);
-    
-    if (isTerminalStatus) {
-        // Terminal status: cancel any pending debounce and process immediately
-        if (pendingEvents.has(orderKey)) {
-            const pending = pendingEvents.get(orderKey);
-            clearTimeout(pending.timeoutId);
-            pendingEvents.delete(orderKey);
-        }
-        // Process terminal status immediately
-        processOrderEvent(eventData);
-    } else {
-        // Non-terminal status (pending, open, new): debounce to allow terminal status to override
-        // But keep the FIRST non-terminal event (pending) for the toast, not later ones (open)
-        if (pendingEvents.has(orderKey)) {
-            // Already have a pending event, just reset the timer but keep original event
-            const pending = pendingEvents.get(orderKey);
-            clearTimeout(pending.timeoutId);
-            
-            const timeoutId = setTimeout(() => {
-                const stored = pendingEvents.get(orderKey);
-                pendingEvents.delete(orderKey);
-                if (stored) {
-                    processOrderEvent(stored.event);
-                }
-            }, DEBOUNCE_MS);
-            
-            pending.timeoutId = timeoutId;
-        } else {
-            // First non-terminal event, store it
-            const timeoutId = setTimeout(() => {
-                const stored = pendingEvents.get(orderKey);
-                pendingEvents.delete(orderKey);
-                if (stored) {
-                    processOrderEvent(stored.event);
-                }
-            }, DEBOUNCE_MS);
-            
-            pendingEvents.set(orderKey, { event: eventData, timeoutId });
-        }
-    }
-
-    // Always notify consumers immediately for data refresh (but toast is debounced)
+    // Notify all consumers immediately for data refresh
     consumers.forEach(consumer => {
         if (consumer.onOrderUpdate) {
             try {
@@ -108,88 +58,86 @@ function globalHandleOrderEvent(message) {
             }
         }
     });
-}
 
-function processOrderEvent(eventData) {
-    const orderId = eventData.id || eventData.ID;
-    const symbol = eventData.symbol || eventData.Symbol || 'N/A';
-    const status = eventData.status || eventData.Status;
-    const remainingQty = eventData.remaining_quantity || eventData.remainingQuantity || 0;
-    const filledQty = eventData.exec_quantity || eventData.execQuantity || eventData.executed_quantity || 0;
-    const avgFillPrice = eventData.avg_fill_price || eventData.avgFillPrice || 0;
-    const orderType = eventData.type || eventData.order_type || '';
+    // Show toast only for normalized events (backend handles state tracking)
+    if (!normalizedEvent || !toastsEnabled) {
+        return;
+    }
 
-    // Build notification message based on status
+    // The normalized event determines what to show
     let messageText = '';
     let title = '';
+    const symbol = eventData.symbol || eventData.Symbol || 'N/A';
     const price = eventData.price || eventData.Price || 0;
-    let shouldShowToast = true;
+    const orderType = eventData.type || eventData.order_type || '';
+    const orderInfo = orderId ? ` #${orderId}` : '';
 
-    if (status?.toLowerCase() === 'filled') {
-        title = symbol !== 'N/A' ? `Order Filled: ${symbol}` : `Order Filled`;
-        if (filledQty > 0 && avgFillPrice > 0) {
-            messageText = `Filled ${filledQty} @ $${avgFillPrice.toFixed(2)}`;
-        } else if (price > 0) {
-            messageText = `Filled @ $${price.toFixed(2)}`;
-        } else {
-            messageText = `Order filled`;
-        }
-    } else if (status?.toLowerCase() === 'canceled' || status?.toLowerCase() === 'cancelled') {
-        title = `Order Canceled`;
-        const orderInfo = orderId ? ` #${orderId}` : '';
-        if (remainingQty > 0) {
-            messageText = `Order${orderInfo} canceled (${remainingQty} remaining)`;
-        } else {
+    switch (normalizedEvent) {
+        case 'order_submitted':
+            title = `Order Submitted`;
+            const priceInfo = price > 0 ? ` @ $${price.toFixed(2)}` : '';
             messageText = symbol !== 'N/A' 
-                ? `Order ${symbol} was canceled` 
-                : `Order${orderInfo} was canceled`;
-        }
-    } else if (status?.toLowerCase() === 'rejected') {
-        title = `Order Rejected`;
-        const orderInfo = orderId ? ` #${orderId}` : '';
-        messageText = symbol !== 'N/A' 
-            ? `Order ${symbol} was rejected` 
-            : `Order${orderInfo} was rejected`;
-    } else if (status?.toLowerCase() === 'pending') {
-        title = `Order Submitted`;
-        const orderInfo = orderId ? ` #${orderId}` : '';
-        const priceInfo = price > 0 ? ` @ $${price.toFixed(2)}` : '';
-        messageText = symbol !== 'N/A' 
-            ? `Order ${symbol} submitted${priceInfo} (${orderType})`
-            : `Order${orderInfo} submitted${priceInfo} (${orderType})`;
-    } else if (status?.toLowerCase() === 'open' || status?.toLowerCase() === 'new') {
-        // Order is now live in the market - skip notification since we already showed "submitted"
-        shouldShowToast = false;
-    } else if (status?.toLowerCase() === 'partially_filled') {
-        title = `Order Partially Filled`;
-        const orderInfo = orderId ? ` #${orderId}` : '';
-        if (filledQty > 0 && avgFillPrice > 0) {
-            messageText = `Filled ${filledQty} @ $${avgFillPrice.toFixed(2)} (${remainingQty} remaining)`;
-        } else {
-            messageText = symbol !== 'N/A' 
-                ? `Order ${symbol} partially filled` 
-                : `Order${orderInfo} partially filled`;
-        }
-    } else {
-        shouldShowToast = false;
+                ? `Order ${symbol} submitted${priceInfo} (${orderType})`
+                : `Order${orderInfo} submitted${priceInfo} (${orderType})`;
+            break;
+            
+        case 'order_filled':
+            title = symbol !== 'N/A' ? `Order Filled: ${symbol}` : `Order Filled`;
+            const filledQty = eventData.exec_quantity || eventData.execQuantity || eventData.executed_quantity || 0;
+            const avgFillPrice = eventData.avg_fill_price || eventData.avgFillPrice || 0;
+            if (filledQty > 0 && avgFillPrice > 0) {
+                messageText = `Filled ${filledQty} @ $${avgFillPrice.toFixed(2)}`;
+            } else if (price > 0) {
+                messageText = `Filled @ $${price.toFixed(2)}`;
+            } else {
+                messageText = `Order filled`;
+            }
+            break;
+            
+        case 'order_partially_filled':
+            title = `Order Partially Filled`;
+            const partialFilledQty = eventData.exec_quantity || eventData.execQuantity || eventData.executed_quantity || 0;
+            const partialAvgFillPrice = eventData.avg_fill_price || eventData.avgFillPrice || 0;
+            const remainingQty = eventData.remaining_quantity || eventData.remainingQuantity || 0;
+            if (partialFilledQty > 0 && partialAvgFillPrice > 0) {
+                messageText = `Filled ${partialFilledQty} @ $${partialAvgFillPrice.toFixed(2)} (${remainingQty} remaining)`;
+            } else {
+                messageText = symbol !== 'N/A' 
+                    ? `Order ${symbol} partially filled` 
+                    : `Order${orderInfo} partially filled`;
+            }
+            break;
+            
+        case 'order_cancelled':
+            title = `Order Canceled`;
+            const remaining = eventData.remaining_quantity || eventData.remainingQuantity || 0;
+            if (remaining > 0) {
+                messageText = `Order${orderInfo} canceled (${remaining} remaining)`;
+            } else {
+                messageText = symbol !== 'N/A' 
+                    ? `Order ${symbol} was canceled` 
+                    : `Order${orderInfo} was canceled`;
+            }
+            break;
+            
+        default:
+            return; // Unknown normalized event, don't show toast
     }
 
-    // Show toast only once (via global flag)
-    if (shouldShowToast && toastsEnabled && messageText) {
-        const notificationType = getStatusNotificationType(status);
-        const notificationMethods = {
-            'success': notificationService.showSuccess.bind(notificationService),
-            'warning': notificationService.showWarning.bind(notificationService),
-            'error': notificationService.showError.bind(notificationService),
-            'info': notificationService.showInfo.bind(notificationService),
-        };
+    // Show the toast
+    const notificationType = getStatusNotificationType(eventData.status);
+    const notificationMethods = {
+        'success': notificationService.showSuccess.bind(notificationService),
+        'warning': notificationService.showWarning.bind(notificationService),
+        'error': notificationService.showError.bind(notificationService),
+        'info': notificationService.showInfo.bind(notificationService),
+    };
 
-        const notify = notificationMethods[notificationType] || notificationService.showInfo.bind(notificationService);
-        notify(messageText, title, 5000);
-        
-        // Play notification sound for order events
-        playOrderNotificationSound();
-    }
+    const notify = notificationMethods[notificationType] || notificationService.showInfo.bind(notificationService);
+    notify(messageText, title, 5000);
+    
+    // Play notification sound
+    playOrderNotificationSound();
 }
 
 function ensureGlobalListener() {

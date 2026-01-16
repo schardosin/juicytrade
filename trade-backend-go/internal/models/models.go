@@ -355,12 +355,13 @@ type IVxResponse struct {
 	CalculationTime *float64        `json:"calculation_time,omitempty"`
 }
 
-// OrderEvent represents a real-time order event from Tradier's WebSocket stream
+// OrderEvent represents a real-time order event from broker WebSocket streams
 type OrderEvent struct {
-	ID                interface{} `json:"id"`     // Can be string or number depending on API version
-	Event             string      `json:"event"`  // "order"
-	Status            string      `json:"status"` // "open", "pending", "filled", "canceled", "rejected", etc.
-	Type              string      `json:"type"`   // "market", "limit", etc.
+	ID                interface{} `json:"id"`                         // Can be string or number depending on API version
+	Event             string      `json:"event"`                      // "order"
+	Status            string      `json:"status"`                     // "open", "pending", "filled", "canceled", "rejected", etc.
+	NormalizedEvent   string      `json:"normalized_event,omitempty"` // "order_submitted", "order_filled", "order_partially_filled", "order_cancelled"
+	Type              string      `json:"type"`                       // "market", "limit", etc.
 	Symbol            string      `json:"symbol,omitempty"`
 	Side              string      `json:"side,omitempty"`
 	Quantity          float64     `json:"quantity,omitempty"`
