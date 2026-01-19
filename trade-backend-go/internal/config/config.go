@@ -14,27 +14,27 @@ type Settings struct {
 	Provider string `mapstructure:"provider" json:"provider"`
 
 	// Alpaca API credentials
-	AlpacaAPIKeyLive      string `mapstructure:"alpaca_api_key_live" json:"alpaca_api_key_live"`
-	AlpacaAPISecretLive   string `mapstructure:"alpaca_api_secret_live" json:"alpaca_api_secret_live"`
-	AlpacaAPIKeyPaper     string `mapstructure:"alpaca_api_key_paper" json:"alpaca_api_key_paper"`
-	AlpacaAPISecretPaper  string `mapstructure:"alpaca_api_secret_paper" json:"alpaca_api_secret_paper"`
-	AlpacaBaseURLLive     string `mapstructure:"alpaca_base_url_live" json:"alpaca_base_url_live"`
-	AlpacaBaseURLPaper    string `mapstructure:"alpaca_base_url_paper" json:"alpaca_base_url_paper"`
-	AlpacaDataURL         string `mapstructure:"alpaca_data_url" json:"alpaca_data_url"`
+	AlpacaAPIKeyLive     string `mapstructure:"alpaca_api_key_live" json:"alpaca_api_key_live"`
+	AlpacaAPISecretLive  string `mapstructure:"alpaca_api_secret_live" json:"alpaca_api_secret_live"`
+	AlpacaAPIKeyPaper    string `mapstructure:"alpaca_api_key_paper" json:"alpaca_api_key_paper"`
+	AlpacaAPISecretPaper string `mapstructure:"alpaca_api_secret_paper" json:"alpaca_api_secret_paper"`
+	AlpacaBaseURLLive    string `mapstructure:"alpaca_base_url_live" json:"alpaca_base_url_live"`
+	AlpacaBaseURLPaper   string `mapstructure:"alpaca_base_url_paper" json:"alpaca_base_url_paper"`
+	AlpacaDataURL        string `mapstructure:"alpaca_data_url" json:"alpaca_data_url"`
 
 	// Public API credentials
 	PublicSecretKey string `mapstructure:"public_secret_key" json:"public_secret_key"`
 	PublicAccountID string `mapstructure:"public_account_id" json:"public_account_id"`
 
 	// Tradier API credentials
-	TradierSecretKey       string `mapstructure:"tradier_secret_key" json:"tradier_secret_key"`
-	TradierAccountID       string `mapstructure:"tradier_account_id" json:"tradier_account_id"`
-	TradierSecretKeyPaper  string `mapstructure:"tradier_secret_key_paper" json:"tradier_secret_key_paper"`
-	TradierAccountIDPaper  string `mapstructure:"tradier_account_id_paper" json:"tradier_account_id_paper"`
-	TradierBaseURLLive     string `mapstructure:"tradier_base_url_live" json:"tradier_base_url_live"`
-	TradierBaseURLPaper    string `mapstructure:"tradier_base_url_paper" json:"tradier_base_url_paper"`
-	TradierStreamURLLive   string `mapstructure:"tradier_stream_url_live" json:"tradier_stream_url_live"`
-	TradierStreamURLPaper  string `mapstructure:"tradier_stream_url_paper" json:"tradier_stream_url_paper"`
+	TradierSecretKey      string `mapstructure:"tradier_secret_key" json:"tradier_secret_key"`
+	TradierAccountID      string `mapstructure:"tradier_account_id" json:"tradier_account_id"`
+	TradierSecretKeyPaper string `mapstructure:"tradier_secret_key_paper" json:"tradier_secret_key_paper"`
+	TradierAccountIDPaper string `mapstructure:"tradier_account_id_paper" json:"tradier_account_id_paper"`
+	TradierBaseURLLive    string `mapstructure:"tradier_base_url_live" json:"tradier_base_url_live"`
+	TradierBaseURLPaper   string `mapstructure:"tradier_base_url_paper" json:"tradier_base_url_paper"`
+	TradierStreamURLLive  string `mapstructure:"tradier_stream_url_live" json:"tradier_stream_url_live"`
+	TradierStreamURLPaper string `mapstructure:"tradier_stream_url_paper" json:"tradier_stream_url_paper"`
 
 	// Server settings
 	Host   string `mapstructure:"host" json:"host"`
@@ -50,6 +50,12 @@ type Settings struct {
 	// Streaming settings
 	StreamingQuotes string `mapstructure:"streaming_quotes" json:"streaming_quotes"`
 	StreamingGreeks string `mapstructure:"streaming_greeks" json:"streaming_greeks"`
+
+	// Strategy Service settings
+	StrategyServiceURL string `mapstructure:"strategy_service_url" json:"strategy_service_url"`
+
+	// Python Backend settings (for data-import and other legacy services)
+	PythonBackendURL string `mapstructure:"python_backend_url" json:"python_backend_url"`
 }
 
 // Global settings instance - exact equivalent of Python's global settings
@@ -69,7 +75,7 @@ func LoadSettings() *Settings {
 		// It's okay if config file doesn't exist, we can use env vars
 		if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
 			// Config file was found but another error occurred
-			// We can log it or just proceed if we want to be very permissive, 
+			// We can log it or just proceed if we want to be very permissive,
 			// but usually a malformed config file is worth noting.
 			// For now, we'll just proceed as env vars might cover it.
 		}
@@ -91,6 +97,8 @@ func LoadSettings() *Settings {
 	viper.SetDefault("tradier_stream_url_paper", "wss://ws.sandbox.tradier.com/v1/markets/events")
 	viper.SetDefault("streaming_quotes", "")
 	viper.SetDefault("streaming_greeks", "")
+	viper.SetDefault("strategy_service_url", "http://localhost:8009")
+	viper.SetDefault("python_backend_url", "http://localhost:8010")
 
 	// Enable automatic environment variable binding
 	viper.AutomaticEnv()
@@ -115,36 +123,40 @@ func LoadSettings() *Settings {
 	viper.BindEnv("tradier_stream_url_paper", "TRADIER_STREAM_URL_PAPER")
 	viper.BindEnv("streaming_quotes", "STREAMING_QUOTES")
 	viper.BindEnv("streaming_greeks", "STREAMING_GREEKS")
+	viper.BindEnv("strategy_service_url", "STRATEGY_SERVICE_URL")
+	viper.BindEnv("python_backend_url", "PYTHON_BACKEND_URL")
 
 	settings := &Settings{}
 	if err := viper.Unmarshal(settings); err != nil {
 		// If unmarshal fails, create settings with defaults and environment variables
 		settings = &Settings{
 			Provider:                     getEnvOrDefault("PROVIDER", "alpaca"),
-			AlpacaAPIKeyLive:            getEnvOrDefault("APCA_API_KEY_ID_LIVE", ""),
-			AlpacaAPISecretLive:         getEnvOrDefault("APCA_API_SECRET_KEY_LIVE", ""),
-			AlpacaAPIKeyPaper:           getEnvOrDefault("APCA_API_KEY_ID_PAPER", ""),
-			AlpacaAPISecretPaper:        getEnvOrDefault("APCA_API_SECRET_KEY_PAPER", ""),
-			AlpacaBaseURLLive:           getEnvOrDefault("ALPACA_BASE_URL_LIVE", "https://api.alpaca.markets"),
-			AlpacaBaseURLPaper:          getEnvOrDefault("ALPACA_BASE_URL_PAPER", "https://paper-api.alpaca.markets"),
-			AlpacaDataURL:               getEnvOrDefault("ALPACA_DATA_URL", "https://data.alpaca.markets"),
-			PublicSecretKey:             getEnvOrDefault("PUBLIC_SECRET_KEY", ""),
-			PublicAccountID:             getEnvOrDefault("PUBLIC_ACCOUNT_ID", ""),
-			TradierSecretKey:            getEnvOrDefault("TRADIER_SECRET_KEY", ""),
-			TradierAccountID:            getEnvOrDefault("TRADIER_ACCOUNT_ID", ""),
-			TradierSecretKeyPaper:       getEnvOrDefault("TRADIER_SECRET_KEY_PAPER", ""),
-			TradierAccountIDPaper:       getEnvOrDefault("TRADIER_ACCOUNT_ID_PAPER", ""),
-			TradierBaseURLLive:          getEnvOrDefault("TRADIER_BASE_URL_LIVE", "https://api.tradier.com"),
-			TradierBaseURLPaper:         getEnvOrDefault("TRADIER_BASE_URL_PAPER", "https://sandbox.tradier.com"),
-			TradierStreamURLLive:        getEnvOrDefault("TRADIER_STREAM_URL_LIVE", "wss://ws.tradier.com/v1/markets/events"),
-			TradierStreamURLPaper:       getEnvOrDefault("TRADIER_STREAM_URL_PAPER", "wss://ws.sandbox.tradier.com/v1/markets/events"),
-			Host:                        getEnvOrDefault("HOST", "0.0.0.0"),
-			Port:                        getEnvIntOrDefault("PORT", 8008),
-			Reload:                      getEnvBoolOrDefault("RELOAD", true),
-			LogLevel:                    getEnvOrDefault("LOG_LEVEL", "INFO"),
+			AlpacaAPIKeyLive:             getEnvOrDefault("APCA_API_KEY_ID_LIVE", ""),
+			AlpacaAPISecretLive:          getEnvOrDefault("APCA_API_SECRET_KEY_LIVE", ""),
+			AlpacaAPIKeyPaper:            getEnvOrDefault("APCA_API_KEY_ID_PAPER", ""),
+			AlpacaAPISecretPaper:         getEnvOrDefault("APCA_API_SECRET_KEY_PAPER", ""),
+			AlpacaBaseURLLive:            getEnvOrDefault("ALPACA_BASE_URL_LIVE", "https://api.alpaca.markets"),
+			AlpacaBaseURLPaper:           getEnvOrDefault("ALPACA_BASE_URL_PAPER", "https://paper-api.alpaca.markets"),
+			AlpacaDataURL:                getEnvOrDefault("ALPACA_DATA_URL", "https://data.alpaca.markets"),
+			PublicSecretKey:              getEnvOrDefault("PUBLIC_SECRET_KEY", ""),
+			PublicAccountID:              getEnvOrDefault("PUBLIC_ACCOUNT_ID", ""),
+			TradierSecretKey:             getEnvOrDefault("TRADIER_SECRET_KEY", ""),
+			TradierAccountID:             getEnvOrDefault("TRADIER_ACCOUNT_ID", ""),
+			TradierSecretKeyPaper:        getEnvOrDefault("TRADIER_SECRET_KEY_PAPER", ""),
+			TradierAccountIDPaper:        getEnvOrDefault("TRADIER_ACCOUNT_ID_PAPER", ""),
+			TradierBaseURLLive:           getEnvOrDefault("TRADIER_BASE_URL_LIVE", "https://api.tradier.com"),
+			TradierBaseURLPaper:          getEnvOrDefault("TRADIER_BASE_URL_PAPER", "https://sandbox.tradier.com"),
+			TradierStreamURLLive:         getEnvOrDefault("TRADIER_STREAM_URL_LIVE", "wss://ws.tradier.com/v1/markets/events"),
+			TradierStreamURLPaper:        getEnvOrDefault("TRADIER_STREAM_URL_PAPER", "wss://ws.sandbox.tradier.com/v1/markets/events"),
+			Host:                         getEnvOrDefault("HOST", "0.0.0.0"),
+			Port:                         getEnvIntOrDefault("PORT", 8008),
+			Reload:                       getEnvBoolOrDefault("RELOAD", true),
+			LogLevel:                     getEnvOrDefault("LOG_LEVEL", "INFO"),
 			SubscriptionKeepaliveTimeout: getEnvIntOrDefault("SUBSCRIPTION_KEEPALIVE_TIMEOUT", 60),
-			StreamingQuotes:             getEnvOrDefault("STREAMING_QUOTES", ""),
-			StreamingGreeks:             getEnvOrDefault("STREAMING_GREEKS", ""),
+			StreamingQuotes:              getEnvOrDefault("STREAMING_QUOTES", ""),
+			StreamingGreeks:              getEnvOrDefault("STREAMING_GREEKS", ""),
+			StrategyServiceURL:           getEnvOrDefault("STRATEGY_SERVICE_URL", "http://localhost:8009"),
+			PythonBackendURL:             getEnvOrDefault("PYTHON_BACKEND_URL", "http://localhost:8010"),
 		}
 	}
 

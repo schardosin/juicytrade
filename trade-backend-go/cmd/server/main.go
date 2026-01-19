@@ -14,6 +14,7 @@ import (
 
 	"trade-backend-go/internal/api/handlers"
 	"trade-backend-go/internal/auth"
+	"trade-backend-go/internal/clients"
 	"trade-backend-go/internal/config"
 	"trade-backend-go/internal/models"
 	"trade-backend-go/internal/providers"
@@ -75,6 +76,15 @@ func main() {
 	// Initialize handlers
 	healthHandler := handlers.NewHealthHandler()
 	marketDataHandler := handlers.NewMarketDataHandler(providerManager)
+
+	// Initialize strategy client and handler
+	strategyClient := clients.NewStrategyClient(cfg.StrategyServiceURL)
+	strategyHandler := handlers.NewStrategyHandler(strategyClient)
+
+	// Initialize data-import client and handler (proxies to Python backend)
+	dataImportClient := clients.NewDataImportClient(cfg.PythonBackendURL)
+	dataImportHandler := handlers.NewDataImportHandler(dataImportClient)
+
 	// Initialize WebSocket handler with IVx service
 	wsHandler := handlers.NewWebSocketHandler(ivxService)
 
@@ -1498,6 +1508,20 @@ func main() {
 		})
 	})
 
+	// Strategy Management (proxy to Python strategy service)
+	// Register on /api/strategies
+	registerStrategyRoutes(api, strategyHandler)
+
+	// Register on /api/api/strategies (to handle frontend legacy double-prefix)
+	apiDouble := api.Group("/api")
+	registerStrategyRoutes(apiDouble, strategyHandler)
+
+	// Data Import (proxy to Python backend)
+	// Register on /api/data-import
+	registerDataImportRoutes(api, dataImportHandler)
+	// Register on /api/api/data-import (to handle frontend legacy double-prefix)
+	registerDataImportRoutes(apiDouble, dataImportHandler)
+
 	// WebSocket endpoint - exact same path as Python
 
 	// Debug endpoint to check account stream status
@@ -1571,6 +1595,70 @@ func main() {
 	}
 
 	log.Println("Server exited")
+}
+
+// Helper to register strategy routes on a router group
+func registerStrategyRoutes(g *gin.RouterGroup, h *handlers.StrategyHandler) {
+	// Strategy Management
+	g.GET("/strategies/my", h.ListStrategies)
+	g.POST("/strategies/upload", h.UploadStrategy)
+	g.GET("/strategies/:id", h.GetStrategy)
+	g.PUT("/strategies/:id", h.UpdateStrategy)
+	g.DELETE("/strategies/:id", h.DeleteStrategy)
+	g.GET("/strategies/:id/parameters", h.GetStrategyParameters)
+	g.POST("/strategies/:id/validate", h.ValidateStrategy)
+
+	// Strategy Configurations
+	g.GET("/strategies/:id/configs", h.GetConfigurations)
+	g.POST("/strategies/:id/configs", h.CreateConfiguration)
+	g.GET("/strategies/configs/:configId", h.GetConfiguration)
+	g.PUT("/strategies/configs/:configId", h.UpdateConfiguration)
+	g.DELETE("/strategies/configs/:configId", h.DeleteConfiguration)
+
+	// Backtesting
+	g.POST("/strategies/:id/backtest", h.RunBacktest)
+	g.GET("/strategies/backtest/runs", h.GetBacktestRuns)
+	g.GET("/strategies/backtest/runs/:runId", h.GetBacktestRun)
+	g.DELETE("/strategies/backtest/runs/:runId", h.DeleteBacktestRun)
+
+	// Live Trading
+	g.POST("/strategies/:id/start", h.StartStrategy)
+	g.POST("/strategies/:id/stop", h.StopStrategy)
+	g.POST("/strategies/:id/pause", h.PauseStrategy)
+	g.POST("/strategies/:id/resume", h.ResumeStrategy)
+	g.GET("/strategies/:id/status", h.GetStrategyStatus)
+	g.GET("/strategies/stats", h.GetExecutionStats)
+}
+
+// Helper to register data-import routes on a router group
+func registerDataImportRoutes(g *gin.RouterGroup, h *handlers.DataImportHandler) {
+	// Files
+	g.GET("/data-import/files", h.ListFiles)
+	g.GET("/data-import/files/detailed", h.ListFilesDetailed)
+
+	// Imported data
+	g.GET("/data-import/imported-data", h.GetImportedData)
+	g.GET("/data-import/imported-data/:symbol", h.GetImportedDataBySymbol)
+
+	// Metadata
+	g.GET("/data-import/metadata/:filename", h.GetFileMetadata)
+
+	// Jobs
+	g.POST("/data-import/jobs", h.CreateJob)
+	g.GET("/data-import/jobs/:job_id/status", h.GetJobStatus)
+	g.GET("/data-import/jobs", h.ListJobs)
+	g.DELETE("/data-import/jobs/:job_id", h.CancelJob)
+
+	// Queue
+	g.GET("/data-import/queue/status", h.GetQueueStatus)
+	g.POST("/data-import/queue", h.AddToQueue)
+	g.POST("/data-import/queue/batch", h.AddBatchToQueue)
+	g.DELETE("/data-import/queue/:queue_id", h.RemoveFromQueue)
+	g.DELETE("/data-import/queue/clear", h.ClearQueue)
+
+	// Summary and stats
+	g.GET("/data-import/summary", h.GetImportSummary)
+	g.GET("/data-import/storage/stats", h.GetStorageStats)
 }
 
 // Helper function to create string pointer

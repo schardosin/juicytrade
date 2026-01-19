@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  strategy-service:
+    build: .
+    ports:
+      - "8009:8009"
+    volumes:
+      - ./data:/app/data
+      - ./src:/app/src
+    environment:
+      - STRATEGY_LOG_LEVEL=INFO
+      - STRATEGY_PORT=8009
+    restart: unless-stopped

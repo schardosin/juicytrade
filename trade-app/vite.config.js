@@ -17,6 +17,10 @@ export default defineConfig({
         changeOrigin: true,
         // Forward /auth requests directly to backend (no rewrite needed)
       },
+      "/health": {
+        target: process.env.JUICYTRADE_API_BASE_URL || "http://localhost:8008",
+        changeOrigin: true,
+      },
     },
   },
   resolve: {
