@@ -5,20 +5,30 @@ This module extends the existing models.py with options-specific helper classes
 that complement the existing OptionContract and MultiLegOrderRequest models.
 """
 
-import sys
-from pathlib import Path
-
-# Ensure trade_backend is importable
-_project_root = Path(__file__).parent.parent.parent.parent
-if str(_project_root) not in sys.path:
-    sys.path.insert(0, str(_project_root))
-
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime, date
 import re
 
-from trade_backend.models import OptionContract
+
+class OptionContract(BaseModel):
+    """Standardized option contract model."""
+    symbol: str
+    underlying_symbol: str
+    expiration_date: str
+    strike_price: float
+    type: str  # "call" or "put"
+    root_symbol: Optional[str] = None  # Root symbol from provider (e.g., SPXW, SPY)
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    close_price: Optional[float] = None
+    volume: Optional[int] = None
+    open_interest: Optional[int] = None
+    implied_volatility: Optional[float] = None
+    delta: Optional[float] = None
+    gamma: Optional[float] = None
+    theta: Optional[float] = None
+    vega: Optional[float] = None
 
 
 class OptionsChain(BaseModel):

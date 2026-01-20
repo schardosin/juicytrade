@@ -5,13 +5,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Add parent directory to path so trade_backend can be imported
-parent_dir = Path(__file__).parent.parent.parent
-if str(parent_dir) not in sys.path:
-    sys.path.insert(0, str(parent_dir))
+# Add parent directory to path so 'src' packages can be imported
+_parent_dir = Path(__file__).parent.parent.parent
+if str(_parent_dir) not in sys.path:
+    sys.path.insert(0, str(_parent_dir))
 
 from src.config import settings
 from src.api.endpoints import router as strategies_router
+from src.api.data_import_endpoints import router as data_import_router
 from src.persistence.database import strategy_db_manager
 
 # Configure logging
@@ -59,6 +60,7 @@ app.add_middleware(
 
 # Register routers
 app.include_router(strategies_router, prefix="/api/strategies", tags=["strategies"])
+app.include_router(data_import_router, prefix="/api", tags=["data-import"])
 
 @app.get("/health")
 async def health_check():

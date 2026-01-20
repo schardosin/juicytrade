@@ -187,3 +187,74 @@ func (c *StrategyClient) GetStrategyStatus(strategyID string) ([]byte, int, erro
 func (c *StrategyClient) GetExecutionStats() ([]byte, int, error) {
 	return c.doRequest(context.Background(), "GET", "/api/strategies/stats", nil, "")
 }
+
+// Data Import - proxied to strategy service
+
+func (c *StrategyClient) ListImportFiles() ([]byte, int, error) {
+	return c.doRequest(context.Background(), "GET", "/api/data-import/files", nil, "")
+}
+
+func (c *StrategyClient) ListImportFilesDetailed() ([]byte, int, error) {
+	return c.doRequest(context.Background(), "GET", "/api/data-import/files/detailed", nil, "")
+}
+
+func (c *StrategyClient) GetImportedData(expand bool) ([]byte, int, error) {
+	path := fmt.Sprintf("/api/data-import/imported-data?expand=%t", expand)
+	return c.doRequest(context.Background(), "GET", path, nil, "")
+}
+
+func (c *StrategyClient) GetImportedDataBySymbol(symbol string) ([]byte, int, error) {
+	return c.doRequest(context.Background(), "GET", fmt.Sprintf("/api/data-import/imported-data/%s", symbol), nil, "")
+}
+
+func (c *StrategyClient) GetFileMetadata(filename string) ([]byte, int, error) {
+	return c.doRequest(context.Background(), "GET", fmt.Sprintf("/api/data-import/metadata/%s", filename), nil, "")
+}
+
+func (c *StrategyClient) CreateImportJob(body []byte) ([]byte, int, error) {
+	return c.doRequest(context.Background(), "POST", "/api/data-import/jobs", bytes.NewReader(body), "application/json")
+}
+
+func (c *StrategyClient) GetImportJobStatus(jobID string) ([]byte, int, error) {
+	return c.doRequest(context.Background(), "GET", fmt.Sprintf("/api/data-import/jobs/%s/status", jobID), nil, "")
+}
+
+func (c *StrategyClient) ListImportJobs(status string, limit int) ([]byte, int, error) {
+	path := fmt.Sprintf("/api/data-import/jobs?limit=%d", limit)
+	if status != "" {
+		path = fmt.Sprintf("/api/data-import/jobs?status=%s&limit=%d", status, limit)
+	}
+	return c.doRequest(context.Background(), "GET", path, nil, "")
+}
+
+func (c *StrategyClient) CancelImportJob(jobID string) ([]byte, int, error) {
+	return c.doRequest(context.Background(), "DELETE", fmt.Sprintf("/api/data-import/jobs/%s", jobID), nil, "")
+}
+
+func (c *StrategyClient) GetImportQueueStatus() ([]byte, int, error) {
+	return c.doRequest(context.Background(), "GET", "/api/data-import/queue/status", nil, "")
+}
+
+func (c *StrategyClient) AddToImportQueue(body []byte) ([]byte, int, error) {
+	return c.doRequest(context.Background(), "POST", "/api/data-import/queue", bytes.NewReader(body), "application/json")
+}
+
+func (c *StrategyClient) AddBatchToImportQueue(body []byte) ([]byte, int, error) {
+	return c.doRequest(context.Background(), "POST", "/api/data-import/queue/batch", bytes.NewReader(body), "application/json")
+}
+
+func (c *StrategyClient) RemoveFromImportQueue(queueID string) ([]byte, int, error) {
+	return c.doRequest(context.Background(), "DELETE", fmt.Sprintf("/api/data-import/queue/%s", queueID), nil, "")
+}
+
+func (c *StrategyClient) ClearImportQueue() ([]byte, int, error) {
+	return c.doRequest(context.Background(), "DELETE", "/api/data-import/queue/clear", nil, "")
+}
+
+func (c *StrategyClient) GetImportSummary() ([]byte, int, error) {
+	return c.doRequest(context.Background(), "GET", "/api/data-import/summary", nil, "")
+}
+
+func (c *StrategyClient) GetStorageStats() ([]byte, int, error) {
+	return c.doRequest(context.Background(), "GET", "/api/data-import/storage/stats", nil, "")
+}

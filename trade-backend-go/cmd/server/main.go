@@ -81,10 +81,6 @@ func main() {
 	strategyClient := clients.NewStrategyClient(cfg.StrategyServiceURL)
 	strategyHandler := handlers.NewStrategyHandler(strategyClient)
 
-	// Initialize data-import client and handler (proxies to Python backend)
-	dataImportClient := clients.NewDataImportClient(cfg.PythonBackendURL)
-	dataImportHandler := handlers.NewDataImportHandler(dataImportClient)
-
 	// Initialize WebSocket handler with IVx service
 	wsHandler := handlers.NewWebSocketHandler(ivxService)
 
@@ -1516,11 +1512,11 @@ func main() {
 	apiDouble := api.Group("/api")
 	registerStrategyRoutes(apiDouble, strategyHandler)
 
-	// Data Import (proxy to Python backend)
+	// Data Import (proxy to strategy service)
 	// Register on /api/data-import
-	registerDataImportRoutes(api, dataImportHandler)
+	registerDataImportRoutes(api, strategyHandler)
 	// Register on /api/api/data-import (to handle frontend legacy double-prefix)
-	registerDataImportRoutes(apiDouble, dataImportHandler)
+	registerDataImportRoutes(apiDouble, strategyHandler)
 
 	// WebSocket endpoint - exact same path as Python
 
@@ -1631,10 +1627,10 @@ func registerStrategyRoutes(g *gin.RouterGroup, h *handlers.StrategyHandler) {
 }
 
 // Helper to register data-import routes on a router group
-func registerDataImportRoutes(g *gin.RouterGroup, h *handlers.DataImportHandler) {
+func registerDataImportRoutes(g *gin.RouterGroup, h *handlers.StrategyHandler) {
 	// Files
-	g.GET("/data-import/files", h.ListFiles)
-	g.GET("/data-import/files/detailed", h.ListFilesDetailed)
+	g.GET("/data-import/files", h.ListImportFiles)
+	g.GET("/data-import/files/detailed", h.ListImportFilesDetailed)
 
 	// Imported data
 	g.GET("/data-import/imported-data", h.GetImportedData)
@@ -1644,17 +1640,17 @@ func registerDataImportRoutes(g *gin.RouterGroup, h *handlers.DataImportHandler)
 	g.GET("/data-import/metadata/:filename", h.GetFileMetadata)
 
 	// Jobs
-	g.POST("/data-import/jobs", h.CreateJob)
-	g.GET("/data-import/jobs/:job_id/status", h.GetJobStatus)
-	g.GET("/data-import/jobs", h.ListJobs)
-	g.DELETE("/data-import/jobs/:job_id", h.CancelJob)
+	g.POST("/data-import/jobs", h.CreateImportJob)
+	g.GET("/data-import/jobs/:job_id/status", h.GetImportJobStatus)
+	g.GET("/data-import/jobs", h.ListImportJobs)
+	g.DELETE("/data-import/jobs/:job_id", h.CancelImportJob)
 
 	// Queue
-	g.GET("/data-import/queue/status", h.GetQueueStatus)
-	g.POST("/data-import/queue", h.AddToQueue)
-	g.POST("/data-import/queue/batch", h.AddBatchToQueue)
-	g.DELETE("/data-import/queue/:queue_id", h.RemoveFromQueue)
-	g.DELETE("/data-import/queue/clear", h.ClearQueue)
+	g.GET("/data-import/queue/status", h.GetImportQueueStatus)
+	g.POST("/data-import/queue", h.AddToImportQueue)
+	g.POST("/data-import/queue/batch", h.AddBatchToImportQueue)
+	g.DELETE("/data-import/queue/:queue_id", h.RemoveFromImportQueue)
+	g.DELETE("/data-import/queue/clear", h.ClearImportQueue)
 
 	// Summary and stats
 	g.GET("/data-import/summary", h.GetImportSummary)

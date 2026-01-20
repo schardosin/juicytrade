@@ -234,3 +234,120 @@ func (h *StrategyHandler) GetExecutionStats(c *gin.Context) {
 	data, code, err := h.client.GetExecutionStats()
 	h.proxyResponse(c, data, code, err)
 }
+
+// Data Import
+
+func (h *StrategyHandler) ListImportFiles(c *gin.Context) {
+	data, code, err := h.client.ListImportFiles()
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) ListImportFilesDetailed(c *gin.Context) {
+	data, code, err := h.client.ListImportFilesDetailed()
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) GetImportedData(c *gin.Context) {
+	expand := c.DefaultQuery("expand", "false") == "true"
+	data, code, err := h.client.GetImportedData(expand)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) GetImportedDataBySymbol(c *gin.Context) {
+	symbol := c.Param("symbol")
+	data, code, err := h.client.GetImportedDataBySymbol(symbol)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) GetFileMetadata(c *gin.Context) {
+	filename := c.Param("filename")
+	data, code, err := h.client.GetFileMetadata(filename)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) CreateImportJob(c *gin.Context) {
+	body, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request body",
+			"error":   err.Error(),
+		})
+		return
+	}
+	data, code, err := h.client.CreateImportJob(body)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) GetImportJobStatus(c *gin.Context) {
+	jobID := c.Param("job_id")
+	data, code, err := h.client.GetImportJobStatus(jobID)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) ListImportJobs(c *gin.Context) {
+	status := c.Query("status")
+	limit := 50
+	data, code, err := h.client.ListImportJobs(status, limit)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) CancelImportJob(c *gin.Context) {
+	jobID := c.Param("job_id")
+	data, code, err := h.client.CancelImportJob(jobID)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) GetImportQueueStatus(c *gin.Context) {
+	data, code, err := h.client.GetImportQueueStatus()
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) AddToImportQueue(c *gin.Context) {
+	body, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request body",
+			"error":   err.Error(),
+		})
+		return
+	}
+	data, code, err := h.client.AddToImportQueue(body)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) AddBatchToImportQueue(c *gin.Context) {
+	body, err := c.GetRawData()
+	if err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": "Invalid request body",
+			"error":   err.Error(),
+		})
+		return
+	}
+	data, code, err := h.client.AddBatchToImportQueue(body)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) RemoveFromImportQueue(c *gin.Context) {
+	queueID := c.Param("queue_id")
+	data, code, err := h.client.RemoveFromImportQueue(queueID)
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) ClearImportQueue(c *gin.Context) {
+	data, code, err := h.client.ClearImportQueue()
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) GetImportSummary(c *gin.Context) {
+	data, code, err := h.client.GetImportSummary()
+	h.proxyResponse(c, data, code, err)
+}
+
+func (h *StrategyHandler) GetStorageStats(c *gin.Context) {
+	data, code, err := h.client.GetStorageStats()
+	h.proxyResponse(c, data, code, err)
+}

@@ -24,3 +24,5 @@ pytz>=2023.3
 # Utilities
 aiofiles>=23.2.0
 requests>=2.31.0
+
+databento>=0.69.0
