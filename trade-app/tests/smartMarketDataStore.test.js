@@ -453,7 +453,7 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
         expect(store.activeGreeksSubscriptions.has(symbol)).toBe(true);
       });
 
-      it('processes Greeks updates correctly', () => {
+      it('processes Greeks updates correctly', async () => {
         const symbol = 'SPY_240119C00500000';
         const greeksData = {
           symbol,
@@ -466,7 +466,19 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
           }
         };
         
-        store.handleGreeksUpdate(greeksData);
+        // Pre-populate the provider config cache with streaming_greeks enabled
+        // This is required because handleGreeksUpdate checks for streaming_greeks config
+        store.cache.set('providers.config', {
+          data: {
+            streaming: 'tastytrade',
+            streaming_greeks: 'tastytrade',
+            greeks: 'alpaca',
+            orders: 'tastytrade'
+          },
+          timestamp: Date.now()
+        });
+        
+        await store.handleGreeksUpdate(greeksData);
         
         const storedGreeks = store.optionGreeks.get(symbol);
         expect(storedGreeks).toBeTruthy();
@@ -1437,28 +1449,22 @@ describe('SmartMarketDataStore - Cascade Protection & Data Integrity', () => {
         expect(store.currentSymbolDaily6M.bars).toHaveLength(initialBarsCount);
       });
 
-      it('triggers background load on first stock subscription', async () => {
+      it('subscribeToSymbol adds symbol to active subscriptions and schedules backend update', async () => {
         const symbol = 'AAPL';
         
-        // Mock the API call
-        const mockBars = [
-          { time: '2024-07-01', open: 150, high: 155, low: 149, close: 153, volume: 1000000 }
-        ];
-        mockApi.getHistoricalData.mockResolvedValueOnce({ bars: mockBars });
-        
-        // Subscribe to symbol (should trigger background load)
+        // Subscribe to symbol - adds to subscriptions, schedules WebSocket update
+        // Note: subscribeToSymbol no longer triggers historical data loading
+        // Historical data is loaded separately via loadCurrentSymbolDaily6M
         await store.subscribeToSymbol(symbol);
         
-        // Wait for background load to complete
-        await new Promise(resolve => setTimeout(resolve, 100));
+        // Symbol should be added to active subscriptions
+        expect(store.activeSubscriptions.has(symbol)).toBe(true);
         
-        expect(mockApi.getHistoricalData).toHaveBeenCalledWith(
-          symbol,
-          'D',
-          expect.objectContaining({
-            start_date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/)
-          })
-        );
+        // Wait for debounced backend update
+        await new Promise(resolve => setTimeout(resolve, 150));
+        
+        // Should have called WebSocket to update subscriptions
+        expect(mockWebSocketClient.replaceAllSubscriptions).toHaveBeenCalled();
       });
     });
 
