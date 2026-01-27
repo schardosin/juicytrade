@@ -13,6 +13,7 @@ import authService from "./services/authService.js";
 import Button from "primevue/button";
 import InputText from "primevue/inputtext";
 import InputNumber from "primevue/inputnumber";
+import InputSwitch from "primevue/inputswitch";
 import Dropdown from "primevue/dropdown";
 import Calendar from "primevue/calendar";
 import DataTable from "primevue/datatable";
@@ -129,6 +130,7 @@ function configureDataSources() {
 app.component("Button", Button);
 app.component("InputText", InputText);
 app.component("InputNumber", InputNumber);
+app.component("InputSwitch", InputSwitch);
 app.component("Dropdown", Dropdown);
 app.component("Calendar", Calendar);
 app.component("DataTable", DataTable);

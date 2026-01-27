@@ -849,6 +849,63 @@ func (sm *StreamingManager) GetLatestCache() *LatestValueCache {
 	return sm.latestCache
 }
 
+// AddSymbolsToSubscriptions adds symbols to the existing subscriptions without replacing them.
+// This is useful for automation/background tasks that need to subscribe without disrupting other clients.
+func (sm *StreamingManager) AddSymbolsToSubscriptions(ctx context.Context, symbols []string) error {
+	sm.lock.Lock()
+	defer sm.lock.Unlock()
+
+	if len(symbols) == 0 {
+		return nil
+	}
+
+	// Add to existing subscriptions
+	optionSymbols := make([]string, 0)
+	stockSymbols := make([]string, 0)
+
+	for _, symbol := range symbols {
+		if sm.isOptionSymbol(symbol) {
+			if !sm.greeksSubscriptions[symbol] {
+				sm.greeksSubscriptions[symbol] = true
+				optionSymbols = append(optionSymbols, symbol)
+			}
+		}
+		if !sm.quoteSubscriptions[symbol] {
+			sm.quoteSubscriptions[symbol] = true
+			if sm.isOptionSymbol(symbol) {
+				optionSymbols = append(optionSymbols, symbol)
+			} else {
+				stockSymbols = append(stockSymbols, symbol)
+			}
+		}
+	}
+
+	// Subscribe to new quotes (all symbols need quotes)
+	if len(stockSymbols) > 0 || len(optionSymbols) > 0 {
+		allQuoteSymbols := make([]string, 0, len(sm.quoteSubscriptions))
+		for s := range sm.quoteSubscriptions {
+			allQuoteSymbols = append(allQuoteSymbols, s)
+		}
+		if err := sm.subscribeQuotesSafe(ctx, allQuoteSymbols); err != nil {
+			slog.Warn("Failed to subscribe quotes for added symbols", "error", err)
+		}
+	}
+
+	// Subscribe to new Greeks (options only)
+	if len(optionSymbols) > 0 {
+		allGreeksSymbols := make([]string, 0, len(sm.greeksSubscriptions))
+		for s := range sm.greeksSubscriptions {
+			allGreeksSymbols = append(allGreeksSymbols, s)
+		}
+		if err := sm.subscribeGreeksSafe(ctx, allGreeksSymbols); err != nil {
+			slog.Warn("Failed to subscribe Greeks for added symbols", "error", err)
+		}
+	}
+
+	slog.Debug("Added symbols to subscriptions", "added_quotes", len(stockSymbols)+len(optionSymbols), "added_greeks", len(optionSymbols))
+	return nil
+}
+
 // Singleton instance
 var streamingManagerInstance *StreamingManager
 var streamingManagerOnce sync.Once

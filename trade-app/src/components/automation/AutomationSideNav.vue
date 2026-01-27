@@ -5,8 +5,8 @@
       <div
         v-for="item in navItems"
         :key="item.id"
-        :class="['nav-item', { active: activeItem === item.id }]"
-        @click="setActiveItem(item.id)"
+        :class="['nav-item', { active: isActive(item) }]"
+        @click="navigateTo(item)"
       >
         <div class="nav-icon">
           <i :class="item.icon"></i>
@@ -17,110 +17,70 @@
 
     <!-- Bottom Section -->
     <div class="nav-bottom">
-      <div class="nav-item" @click="openHelp">
+      <div class="nav-item" @click="goBack">
         <div class="nav-icon">
-          <i class="pi pi-question-circle"></i>
+          <i class="pi pi-arrow-left"></i>
         </div>
-        <div class="nav-label">Help</div>
+        <div class="nav-label">Back</div>
       </div>
     </div>
   </div>
 </template>
 
 <script>
-import { ref, onMounted, watch } from "vue";
+import { ref, computed } from "vue";
 import { useRouter, useRoute } from "vue-router";
 
 export default {
-  name: "SideNav",
+  name: "AutomationSideNav",
   setup() {
     const router = useRouter();
     const route = useRoute();
-    // Reactive data
-    const activeItem = ref("trade");
 
-    // Navigation items matching the JuicyTrade layout
+    // Navigation items for Automation section
     const navItems = [
       {
-        id: "positions",
-        label: "Positions",
-        icon: "pi pi-chart-line",
-        route: "/positions",
-      },
-      {
-        id: "trade",
-        label: "Trade",
-        icon: "pi pi-shopping-cart",
-        route: "/trade",
-      },
-      {
-        id: "chart",
-        label: "Chart",
-        icon: "pi pi-chart-bar",
-        route: "/chart",
-      },
-      {
-        id: "automation",
-        label: "Auto",
-        icon: "pi pi-bolt",
+        id: "dashboard",
+        label: "Dashboard",
+        icon: "pi pi-th-large",
         route: "/automation",
+        exact: true,
       },
       {
-        id: "activity",
-        label: "Activity",
-        icon: "pi pi-clock",
-        route: "/activity",
+        id: "create",
+        label: "New Config",
+        icon: "pi pi-plus",
+        route: "/automation/create",
       },
       {
         id: "history",
         label: "History",
         icon: "pi pi-history",
-        route: "/history",
+        route: "/automation/history",
       },
     ];
 
     // Methods
-    const setActiveItem = (itemId) => {
-      activeItem.value = itemId;
-      const item = navItems.find((nav) => nav.id === itemId);
-      if (item) {
-        router.push(item.route);
+    const isActive = (item) => {
+      if (item.exact) {
+        return route.path === item.route;
       }
+      return route.path.startsWith(item.route);
     };
 
-    const updateActiveItemFromRoute = () => {
-      const currentPath = route.path;
-      const currentItem = navItems.find((item) => item.route === currentPath);
-      if (currentItem) {
-        activeItem.value = currentItem.id;
-      } else if (currentPath === "/" || currentPath === "/trade") {
-        activeItem.value = "trade";
-      }
+    const navigateTo = (item) => {
+      router.push(item.route);
     };
 
-    const openHelp = () => {
-      console.log("Opening help");
-      // Here you would open help documentation or support
+    const goBack = () => {
+      router.push("/trade");
     };
-
-    // Watch for route changes
-    watch(route, updateActiveItemFromRoute, { immediate: true });
-
-    // Set initial active item on mount
-    onMounted(() => {
-      updateActiveItemFromRoute();
-    });
 
     return {
-      // Reactive data
-      activeItem,
-
-      // Static data
       navItems,
-
-      // Methods
-      setActiveItem,
-      openHelp,
+      isActive,
+      navigateTo,
+      goBack,
     };
   },
 };

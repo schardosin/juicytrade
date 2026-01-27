@@ -285,11 +285,18 @@ func (pm *ProviderManager) GetOptionsChainBasic(ctx context.Context, symbol, exp
 }
 
 // GetOptionsGreeksBatch gets Greeks for multiple option symbols.
+// Prioritizes streaming_greeks over greeks provider.
 // Exact conversion of Python get_options_greeks_batch method.
 func (pm *ProviderManager) GetOptionsGreeksBatch(ctx context.Context, optionSymbols []string) (map[string]map[string]interface{}, error) {
-	provider := pm.getProvider("options_chain")
+	// Try streaming_greeks first (priority 1)
+	provider := pm.getProvider("streaming_greeks")
 	if provider == nil {
-		return nil, fmt.Errorf("no provider configured for options_chain")
+		// Fallback to non-streaming greeks (priority 2)
+		provider = pm.getProvider("greeks")
+	}
+
+	if provider == nil {
+		return nil, fmt.Errorf("no provider configured for greeks or streaming_greeks")
 	}
 
 	return provider.GetOptionsGreeksBatch(ctx, optionSymbols)

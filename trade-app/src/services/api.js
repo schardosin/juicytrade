@@ -1237,6 +1237,184 @@ export const api = {
       throw error;
     }
   },
+
+  // === Automation APIs ===
+
+  // Get all automation configs
+  async getAutomationConfigs() {
+    try {
+      const response = await apiClient.get(`${API_BASE_URL}/automation/configs`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching automation configs:", error);
+      throw error;
+    }
+  },
+
+  // Get a specific automation config
+  async getAutomationConfig(configId) {
+    try {
+      const response = await apiClient.get(`${API_BASE_URL}/automation/configs/${configId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching automation config:", error);
+      throw error;
+    }
+  },
+
+  // Create a new automation config
+  async createAutomationConfig(configData) {
+    try {
+      const response = await apiClient.post(`${API_BASE_URL}/automation/configs`, configData);
+      return response.data;
+    } catch (error) {
+      console.error("Error creating automation config:", error);
+      throw error;
+    }
+  },
+
+  // Update an automation config
+  async updateAutomationConfig(configId, configData) {
+    try {
+      const response = await apiClient.put(`${API_BASE_URL}/automation/configs/${configId}`, configData);
+      return response.data;
+    } catch (error) {
+      console.error("Error updating automation config:", error);
+      throw error;
+    }
+  },
+
+  // Delete an automation config
+  async deleteAutomationConfig(configId) {
+    try {
+      const response = await apiClient.delete(`${API_BASE_URL}/automation/configs/${configId}`);
+      return response.data;
+    } catch (error) {
+      console.error("Error deleting automation config:", error);
+      throw error;
+    }
+  },
+
+  // Toggle automation config enabled/disabled
+  async toggleAutomationConfig(configId) {
+    try {
+      const response = await apiClient.put(`${API_BASE_URL}/automation/configs/${configId}/toggle`);
+      return response.data;
+    } catch (error) {
+      console.error("Error toggling automation config:", error);
+      throw error;
+    }
+  },
+
+  // Start automation
+  async startAutomation(configId) {
+    try {
+      const response = await apiClient.post(`${API_BASE_URL}/automation/${configId}/start`);
+      return response.data;
+    } catch (error) {
+      console.error("Error starting automation:", error);
+      throw error;
+    }
+  },
+
+  // Stop automation
+  async stopAutomation(configId) {
+    try {
+      const response = await apiClient.post(`${API_BASE_URL}/automation/${configId}/stop`);
+      return response.data;
+    } catch (error) {
+      console.error("Error stopping automation:", error);
+      throw error;
+    }
+  },
+
+  // Reset TradedToday flag for daily automations
+  async resetAutomationTradedToday(configId) {
+    try {
+      const response = await apiClient.post(`${API_BASE_URL}/automation/${configId}/reset-today`);
+      return response.data;
+    } catch (error) {
+      console.error("Error resetting traded today:", error);
+      throw error;
+    }
+  },
+
+  // Get automation status for a specific config
+  async getAutomationStatus(configId) {
+    try {
+      const response = await apiClient.get(`${API_BASE_URL}/automation/${configId}/status`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching automation status:", error);
+      throw error;
+    }
+  },
+
+  // Get automation logs for a specific config
+  async getAutomationLogs(configId) {
+    try {
+      const response = await apiClient.get(`${API_BASE_URL}/automation/${configId}/logs`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching automation logs:", error);
+      throw error;
+    }
+  },
+
+  // Get all automation statuses
+  async getAllAutomationStatuses() {
+    try {
+      const response = await apiClient.get(`${API_BASE_URL}/automation/status`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching all automation statuses:", error);
+      throw error;
+    }
+  },
+
+  // Evaluate indicators for a saved config
+  async evaluateAutomationConfig(configId) {
+    try {
+      const response = await apiClient.post(`${API_BASE_URL}/automation/${configId}/evaluate`);
+      return response.data;
+    } catch (error) {
+      console.error("Error evaluating automation config:", error);
+      throw error;
+    }
+  },
+
+  // Preview indicator evaluation (without saving)
+  async previewAutomationIndicators(indicatorsData) {
+    try {
+      const response = await apiClient.post(`${API_BASE_URL}/automation/evaluate`, indicatorsData);
+      return response.data;
+    } catch (error) {
+      console.error("Error previewing automation indicators:", error);
+      throw error;
+    }
+  },
+
+  // Get FOMC dates
+  async getFomcDates() {
+    try {
+      const response = await apiClient.get(`${API_BASE_URL}/automation/fomc-dates`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching FOMC dates:", error);
+      throw error;
+    }
+  },
+
+  // Preview strikes for automation config (without placing order)
+  async previewStrikes(previewData) {
+    try {
+      const response = await apiClient.post(`${API_BASE_URL}/automation/preview-strikes`, previewData);
+      return response.data;
+    } catch (error) {
+      console.error("Error previewing strikes:", error);
+      throw error;
+    }
+  },
 };
 
 export default api;

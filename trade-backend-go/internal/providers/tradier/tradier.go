@@ -721,6 +721,8 @@ func (t *TradierProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbo
 						"gamma":              contract.Gamma,
 						"vega":               contract.Vega,
 						"implied_volatility": ivVal,
+						"bid":                contract.Bid,
+						"ask":                contract.Ask,
 					}
 
 					// Log what we extracted at DEBUG level
@@ -1401,7 +1403,17 @@ func (t *TradierProvider) PlaceOrder(ctx context.Context, orderData map[string]i
 	}
 
 	if response.Order.ID != nil {
-		orderID := fmt.Sprintf("%v", response.Order.ID)
+		// Handle order ID - it may come as a number or string from the API
+		var orderID string
+		switch id := response.Order.ID.(type) {
+		case float64:
+			// Convert float64 to int string (avoid scientific notation)
+			orderID = fmt.Sprintf("%.0f", id)
+		case string:
+			orderID = id
+		default:
+			orderID = fmt.Sprintf("%v", id)
+		}
 
 		assetClass := "us_equity"
 		if t.isOptionSymbol(symbol) {
@@ -1515,7 +1527,17 @@ func (t *TradierProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[
 	}
 
 	if response.Order.ID != nil {
-		orderID := fmt.Sprintf("%v", response.Order.ID)
+		// Handle order ID - it may come as a number or string from the API
+		var orderID string
+		switch id := response.Order.ID.(type) {
+		case float64:
+			// Convert float64 to int string (avoid scientific notation)
+			orderID = fmt.Sprintf("%.0f", id)
+		case string:
+			orderID = id
+		default:
+			orderID = fmt.Sprintf("%v", id)
+		}
 
 		// Convert legs to the expected format
 		var orderLegs []map[string]interface{}

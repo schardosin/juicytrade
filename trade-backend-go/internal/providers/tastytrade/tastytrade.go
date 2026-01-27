@@ -18,6 +18,15 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// weeklyMap maps index symbols to their weekly option root symbols
+// This handles cases where weekly options use different root symbols than the underlying
+var weeklyMap = map[string]string{
+	"SPX": "SPXW",
+	"NDX": "NDXP",
+	"RUT": "RUTW",
+	"VIX": "VIXW",
+}
+
 // TastyTradeProvider implements the Provider interface for TastyTrade.
 // Exact conversion of Python TastyTradeProvider class.
 type TastyTradeProvider struct {
@@ -287,18 +296,138 @@ func (p *TastyTradeProvider) GetStockQuote(ctx context.Context, symbol string) (
 	}, nil
 }
 
-// GetStockQuotes gets stock quotes for multiple symbols.
-// Exact conversion of Python get_stock_quotes method.
+// GetStockQuotes gets stock quotes for multiple symbols using batch streaming.
+// Optimized version that subscribes to all symbols at once instead of one by one.
 func (p *TastyTradeProvider) GetStockQuotes(ctx context.Context, symbols []string) (map[string]*models.StockQuote, error) {
-	quotes := make(map[string]*models.StockQuote)
-	for _, symbol := range symbols {
-		quote, err := p.GetStockQuote(ctx, symbol)
-		if err != nil {
-			continue
-		}
-		quotes[symbol] = quote
+	if len(symbols) == 0 {
+		return make(map[string]*models.StockQuote), nil
 	}
-	return quotes, nil
+
+	// Ensure streaming connection is healthy
+	if !p.ensureHealthyConnection(ctx) {
+		return make(map[string]*models.StockQuote), fmt.Errorf("streaming connection not available for quotes")
+	}
+
+	// Create channels for each symbol to receive quotes
+	futures := make(map[string]chan map[string]interface{})
+	for _, symbol := range symbols {
+		futures[symbol] = make(chan map[string]interface{}, 1)
+		p.streamingState.requestsLock.Lock()
+		p.streamingState.quoteRequests[symbol] = futures[symbol]
+		p.streamingState.requestsLock.Unlock()
+	}
+
+	// Subscribe to Quote data for all symbols at once
+	success, err := p.SubscribeToSymbols(ctx, symbols, []string{"Quote"})
+	if err != nil || !success {
+		// Clean up futures
+		p.streamingState.requestsLock.Lock()
+		for _, symbol := range symbols {
+			delete(p.streamingState.quoteRequests, symbol)
+		}
+		p.streamingState.requestsLock.Unlock()
+		return make(map[string]*models.StockQuote), fmt.Errorf("failed to subscribe to quotes: %v", err)
+	}
+
+	// Wait for results with a SINGLE global timeout (2 seconds)
+	results := make(map[string]*models.StockQuote)
+	timeout := 2 * time.Second
+	deadline := time.Now().Add(timeout)
+
+	received := 0
+	target := len(symbols)
+
+	// Use a single timer for the global timeout
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	// Collect results until timeout or all received
+	for received < target {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			slog.Debug("Global timeout reached for quotes batch",
+				"received", received,
+				"total", target)
+			break
+		}
+
+		// Check each symbol's channel without blocking
+		foundOne := false
+		for symbol, ch := range futures {
+			// Skip already received symbols
+			if _, exists := results[symbol]; exists {
+				continue
+			}
+
+			select {
+			case quoteData := <-ch:
+				// Build StockQuote from received data
+				var bidPtr, askPtr *float64
+				if quoteData != nil {
+					if b, ok := quoteData["bid"].(float64); ok && b > 0 {
+						bidVal := b
+						bidPtr = &bidVal
+					}
+					if a, ok := quoteData["ask"].(float64); ok && a > 0 {
+						askVal := a
+						askPtr = &askVal
+					}
+				}
+				results[symbol] = &models.StockQuote{
+					Symbol:    symbol,
+					Bid:       bidPtr,
+					Ask:       askPtr,
+					Last:      nil,
+					Timestamp: time.Now().Format(time.RFC3339),
+				}
+				received++
+				foundOne = true
+			default:
+				// Channel not ready, continue to next
+			}
+		}
+
+		// If no new data, wait a bit before checking again
+		if !foundOne {
+			select {
+			case <-time.After(50 * time.Millisecond):
+				// Small delay to avoid busy loop
+			case <-timer.C:
+				slog.Debug("Global timeout reached for quotes batch",
+					"received", received,
+					"total", target)
+				goto cleanup
+			case <-ctx.Done():
+				goto cleanup
+			}
+		}
+	}
+
+cleanup:
+	// Mark remaining symbols with empty quotes
+	for _, symbol := range symbols {
+		if _, exists := results[symbol]; !exists {
+			results[symbol] = &models.StockQuote{
+				Symbol:    symbol,
+				Timestamp: time.Now().Format(time.RFC3339),
+			}
+		}
+	}
+
+	slog.Info("Quotes batch completed",
+		"received", received,
+		"total", target,
+		"duration", time.Since(deadline.Add(-timeout)).String())
+
+	// Clean up: unsubscribe and remove futures
+	p.UnsubscribeFromSymbols(ctx, symbols, []string{"Quote"})
+	p.streamingState.requestsLock.Lock()
+	for _, symbol := range symbols {
+		delete(p.streamingState.quoteRequests, symbol)
+	}
+	p.streamingState.requestsLock.Unlock()
+
+	return results, nil
 }
 
 // GetExpirationDates gets available expiration dates for options on a symbol with universal enhanced structure.
@@ -425,7 +554,15 @@ func (p *TastyTradeProvider) GetOptionsChainBasic(ctx context.Context, symbol, e
 		}
 
 		// Filter by root symbol to ensure exact chain scoping (parity with Python)
-		if item.RootSymbol == "" || !strings.EqualFold(item.RootSymbol, symbol) {
+		// Also accept weekly root symbols (e.g., NDXP for NDX, SPXW for SPX)
+		rootMatches := strings.EqualFold(item.RootSymbol, symbol)
+		if !rootMatches {
+			// Check if the root symbol is a weekly variant of the requested symbol
+			if weeklyRoot, ok := weeklyMap[strings.ToUpper(symbol)]; ok {
+				rootMatches = strings.EqualFold(item.RootSymbol, weeklyRoot)
+			}
+		}
+		if item.RootSymbol == "" || !rootMatches {
 			continue
 		}
 
@@ -569,25 +706,81 @@ func (p *TastyTradeProvider) getStreamingGreeksBatch(ctx context.Context, symbol
 		return make(map[string]map[string]interface{}), fmt.Errorf("failed to subscribe to symbols: %v", err)
 	}
 
-	// Wait for results with timeout
+	// Wait for results with a SINGLE global timeout (not per-symbol)
+	// This is critical for performance - we wait for all symbols in parallel
 	results := make(map[string]map[string]interface{})
 	timeoutDuration := time.Duration(timeout) * time.Second
+	deadline := time.Now().Add(timeoutDuration)
 
-	for _, symbol := range symbols {
-		select {
-		case greeks := <-futures[symbol]:
-			if greeks != nil {
-				results[symbol] = greeks
-			} else {
-				results[symbol] = nil
+	received := 0
+	target := len(symbols)
+
+	// Use a single timer for the global timeout
+	timer := time.NewTimer(timeoutDuration)
+	defer timer.Stop()
+
+	// Collect results until timeout or all received
+	for received < target {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			slog.Warn("Global timeout reached for Greeks batch",
+				"received", received,
+				"total", target,
+				"timeout", timeout)
+			break
+		}
+
+		// Check each symbol's channel without blocking
+		foundOne := false
+		for symbol, ch := range futures {
+			// Skip already received symbols
+			if _, exists := results[symbol]; exists {
+				continue
 			}
-		case <-time.After(timeoutDuration):
-			slog.Warn(fmt.Sprintf("Timeout waiting for greeks for %s", symbol))
-			results[symbol] = nil
-		case <-ctx.Done():
+
+			select {
+			case greeks := <-ch:
+				if greeks != nil {
+					results[symbol] = greeks
+				} else {
+					results[symbol] = nil
+				}
+				received++
+				foundOne = true
+			default:
+				// Channel not ready, continue to next
+			}
+		}
+
+		// If no new data, wait a bit before checking again
+		if !foundOne {
+			select {
+			case <-time.After(50 * time.Millisecond):
+				// Small delay to avoid busy loop
+			case <-timer.C:
+				slog.Warn("Global timeout reached for Greeks batch",
+					"received", received,
+					"total", target,
+					"timeout", timeout)
+				goto cleanup
+			case <-ctx.Done():
+				goto cleanup
+			}
+		}
+	}
+
+cleanup:
+	// Mark remaining symbols as nil
+	for _, symbol := range symbols {
+		if _, exists := results[symbol]; !exists {
 			results[symbol] = nil
 		}
 	}
+
+	slog.Info("Greeks batch completed",
+		"received", received,
+		"total", target,
+		"duration", time.Since(deadline.Add(-timeoutDuration)).String())
 
 	// Clean up: unsubscribe and remove futures
 	p.UnsubscribeFromSymbols(ctx, symbols, []string{"Greeks"})

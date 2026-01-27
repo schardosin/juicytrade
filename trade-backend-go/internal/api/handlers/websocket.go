@@ -900,6 +900,40 @@ func (h *WebSocketHandler) BroadcastOrderEvent(event *models.OrderEvent) {
 	slog.Info("[ORDER-EVENT] Order event broadcast complete", "orderID", event.ID, "sentTo", sentCount, "totalClients", len(h.clients))
 }
 
+// BroadcastAutomationUpdate broadcasts an automation status update to all connected clients
+func (h *WebSocketHandler) BroadcastAutomationUpdate(id string, data map[string]interface{}) {
+	if data == nil {
+		slog.Warn("[AUTOMATION] BroadcastAutomationUpdate called with nil data")
+		return
+	}
+
+	slog.Info("[AUTOMATION] Broadcasting automation update to clients",
+		"automationID", id,
+		"status", data["status"],
+		"connectedClients", len(h.clients))
+
+	response := map[string]interface{}{
+		"type":          "automation_update",
+		"automation_id": id,
+		"data":          data,
+		"timestamp":     time.Now().UnixMilli(),
+	}
+
+	h.clientsMutex.RLock()
+	defer h.clientsMutex.RUnlock()
+
+	sentCount := 0
+	for conn := range h.clients {
+		if err := h.sendToClientRaw(conn, response); err != nil {
+			slog.Error("[AUTOMATION] Failed to send automation update to client", "error", err, "automationID", id, "client", conn.RemoteAddr())
+		} else {
+			sentCount++
+		}
+	}
+
+	slog.Debug("[AUTOMATION] Automation update broadcast complete", "automationID", id, "sentTo", sentCount, "totalClients", len(h.clients))
+}
+
 // GetAccountStreamStatus returns the status of the account stream
 func (h *WebSocketHandler) GetAccountStreamStatus() map[string]interface{} {
 	status := map[string]interface{}{

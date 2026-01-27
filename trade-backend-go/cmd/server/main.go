@@ -14,6 +14,7 @@ import (
 
 	"trade-backend-go/internal/api/handlers"
 	"trade-backend-go/internal/auth"
+	automationTypes "trade-backend-go/internal/automation/types"
 	"trade-backend-go/internal/clients"
 	"trade-backend-go/internal/config"
 	"trade-backend-go/internal/models"
@@ -1512,6 +1513,37 @@ func main() {
 	apiDouble := api.Group("/api")
 	registerStrategyRoutes(apiDouble, strategyHandler)
 
+	// Automation Management
+	automationHandler, err := handlers.NewAutomationHandler(providerManager)
+	if err != nil {
+		log.Printf("Warning: Failed to initialize automation handler: %v", err)
+	} else {
+		registerAutomationRoutes(api, automationHandler)
+		registerAutomationRoutes(apiDouble, automationHandler)
+
+		// Register automation update callback to broadcast via WebSocket
+		automationHandler.GetEngine().RegisterUpdateCallback(func(id string, automation *automationTypes.ActiveAutomation) {
+			if automation == nil {
+				return
+			}
+			// Broadcast automation updates to WebSocket clients
+			wsHandler.BroadcastAutomationUpdate(id, map[string]interface{}{
+				"status":              automation.Status,
+				"message":             automation.Message,
+				"indicator_results":   automation.IndicatorResults,
+				"all_indicators_pass": automation.AllIndicatorsPass,
+				"current_order":       automation.CurrentOrder,
+				"placed_orders":       automation.PlacedOrders,
+				"error_count":         automation.ErrorCount,
+				"started_at":          automation.StartedAt,
+				"last_evaluation":     automation.LastEvaluation,
+				"logs":                automation.Logs,
+			})
+		})
+
+		log.Printf("✅ Automation engine initialized with WebSocket updates")
+	}
+
 	// Data Import (proxy to strategy service)
 	// Register on /api/data-import
 	registerDataImportRoutes(api, strategyHandler)
@@ -1655,6 +1687,43 @@ func registerDataImportRoutes(g *gin.RouterGroup, h *handlers.StrategyHandler) {
 	// Summary and stats
 	g.GET("/data-import/summary", h.GetImportSummary)
 	g.GET("/data-import/storage/stats", h.GetStorageStats)
+}
+
+// Helper to register automation routes on a router group
+func registerAutomationRoutes(g *gin.RouterGroup, h *handlers.AutomationHandler) {
+	// Config CRUD
+	g.GET("/automation/configs", h.ListConfigs)
+	g.POST("/automation/configs", h.CreateConfig)
+	g.GET("/automation/configs/:id", h.GetConfig)
+	g.PUT("/automation/configs/:id", h.UpdateConfig)
+	g.DELETE("/automation/configs/:id", h.DeleteConfig)
+	g.PUT("/automation/configs/:id/toggle", h.ToggleEnabled)
+
+	// Status (must be before :id routes)
+	g.GET("/automation/status", h.GetAllStatus)
+
+	// Indicator evaluation (must be before :id routes)
+	g.POST("/automation/evaluate", h.EvaluateIndicatorsPreview)
+
+	// Strike preview (must be before :id routes)
+	g.POST("/automation/preview-strikes", h.PreviewStrikes)
+
+	// FOMC dates (must be before :id routes)
+	g.GET("/automation/fomc-dates", h.GetFOMCDates)
+
+	// Tracking endpoints (must be before :id routes)
+	g.GET("/automation/tracking/orders", h.GetTrackedOrders)
+	g.GET("/automation/tracking/positions", h.GetTrackedPositions)
+
+	// Control (parameterized routes - must come after static routes)
+	g.POST("/automation/:id/start", h.StartAutomation)
+	g.POST("/automation/:id/stop", h.StopAutomation)
+	g.POST("/automation/:id/reset-today", h.ResetTradedToday)
+	g.GET("/automation/:id/status", h.GetAutomationStatus)
+	g.GET("/automation/:id/logs", h.GetAutomationLogs)
+	g.POST("/automation/:id/evaluate", h.EvaluateIndicators)
+	g.GET("/automation/:id/orders", h.GetAutomationOrders)
+	g.GET("/automation/:id/positions", h.GetAutomationPositions)
 }
 
 // Helper function to create string pointer

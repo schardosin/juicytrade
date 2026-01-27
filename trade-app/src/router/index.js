@@ -5,6 +5,7 @@ import PositionsView from "../views/PositionsView.vue";
 import SmartMarketDataTest from "../components/SmartMarketDataTest.vue";
 import SetupView from "../views/SetupView.vue";
 import StrategiesView from "../views/StrategiesView.vue";
+import AutomationView from "../views/AutomationView.vue";
 import LoginPage from "../components/auth/LoginPage.vue";
 import { api } from "../services/api.js";
 import authService from "../services/authService.js";
@@ -131,6 +132,40 @@ const routes = [
         component: () => import("../components/strategies/StrategyData.vue"),
         meta: {
           title: "Data Management - Trading Platform",
+        },
+      },
+    ],
+  },
+  {
+    path: "/automation",
+    name: "Automation",
+    component: AutomationView,
+    meta: {
+      title: "Automation - Trading Platform",
+    },
+    children: [
+      {
+        path: "",
+        name: "AutomationDashboard",
+        component: () => import("../components/automation/AutomationDashboard.vue"),
+        meta: {
+          title: "Automation Dashboard - Trading Platform",
+        },
+      },
+      {
+        path: "create",
+        name: "AutomationCreate",
+        component: () => import("../components/automation/AutomationConfigForm.vue"),
+        meta: {
+          title: "Create Automation - Trading Platform",
+        },
+      },
+      {
+        path: "edit/:id",
+        name: "AutomationEdit",
+        component: () => import("../components/automation/AutomationConfigForm.vue"),
+        meta: {
+          title: "Edit Automation - Trading Platform",
         },
       },
     ],

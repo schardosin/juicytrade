@@ -921,6 +921,11 @@ export default {
       webSocketClient.onPriceUpdate(handleDataReceived);
       webSocketClient.onGreeksUpdate(handleDataReceived);
       
+      // Note: TopBar is a top-level component that persists for the app's lifetime,
+      // so cleanup for these callbacks isn't strictly necessary but would use:
+      // webSocketClient.removeCallback('price_update', handleDataReceived);
+      // webSocketClient.removeCallback('greeks_update', handleDataReceived);
+      
       // Initialize connection status based on current WebSocket state
       if (webSocketClient.isConnected.value) {
         // If already connected, set status immediately

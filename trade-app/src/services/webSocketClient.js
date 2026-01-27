@@ -381,6 +381,39 @@ class WebSocketStreamingClient {
     this.callbacks.get(type).add(callback);
   }
 
+  /**
+   * Remove a callback for a specific message type
+   * @param {string} type - The message type (e.g., 'automation_update', 'price_update')
+   * @param {Function} callback - The callback function to remove
+   * @returns {boolean} - True if the callback was found and removed
+   */
+  removeCallback(type, callback) {
+    const callbacks = this.callbacks.get(type);
+    if (callbacks) {
+      const removed = callbacks.delete(callback);
+      if (removed) {
+        console.log(`🧹 Removed callback for message type: ${type}`);
+      }
+      // Clean up empty Sets
+      if (callbacks.size === 0) {
+        this.callbacks.delete(type);
+      }
+      return removed;
+    }
+    return false;
+  }
+
+  /**
+   * Remove all callbacks for a specific message type
+   * @param {string} type - The message type to clear all callbacks for
+   */
+  removeAllCallbacks(type) {
+    if (this.callbacks.has(type)) {
+      this.callbacks.delete(type);
+      console.log(`🧹 Removed all callbacks for message type: ${type}`);
+    }
+  }
+
   handleMessage(message) {
     // Add data freshness validation
     if (message.timestamp_ms) {
@@ -409,6 +442,7 @@ class WebSocketStreamingClient {
             message.type === 'greeks_update' || 
             message.type === 'subscription_confirmed' ||
             message.type === 'order_event' ||
+            message.type === 'automation_update' ||
             message.type === 'ivx_status' ||
             message.type === 'ivx_update' ||
             message.type === 'ivx_complete' ||
