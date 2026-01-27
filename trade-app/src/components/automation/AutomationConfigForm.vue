@@ -996,8 +996,9 @@ export default {
 }
 
 .indicator-type {
-  flex: 1;
+  flex: 0 0 200px;
   min-width: 150px;
+  max-width: 200px;
 }
 
 .type-label {
@@ -1014,7 +1015,7 @@ export default {
 
 .indicator-config {
   display: flex;
-  gap: var(--spacing-sm);
+  gap: 12px;
   align-items: center;
 }
 
@@ -1023,22 +1024,40 @@ export default {
 }
 
 .operator-dropdown {
-  width: 160px;
+  flex: 0 0 auto;
+}
+
+:deep(.operator-dropdown.p-dropdown) {
+  width: 220px;
 }
 
 .threshold-input {
+  flex: 0 0 auto;
+}
+
+:deep(.threshold-input.p-inputnumber) {
   width: 100px;
 }
 
+:deep(.threshold-input .p-inputnumber-input) {
+  width: 100px;
+  border-radius: var(--radius-sm);
+}
+
 .symbol-input {
+  flex: 0 0 auto;
+}
+
+:deep(.symbol-input.p-inputtext) {
   width: 80px;
+  border-radius: var(--radius-sm);
 }
 
 .indicator-test {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  min-width: 100px;
+  flex: 0 0 auto;
 }
 
 .test-result {
