@@ -3,10 +3,13 @@ package automation
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"trade-backend-go/internal/utils"
 )
 
 // Storage handles persistence of automation configurations
@@ -23,14 +26,19 @@ type StorageData struct {
 	Configs   map[string]*AutomationConfig `json:"configs"`
 }
 
-// NewStorage creates a new storage instance
-func NewStorage(dataDir string) (*Storage, error) {
-	// Ensure data directory exists
-	if err := os.MkdirAll(dataDir, 0755); err != nil {
-		return nil, fmt.Errorf("failed to create data directory: %w", err)
+// NewStorage creates a new storage instance using GlobalPathManager for consistent path resolution
+func NewStorage() (*Storage, error) {
+	// Use GlobalPathManager for consistent path resolution (same as provider configs)
+	filePath := utils.GlobalPathManager.GetConfigFilePath("automations.json")
+
+	// Ensure directory exists
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("failed to create config directory: %w", err)
 	}
 
-	filePath := filepath.Join(dataDir, "automations.json")
+	slog.Info("Automation storage initialized", "path", filePath)
+
 	s := &Storage{
 		filePath: filePath,
 		configs:  make(map[string]*AutomationConfig),

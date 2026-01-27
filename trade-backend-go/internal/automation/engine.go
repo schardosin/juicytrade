@@ -29,8 +29,8 @@ type Engine struct {
 }
 
 // NewEngine creates a new automation engine
-func NewEngine(pm *providers.ProviderManager, dataDir string) (*Engine, error) {
-	storage, err := NewStorage(dataDir)
+func NewEngine(pm *providers.ProviderManager) (*Engine, error) {
+	storage, err := NewStorage()
 	if err != nil {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
@@ -39,8 +39,8 @@ func NewEngine(pm *providers.ProviderManager, dataDir string) (*Engine, error) {
 		providerManager:   pm,
 		indicatorService:  indicators.NewService(pm),
 		storage:           storage,
-		trackingStore:     NewTrackingStore(dataDir),
-		runtimeState:      NewRuntimeStateStorage(dataDir),
+		trackingStore:     NewTrackingStore(),
+		runtimeState:      NewRuntimeStateStorage(),
 		activeAutomations: make(map[string]*types.ActiveAutomation),
 		stopChannels:      make(map[string]chan struct{}),
 		updateCallbacks:   make([]func(string, *types.ActiveAutomation), 0),

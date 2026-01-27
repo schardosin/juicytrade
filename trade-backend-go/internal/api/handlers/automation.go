@@ -2,8 +2,6 @@ package handlers
 
 import (
 	"net/http"
-	"os"
-	"path/filepath"
 
 	"trade-backend-go/internal/automation"
 	"trade-backend-go/internal/automation/types"
@@ -19,17 +17,7 @@ type AutomationHandler struct {
 
 // NewAutomationHandler creates a new automation handler
 func NewAutomationHandler(pm *providers.ProviderManager) (*AutomationHandler, error) {
-	// Get data directory from environment or use default
-	dataDir := os.Getenv("JUICYTRADE_DATA_DIR")
-	if dataDir == "" {
-		homeDir, err := os.UserHomeDir()
-		if err != nil {
-			return nil, err
-		}
-		dataDir = filepath.Join(homeDir, ".juicytrade")
-	}
-
-	engine, err := automation.NewEngine(pm, dataDir)
+	engine, err := automation.NewEngine(pm)
 	if err != nil {
 		return nil, err
 	}

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"trade-backend-go/internal/automation/types"
+	"trade-backend-go/internal/utils"
 )
 
 // RuntimeState represents the persisted state of all active automations
@@ -39,10 +40,18 @@ type RuntimeStateStorage struct {
 	mu       sync.RWMutex
 }
 
-// NewRuntimeStateStorage creates a new runtime state storage
-func NewRuntimeStateStorage(dataDir string) *RuntimeStateStorage {
+// NewRuntimeStateStorage creates a new runtime state storage using GlobalPathManager
+func NewRuntimeStateStorage() *RuntimeStateStorage {
+	filePath := utils.GlobalPathManager.GetConfigFilePath("automation_runtime_state.json")
+
+	// Ensure directory exists
+	dir := filepath.Dir(filePath)
+	os.MkdirAll(dir, 0755)
+
+	slog.Info("Automation runtime state storage initialized", "path", filePath)
+
 	return &RuntimeStateStorage{
-		filePath: filepath.Join(dataDir, "automation_runtime_state.json"),
+		filePath: filePath,
 	}
 }
 

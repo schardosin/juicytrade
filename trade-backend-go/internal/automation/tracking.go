@@ -2,12 +2,14 @@ package automation
 
 import (
 	"encoding/json"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
 
 	"trade-backend-go/internal/automation/types"
+	"trade-backend-go/internal/utils"
 )
 
 // TrackingStore manages order-to-automation mappings and position tracking
@@ -17,17 +19,25 @@ type TrackingStore struct {
 	positions             map[string]*types.AutomationPosition // positionKey -> AutomationPosition
 	ordersByAutomation    map[string][]string                  // automationID -> []orderIDs
 	positionsByAutomation map[string][]string                  // automationID -> []positionKeys
-	dataDir               string
+	filePath              string
 }
 
-// NewTrackingStore creates a new tracking store
-func NewTrackingStore(dataDir string) *TrackingStore {
+// NewTrackingStore creates a new tracking store using GlobalPathManager
+func NewTrackingStore() *TrackingStore {
+	filePath := utils.GlobalPathManager.GetConfigFilePath("automation_tracking.json")
+
+	// Ensure directory exists
+	dir := filepath.Dir(filePath)
+	os.MkdirAll(dir, 0755)
+
+	slog.Info("Automation tracking store initialized", "path", filePath)
+
 	store := &TrackingStore{
 		orders:                make(map[string]*types.PlacedOrder),
 		positions:             make(map[string]*types.AutomationPosition),
 		ordersByAutomation:    make(map[string][]string),
 		positionsByAutomation: make(map[string][]string),
-		dataDir:               dataDir,
+		filePath:              filePath,
 	}
 
 	// Load persisted data
@@ -186,12 +196,8 @@ type trackingData struct {
 	PositionsByAutomation map[string][]string                  `json:"positions_by_automation"`
 }
 
-func (s *TrackingStore) getFilePath() string {
-	return filepath.Join(s.dataDir, "automation_tracking.json")
-}
-
 func (s *TrackingStore) persist() {
-	if s.dataDir == "" {
+	if s.filePath == "" {
 		return
 	}
 
@@ -207,23 +213,20 @@ func (s *TrackingStore) persist() {
 		return
 	}
 
-	// Ensure directory exists
-	os.MkdirAll(s.dataDir, 0755)
-
 	// Write to temp file first, then rename (atomic)
-	tempPath := s.getFilePath() + ".tmp"
+	tempPath := s.filePath + ".tmp"
 	if err := os.WriteFile(tempPath, bytes, 0644); err != nil {
 		return
 	}
-	os.Rename(tempPath, s.getFilePath())
+	os.Rename(tempPath, s.filePath)
 }
 
 func (s *TrackingStore) load() {
-	if s.dataDir == "" {
+	if s.filePath == "" {
 		return
 	}
 
-	bytes, err := os.ReadFile(s.getFilePath())
+	bytes, err := os.ReadFile(s.filePath)
 	if err != nil {
 		return // File doesn't exist yet, that's OK
 	}
