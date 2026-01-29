@@ -105,6 +105,12 @@ export default {
         route: "/chart",
       },
       {
+        id: "automation",
+        label: "Auto",
+        icon: "pi pi-bolt",
+        route: "/automation",
+      },
+      {
         id: "activity",
         label: "Activity",
         icon: "pi pi-clock",

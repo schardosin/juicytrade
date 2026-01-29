@@ -63,16 +63,18 @@ type IndicatorConfig struct {
 
 // IndicatorResult contains the result of an indicator evaluation
 type IndicatorResult struct {
-	Type      IndicatorType `json:"type"`
-	Symbol    string        `json:"symbol"`
-	Value     float64       `json:"value"`
-	Threshold float64       `json:"threshold"`
-	Operator  Operator      `json:"operator"`
-	Pass      bool          `json:"pass"`
-	Enabled   bool          `json:"enabled"`
-	Timestamp time.Time     `json:"timestamp"`
-	Details   string        `json:"details,omitempty"`
-	Error     string        `json:"error,omitempty"`
+	Type          IndicatorType `json:"type"`
+	Symbol        string        `json:"symbol"`
+	Value         float64       `json:"value"`
+	LastGoodValue *float64      `json:"last_good_value,omitempty"` // Previous successful value (shown when stale)
+	Stale         bool          `json:"stale"`                     // True if data fetch failed, using cached value
+	Threshold     float64       `json:"threshold"`
+	Operator      Operator      `json:"operator"`
+	Pass          bool          `json:"pass"`
+	Enabled       bool          `json:"enabled"`
+	Timestamp     time.Time     `json:"timestamp"`
+	Details       string        `json:"details,omitempty"`
+	Error         string        `json:"error,omitempty"`
 }
 
 // TradeConfiguration defines the trade parameters for an automation

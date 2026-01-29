@@ -110,7 +110,7 @@
           All enabled indicators must pass for a trade to be executed
         </p>
         
-        <div class="indicators-list">
+        <div class="indicators-list" :class="{ 'mobile-indicators': isMobile }">
           <div
             v-for="(indicator, index) in config.indicators"
             :key="indicator.type"
@@ -122,15 +122,16 @@
             </div>
             <div class="indicator-type">
               <span class="type-label">{{ formatIndicatorType(indicator.type) }}</span>
-              <span class="type-description">{{ getIndicatorDescription(indicator.type) }}</span>
+              <span v-if="!isMobile" class="type-description">{{ getIndicatorDescription(indicator.type) }}</span>
             </div>
             <div class="indicator-config" :class="{ 'dimmed': !indicator.enabled }">
               <Dropdown
                 v-model="indicator.operator"
-                :options="operators"
+                :options="displayOperators"
                 optionLabel="label"
                 optionValue="value"
                 class="operator-dropdown"
+                :class="{ 'mobile-operator': isMobile }"
                 :disabled="!indicator.enabled"
               />
               <InputNumber
@@ -138,6 +139,7 @@
                 :minFractionDigits="indicator.type === 'calendar' ? 0 : 2"
                 :maxFractionDigits="indicator.type === 'calendar' ? 0 : 2"
                 class="threshold-input"
+                :class="{ 'mobile-threshold': isMobile }"
                 :disabled="!indicator.enabled"
                 :placeholder="indicator.type === 'calendar' ? '0 or 1' : 'Value'"
               />
@@ -146,10 +148,21 @@
                 v-model="indicator.symbol"
                 :placeholder="getIndicatorDefaultSymbol(indicator.type)"
                 class="symbol-input"
+                :class="{ 'mobile-symbol': isMobile }"
                 :disabled="!indicator.enabled"
               />
+              <!-- Mobile test result - shown inline after Test All -->
+              <span 
+                v-if="isMobile && indicatorResults[indicator.type]" 
+                class="mobile-test-result" 
+                :class="getIndicatorResultClass(indicatorResults[indicator.type])"
+                :title="indicatorResults[indicator.type].stale ? `Stale: ${indicatorResults[indicator.type].error}` : ''"
+              >
+                <span v-if="indicatorResults[indicator.type].stale" class="stale-icon">⚠</span>
+                {{ indicatorResults[indicator.type].value?.toFixed(2) || 'N/A' }}
+              </span>
             </div>
-            <div class="indicator-test">
+            <div v-if="!isMobile" class="indicator-test">
               <Button
                 icon="pi pi-sync"
                 class="p-button-text p-button-sm"
@@ -158,7 +171,13 @@
                 :loading="testingIndicator === indicator.type"
                 :disabled="!indicator.enabled"
               />
-              <span v-if="indicatorResults[indicator.type]" class="test-result" :class="indicatorResults[indicator.type].passed ? 'passed' : 'failed'">
+              <span 
+                v-if="indicatorResults[indicator.type]" 
+                class="test-result" 
+                :class="getIndicatorResultClass(indicatorResults[indicator.type])"
+                :title="indicatorResults[indicator.type].stale ? `Stale: ${indicatorResults[indicator.type].error}` : ''"
+              >
+                <span v-if="indicatorResults[indicator.type].stale" class="stale-icon">⚠</span>
                 {{ indicatorResults[indicator.type].value?.toFixed(2) || 'N/A' }}
               </span>
             </div>
@@ -372,19 +391,15 @@
             :disabled="!config.symbol || !config.trade_config.strategy"
           />
           
-          <div v-if="strikePreview" class="strike-preview-content">
+          <div v-if="strikePreview" class="strike-preview-content" :class="{ 'mobile-preview': isMobile }">
             <div class="preview-expiry">
-              <strong>Expiration:</strong> {{ strikePreview.spread?.expiry || 'N/A' }}
+              <strong>Exp:</strong> {{ strikePreview.spread?.expiry || 'N/A' }}
             </div>
             
             <div class="preview-legs">
               <div class="preview-leg short-leg">
-                <h4>Short Leg (Sell)</h4>
+                <h4>Short (Sell)</h4>
                 <div class="leg-details">
-                  <div class="leg-row">
-                    <span class="leg-label">Symbol:</span>
-                    <span class="leg-value">{{ strikePreview.short_leg?.symbol || 'N/A' }}</span>
-                  </div>
                   <div class="leg-row">
                     <span class="leg-label">Strike:</span>
                     <span class="leg-value">{{ strikePreview.short_leg?.strike?.toFixed(0) || 'N/A' }}</span>
@@ -395,7 +410,7 @@
                   </div>
                   <div class="leg-row">
                     <span class="leg-label">Bid/Ask:</span>
-                    <span class="leg-value">{{ formatPrice(strikePreview.short_leg?.bid) }} / {{ formatPrice(strikePreview.short_leg?.ask) }}</span>
+                    <span class="leg-value">{{ formatPrice(strikePreview.short_leg?.bid) }}/{{ formatPrice(strikePreview.short_leg?.ask) }}</span>
                   </div>
                   <div class="leg-row">
                     <span class="leg-label">Mid:</span>
@@ -405,12 +420,8 @@
               </div>
               
               <div class="preview-leg long-leg">
-                <h4>Long Leg (Buy)</h4>
+                <h4>Long (Buy)</h4>
                 <div class="leg-details">
-                  <div class="leg-row">
-                    <span class="leg-label">Symbol:</span>
-                    <span class="leg-value">{{ strikePreview.long_leg?.symbol || 'N/A' }}</span>
-                  </div>
                   <div class="leg-row">
                     <span class="leg-label">Strike:</span>
                     <span class="leg-value">{{ strikePreview.long_leg?.strike?.toFixed(0) || 'N/A' }}</span>
@@ -421,7 +432,7 @@
                   </div>
                   <div class="leg-row">
                     <span class="leg-label">Bid/Ask:</span>
-                    <span class="leg-value">{{ formatPrice(strikePreview.long_leg?.bid) }} / {{ formatPrice(strikePreview.long_leg?.ask) }}</span>
+                    <span class="leg-value">{{ formatPrice(strikePreview.long_leg?.bid) }}/{{ formatPrice(strikePreview.long_leg?.ask) }}</span>
                   </div>
                   <div class="leg-row">
                     <span class="leg-label">Mid:</span>
@@ -435,7 +446,7 @@
               <h4>Spread Summary</h4>
               <div class="spread-details">
                 <div class="spread-row">
-                  <span class="spread-label">Natural Credit (Bid-Ask):</span>
+                  <span class="spread-label">Natural:</span>
                   <span class="spread-value">{{ formatPrice(strikePreview.spread?.natural_credit) }}</span>
                 </div>
                 <div class="spread-row">
@@ -443,7 +454,7 @@
                   <span class="spread-value highlight">{{ formatPrice(strikePreview.spread?.mid_credit) }}</span>
                 </div>
                 <div class="spread-row" v-if="config.trade_config.starting_offset > 0">
-                  <span class="spread-label">Starting Price (Mid - Offset):</span>
+                  <span class="spread-label">Start Price:</span>
                   <span class="spread-value highlight-green">{{ formatPrice(calculateStartingPrice()) }}</span>
                 </div>
               </div>
@@ -476,12 +487,14 @@
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { api } from '../../services/api.js'
+import { useMobileDetection } from '../../composables/useMobileDetection.js'
 
 export default {
   name: 'AutomationConfigForm',
   setup() {
     const router = useRouter()
     const route = useRoute()
+    const { isMobile } = useMobileDetection()
 
     // Check if we're in edit mode
     const isEditMode = computed(() => !!route.params.id)
@@ -545,6 +558,14 @@ export default {
       { label: '= (equals)', value: 'eq' },
       { label: '!= (not equals)', value: 'ne' },
     ]
+    const mobileOperators = [
+      { label: '>', value: 'gt' },
+      { label: '<', value: 'lt' },
+      { label: '=', value: 'eq' },
+      { label: '!=', value: 'ne' },
+    ]
+    // Use symbols-only operators on mobile
+    const displayOperators = computed(() => isMobile.value ? mobileOperators : operators)
     const strategies = [
       { label: 'Put Credit Spread', value: 'put_spread' },
       { label: 'Call Credit Spread', value: 'call_spread' },
@@ -607,6 +628,11 @@ export default {
         return 'Will automatically reset and trade again each trading day'
       }
       return 'Will stop after one successful trade'
+    }
+
+    const getIndicatorResultClass = (result) => {
+      if (result.stale) return 'stale'
+      return result.passed ? 'passed' : 'failed'
     }
 
     const loadConfig = async () => {
@@ -703,7 +729,9 @@ export default {
             operator: result.operator,
             threshold: result.threshold,
             symbol: result.symbol,
-            details: result.details
+            details: result.details,
+            stale: result.stale || false,
+            error: result.error || ''
           }
         }
       } catch (err) {
@@ -735,7 +763,9 @@ export default {
             operator: result.operator,
             threshold: result.threshold,
             symbol: result.symbol,
-            details: result.details
+            details: result.details,
+            stale: result.stale || false,
+            error: result.error || ''
           }
         })
         allIndicatorsResult.value = allPass
@@ -813,17 +843,23 @@ export default {
       symbols,
       timezones,
       operators,
+      mobileOperators,
+      displayOperators,
       strategies,
       orderTypes,
       timeInForceOptions,
       expirationModes,
       recurrenceOptions,
+      
+      // Mobile
+      isMobile,
 
       // Methods
       formatIndicatorType,
       getIndicatorDescription,
       getIndicatorDefaultSymbol,
       getRecurrenceHint,
+      getIndicatorResultClass,
       saveConfig,
       cancel,
       testIndicator,
@@ -1077,6 +1113,18 @@ export default {
   color: var(--color-danger);
 }
 
+.test-result.stale {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--color-warning);
+  border: 1px dashed var(--color-warning);
+}
+
+.test-result .stale-icon,
+.mobile-test-result .stale-icon {
+  font-size: 10px;
+  margin-right: 2px;
+}
+
 .test-all-section {
   display: flex;
   align-items: center;
@@ -1245,5 +1293,173 @@ export default {
     width: 100%;
     flex-wrap: wrap;
   }
+}
+
+/* Mobile Indicators - Single Line Layout */
+.mobile-indicators .indicator-row {
+  flex-wrap: nowrap;
+  padding: var(--spacing-sm);
+  gap: var(--spacing-xs);
+  align-items: center;
+}
+
+.mobile-indicators .indicator-toggle {
+  flex: 0 0 auto;
+}
+
+.mobile-indicators .indicator-type {
+  flex: 0 0 auto;
+  min-width: auto;
+  max-width: none;
+}
+
+.mobile-indicators .type-label {
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+.mobile-indicators .indicator-config {
+  flex: 1;
+  display: flex;
+  gap: var(--spacing-xs);
+  flex-wrap: nowrap;
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+.mobile-indicators .indicator-config.dimmed {
+  opacity: 0.5;
+}
+
+/* Mobile operator dropdown - compact, no trigger arrow */
+:deep(.mobile-operator.p-dropdown) {
+  width: 44px !important;
+  min-width: 44px !important;
+}
+
+:deep(.mobile-operator .p-dropdown-label) {
+  padding: 6px 8px;
+  font-size: var(--font-size-sm);
+  text-align: center;
+  text-overflow: clip;
+  overflow: visible;
+}
+
+:deep(.mobile-operator .p-dropdown-trigger) {
+  display: none;
+}
+
+/* Mobile threshold input - compact */
+:deep(.mobile-threshold.p-inputnumber) {
+  width: 60px !important;
+}
+
+:deep(.mobile-threshold .p-inputnumber-input) {
+  width: 60px !important;
+  padding: 6px 4px;
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+/* Mobile symbol input - compact */
+:deep(.mobile-symbol.p-inputtext) {
+  width: 50px !important;
+  padding: 6px 4px;
+  font-size: var(--font-size-sm);
+  text-align: center;
+}
+
+/* Mobile test result - inline display */
+.mobile-test-result {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  padding: 4px 6px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+  min-width: 40px;
+  text-align: center;
+}
+
+.mobile-test-result.passed {
+  background: rgba(34, 197, 94, 0.15);
+  color: var(--color-success);
+}
+
+.mobile-test-result.failed {
+  background: rgba(239, 68, 68, 0.15);
+  color: var(--color-danger);
+}
+
+.mobile-test-result.stale {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--color-warning);
+  border: 1px dashed var(--color-warning);
+}
+
+/* Mobile Strike Preview */
+.mobile-preview {
+  padding: var(--spacing-sm);
+}
+
+.mobile-preview .preview-expiry {
+  font-size: var(--font-size-sm);
+  margin-bottom: var(--spacing-sm);
+  padding-bottom: var(--spacing-xs);
+}
+
+.mobile-preview .preview-legs {
+  grid-template-columns: 1fr 1fr;
+  gap: var(--spacing-xs);
+  margin-bottom: var(--spacing-sm);
+}
+
+.mobile-preview .preview-leg {
+  padding: var(--spacing-xs);
+}
+
+.mobile-preview .preview-leg h4 {
+  font-size: var(--font-size-xs);
+  margin-bottom: var(--spacing-xs);
+}
+
+.mobile-preview .leg-details {
+  gap: 2px;
+}
+
+.mobile-preview .leg-row {
+  font-size: var(--font-size-xs);
+}
+
+.mobile-preview .leg-label {
+  font-size: var(--font-size-xs);
+}
+
+.mobile-preview .leg-value {
+  font-size: var(--font-size-xs);
+}
+
+.mobile-preview .preview-spread {
+  padding: var(--spacing-xs);
+}
+
+.mobile-preview .preview-spread h4 {
+  font-size: var(--font-size-xs);
+  margin-bottom: var(--spacing-xs);
+}
+
+.mobile-preview .spread-details {
+  gap: 2px;
+}
+
+.mobile-preview .spread-row {
+  font-size: var(--font-size-xs);
+}
+
+.mobile-preview .spread-label {
+  font-size: var(--font-size-xs);
+}
+
+.mobile-preview .spread-value {
+  font-size: var(--font-size-xs);
 }
 </style>

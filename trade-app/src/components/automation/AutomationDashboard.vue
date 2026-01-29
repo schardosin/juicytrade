@@ -62,9 +62,9 @@
         v-for="config in configs"
         :key="config.id"
         class="config-card"
-        :class="getStatusClass(config)"
+        :class="[getStatusClass(config), { 'mobile-collapsed': isMobile && !isCardExpanded(config.id) }]"
       >
-        <div class="config-header">
+        <div class="config-header" @click="isMobile ? toggleCardExpanded(config.id) : null">
           <div class="config-info">
             <h3 class="config-name">{{ config.name }}</h3>
             <div class="config-meta">
@@ -76,79 +76,95 @@
               </span>
             </div>
           </div>
-          <div class="config-status">
+          <div class="config-header-right">
             <span class="status-badge" :class="getRunningStatusClass(config)">
               <i :class="getStatusIcon(config)"></i>
-              {{ getStatusText(config) }}
+              <span v-if="!isMobile">{{ getStatusText(config) }}</span>
             </span>
+            <button 
+              v-if="isMobile" 
+              class="expand-toggle"
+              @click.stop="toggleCardExpanded(config.id)"
+            >
+              <i :class="isCardExpanded(config.id) ? 'pi pi-chevron-up' : 'pi pi-chevron-down'"></i>
+            </button>
           </div>
         </div>
 
-        <!-- Indicators Summary -->
-        <div class="indicators-section">
-          <div class="section-label">Entry Criteria</div>
-          <div class="indicators-grid">
-            <div
-              v-for="indicator in getEnabledIndicators(config)"
-              :key="indicator.type"
-              class="indicator-chip"
-              :class="getIndicatorStatusClass(config, indicator)"
-            >
-              <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
-              <span class="indicator-value">{{ formatIndicatorCondition(indicator) }}</span>
+        <!-- Card Details - Collapsible on mobile -->
+        <div v-show="!isMobile || isCardExpanded(config.id)" class="card-details">
+          <!-- Indicators Summary -->
+          <div class="indicators-section">
+            <div class="section-label">Entry Criteria</div>
+            <div class="indicators-grid">
+              <div
+                v-for="indicator in getEnabledIndicators(config)"
+                :key="indicator.type"
+                class="indicator-chip"
+                :class="getIndicatorStatusClass(config, indicator)"
+              >
+                <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
+                <span class="indicator-value">{{ formatIndicatorCondition(indicator) }}</span>
+              </div>
             </div>
           </div>
-        </div>
 
-        <!-- Trade Config Summary -->
-        <div class="trade-summary">
-          <div class="summary-item">
-            <span class="summary-label">Entry Time</span>
-            <span class="summary-value">{{ config.entry_time }} {{ config.entry_timezone }}</span>
+          <!-- Trade Config Summary -->
+          <div class="trade-summary">
+            <div class="summary-item">
+              <span class="summary-label">Entry Time</span>
+              <span class="summary-value">{{ config.entry_time }} {{ config.entry_timezone }}</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">Delta</span>
+              <span class="summary-value">{{ config.trade_config?.target_delta || 'N/A' }}</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">Width</span>
+              <span class="summary-value">{{ config.trade_config?.width || 'N/A' }}</span>
+            </div>
+            <div class="summary-item">
+              <span class="summary-label">Max Capital</span>
+              <span class="summary-value">${{ formatNumber(config.trade_config?.max_capital) }}</span>
+            </div>
           </div>
-          <div class="summary-item">
-            <span class="summary-label">Delta</span>
-            <span class="summary-value">{{ config.trade_config?.target_delta || 'N/A' }}</span>
-          </div>
-          <div class="summary-item">
-            <span class="summary-label">Width</span>
-            <span class="summary-value">{{ config.trade_config?.width || 'N/A' }}</span>
-          </div>
-          <div class="summary-item">
-            <span class="summary-label">Max Capital</span>
-            <span class="summary-value">${{ formatNumber(config.trade_config?.max_capital) }}</span>
-          </div>
-        </div>
 
-        <!-- Status Details (when running) -->
-        <div v-if="getAutomationStatus(config.id)" class="status-details">
-          <div class="status-row">
-            <span class="status-label">State:</span>
-            <span class="status-value">{{ getAutomationStatus(config.id)?.status || getAutomationStatus(config.id)?.state }}</span>
-          </div>
-          <!-- TradedToday indicator for daily automations -->
-          <div v-if="config.recurrence === 'daily'" class="status-row">
-            <span class="status-label">Today's Trade:</span>
-            <span class="status-value traded-today-status" :class="{ 'traded': getAutomationStatus(config.id)?.traded_today }">
-              <i :class="getAutomationStatus(config.id)?.traded_today ? 'pi pi-check-circle' : 'pi pi-clock'"></i>
-              {{ getAutomationStatus(config.id)?.traded_today ? 'Completed' : 'Pending' }}
-            </span>
-          </div>
-          <div v-if="getAutomationStatus(config.id)?.message" class="status-row">
-            <span class="status-label">Message:</span>
-            <span class="status-value">{{ getAutomationStatus(config.id)?.message }}</span>
-          </div>
-          <div v-if="getAutomationStatus(config.id)?.indicator_results" class="indicator-results">
-            <div class="results-label">Last Evaluation:</div>
-            <div class="results-grid">
-              <div
-                v-for="(result, idx) in getAutomationStatus(config.id)?.indicator_results"
-                :key="idx"
-                class="result-chip"
-                :class="{ 'passed': result.pass, 'failed': !result.pass }"
-              >
-                <span>{{ formatIndicatorType(result.type) }}</span>
-                <span>{{ formatIndicatorValue(result) }}</span>
+          <!-- Status Details (when running) -->
+          <div v-if="getAutomationStatus(config.id)" class="status-details">
+            <div class="status-row">
+              <span class="status-label">State:</span>
+              <span class="status-value">{{ getAutomationStatus(config.id)?.status || getAutomationStatus(config.id)?.state }}</span>
+            </div>
+            <!-- TradedToday indicator for daily automations -->
+            <div v-if="config.recurrence === 'daily'" class="status-row">
+              <span class="status-label">Today's Trade:</span>
+              <span class="status-value traded-today-status" :class="{ 'traded': getAutomationStatus(config.id)?.traded_today }">
+                <i :class="getAutomationStatus(config.id)?.traded_today ? 'pi pi-check-circle' : 'pi pi-clock'"></i>
+                {{ getAutomationStatus(config.id)?.traded_today ? 'Completed' : 'Pending' }}
+              </span>
+            </div>
+            <div v-if="getAutomationStatus(config.id)?.message" class="status-row">
+              <span class="status-label">Message:</span>
+              <span class="status-value">{{ getAutomationStatus(config.id)?.message }}</span>
+            </div>
+            <div v-if="getAutomationStatus(config.id)?.indicator_results" class="indicator-results">
+              <div class="results-label">Last Evaluation:</div>
+              <div class="results-grid">
+                <div
+                  v-for="(result, idx) in getAutomationStatus(config.id)?.indicator_results"
+                  :key="idx"
+                  class="result-chip"
+                  :class="{ 
+                    'passed': result.pass && !result.stale, 
+                    'failed': !result.pass && !result.stale,
+                    'stale': result.stale 
+                  }"
+                  :title="result.stale ? `Stale data: ${result.error || 'Fetch failed'}` : result.details"
+                >
+                  <span>{{ formatIndicatorType(result.type) }}</span>
+                  <span v-if="result.stale" class="stale-icon">⚠</span>
+                  <span>{{ formatIndicatorValue(result) }}</span>
+                </div>
               </div>
             </div>
           </div>
@@ -340,11 +356,13 @@ import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { api } from '../../services/api.js'
 import webSocketClient from '../../services/webSocketClient.js'
+import { useMobileDetection } from '../../composables/useMobileDetection.js'
 
 export default {
   name: 'AutomationDashboard',
   setup() {
     const router = useRouter()
+    const { isMobile } = useMobileDetection()
 
     // State
     const configs = ref([])
@@ -353,6 +371,7 @@ export default {
     const isRefreshing = ref(false)
     const error = ref(null)
     const actionLoading = ref(null)
+    const expandedCards = ref(new Set()) // Track expanded cards on mobile
     
     // Dialogs
     const showEvalDialog = ref(false)
@@ -544,6 +563,8 @@ export default {
     const formatIndicatorValue = (result) => {
       if (result.value === null || result.value === undefined) return 'N/A'
       if (typeof result.value === 'number') {
+        // For stale results, show the cached value (if we have one)
+        // The stale icon is already shown separately
         return result.value.toFixed(2)
       }
       return String(result.value)
@@ -717,6 +738,21 @@ export default {
       })
     }
 
+    // Mobile card expand/collapse functions
+    const toggleCardExpanded = (configId) => {
+      if (expandedCards.value.has(configId)) {
+        expandedCards.value.delete(configId)
+      } else {
+        expandedCards.value.add(configId)
+      }
+      // Force reactivity
+      expandedCards.value = new Set(expandedCards.value)
+    }
+
+    const isCardExpanded = (configId) => {
+      return expandedCards.value.has(configId)
+    }
+
     // Lifecycle
     onMounted(async () => {
       isLoading.value = true
@@ -789,6 +825,12 @@ export default {
       showLogs,
       refreshLogs,
       formatLogTime,
+      
+      // Mobile
+      isMobile,
+      expandedCards,
+      toggleCardExpanded,
+      isCardExpanded,
     }
   }
 }
@@ -1167,6 +1209,16 @@ export default {
   color: var(--color-danger);
 }
 
+.result-chip.stale {
+  background: rgba(251, 191, 36, 0.15);
+  color: var(--color-warning);
+  border: 1px dashed var(--color-warning);
+}
+
+.result-chip .stale-icon {
+  font-size: 10px;
+}
+
 /* Config Actions */
 .config-actions {
   display: flex;
@@ -1358,6 +1410,32 @@ export default {
   font-size: var(--font-size-xs);
 }
 
+/* Config Header Right (status + expand button) */
+.config-header-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+}
+
+.expand-toggle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border: none;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+  color: var(--text-secondary);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.expand-toggle:hover {
+  background: var(--bg-quaternary, var(--border-primary));
+  color: var(--text-primary);
+}
+
 /* Responsive */
 @media (max-width: 768px) {
   .automation-dashboard {
@@ -1375,6 +1453,71 @@ export default {
 
   .trade-summary {
     grid-template-columns: 1fr;
+  }
+
+  /* Mobile Card Styles */
+  .config-card {
+    padding: var(--spacing-md);
+  }
+
+  .config-card.mobile-collapsed {
+    padding-bottom: var(--spacing-sm);
+  }
+
+  .config-header {
+    cursor: pointer;
+  }
+
+  .config-card.mobile-collapsed .config-header {
+    margin-bottom: var(--spacing-xs);
+  }
+
+  .config-name {
+    font-size: var(--font-size-md);
+  }
+
+  .config-meta {
+    flex-wrap: wrap;
+    gap: var(--spacing-xs);
+  }
+
+  .config-symbol,
+  .config-strategy,
+  .config-recurrence {
+    font-size: var(--font-size-xs);
+    padding: 2px 6px;
+  }
+
+  /* Status badge - icon only on mobile */
+  .status-badge {
+    padding: var(--spacing-xs);
+  }
+
+  /* Mobile collapsed card - compact actions */
+  .config-card.mobile-collapsed .config-actions {
+    padding-top: var(--spacing-sm);
+    border-top: none;
+    justify-content: flex-start;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  /* Make action buttons smaller on mobile collapsed view */
+  .config-card.mobile-collapsed .config-actions .p-button {
+    padding: 6px;
+    min-width: unset;
+  }
+
+  /* Hide less important actions on mobile collapsed view */
+  .config-card.mobile-collapsed .config-actions .p-button[title="Duplicate Config"],
+  .config-card.mobile-collapsed .config-actions .p-button[title="Test Indicators"] {
+    display: none;
+  }
+
+  /* When expanded, show all actions */
+  .config-card:not(.mobile-collapsed) .config-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
   }
 }
 </style>

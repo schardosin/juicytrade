@@ -4,16 +4,51 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"trade-backend-go/internal/automation/types"
 	"trade-backend-go/internal/providers"
 )
 
+// cacheKey generates a unique key for caching indicator results
+func cacheKey(configID string, indicatorType types.IndicatorType) string {
+	return fmt.Sprintf("%s:%s", configID, indicatorType)
+}
+
+// cachedResult stores a successful indicator result for fallback
+type cachedResult struct {
+	Value     float64
+	Timestamp time.Time
+}
+
+// cachedQuote stores a short-lived quote to prevent concurrent fetch race conditions
+type cachedQuote struct {
+	Price     float64
+	Timestamp time.Time
+}
+
+// quoteCacheTTL is how long to cache real-time quotes (prevents race condition when
+// multiple automations request the same symbol's quote simultaneously)
+const quoteCacheTTL = 5 * time.Second
+
 // Service handles indicator calculations using the provider abstraction layer
 type Service struct {
 	providerManager *providers.ProviderManager
 	fomcDates       []time.Time // Pre-loaded FOMC dates
+
+	// Cache for last known good indicator values (for stale fallback)
+	cacheMu sync.RWMutex
+	cache   map[string]*cachedResult
+
+	// Short-term cache for real-time quotes (prevents concurrent fetch race)
+	quoteCacheMu sync.RWMutex
+	quoteCache   map[string]*cachedQuote
+
+	// Per-symbol fetch locks to prevent concurrent fetches for the same symbol
+	// This eliminates the check-then-act race condition
+	quoteFetchMu   sync.Mutex
+	quoteFetchLock map[string]*sync.Mutex
 }
 
 // NewService creates a new indicator service
@@ -21,13 +56,145 @@ func NewService(pm *providers.ProviderManager) *Service {
 	s := &Service{
 		providerManager: pm,
 		fomcDates:       loadFOMCDates(),
+		cache:           make(map[string]*cachedResult),
+		quoteCache:      make(map[string]*cachedQuote),
+		quoteFetchLock:  make(map[string]*sync.Mutex),
 	}
 	return s
 }
 
+// getQuoteFetchLock returns a per-symbol mutex for serializing quote fetches
+func (s *Service) getQuoteFetchLock(symbol string) *sync.Mutex {
+	s.quoteFetchMu.Lock()
+	defer s.quoteFetchMu.Unlock()
+
+	if lock, exists := s.quoteFetchLock[symbol]; exists {
+		return lock
+	}
+	lock := &sync.Mutex{}
+	s.quoteFetchLock[symbol] = lock
+	return lock
+}
+
+// getCachedQuote retrieves a short-lived cached quote if still valid
+func (s *Service) getCachedQuote(symbol string) (float64, bool) {
+	s.quoteCacheMu.RLock()
+	defer s.quoteCacheMu.RUnlock()
+
+	cached, exists := s.quoteCache[symbol]
+	if !exists {
+		return 0, false
+	}
+
+	// Check if cache is still valid
+	if time.Since(cached.Timestamp) > quoteCacheTTL {
+		return 0, false
+	}
+
+	return cached.Price, true
+}
+
+// setCachedQuote stores a short-lived quote
+func (s *Service) setCachedQuote(symbol string, price float64) {
+	s.quoteCacheMu.Lock()
+	defer s.quoteCacheMu.Unlock()
+
+	s.quoteCache[symbol] = &cachedQuote{
+		Price:     price,
+		Timestamp: time.Now(),
+	}
+}
+
+// getCachedResult retrieves a cached indicator result
+func (s *Service) getCachedResult(configID string, indicatorType types.IndicatorType) *cachedResult {
+	s.cacheMu.RLock()
+	defer s.cacheMu.RUnlock()
+	return s.cache[cacheKey(configID, indicatorType)]
+}
+
+// setCachedResult stores a successful indicator result
+func (s *Service) setCachedResult(configID string, indicatorType types.IndicatorType, value float64) {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cache[cacheKey(configID, indicatorType)] = &cachedResult{
+		Value:     value,
+		Timestamp: time.Now(),
+	}
+}
+
+// ClearCache removes all cached results (useful for testing)
+func (s *Service) ClearCache() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cache = make(map[string]*cachedResult)
+}
+
+// getQuoteWithCache fetches a quote with race-condition-safe caching.
+// Uses a per-symbol lock to ensure only one goroutine fetches while others wait,
+// eliminating the check-then-act race condition.
+func (s *Service) getQuoteWithCache(ctx context.Context, symbol string) (float64, error) {
+	// Fast path: check cache without lock
+	if cachedPrice, ok := s.getCachedQuote(symbol); ok {
+		slog.Debug("Using cached quote (fast path)",
+			"symbol", symbol,
+			"price", cachedPrice)
+		return cachedPrice, nil
+	}
+
+	// Slow path: acquire per-symbol lock to prevent concurrent fetches
+	lock := s.getQuoteFetchLock(symbol)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Double-check cache after acquiring lock (another goroutine may have populated it)
+	if cachedPrice, ok := s.getCachedQuote(symbol); ok {
+		slog.Debug("Using cached quote (after lock)",
+			"symbol", symbol,
+			"price", cachedPrice)
+		return cachedPrice, nil
+	}
+
+	// Cache miss - fetch from provider
+	slog.Debug("Fetching quote from provider",
+		"symbol", symbol)
+
+	quotes, err := s.providerManager.GetStockQuotes(ctx, []string{symbol})
+	if err != nil {
+		return 0, fmt.Errorf("failed to get current price for %s: %w", symbol, err)
+	}
+
+	quote, ok := quotes[symbol]
+	if !ok {
+		return 0, fmt.Errorf("quote not available for %s", symbol)
+	}
+
+	// Extract price: try Last first, fall back to bid/ask midpoint
+	var price float64
+	if quote.Last != nil && *quote.Last > 0 {
+		price = *quote.Last
+	} else if quote.Bid != nil && quote.Ask != nil && *quote.Bid > 0 && *quote.Ask > 0 {
+		price = (*quote.Bid + *quote.Ask) / 2
+	} else if quote.Bid != nil && *quote.Bid > 0 {
+		price = *quote.Bid
+	} else if quote.Ask != nil && *quote.Ask > 0 {
+		price = *quote.Ask
+	} else {
+		return 0, fmt.Errorf("current price not available for %s (no last, bid, or ask)", symbol)
+	}
+
+	// Cache the quote for subsequent requests
+	s.setCachedQuote(symbol, price)
+	slog.Info("Fetched and cached quote",
+		"symbol", symbol,
+		"price", price)
+
+	return price, nil
+}
+
 // EvaluateIndicator calculates a single indicator
 // Each indicator uses its own configured symbol (or defaults like QQQ for Gap/Range/Trend, VIX for vix)
-func (s *Service) EvaluateIndicator(ctx context.Context, config types.IndicatorConfig) *types.IndicatorResult {
+// configID is used for caching - pass empty string for preview/test mode (no caching)
+func (s *Service) EvaluateIndicator(ctx context.Context, configID string, config types.IndicatorConfig) *types.IndicatorResult {
 	result := &types.IndicatorResult{
 		Type:      config.Type,
 		Symbol:    config.Symbol, // Will be overwritten below with actual symbol used
@@ -89,8 +256,36 @@ func (s *Service) EvaluateIndicator(ctx context.Context, config types.IndicatorC
 	if err != nil {
 		result.Error = err.Error()
 		result.Pass = false
-		slog.Error("Indicator evaluation failed", "type", config.Type, "error", err)
+		result.Stale = true
+
+		// Try to use last known good value for display (only if we have a configID for caching)
+		if configID != "" {
+			if cached := s.getCachedResult(configID, config.Type); cached != nil {
+				result.Value = cached.Value
+				result.LastGoodValue = &cached.Value
+				result.Details = fmt.Sprintf("STALE: Last good value from %s - %s",
+					cached.Timestamp.Format("15:04:05"), err.Error())
+				slog.Warn("Indicator evaluation failed, using cached value",
+					"type", config.Type,
+					"cachedValue", cached.Value,
+					"cachedAt", cached.Timestamp,
+					"error", err)
+			} else {
+				result.Details = fmt.Sprintf("STALE: No cached value available - %s", err.Error())
+				slog.Error("Indicator evaluation failed, no cached value available",
+					"type", config.Type,
+					"error", err)
+			}
+		} else {
+			// Preview/test mode - no caching
+			slog.Error("Indicator evaluation failed (preview mode)", "type", config.Type, "error", err)
+		}
 		return result
+	}
+
+	// Success - cache this result (only if we have a configID)
+	if configID != "" {
+		s.setCachedResult(configID, config.Type, result.Value)
 	}
 
 	// Evaluate the condition
@@ -102,11 +297,12 @@ func (s *Service) EvaluateIndicator(ctx context.Context, config types.IndicatorC
 
 // EvaluateAllIndicators evaluates all indicators
 // Each indicator uses its own configured symbol (or defaults like QQQ for Gap/Range/Trend)
-func (s *Service) EvaluateAllIndicators(ctx context.Context, configs []types.IndicatorConfig) []types.IndicatorResult {
+// configID is used for caching - pass empty string for preview/test mode (no caching)
+func (s *Service) EvaluateAllIndicators(ctx context.Context, configID string, configs []types.IndicatorConfig) []types.IndicatorResult {
 	results := make([]types.IndicatorResult, 0, len(configs))
 
 	for _, config := range configs {
-		result := s.EvaluateIndicator(ctx, config)
+		result := s.EvaluateIndicator(ctx, configID, config)
 		results = append(results, *result)
 	}
 
@@ -114,9 +310,10 @@ func (s *Service) EvaluateAllIndicators(ctx context.Context, configs []types.Ind
 }
 
 // AllIndicatorsPass checks if all enabled indicators pass
+// Returns false if any enabled indicator is stale OR failing
 func (s *Service) AllIndicatorsPass(results []types.IndicatorResult) bool {
 	for _, result := range results {
-		if result.Enabled && !result.Pass {
+		if result.Enabled && (result.Stale || !result.Pass) {
 			return false
 		}
 	}
@@ -151,31 +348,8 @@ func (s *Service) GetVIXValue(ctx context.Context, customSymbol string) (float64
 		return 0, fmt.Errorf("VIX close price not available in historical data")
 	}
 
-	// For other symbols (UVXY, VXX, etc.), use streaming quotes
-	quotes, err := s.providerManager.GetStockQuotes(ctx, []string{symbol})
-	if err != nil {
-		return 0, fmt.Errorf("failed to get quote for %s: %w", symbol, err)
-	}
-
-	if quote, ok := quotes[symbol]; ok {
-		// Try Last price first
-		if quote.Last != nil && *quote.Last > 0 {
-			return *quote.Last, nil
-		}
-		// Fall back to bid/ask midpoint
-		if quote.Bid != nil && quote.Ask != nil && *quote.Bid > 0 && *quote.Ask > 0 {
-			return (*quote.Bid + *quote.Ask) / 2, nil
-		}
-		// Fall back to just bid or ask
-		if quote.Bid != nil && *quote.Bid > 0 {
-			return *quote.Bid, nil
-		}
-		if quote.Ask != nil && *quote.Ask > 0 {
-			return *quote.Ask, nil
-		}
-	}
-
-	return 0, fmt.Errorf("quote not available for %s", symbol)
+	// For other symbols (UVXY, VXX, etc.), use race-condition-safe caching
+	return s.getQuoteWithCache(ctx, symbol)
 }
 
 // GetGapPercent calculates the gap percentage: (Open - PrevClose) / PrevClose * 100
@@ -220,29 +394,10 @@ func (s *Service) GetTrendPercent(ctx context.Context, symbol string) (float64, 
 		return 0, fmt.Errorf("open is zero for %s", symbol)
 	}
 
-	// Get current price
-	quotes, err := s.providerManager.GetStockQuotes(ctx, []string{symbol})
+	// Get current price with race-condition-safe caching
+	currentPrice, err := s.getQuoteWithCache(ctx, symbol)
 	if err != nil {
-		return 0, fmt.Errorf("failed to get current price for %s: %w", symbol, err)
-	}
-
-	quote, ok := quotes[symbol]
-	if !ok {
-		return 0, fmt.Errorf("quote not available for %s", symbol)
-	}
-
-	// Try Last price first, fall back to bid/ask midpoint
-	var currentPrice float64
-	if quote.Last != nil && *quote.Last > 0 {
-		currentPrice = *quote.Last
-	} else if quote.Bid != nil && quote.Ask != nil && *quote.Bid > 0 && *quote.Ask > 0 {
-		currentPrice = (*quote.Bid + *quote.Ask) / 2
-	} else if quote.Bid != nil && *quote.Bid > 0 {
-		currentPrice = *quote.Bid
-	} else if quote.Ask != nil && *quote.Ask > 0 {
-		currentPrice = *quote.Ask
-	} else {
-		return 0, fmt.Errorf("current price not available for %s (no last, bid, or ask)", symbol)
+		return 0, err
 	}
 
 	trend := ((currentPrice - dailyData.Open) / dailyData.Open) * 100

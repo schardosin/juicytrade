@@ -380,7 +380,8 @@ func (h *AutomationHandler) EvaluateIndicatorsPreview(c *gin.Context) {
 		}
 	}
 
-	results := h.engine.GetIndicatorService().EvaluateAllIndicators(c.Request.Context(), request.Indicators)
+	// Empty configID for preview mode - no caching
+	results := h.engine.GetIndicatorService().EvaluateAllIndicators(c.Request.Context(), "", request.Indicators)
 	allPass := h.engine.GetIndicatorService().AllIndicatorsPass(results)
 
 	c.JSON(http.StatusOK, gin.H{

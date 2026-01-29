@@ -303,8 +303,9 @@ func (e *Engine) ResetTradedToday(id string) error {
 }
 
 // EvaluateIndicators evaluates indicators for a config without starting
+// Uses the config ID for caching results
 func (e *Engine) EvaluateIndicators(ctx context.Context, config *types.AutomationConfig) []types.IndicatorResult {
-	return e.indicatorService.EvaluateAllIndicators(ctx, config.Indicators)
+	return e.indicatorService.EvaluateAllIndicators(ctx, config.ID, config.Indicators)
 }
 
 // PreviewStrikes finds strikes for a given configuration without placing an order
@@ -414,8 +415,8 @@ func (e *Engine) handleWaitingState(id string, active *types.ActiveAutomation, s
 		"entryTime", active.Config.EntryTime,
 		"isEntryTime", isEntryTime)
 
-	// Evaluate indicators
-	results := e.indicatorService.EvaluateAllIndicators(ctx, active.Config.Indicators)
+	// Evaluate indicators (use config ID for caching)
+	results := e.indicatorService.EvaluateAllIndicators(ctx, id, active.Config.Indicators)
 
 	e.mu.Lock()
 	active.IndicatorResults = results
@@ -423,10 +424,26 @@ func (e *Engine) handleWaitingState(id string, active *types.ActiveAutomation, s
 	active.LastEvaluation = time.Now()
 	e.mu.Unlock()
 
-	slog.Info("🤖 Indicators evaluated",
-		"id", id,
-		"allPass", active.AllIndicatorsPass,
-		"results", results)
+	// Check if any indicators are stale
+	hasStaleIndicators := false
+	for _, result := range results {
+		if result.Enabled && result.Stale {
+			hasStaleIndicators = true
+			break
+		}
+	}
+
+	if hasStaleIndicators {
+		slog.Warn("🤖 Indicators evaluated with stale data",
+			"id", id,
+			"allPass", active.AllIndicatorsPass,
+			"results", results)
+	} else {
+		slog.Info("🤖 Indicators evaluated",
+			"id", id,
+			"allPass", active.AllIndicatorsPass,
+			"results", results)
+	}
 
 	// Check if it's time to trade
 	if isEntryTime && active.AllIndicatorsPass {
@@ -442,11 +459,17 @@ func (e *Engine) handleWaitingState(id string, active *types.ActiveAutomation, s
 		return
 	} else if isEntryTime && !active.AllIndicatorsPass {
 		e.mu.Lock()
-		active.AddLog("warn", "Entry time reached but indicators not passing")
-		active.Message = "Entry time reached but indicators not passing"
+		if hasStaleIndicators {
+			active.AddLog("warn", "Entry time reached but some indicators have stale data - trade blocked")
+			active.Message = "Entry time reached but indicators have stale data"
+		} else {
+			active.AddLog("warn", "Entry time reached but indicators not passing")
+			active.Message = "Entry time reached but indicators not passing"
+		}
 		e.mu.Unlock()
 		slog.Warn("🤖 Entry time but indicators failing",
 			"id", id,
+			"hasStaleIndicators", hasStaleIndicators,
 			"results", results)
 	} else if !isEntryTime {
 		e.mu.Lock()

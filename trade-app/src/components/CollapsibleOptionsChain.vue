@@ -16,6 +16,10 @@
           <option value="80">80 strikes</option>
           <option value="90">90 strikes</option>
           <option value="100">100 strikes</option>
+          <option value="150">150 strikes</option>
+          <option value="200">200 strikes</option>
+          <option value="250">250 strikes</option>
+          <option value="300">300 strikes</option>
         </select>
       </div>
       <div class="filter-info">
