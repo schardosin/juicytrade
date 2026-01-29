@@ -140,7 +140,6 @@
                       v-if="getCallOption(expiration, strike)"
                       class="option-data"
                       :class="[getCallSelectionClass(expiration, strike), { 'mobile-layout': isMobile }]"
-                      @click="selectCallOption(expiration, strike)"
                     >
                       <div class="greek-cell">
                         {{ getCallDelta(expiration, strike) }}
@@ -200,7 +199,6 @@
                       v-if="getPutOption(expiration, strike)"
                       class="option-data"
                       :class="[getPutSelectionClass(expiration, strike), { 'mobile-layout': isMobile }]"
-                      @click="selectPutOption(expiration, strike)"
                     >
                       <div
                         class="price-cell bid"
