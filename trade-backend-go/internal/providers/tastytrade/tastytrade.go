@@ -1885,6 +1885,16 @@ func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []s
 				"symbol": streamingSymbol,
 			})
 		}
+
+		// Add Trade (Volume) subscription - automatically included with Greeks for options
+		// Trade events contain dayVolume which we need for the options chain
+		// Also supports explicit "Volume" or "Trade" data type requests
+		if (containsString(dataTypes, "Greeks") || containsString(dataTypes, "Volume") || containsString(dataTypes, "Trade")) && p.isOptionSymbol(symbol) {
+			allSubscriptions = append(allSubscriptions, map[string]interface{}{
+				"type":   "Trade",
+				"symbol": streamingSymbol,
+			})
+		}
 	}
 
 	// Batch subscriptions into chunks of 50 to avoid DXLink limits
@@ -1969,6 +1979,11 @@ func (p *TastyTradeProvider) UnsubscribeFromSymbols(ctx context.Context, symbols
 			if dataType == "Greeks" && p.isOptionSymbol(symbol) {
 				subscriptions = append(subscriptions, map[string]interface{}{
 					"type":   "Greeks",
+					"symbol": streamingSymbol,
+				})
+				// Also unsubscribe from Trade (volume) which was auto-subscribed with Greeks
+				subscriptions = append(subscriptions, map[string]interface{}{
+					"type":   "Trade",
 					"symbol": streamingSymbol,
 				})
 			}
@@ -2187,8 +2202,10 @@ func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 		"acceptAggregationPeriod": 0.1,
 		"acceptDataFormat":        "COMPACT",
 		"acceptEventFields": map[string]interface{}{
-			"Quote":  []string{"eventType", "eventSymbol", "bidPrice", "askPrice", "bidSize", "askSize"},
-			"Greeks": []string{"eventType", "eventSymbol", "delta", "gamma", "theta", "vega", "volatility"},
+			"Quote":   []string{"eventType", "eventSymbol", "bidPrice", "askPrice", "bidSize", "askSize"},
+			"Greeks":  []string{"eventType", "eventSymbol", "delta", "gamma", "theta", "vega", "volatility"},
+			"Summary": []string{"eventType", "eventSymbol", "openInterest", "dayOpenPrice", "dayHighPrice", "dayLowPrice", "prevDayClosePrice"},
+			"Trade":   []string{"eventType", "eventSymbol", "price", "dayVolume", "size"},
 		},
 	}
 
@@ -2412,6 +2429,23 @@ func (p *TastyTradeProvider) processStreamingData(ctx context.Context) {
 // processFeedEvents processes FEED_DATA events and sends to streaming cache or queue.
 // Exact conversion of Python _process_feed_events method.
 func (p *TastyTradeProvider) processFeedEvents(feedData []interface{}) {
+	// Debug: Log the event types present in the feed data (temporarily at INFO level for debugging)
+	eventTypes := make(map[string]int)
+	for _, item := range feedData {
+		if itemArray, ok := item.([]interface{}); ok {
+			for _, elem := range itemArray {
+				if str, ok := elem.(string); ok {
+					if str == "Quote" || str == "Greeks" || str == "Summary" || str == "Trade" {
+						eventTypes[str]++
+					}
+				}
+			}
+		}
+	}
+	if len(eventTypes) > 0 {
+		slog.Debug(fmt.Sprintf("TastyTrade: Feed event types received: %v", eventTypes))
+	}
+
 	if p.streamingState.streamingQueue == nil && p.streamingState.streamingCache == nil {
 		slog.Warn("TastyTrade: No streaming queue or cache available for feed events")
 		return
@@ -2446,12 +2480,23 @@ func (p *TastyTradeProvider) processFeedEvents(feedData []interface{}) {
 		}
 	}
 
+	// Process Trade events (for volume data)
+	tradeData := p.processTradeFeedData(feedData)
+
 	// Process Greeks events
 	greeksData := p.processGreeksFeedData(feedData)
 	if len(greeksData) > 0 {
 		slog.Debug(fmt.Sprintf("TastyTrade: Processing %d Greeks updates", len(greeksData)))
 		for symbol, greeks := range greeksData {
 			standardSymbol := p.convertSymbolToStandardFormat(symbol)
+
+			// Merge volume from Trade data if available for this symbol
+			if trade, exists := tradeData[symbol]; exists {
+				if volume, ok := trade["volume"]; ok {
+					greeks["volume"] = volume
+					slog.Debug(fmt.Sprintf("TastyTrade: Merged volume=%v into Greeks for %s", volume, symbol))
+				}
+			}
 
 			// Handle Greeks requests
 			p.streamingState.requestsLock.Lock()
@@ -2472,6 +2517,33 @@ func (p *TastyTradeProvider) processFeedEvents(feedData []interface{}) {
 			}
 			p.sendToCacheOrQueue(marketData)
 			slog.Debug(fmt.Sprintf("TastyTrade: Sent Greeks update for %s", standardSymbol))
+		}
+	}
+
+	// Process Trade events that don't have matching Greeks (standalone volume updates)
+	// This handles cases where Trade updates arrive without Greeks
+	if len(tradeData) > 0 {
+		for symbol, trade := range tradeData {
+			// Skip if we already processed this symbol with Greeks
+			if _, hasGreeks := greeksData[symbol]; hasGreeks {
+				continue
+			}
+
+			standardSymbol := p.convertSymbolToStandardFormat(symbol)
+
+			// Send volume-only update as greeks type (frontend expects volume in greeks)
+			volumeData := map[string]interface{}{
+				"volume": trade["volume"],
+			}
+
+			marketData := &models.MarketData{
+				Symbol:    standardSymbol,
+				Data:      volumeData,
+				DataType:  "greeks",
+				Timestamp: time.Now().Format(time.RFC3339),
+			}
+			p.sendToCacheOrQueue(marketData)
+			slog.Debug(fmt.Sprintf("TastyTrade: Sent volume-only update for %s", standardSymbol))
 		}
 	}
 }
@@ -2543,6 +2615,53 @@ func (p *TastyTradeProvider) processGreeksFeedData(feedData []interface{}) map[s
 	}
 
 	return greeksData
+}
+
+// processTradeFeedData processes FEED_DATA messages and extracts Trade events (volume).
+// Trade events contain dayVolume which we merge into Greeks data.
+// We request fields: ["eventType", "eventSymbol", "price", "dayVolume", "size"]
+// So each Trade event has 5 elements in COMPACT format.
+func (p *TastyTradeProvider) processTradeFeedData(feedData []interface{}) map[string]map[string]interface{} {
+	tradeData := make(map[string]map[string]interface{})
+
+	// Number of fields we requested for Trade events
+	const tradeFieldCount = 5 // eventType, eventSymbol, price, dayVolume, size
+
+	for _, item := range feedData {
+		if itemArray, ok := item.([]interface{}); ok {
+			// Parse the flat array - each Trade event has tradeFieldCount consecutive elements
+			i := 0
+			for i < len(itemArray) {
+				if itemArray[i] == "Trade" {
+					// Make sure we have enough elements
+					if i+tradeFieldCount > len(itemArray) {
+						slog.Warn(fmt.Sprintf("TastyTrade: Incomplete Trade event at index %d, only %d elements remaining", i, len(itemArray)-i))
+						break
+					}
+					symbol := itemArray[i+1].(string)
+					// Fields: [0]=eventType, [1]=eventSymbol, [2]=price, [3]=dayVolume, [4]=size
+					dayVolume := itemArray[i+3]
+
+					slog.Debug(fmt.Sprintf("TastyTrade: Trade for %s: dayVolume=%v (%T)", symbol, dayVolume, dayVolume))
+
+					// Store volume data
+					trade := map[string]interface{}{
+						"volume": dayVolume,
+					}
+					tradeData[symbol] = trade
+					i += tradeFieldCount // Move to next Trade event
+				} else {
+					i++ // Skip non-Trade data
+				}
+			}
+		}
+	}
+
+	if len(tradeData) > 0 {
+		slog.Debug(fmt.Sprintf("TastyTrade: Extracted %d Trade events with volume", len(tradeData)))
+	}
+
+	return tradeData
 }
 
 // sendToCacheOrQueue sends market data to cache if available, otherwise to queue.

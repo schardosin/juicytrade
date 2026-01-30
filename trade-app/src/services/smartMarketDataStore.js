@@ -1470,19 +1470,27 @@ class SmartMarketDataStore {
     const theta = dataObj.theta;
     const vega = dataObj.vega;
     const iv = dataObj.implied_volatility;
+    const volume = dataObj.volume;
+
+    // Helper to check if value is actually present (not null or undefined)
+    const hasValue = (v) => v !== undefined && v !== null;
 
     // Skip if no valid Greeks data
-    if (delta === undefined && gamma === undefined && theta === undefined && vega === undefined && iv === undefined) {
+    if (!hasValue(delta) && !hasValue(gamma) && !hasValue(theta) && !hasValue(vega) && !hasValue(iv) && !hasValue(volume)) {
       return;
     }
 
-    // Minimal Greeks data object
+    // Get existing Greeks data to merge with (preserves values not in this update)
+    const existingGreeks = this.optionGreeks.get(symbol) || {};
+
+    // Merge new data with existing - only update fields that have actual values (not null/undefined)
     const greeksData = {
-      delta,
-      gamma,
-      theta,
-      vega,
-      implied_volatility: iv,
+      delta: hasValue(delta) ? delta : existingGreeks.delta,
+      gamma: hasValue(gamma) ? gamma : existingGreeks.gamma,
+      theta: hasValue(theta) ? theta : existingGreeks.theta,
+      vega: hasValue(vega) ? vega : existingGreeks.vega,
+      implied_volatility: hasValue(iv) ? iv : existingGreeks.implied_volatility,
+      volume: hasValue(volume) ? volume : existingGreeks.volume,
       timestamp: Date.now(),
     };
 

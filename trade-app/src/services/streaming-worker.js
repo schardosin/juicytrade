@@ -57,7 +57,7 @@ function connect(url) {
     // Resubscribe to any existing symbols
     if (subscriptions.size > 0) {
       console.log(`🔄 Resubscribing to ${subscriptions.size} symbols after reconnection`);
-      socket.send(JSON.stringify({ action: 'subscribe', symbols: Array.from(subscriptions) }));
+      socket.send(JSON.stringify({ type: 'subscribe', symbols: Array.from(subscriptions) }));
     }
   };
 
@@ -121,7 +121,7 @@ function connect(url) {
 
 function subscribe(symbols) {
   symbols.forEach(symbol => subscriptions.add(symbol));
-  const message = JSON.stringify({ action: 'subscribe', symbols });
+  const message = JSON.stringify({ type: 'subscribe', symbols });
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(message);
   } else {
@@ -131,7 +131,7 @@ function subscribe(symbols) {
 
 function unsubscribe(symbols) {
   symbols.forEach(symbol => subscriptions.delete(symbol));
-  const message = JSON.stringify({ action: 'unsubscribe', symbols });
+  const message = JSON.stringify({ type: 'unsubscribe', symbols });
   if (socket && socket.readyState === WebSocket.OPEN) {
     socket.send(message);
   } else {

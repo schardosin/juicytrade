@@ -110,6 +110,7 @@
               <!-- Options Chain Header -->
               <div class="options-header" :class="{ 'mobile-layout': isMobile }">
                 <div class="calls-header">
+                  <div v-if="!isMobile" class="header-cell">Vol</div>
                   <div class="header-cell">Delta</div>
                   <div v-if="!isMobile" class="header-cell">Theta</div>
                   <div class="header-cell">Bid</div>
@@ -121,6 +122,7 @@
                   <div class="header-cell">Ask</div>
                   <div v-if="!isMobile" class="header-cell">Theta</div>
                   <div class="header-cell">Delta</div>
+                  <div v-if="!isMobile" class="header-cell">Vol</div>
                 </div>
               </div>
 
@@ -141,6 +143,9 @@
                       class="option-data"
                       :class="[getCallSelectionClass(expiration, strike), { 'mobile-layout': isMobile }]"
                     >
+                      <div v-if="!isMobile" class="greek-cell volume-cell">
+                        {{ getCallVolume(expiration, strike) }}
+                      </div>
                       <div class="greek-cell">
                         {{ getCallDelta(expiration, strike) }}
                       </div>
@@ -165,6 +170,7 @@
                       </div>
                     </div>
                     <div v-else class="option-data empty" :class="{ 'mobile-layout': isMobile }">
+                      <div v-if="!isMobile" class="greek-cell">-</div>
                       <div class="greek-cell">-</div>
                       <div v-if="!isMobile" class="greek-cell">-</div>
                       <div class="price-cell">-</div>
@@ -220,12 +226,16 @@
                       <div class="greek-cell">
                         {{ getPutDelta(expiration, strike) }}
                       </div>
+                      <div v-if="!isMobile" class="greek-cell volume-cell">
+                        {{ getPutVolume(expiration, strike) }}
+                      </div>
                     </div>
                     <div v-else class="option-data empty" :class="{ 'mobile-layout': isMobile }">
                       <div class="price-cell">-</div>
                       <div class="price-cell">-</div>
                       <div v-if="!isMobile" class="greek-cell">-</div>
                       <div class="greek-cell">-</div>
+                      <div v-if="!isMobile" class="greek-cell">-</div>
                     </div>
                   </div>
                 </div>
@@ -767,6 +777,37 @@ export default {
       return theta ? theta.toFixed(2) : "-";
     };
 
+    // Format volume with K/M suffixes for readability
+    const formatVolume = (volume) => {
+      if (volume === null || volume === undefined || isNaN(volume)) return "-";
+      if (volume >= 1000000) {
+        return (volume / 1000000).toFixed(1) + "M";
+      } else if (volume >= 1000) {
+        return (volume / 1000).toFixed(1) + "K";
+      }
+      return Math.round(volume).toString();
+    };
+
+    const getCallVolume = (expiration, strike) => {
+      const option = getCallOption(expiration, strike);
+      if (!option) return "-";
+      
+      // Use live Greeks (which includes volume) if available, fallback to static data
+      const liveGreeks = getLiveGreeks(option.symbol);
+      const volume = liveGreeks?.volume ?? option.volume;
+      return formatVolume(volume);
+    };
+
+    const getPutVolume = (expiration, strike) => {
+      const option = getPutOption(expiration, strike);
+      if (!option) return "-";
+      
+      // Use live Greeks (which includes volume) if available, fallback to static data
+      const liveGreeks = getLiveGreeks(option.symbol);
+      const volume = liveGreeks?.volume ?? option.volume;
+      return formatVolume(volume);
+    };
+
     const formatPrice = (price) => {
       if (price === null || price === undefined) return "-";
       return price.toFixed(2);
@@ -1003,9 +1044,12 @@ export default {
       getPutAsk,
       getCallDelta,
       getCallTheta,
+      getCallVolume,
       getPutDelta,
       getPutTheta,
+      getPutVolume,
       formatPrice,
+      formatVolume,
       formatStrike,
       isAtTheMoney,
       getITMLabel,
@@ -1306,7 +1350,7 @@ export default {
 .calls-header,
 .puts-header {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
   gap: var(--spacing-sm);
   padding: var(--spacing-md) var(--spacing-lg);
 }
@@ -1412,7 +1456,7 @@ export default {
 
 .option-data {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
   gap: var(--spacing-sm);
   padding: var(--spacing-md) var(--spacing-lg);
   width: 100%;
@@ -1456,6 +1500,11 @@ export default {
 .greek-cell {
   color: var(--text-secondary);
   font-weight: var(--font-weight-medium);
+}
+
+.greek-cell.volume-cell {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
 }
 
 .price-cell {
