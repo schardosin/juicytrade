@@ -230,52 +230,76 @@ func (p *TastyTradeProvider) makeAuthenticatedRequest(ctx context.Context, metho
 // === Market Data Methods ===
 
 // GetStockQuote gets the latest stock quote for a symbol using streaming (DXLink).
-// Mirrors Python get_streaming_quote: subscribe to Quote, wait for one update, then unsubscribe.
+// Subscribes to both Quote (bid/ask) and Trade (last price) events for complete data.
+// This is especially important for indices like NDX where bid/ask may be unavailable.
 func (p *TastyTradeProvider) GetStockQuote(ctx context.Context, symbol string) (*models.StockQuote, error) {
 	// Ensure streaming connection is healthy
 	if !p.ensureHealthyConnection(ctx) {
 		return nil, fmt.Errorf("streaming connection not available for quotes")
 	}
 
-	// Prepare a one-shot channel to receive the quote
+	// Prepare one-shot channels to receive quote and trade data
 	quoteCh := make(chan map[string]interface{}, 1)
+	tradeCh := make(chan map[string]interface{}, 1)
+
 	p.streamingState.requestsLock.Lock()
 	p.streamingState.quoteRequests[symbol] = quoteCh
+	p.streamingState.tradeRequests[symbol] = tradeCh
 	p.streamingState.requestsLock.Unlock()
 
 	// Ensure cleanup of request registration
 	defer func() {
 		p.streamingState.requestsLock.Lock()
 		delete(p.streamingState.quoteRequests, symbol)
+		delete(p.streamingState.tradeRequests, symbol)
 		p.streamingState.requestsLock.Unlock()
 	}()
 
-	// Subscribe to Quote for the symbol
-	success, err := p.SubscribeToSymbols(ctx, []string{symbol}, []string{"Quote"})
+	// Subscribe to both Quote and Trade for the symbol
+	// Trade events provide the last trade price, which is essential for indices like NDX
+	success, err := p.SubscribeToSymbols(ctx, []string{symbol}, []string{"Quote", "Trade"})
 	if err != nil || !success {
-		return nil, fmt.Errorf("failed to subscribe to quote for %s: %v", symbol, err)
+		return nil, fmt.Errorf("failed to subscribe to quote/trade for %s: %v", symbol, err)
 	}
 
 	// Always unsubscribe before returning
 	defer func() {
-		p.UnsubscribeFromSymbols(ctx, []string{symbol}, []string{"Quote"})
+		p.UnsubscribeFromSymbols(ctx, []string{symbol}, []string{"Quote", "Trade"})
 	}()
 
-	// Wait for a quote with timeout
+	// Wait for quote and trade data with timeout
+	// We wait for both but don't require both - either can provide useful data
 	timeout := 5 * time.Second
-	var quoteData map[string]interface{}
-	select {
-	case q := <-quoteCh:
-		quoteData = q
-	case <-time.After(timeout):
-		slog.Warn("Timeout waiting for streaming quote", "symbol", symbol)
-		quoteData = nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	deadline := time.Now().Add(timeout)
+
+	var quoteData, tradeData map[string]interface{}
+	gotQuote, gotTrade := false, false
+
+	// Wait until we have both or timeout
+	for !gotQuote || !gotTrade {
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			break
+		}
+
+		select {
+		case q := <-quoteCh:
+			quoteData = q
+			gotQuote = true
+		case t := <-tradeCh:
+			tradeData = t
+			gotTrade = true
+		case <-time.After(remaining):
+			// Timeout reached
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
 
-	// Build StockQuote from received data (bid/ask midpoint, last not provided in Quote feed)
-	var bidPtr, askPtr *float64
+	// Build StockQuote from received data
+	var bidPtr, askPtr, lastPtr *float64
+
+	// Extract bid/ask from Quote data
 	if quoteData != nil {
 		if b, ok := quoteData["bid"].(float64); ok && b > 0 {
 			bidVal := b
@@ -287,17 +311,32 @@ func (p *TastyTradeProvider) GetStockQuote(ctx context.Context, symbol string) (
 		}
 	}
 
+	// Extract last price from Trade data
+	if tradeData != nil {
+		if last, ok := tradeData["last"].(float64); ok && last > 0 {
+			lastVal := last
+			lastPtr = &lastVal
+		}
+	}
+
+	slog.Debug("GetStockQuote completed",
+		"symbol", symbol,
+		"hasBid", bidPtr != nil,
+		"hasAsk", askPtr != nil,
+		"hasLast", lastPtr != nil)
+
 	return &models.StockQuote{
 		Symbol:    symbol,
 		Bid:       bidPtr,
 		Ask:       askPtr,
-		Last:      nil, // DXLink Quote feed here does not provide last; Python also uses bid/ask midpoint
+		Last:      lastPtr,
 		Timestamp: time.Now().Format(time.RFC3339),
 	}, nil
 }
 
 // GetStockQuotes gets stock quotes for multiple symbols using batch streaming.
 // Optimized version that subscribes to all symbols at once instead of one by one.
+// Subscribes to both Quote (bid/ask) and Trade (last price) events for complete data.
 func (p *TastyTradeProvider) GetStockQuotes(ctx context.Context, symbols []string) (map[string]*models.StockQuote, error) {
 	if len(symbols) == 0 {
 		return make(map[string]*models.StockQuote), nil
@@ -308,82 +347,112 @@ func (p *TastyTradeProvider) GetStockQuotes(ctx context.Context, symbols []strin
 		return make(map[string]*models.StockQuote), fmt.Errorf("streaming connection not available for quotes")
 	}
 
-	// Create channels for each symbol to receive quotes
-	futures := make(map[string]chan map[string]interface{})
-	for _, symbol := range symbols {
-		futures[symbol] = make(chan map[string]interface{}, 1)
-		p.streamingState.requestsLock.Lock()
-		p.streamingState.quoteRequests[symbol] = futures[symbol]
-		p.streamingState.requestsLock.Unlock()
-	}
+	// Create channels for each symbol to receive quotes and trades
+	quoteFutures := make(map[string]chan map[string]interface{})
+	tradeFutures := make(map[string]chan map[string]interface{})
 
-	// Subscribe to Quote data for all symbols at once
-	success, err := p.SubscribeToSymbols(ctx, symbols, []string{"Quote"})
+	p.streamingState.requestsLock.Lock()
+	for _, symbol := range symbols {
+		quoteFutures[symbol] = make(chan map[string]interface{}, 1)
+		tradeFutures[symbol] = make(chan map[string]interface{}, 1)
+		p.streamingState.quoteRequests[symbol] = quoteFutures[symbol]
+		p.streamingState.tradeRequests[symbol] = tradeFutures[symbol]
+	}
+	p.streamingState.requestsLock.Unlock()
+
+	// Subscribe to both Quote and Trade data for all symbols at once
+	success, err := p.SubscribeToSymbols(ctx, symbols, []string{"Quote", "Trade"})
 	if err != nil || !success {
 		// Clean up futures
 		p.streamingState.requestsLock.Lock()
 		for _, symbol := range symbols {
 			delete(p.streamingState.quoteRequests, symbol)
+			delete(p.streamingState.tradeRequests, symbol)
 		}
 		p.streamingState.requestsLock.Unlock()
-		return make(map[string]*models.StockQuote), fmt.Errorf("failed to subscribe to quotes: %v", err)
+		return make(map[string]*models.StockQuote), fmt.Errorf("failed to subscribe to quotes/trades: %v", err)
+	}
+
+	// Track received data per symbol
+	type symbolData struct {
+		bid      *float64
+		ask      *float64
+		last     *float64
+		gotQuote bool
+		gotTrade bool
+	}
+	dataMap := make(map[string]*symbolData)
+	for _, symbol := range symbols {
+		dataMap[symbol] = &symbolData{}
 	}
 
 	// Wait for results with a SINGLE global timeout (2 seconds)
-	results := make(map[string]*models.StockQuote)
 	timeout := 2 * time.Second
 	deadline := time.Now().Add(timeout)
-
-	received := 0
-	target := len(symbols)
 
 	// Use a single timer for the global timeout
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 
+	// Count how many symbols have complete data (both quote and trade)
+	completeCount := 0
+	target := len(symbols)
+
 	// Collect results until timeout or all received
-	for received < target {
+	for completeCount < target {
 		remaining := time.Until(deadline)
 		if remaining <= 0 {
 			slog.Debug("Global timeout reached for quotes batch",
-				"received", received,
+				"complete", completeCount,
 				"total", target)
 			break
 		}
 
-		// Check each symbol's channel without blocking
+		// Check each symbol's channels without blocking
 		foundOne := false
-		for symbol, ch := range futures {
-			// Skip already received symbols
-			if _, exists := results[symbol]; exists {
-				continue
+		for symbol := range dataMap {
+			data := dataMap[symbol]
+
+			// Check quote channel if not yet received
+			if !data.gotQuote {
+				select {
+				case quoteData := <-quoteFutures[symbol]:
+					if quoteData != nil {
+						if b, ok := quoteData["bid"].(float64); ok && b > 0 {
+							bidVal := b
+							data.bid = &bidVal
+						}
+						if a, ok := quoteData["ask"].(float64); ok && a > 0 {
+							askVal := a
+							data.ask = &askVal
+						}
+					}
+					data.gotQuote = true
+					foundOne = true
+					if data.gotTrade {
+						completeCount++
+					}
+				default:
+				}
 			}
 
-			select {
-			case quoteData := <-ch:
-				// Build StockQuote from received data
-				var bidPtr, askPtr *float64
-				if quoteData != nil {
-					if b, ok := quoteData["bid"].(float64); ok && b > 0 {
-						bidVal := b
-						bidPtr = &bidVal
+			// Check trade channel if not yet received
+			if !data.gotTrade {
+				select {
+				case tradeData := <-tradeFutures[symbol]:
+					if tradeData != nil {
+						if last, ok := tradeData["last"].(float64); ok && last > 0 {
+							lastVal := last
+							data.last = &lastVal
+						}
 					}
-					if a, ok := quoteData["ask"].(float64); ok && a > 0 {
-						askVal := a
-						askPtr = &askVal
+					data.gotTrade = true
+					foundOne = true
+					if data.gotQuote {
+						completeCount++
 					}
+				default:
 				}
-				results[symbol] = &models.StockQuote{
-					Symbol:    symbol,
-					Bid:       bidPtr,
-					Ask:       askPtr,
-					Last:      nil,
-					Timestamp: time.Now().Format(time.RFC3339),
-				}
-				received++
-				foundOne = true
-			default:
-				// Channel not ready, continue to next
 			}
 		}
 
@@ -394,7 +463,7 @@ func (p *TastyTradeProvider) GetStockQuotes(ctx context.Context, symbols []strin
 				// Small delay to avoid busy loop
 			case <-timer.C:
 				slog.Debug("Global timeout reached for quotes batch",
-					"received", received,
+					"complete", completeCount,
 					"total", target)
 				goto cleanup
 			case <-ctx.Done():
@@ -404,26 +473,30 @@ func (p *TastyTradeProvider) GetStockQuotes(ctx context.Context, symbols []strin
 	}
 
 cleanup:
-	// Mark remaining symbols with empty quotes
+	// Build results from collected data
+	results := make(map[string]*models.StockQuote)
 	for _, symbol := range symbols {
-		if _, exists := results[symbol]; !exists {
-			results[symbol] = &models.StockQuote{
-				Symbol:    symbol,
-				Timestamp: time.Now().Format(time.RFC3339),
-			}
+		data := dataMap[symbol]
+		results[symbol] = &models.StockQuote{
+			Symbol:    symbol,
+			Bid:       data.bid,
+			Ask:       data.ask,
+			Last:      data.last,
+			Timestamp: time.Now().Format(time.RFC3339),
 		}
 	}
 
 	slog.Info("Quotes batch completed",
-		"received", received,
+		"complete", completeCount,
 		"total", target,
 		"duration", time.Since(deadline.Add(-timeout)).String())
 
 	// Clean up: unsubscribe and remove futures
-	p.UnsubscribeFromSymbols(ctx, symbols, []string{"Quote"})
+	p.UnsubscribeFromSymbols(ctx, symbols, []string{"Quote", "Trade"})
 	p.streamingState.requestsLock.Lock()
 	for _, symbol := range symbols {
 		delete(p.streamingState.quoteRequests, symbol)
+		delete(p.streamingState.tradeRequests, symbol)
 	}
 	p.streamingState.requestsLock.Unlock()
 
@@ -1587,6 +1660,7 @@ type StreamingState struct {
 	connectionMutex   sync.Mutex // Add: mutex to prevent concurrent ConnectStreaming calls
 	greeksRequests    map[string]chan map[string]interface{}
 	quoteRequests     map[string]chan map[string]interface{}
+	tradeRequests     map[string]chan map[string]interface{} // For receiving Trade events (last price)
 	requestsLock      sync.Mutex
 	messageChan       chan map[string]interface{} // Add: buffered channel for messages
 	errorChan         chan error                  // Add: for read errors
@@ -1610,6 +1684,7 @@ func (p *TastyTradeProvider) initStreamingState() {
 		connectionID:      fmt.Sprintf("tastytrade_%s", p.accountID),
 		greeksRequests:    make(map[string]chan map[string]interface{}),
 		quoteRequests:     make(map[string]chan map[string]interface{}),
+		tradeRequests:     make(map[string]chan map[string]interface{}),
 		messageChan:       make(chan map[string]interface{}, 100),
 		errorChan:         make(chan error, 1),
 		orderEventChan:    make(chan *models.OrderEvent, 50),
@@ -2453,10 +2528,42 @@ func (p *TastyTradeProvider) processFeedEvents(feedData []interface{}) {
 
 	// Process Quote events
 	quoteData := p.processQuoteFeedData(feedData)
+
+	// Process Trade events (for volume data AND last price)
+	// Process Trade BEFORE sending quotes so we can merge last price into quote data
+	tradeData := p.processTradeFeedData(feedData)
+
+	// Handle Trade requests (for GetStockQuote last price)
+	if len(tradeData) > 0 {
+		for symbol, trade := range tradeData {
+			standardSymbol := p.convertSymbolToStandardFormat(symbol)
+
+			// Dispatch to tradeRequests channels (for GetStockQuote)
+			p.streamingState.requestsLock.Lock()
+			if ch, exists := p.streamingState.tradeRequests[standardSymbol]; exists {
+				select {
+				case ch <- trade:
+				default:
+				}
+			}
+			p.streamingState.requestsLock.Unlock()
+		}
+	}
+
+	// Send Quote events to cache (with merged last price from Trade events)
 	if len(quoteData) > 0 {
 		slog.Debug(fmt.Sprintf("TastyTrade: Processing %d quote updates", len(quoteData)))
 		for symbol, quote := range quoteData {
 			standardSymbol := p.convertSymbolToStandardFormat(symbol)
+
+			// CRITICAL: Merge last price from Trade data into Quote data
+			// This is essential for indices like NDX where bid/ask may be NaN but last price is valid
+			if trade, exists := tradeData[symbol]; exists {
+				if last, ok := trade["last"]; ok {
+					quote["last"] = last
+					slog.Debug(fmt.Sprintf("TastyTrade: Merged last=%v into quote for %s", last, symbol))
+				}
+			}
 
 			// Handle quote requests
 			p.streamingState.requestsLock.Lock()
@@ -2480,8 +2587,33 @@ func (p *TastyTradeProvider) processFeedEvents(feedData []interface{}) {
 		}
 	}
 
-	// Process Trade events (for volume data)
-	tradeData := p.processTradeFeedData(feedData)
+	// Also send Trade-only updates for symbols that didn't have Quote data
+	// This ensures symbols with only Trade events still get their last price to the cache
+	if len(tradeData) > 0 {
+		for symbol, trade := range tradeData {
+			// Skip if we already sent this symbol with quote data
+			if _, hasQuote := quoteData[symbol]; hasQuote {
+				continue
+			}
+
+			standardSymbol := p.convertSymbolToStandardFormat(symbol)
+
+			// Send trade data as quote type with just the last price
+			// This allows the frontend to fall back to last price when bid/ask unavailable
+			quoteFromTrade := map[string]interface{}{
+				"last": trade["last"],
+			}
+
+			marketData := &models.MarketData{
+				Symbol:    standardSymbol,
+				Data:      quoteFromTrade,
+				DataType:  "quote",
+				Timestamp: time.Now().Format(time.RFC3339),
+			}
+			p.sendToCacheOrQueue(marketData)
+			slog.Debug(fmt.Sprintf("TastyTrade: Sent trade-only quote update for %s (last=%v)", standardSymbol, trade["last"]))
+		}
+	}
 
 	// Process Greeks events
 	greeksData := p.processGreeksFeedData(feedData)
@@ -2617,8 +2749,8 @@ func (p *TastyTradeProvider) processGreeksFeedData(feedData []interface{}) map[s
 	return greeksData
 }
 
-// processTradeFeedData processes FEED_DATA messages and extracts Trade events (volume).
-// Trade events contain dayVolume which we merge into Greeks data.
+// processTradeFeedData processes FEED_DATA messages and extracts Trade events (volume and last price).
+// Trade events contain dayVolume which we merge into Greeks data, and price which is the last trade price.
 // We request fields: ["eventType", "eventSymbol", "price", "dayVolume", "size"]
 // So each Trade event has 5 elements in COMPACT format.
 func (p *TastyTradeProvider) processTradeFeedData(feedData []interface{}) map[string]map[string]interface{} {
@@ -2640,13 +2772,15 @@ func (p *TastyTradeProvider) processTradeFeedData(feedData []interface{}) map[st
 					}
 					symbol := itemArray[i+1].(string)
 					// Fields: [0]=eventType, [1]=eventSymbol, [2]=price, [3]=dayVolume, [4]=size
+					lastPrice := itemArray[i+2] // price field is the last trade price
 					dayVolume := itemArray[i+3]
 
-					slog.Debug(fmt.Sprintf("TastyTrade: Trade for %s: dayVolume=%v (%T)", symbol, dayVolume, dayVolume))
+					slog.Debug(fmt.Sprintf("TastyTrade: Trade for %s: last=%v, dayVolume=%v", symbol, lastPrice, dayVolume))
 
-					// Store volume data
+					// Store volume and last price data
 					trade := map[string]interface{}{
 						"volume": dayVolume,
+						"last":   lastPrice, // Add last trade price for GetStockQuote fallback
 					}
 					tradeData[symbol] = trade
 					i += tradeFieldCount // Move to next Trade event
@@ -2658,7 +2792,7 @@ func (p *TastyTradeProvider) processTradeFeedData(feedData []interface{}) map[st
 	}
 
 	if len(tradeData) > 0 {
-		slog.Debug(fmt.Sprintf("TastyTrade: Extracted %d Trade events with volume", len(tradeData)))
+		slog.Debug(fmt.Sprintf("TastyTrade: Extracted %d Trade events with volume/last price", len(tradeData)))
 	}
 
 	return tradeData

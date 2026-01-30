@@ -1069,13 +1069,70 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 	}
 
 	var underlyingPrice *float64
-	if quote, ok := quotes[config.Symbol]; ok && quote.Last != nil {
-		underlyingPrice = quote.Last
+	if quote, ok := quotes[config.Symbol]; ok {
+		// Try Last first, then fall back to mid of Bid/Ask
+		if quote.Last != nil && *quote.Last > 0 {
+			underlyingPrice = quote.Last
+			slog.Info("Got underlying price from Last", "symbol", config.Symbol, "price", *underlyingPrice)
+		} else if quote.Bid != nil && quote.Ask != nil && *quote.Bid > 0 && *quote.Ask > 0 {
+			mid := (*quote.Bid + *quote.Ask) / 2
+			underlyingPrice = &mid
+			slog.Info("Got underlying price from Bid/Ask mid", "symbol", config.Symbol, "bid", *quote.Bid, "ask", *quote.Ask, "mid", mid)
+		} else if quote.Bid != nil && *quote.Bid > 0 {
+			underlyingPrice = quote.Bid
+			slog.Info("Got underlying price from Bid only", "symbol", config.Symbol, "price", *underlyingPrice)
+		} else if quote.Ask != nil && *quote.Ask > 0 {
+			underlyingPrice = quote.Ask
+			slog.Info("Got underlying price from Ask only", "symbol", config.Symbol, "price", *underlyingPrice)
+		} else {
+			slog.Warn("Quote received but no valid price data",
+				"symbol", config.Symbol,
+				"hasLast", quote.Last != nil,
+				"lastValue", quote.Last,
+				"hasBid", quote.Bid != nil,
+				"bidValue", quote.Bid,
+				"hasAsk", quote.Ask != nil,
+				"askValue", quote.Ask)
+		}
+	} else {
+		slog.Warn("No quote returned for symbol", "symbol", config.Symbol, "quotesReturned", len(quotes))
+	}
+
+	// FALLBACK: For indices (NDX, SPX, VIX, RUT), streaming quotes often don't work
+	// Use historical bars API as a fallback (same approach as GetVIXValue)
+	if underlyingPrice == nil {
+		indexSymbols := map[string]bool{"NDX": true, "SPX": true, "VIX": true, "RUT": true}
+		if indexSymbols[config.Symbol] {
+			slog.Info("Streaming quote failed for index, trying historical bars fallback", "symbol", config.Symbol)
+			bars, err := e.providerManager.GetHistoricalBars(ctx, config.Symbol, "D", nil, nil, 1)
+			if err == nil && len(bars) > 0 {
+				// Try to get close price from the most recent bar
+				if closeVal, ok := bars[0]["close"]; ok {
+					if closeFloat, ok := closeVal.(float64); ok && closeFloat > 0 {
+						underlyingPrice = &closeFloat
+						slog.Info("Got underlying price from historical bars", "symbol", config.Symbol, "price", closeFloat)
+					}
+				}
+			} else {
+				slog.Warn("Historical bars fallback also failed", "symbol", config.Symbol, "error", err)
+			}
+		}
+	}
+
+	// CRITICAL: If we couldn't get the underlying price, we CANNOT proceed
+	// as we'll select completely wrong strikes
+	if underlyingPrice == nil {
+		return nil, fmt.Errorf("failed to get underlying price for %s - cannot determine ATM strike. Check if symbol is correct and market is open", config.Symbol)
 	}
 
 	// Get options chain (basic structure first)
 	// Parameters: ctx, symbol, expiry, underlyingPrice, atmRange, includeGreeks, strikesOnly
-	chain, err := e.providerManager.GetOptionsChainSmart(ctx, config.Symbol, expiry, underlyingPrice, 50, true, false)
+	// Adjust atmRange based on target delta - lower delta targets need more OTM strikes
+	atmRange := 200
+	if config.TradeConfig.TargetDelta <= 0.10 {
+		atmRange = 300 // Need many more strikes for low delta targets
+	}
+	chain, err := e.providerManager.GetOptionsChainSmart(ctx, config.Symbol, expiry, underlyingPrice, atmRange, true, false)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get options chain: %w", err)
 	}
@@ -1144,7 +1201,27 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 		"totalOptions", len(allOptions),
 		"atmIndex", atmIndex,
 		"atmStrike", allOptions[atmIndex].strike,
-		"underlyingPrice", underlyingPrice)
+		"underlyingPrice", underlyingPrice,
+		"targetDelta", config.TradeConfig.TargetDelta)
+
+	// Debug: Log all available strikes for puts/calls near ATM
+	if len(allOptions) > 0 {
+		startLog := atmIndex - 50
+		if startLog < 0 {
+			startLog = 0
+		}
+		endLog := atmIndex + 10
+		if endLog > len(allOptions) {
+			endLog = len(allOptions)
+		}
+		for i := startLog; i < endLog; i++ {
+			slog.Debug("AVAILABLE STRIKE",
+				"index", i,
+				"strike", allOptions[i].strike,
+				"symbol", allOptions[i].symbol,
+				"distFromATM", i-atmIndex)
+		}
+	}
 
 	// Windowed approach: start with initial window, expand as needed
 	// Window size and expansion parameters
@@ -1226,34 +1303,71 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 				"windowEnd", windowEnd,
 				"symbolsToLoad", len(symbolsToLoad))
 
-			// Fetch Greeks for this window
-			newGreeks, err := e.providerManager.GetOptionsGreeksBatch(ctx, symbolsToLoad)
-			if err != nil {
-				slog.Warn("Failed to get Greeks for window", "error", err, "iteration", iteration)
-			} else {
-				// Count how many valid Greeks we received
-				validGreeksCount := 0
+			// Fetch Greeks for this window with retry for missing symbols
+			var validGreeksCount int
+			maxRetries := 2
+			for retry := 0; retry <= maxRetries; retry++ {
+				var symbolsForThisAttempt []string
+				if retry == 0 {
+					symbolsForThisAttempt = symbolsToLoad
+				} else {
+					// On retry, only load symbols that are still missing Greeks
+					for _, sym := range symbolsToLoad {
+						if greeksMap[sym] == nil {
+							symbolsForThisAttempt = append(symbolsForThisAttempt, sym)
+						}
+					}
+					if len(symbolsForThisAttempt) == 0 {
+						break // All symbols have Greeks now
+					}
+					slog.Info("Retrying Greeks fetch for missing symbols",
+						"retry", retry,
+						"missingCount", len(symbolsForThisAttempt))
+				}
+
+				newGreeks, err := e.providerManager.GetOptionsGreeksBatch(ctx, symbolsForThisAttempt)
+				if err != nil {
+					slog.Warn("Failed to get Greeks for window", "error", err, "iteration", iteration, "retry", retry)
+					continue
+				}
+
+				// Store received Greeks
 				for symbol, greeks := range newGreeks {
-					greeksMap[symbol] = greeks
 					if greeks != nil {
-						if _, ok := greeks["delta"]; ok {
+						greeksMap[symbol] = greeks
+					}
+				}
+
+				// Count total valid Greeks after this attempt
+				validGreeksCount = 0
+				for _, sym := range symbolsToLoad {
+					if g := greeksMap[sym]; g != nil {
+						if _, ok := g["delta"]; ok {
 							validGreeksCount++
 						}
 					}
 				}
-				slog.Info("Greeks received",
-					"requested", len(symbolsToLoad),
-					"received", len(newGreeks),
-					"validWithDelta", validGreeksCount)
 
-				// SAFEGUARD: If we got very few Greeks, something is wrong
-				minRequiredRatio := 0.5 // At least 50% should have data
-				if float64(validGreeksCount) < float64(len(symbolsToLoad))*minRequiredRatio {
-					slog.Warn("Low Greeks coverage - data quality issue",
-						"requested", len(symbolsToLoad),
-						"validWithDelta", validGreeksCount,
-						"minRequired", int(float64(len(symbolsToLoad))*minRequiredRatio))
+				slog.Info("Greeks received",
+					"requested", len(symbolsForThisAttempt),
+					"received", len(newGreeks),
+					"totalValidWithDelta", validGreeksCount,
+					"totalRequested", len(symbolsToLoad),
+					"retry", retry)
+
+				// If we got at least 90% of Greeks, stop retrying
+				if float64(validGreeksCount) >= float64(len(symbolsToLoad))*0.9 {
+					break
 				}
+			}
+
+			// SAFEGUARD: If we got very few Greeks, something is wrong
+			minRequiredRatio := 0.5 // At least 50% should have data
+			if float64(validGreeksCount) < float64(len(symbolsToLoad))*minRequiredRatio {
+				slog.Warn("Low Greeks coverage - data quality issue",
+					"requested", len(symbolsToLoad),
+					"validWithDelta", validGreeksCount,
+					"minRequired", int(float64(len(symbolsToLoad))*minRequiredRatio))
 			}
 
 			// Fetch quotes for this window
@@ -1267,41 +1381,75 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 			}
 		}
 
-		// Search current window for target delta
-		var minDelta, maxDelta float64 = 1.0, 0.0
+		// Search from ATM outward in the OTM direction
+		// For puts: search from atmIndex toward lower indices (lower strikes = more OTM)
+		// For calls: search from atmIndex toward higher indices (higher strikes = more OTM)
+		// Stop at the FIRST strike where delta <= target (closest to target from OTM side)
+
 		withDeltaCount := 0
+		roundedTarget := float64(int(targetDelta*100+0.5)) / 100
 
-		for i := windowStart; i < windowEnd && i < len(allOptions); i++ {
-			opt := allOptions[i]
-			delta, ok := extractDelta(greeksMap[opt.symbol])
-			if !ok {
-				continue
-			}
+		// Determine search bounds within current window
+		searchStart := atmIndex
+		if searchStart < windowStart {
+			searchStart = windowStart
+		}
+		if searchStart >= windowEnd {
+			searchStart = windowEnd - 1
+		}
 
-			withDeltaCount++
-			absDelta := delta
-			if absDelta < 0 {
-				absDelta = -absDelta
-			}
+		// Track if we've gone past target delta (found OTM strikes with delta < target)
+		foundBelowTarget := false
+		lastAboveTarget := (*struct {
+			symbol string
+			strike float64
+			delta  float64
+			bid    float64
+			ask    float64
+		})(nil)
 
-			// Track min/max delta in window for direction decision
-			if absDelta < minDelta {
-				minDelta = absDelta
-			}
-			if absDelta > maxDelta {
-				maxDelta = absDelta
-			}
+		if optionType == "put" {
+			// For puts: search downward from ATM (lower strikes = more OTM = lower delta)
+			for i := searchStart; i >= windowStart; i-- {
+				opt := allOptions[i]
+				delta, ok := extractDelta(greeksMap[opt.symbol])
+				if !ok {
+					continue
+				}
 
-			// Check if this strike meets target (delta must be <= target, rounded to 2 decimals)
-			// Round to 2 decimals for comparison: 0.1549 rounds to 0.15, 0.1550 rounds to 0.16
-			roundedDelta := float64(int(absDelta*100+0.5)) / 100
-			roundedTarget := float64(int(targetDelta*100+0.5)) / 100
+				withDeltaCount++
+				absDelta := delta
+				if absDelta < 0 {
+					absDelta = -absDelta
+				}
 
-			if roundedDelta <= roundedTarget {
-				// Among strikes at or below target, pick the one closest to target (highest delta)
-				if bestShort == nil || absDelta > bestShort.delta {
+				roundedDelta := float64(int(absDelta*100+0.5)) / 100
+
+				if roundedDelta <= roundedTarget {
+					// Found a strike at or below target - this is our best candidate
+					foundBelowTarget = true
 					bid, ask := getBidAsk(opt.symbol)
-					bestShort = &struct {
+
+					// If we already have a candidate, keep the one with higher delta (closer to target)
+					if bestShort == nil || absDelta > bestShort.delta {
+						bestShort = &struct {
+							symbol string
+							strike float64
+							delta  float64
+							bid    float64
+							ask    float64
+						}{
+							symbol: opt.symbol,
+							strike: opt.strike,
+							delta:  absDelta,
+							bid:    bid,
+							ask:    ask,
+						}
+					}
+				} else {
+					// Delta still above target - track this as potential fallback
+					bid, ask := getBidAsk(opt.symbol)
+					lastAboveTarget = &struct {
 						symbol string
 						strike float64
 						delta  float64
@@ -1314,17 +1462,86 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 						bid:    bid,
 						ask:    ask,
 					}
+
+					// If we already found something below target and now we're above again,
+					// we've found the best (we're moving ITM now)
+					if foundBelowTarget {
+						break
+					}
+				}
+			}
+		} else {
+			// For calls: search upward from ATM (higher strikes = more OTM = lower delta)
+			for i := searchStart; i < windowEnd && i < len(allOptions); i++ {
+				opt := allOptions[i]
+				delta, ok := extractDelta(greeksMap[opt.symbol])
+				if !ok {
+					continue
+				}
+
+				withDeltaCount++
+				absDelta := delta
+				if absDelta < 0 {
+					absDelta = -absDelta
+				}
+
+				roundedDelta := float64(int(absDelta*100+0.5)) / 100
+
+				if roundedDelta <= roundedTarget {
+					// Found a strike at or below target - this is our best candidate
+					foundBelowTarget = true
+					bid, ask := getBidAsk(opt.symbol)
+
+					// If we already have a candidate, keep the one with higher delta (closer to target)
+					if bestShort == nil || absDelta > bestShort.delta {
+						bestShort = &struct {
+							symbol string
+							strike float64
+							delta  float64
+							bid    float64
+							ask    float64
+						}{
+							symbol: opt.symbol,
+							strike: opt.strike,
+							delta:  absDelta,
+							bid:    bid,
+							ask:    ask,
+						}
+					}
+				} else {
+					// Delta still above target - track this as potential fallback
+					bid, ask := getBidAsk(opt.symbol)
+					lastAboveTarget = &struct {
+						symbol string
+						strike float64
+						delta  float64
+						bid    float64
+						ask    float64
+					}{
+						symbol: opt.symbol,
+						strike: opt.strike,
+						delta:  absDelta,
+						bid:    bid,
+						ask:    ask,
+					}
+
+					// If we already found something below target and now we're above again,
+					// we've found the best (we're moving ITM now)
+					if foundBelowTarget {
+						break
+					}
 				}
 			}
 		}
 
 		slog.Info("Window search results",
 			"iteration", iteration+1,
-			"windowSize", windowEnd-windowStart,
+			"windowStart", windowStart,
+			"windowEnd", windowEnd,
+			"atmIndex", atmIndex,
 			"withDeltaCount", withDeltaCount,
-			"minDelta", minDelta,
-			"maxDelta", maxDelta,
 			"targetDelta", targetDelta,
+			"foundBelowTarget", foundBelowTarget,
 			"foundMatch", bestShort != nil,
 			"bestStrike", func() float64 {
 				if bestShort != nil {
@@ -1339,32 +1556,11 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 				return 0
 			}())
 
-		// SAFEGUARD: If we have very few options with delta in the window,
-		// we might be making decisions on incomplete data
-		windowSize := windowEnd - windowStart
-		if windowSize > 0 && withDeltaCount > 0 {
-			coverageRatio := float64(withDeltaCount) / float64(windowSize)
-			if coverageRatio < 0.3 {
-				slog.Warn("Low delta coverage in window - results may be unreliable",
-					"windowSize", windowSize,
-					"withDeltaCount", withDeltaCount,
-					"coverageRatio", coverageRatio)
-			}
-		}
-
-		// Check if we should continue expanding
-		// Continue if:
-		// 1. We found a match but minDelta is still above target (might find closer match)
-		// 2. We haven't found any match yet
-		// Stop if:
-		// 1. We found a match AND minDelta <= target (best possible found)
-		// 2. We found a match within acceptable threshold (within 0.02 of target)
-
+		// Check if we found a good match
 		if bestShort != nil {
-			// We have a candidate - check if we should keep looking
-			deltaFromTarget := bestShort.delta - targetDelta
+			deltaFromTarget := targetDelta - bestShort.delta
 
-			// If we found something very close to target, stop
+			// If we found something very close to target (within 0.01), stop
 			if deltaFromTarget <= 0.01 {
 				slog.Info("Found target delta within threshold",
 					"strike", bestShort.strike,
@@ -1374,42 +1570,33 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 				break
 			}
 
-			// If min delta in window is below target, we have the best possible
-			if minDelta <= targetDelta {
-				slog.Info("Found best possible delta (minDelta <= target)",
+			// If we found strikes both above and below target in this window,
+			// we have the best possible - the highest delta that's <= target
+			if foundBelowTarget && lastAboveTarget != nil {
+				slog.Info("Found best possible delta (have strikes above and below target)",
 					"strike", bestShort.strike,
 					"delta", bestShort.delta,
-					"minDelta", minDelta,
+					"lastAboveTargetDelta", lastAboveTarget.delta,
 					"iteration", iteration+1)
 				break
 			}
-
-			// Otherwise, might find better - continue to expansion logic
-			slog.Info("Current best delta is above target, checking if we can expand for better match",
-				"bestDelta", bestShort.delta,
-				"minDelta", minDelta,
-				"targetDelta", targetDelta)
 		}
 
-		// If no delta data at all, can't continue
+		// If no delta data at all in searched range, log and continue trying to expand
 		if withDeltaCount == 0 {
-			slog.Warn("No delta data in window, cannot determine direction")
-			break
+			slog.Warn("No delta data found in search range",
+				"iteration", iteration+1,
+				"searchStart", searchStart,
+				"windowStart", windowStart,
+				"windowEnd", windowEnd,
+				"greeksMapSize", len(greeksMap))
+			// Don't break - try to expand window and load more Greeks
 		}
 
-		// Determine which direction to expand
-		// For puts: lower strikes have lower delta (more OTM)
-		// For calls: higher strikes have lower delta (more OTM)
-		// If target < minDelta, we need more OTM strikes
-		// If target > maxDelta, we need more ITM strikes
-
-		needMoreOTM := targetDelta < minDelta
-		needMoreITM := targetDelta > maxDelta
-
+		// Need to expand window to find more OTM strikes (lower delta)
 		if optionType == "put" {
 			// Put OTM = lower strikes = expand windowStart down
-			// Put ITM = higher strikes = expand windowEnd up
-			if needMoreOTM && windowStart > 0 {
+			if windowStart > 0 {
 				newStart := windowStart - windowExpansion
 				if newStart < 0 {
 					newStart = 0
@@ -1418,23 +1605,13 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 					"oldStart", windowStart,
 					"newStart", newStart)
 				windowStart = newStart
-			} else if needMoreITM && windowEnd < len(allOptions) {
-				newEnd := windowEnd + windowExpansion
-				if newEnd > len(allOptions) {
-					newEnd = len(allOptions)
-				}
-				slog.Info("Expanding window up (more ITM puts)",
-					"oldEnd", windowEnd,
-					"newEnd", newEnd)
-				windowEnd = newEnd
 			} else {
-				slog.Info("Cannot expand further, using closest available")
+				slog.Info("Cannot expand further (at start of options), using best available")
 				break
 			}
 		} else {
 			// Call OTM = higher strikes = expand windowEnd up
-			// Call ITM = lower strikes = expand windowStart down
-			if needMoreOTM && windowEnd < len(allOptions) {
+			if windowEnd < len(allOptions) {
 				newEnd := windowEnd + windowExpansion
 				if newEnd > len(allOptions) {
 					newEnd = len(allOptions)
@@ -1443,69 +1620,148 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 					"oldEnd", windowEnd,
 					"newEnd", newEnd)
 				windowEnd = newEnd
-			} else if needMoreITM && windowStart > 0 {
-				newStart := windowStart - windowExpansion
-				if newStart < 0 {
-					newStart = 0
-				}
-				slog.Info("Expanding window down (more ITM calls)",
-					"oldStart", windowStart,
-					"newStart", newStart)
-				windowStart = newStart
 			} else {
-				slog.Info("Cannot expand further, using closest available")
+				slog.Info("Cannot expand further (at end of options), using best available")
 				break
 			}
 		}
 	}
 
-	// Fallback: if no exact match found, find the strike with highest delta that's still <= target
-	// This extends the search to ALL options, not just the initial window
+	// Fallback: if no exact match found, search all loaded Greeks
 	if bestShort == nil {
-		slog.Info("No exact match found in window, searching all options for strike with delta <= target")
+		slog.Info("No match found in window, searching all loaded Greeks",
+			"totalOptions", len(allOptions),
+			"optionsWithGreeks", len(greeksMap),
+			"optionType", optionType,
+			"windowEnd", windowEnd,
+			"windowStart", windowStart,
+			"atmIndex", atmIndex)
+
 		withDeltaCount := 0
 		roundedTarget := float64(int(targetDelta*100+0.5)) / 100
+		fallbackBatchSize := 20
 
-		for i := 0; i < len(allOptions); i++ {
-			opt := allOptions[i]
-			delta, ok := extractDelta(greeksMap[opt.symbol])
-			if !ok {
-				continue
+		// Search all options that have Greeks loaded, from most OTM to ATM
+		// This handles the case where the window covered all options
+		var searchStart, searchEnd int
+		var searchDirection int
+
+		if optionType == "call" {
+			// Calls: search from highest strike (most OTM) towards ATM
+			searchStart = len(allOptions) - 1
+			searchEnd = -1
+			searchDirection = -1
+		} else {
+			// Puts: search from lowest strike (most OTM) towards ATM
+			searchStart = 0
+			searchEnd = len(allOptions)
+			searchDirection = 1
+		}
+
+		slog.Info("Fallback search range",
+			"searchStart", searchStart,
+			"searchEnd", searchEnd,
+			"searchDirection", searchDirection)
+
+		// Search incrementally, loading Greeks as needed
+		idx := searchStart
+		batchCount := 0
+		for (searchDirection == 1 && idx < searchEnd) || (searchDirection == -1 && idx > searchEnd) {
+			// Determine batch range
+			var batchIndices []int
+			for i := 0; i < fallbackBatchSize && ((searchDirection == 1 && idx < searchEnd) || (searchDirection == -1 && idx > searchEnd)); i++ {
+				batchIndices = append(batchIndices, idx)
+				idx += searchDirection
 			}
 
-			withDeltaCount++
-			absDelta := delta
-			if absDelta < 0 {
-				absDelta = -absDelta
+			if len(batchIndices) == 0 {
+				break
 			}
 
-			// Round to 2 decimals for comparison
-			roundedDelta := float64(int(absDelta*100+0.5)) / 100
+			batchCount++
 
-			// Only consider strikes with delta <= target (rounded)
-			if roundedDelta <= roundedTarget {
-				// Among qualifying strikes, pick the one with highest delta (closest to target)
-				if bestShort == nil || absDelta > bestShort.delta {
-					bid, ask := getBidAsk(opt.symbol)
-					bestShort = &struct {
-						symbol string
-						strike float64
-						delta  float64
-						bid    float64
-						ask    float64
-					}{
-						symbol: opt.symbol,
-						strike: opt.strike,
-						delta:  absDelta,
-						bid:    bid,
-						ask:    ask,
+			// Collect symbols that need Greeks in this batch
+			var symbolsToLoad []string
+			for _, i := range batchIndices {
+				opt := allOptions[i]
+				if _, loaded := greeksMap[opt.symbol]; !loaded {
+					symbolsToLoad = append(symbolsToLoad, opt.symbol)
+				}
+			}
+
+			// Load Greeks for this batch if needed
+			if len(symbolsToLoad) > 0 {
+				newGreeks, err := e.providerManager.GetOptionsGreeksBatch(ctx, symbolsToLoad)
+				if err != nil {
+					slog.Warn("Failed to load Greeks batch in fallback", "error", err, "batch", batchCount)
+				} else {
+					for symbol, greeks := range newGreeks {
+						greeksMap[symbol] = greeks
 					}
 				}
+
+				// Also load quotes
+				newQuotes, err := e.providerManager.GetStockQuotes(ctx, symbolsToLoad)
+				if err == nil {
+					for symbol, quote := range newQuotes {
+						quotesMap[symbol] = quote
+					}
+				}
+			}
+
+			// Search this batch for a match
+			for _, i := range batchIndices {
+				opt := allOptions[i]
+				delta, ok := extractDelta(greeksMap[opt.symbol])
+				if !ok {
+					continue
+				}
+
+				withDeltaCount++
+				absDelta := delta
+				if absDelta < 0 {
+					absDelta = -absDelta
+				}
+
+				// Round to 2 decimals for comparison
+				roundedDelta := float64(int(absDelta*100+0.5)) / 100
+
+				// Only consider strikes with delta <= target (rounded)
+				if roundedDelta <= roundedTarget {
+					// Among qualifying strikes, pick the one with highest delta (closest to target)
+					if bestShort == nil || absDelta > bestShort.delta {
+						bid, ask := getBidAsk(opt.symbol)
+						bestShort = &struct {
+							symbol string
+							strike float64
+							delta  float64
+							bid    float64
+							ask    float64
+						}{
+							symbol: opt.symbol,
+							strike: opt.strike,
+							delta:  absDelta,
+							bid:    bid,
+							ask:    ask,
+						}
+					}
+				}
+			}
+
+			// If we found a match in this batch, stop searching
+			// As we go further OTM, deltas decrease, so once we find a match,
+			// continuing won't find a better one (higher delta <= target)
+			if bestShort != nil {
+				slog.Info("Found fallback match, stopping search",
+					"strike", bestShort.strike,
+					"delta", bestShort.delta,
+					"batchesSearched", batchCount)
+				break
 			}
 		}
 
 		if bestShort == nil {
-			return nil, fmt.Errorf("no options with delta <= %.4f for %s expiry %s (checked %d options)", targetDelta, config.Symbol, expiry, withDeltaCount)
+			return nil, fmt.Errorf("no options with delta <= %.4f for %s expiry %s (checked %d options with greeks out of %d total)", targetDelta, config.Symbol, expiry, withDeltaCount, len(allOptions))
 		}
 
 		slog.Info("Using fallback strike",
@@ -1569,58 +1825,103 @@ func (e *Engine) findStrikesForDelta(ctx context.Context, config *types.Automati
 	}
 
 	// Find the long option - may need to load Greeks/quotes if not in window
-	var longOption *struct {
+	// NOTE: We find the NEAREST available strike since indices like NDX have $25 or $50 intervals
+	// For puts: long strike should be <= target (lower/more OTM)
+	// For calls: long strike should be >= target (higher/more OTM)
+
+	slog.Info("Searching for long strike", "targetLongStrike", longStrike, "optionType", optionType, "width", width)
+
+	// Step 1: Find the best candidate strike WITHOUT loading Greeks
+	var bestLongCandidate *struct {
+		symbol string
+		strike float64
+	}
+	var bestLongDistance float64 = 999999
+
+	for _, opt := range allOptions {
+		var distance float64
+
+		if optionType == "put" {
+			// For puts, long strike should be <= calculated target (lower strike = more OTM)
+			if opt.strike > longStrike {
+				continue
+			}
+			distance = longStrike - opt.strike
+		} else {
+			// For calls, long strike should be >= calculated target (higher strike = more OTM)
+			if opt.strike < longStrike {
+				continue
+			}
+			distance = opt.strike - longStrike
+		}
+
+		// Pick the strike closest to our target
+		if distance < bestLongDistance {
+			bestLongDistance = distance
+			bestLongCandidate = &struct {
+				symbol string
+				strike float64
+			}{
+				symbol: opt.symbol,
+				strike: opt.strike,
+			}
+
+			// If exact match, stop searching
+			if distance == 0 {
+				break
+			}
+		}
+	}
+
+	if bestLongCandidate == nil {
+		return nil, fmt.Errorf("could not find long strike near %.2f (searched %d options)", longStrike, len(allOptions))
+	}
+
+	// Log if we had to use a different strike than calculated
+	if bestLongCandidate.strike != longStrike {
+		slog.Info("Using nearest available long strike",
+			"targetLongStrike", longStrike,
+			"actualLongStrike", bestLongCandidate.strike,
+			"difference", bestLongDistance,
+			"optionType", optionType)
+	}
+
+	// Step 2: Load Greeks/quotes for the selected candidate ONLY
+	if _, loaded := greeksMap[bestLongCandidate.symbol]; !loaded {
+		slog.Info("Loading Greeks for long leg", "symbol", bestLongCandidate.symbol, "strike", bestLongCandidate.strike)
+		newGreeks, err := e.providerManager.GetOptionsGreeksBatch(ctx, []string{bestLongCandidate.symbol})
+		if err == nil {
+			for symbol, greeks := range newGreeks {
+				greeksMap[symbol] = greeks
+			}
+		}
+		newQuotes, err := e.providerManager.GetStockQuotes(ctx, []string{bestLongCandidate.symbol})
+		if err == nil {
+			for symbol, quote := range newQuotes {
+				quotesMap[symbol] = quote
+			}
+		}
+	}
+
+	// Step 3: Build the longOption struct with Greeks and quotes
+	delta, _ := extractDelta(greeksMap[bestLongCandidate.symbol])
+	if delta < 0 {
+		delta = -delta
+	}
+	bid, ask := getBidAsk(bestLongCandidate.symbol)
+
+	longOption := &struct {
 		symbol string
 		strike float64
 		delta  float64
 		bid    float64
 		ask    float64
-	}
-
-	for _, opt := range allOptions {
-		if opt.strike == longStrike {
-			// Check if we need to load Greeks for this strike
-			if _, loaded := greeksMap[opt.symbol]; !loaded {
-				slog.Info("Loading Greeks for long leg", "symbol", opt.symbol, "strike", longStrike)
-				newGreeks, err := e.providerManager.GetOptionsGreeksBatch(ctx, []string{opt.symbol})
-				if err == nil {
-					for symbol, greeks := range newGreeks {
-						greeksMap[symbol] = greeks
-					}
-				}
-				newQuotes, err := e.providerManager.GetStockQuotes(ctx, []string{opt.symbol})
-				if err == nil {
-					for symbol, quote := range newQuotes {
-						quotesMap[symbol] = quote
-					}
-				}
-			}
-
-			delta, _ := extractDelta(greeksMap[opt.symbol])
-			if delta < 0 {
-				delta = -delta
-			}
-			bid, ask := getBidAsk(opt.symbol)
-
-			longOption = &struct {
-				symbol string
-				strike float64
-				delta  float64
-				bid    float64
-				ask    float64
-			}{
-				symbol: opt.symbol,
-				strike: opt.strike,
-				delta:  delta,
-				bid:    bid,
-				ask:    ask,
-			}
-			break
-		}
-	}
-
-	if longOption == nil {
-		return nil, fmt.Errorf("could not find long strike at %.2f", longStrike)
+	}{
+		symbol: bestLongCandidate.symbol,
+		strike: bestLongCandidate.strike,
+		delta:  delta,
+		bid:    bid,
+		ask:    ask,
 	}
 
 	// Calculate credit

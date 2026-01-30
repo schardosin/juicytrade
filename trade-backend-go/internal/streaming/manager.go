@@ -530,7 +530,9 @@ func (sm *StreamingManager) subscribeQuotesSafe(ctx context.Context, symbols []s
 			}
 		}
 
-		_, err := provider.SubscribeToSymbols(ctx, providerSymbols, []string{"Quote"})
+		// Subscribe to both Quote and Trade events - Trade provides "last" price
+		// which is essential for indices like NDX that don't have valid bid/ask
+		_, err := provider.SubscribeToSymbols(ctx, providerSymbols, []string{"Quote", "Trade"})
 		if err != nil {
 			slog.Error("Error subscribing quotes on provider", "provider", providerName, "error", err)
 			continue
@@ -548,7 +550,8 @@ func (sm *StreamingManager) unsubscribeQuotesSafe(ctx context.Context, symbols [
 		// Convert symbols to provider format if needed
 		providerSymbols := sm.convertSymbolsToProviderFormat(symbols, providerName)
 
-		_, err := provider.UnsubscribeFromSymbols(ctx, providerSymbols, []string{"Quote"})
+		// Unsubscribe from both Quote and Trade events (matching subscribe)
+		_, err := provider.UnsubscribeFromSymbols(ctx, providerSymbols, []string{"Quote", "Trade"})
 		if err != nil {
 			slog.Error("Error unsubscribing quotes on provider", "provider", providerName, "error", err)
 			continue
