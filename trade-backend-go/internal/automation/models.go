@@ -59,6 +59,7 @@ var (
 	NewIndicatorConfig    = types.NewIndicatorConfig
 	NewTradeConfiguration = types.NewTradeConfiguration
 	NewAutomationConfig   = types.NewAutomationConfig
+	GenerateIndicatorID   = types.GenerateIndicatorID
 )
 
 // generateID creates a unique ID for new automation configs

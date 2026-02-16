@@ -93,13 +93,13 @@
 
         <!-- Card Details - Collapsible on mobile -->
         <div v-show="!isMobile || isCardExpanded(config.id)" class="card-details">
-          <!-- Indicators Summary -->
+        <!-- Indicators Summary -->
           <div class="indicators-section">
             <div class="section-label">Entry Criteria</div>
             <div class="indicators-grid">
               <div
                 v-for="indicator in getEnabledIndicators(config)"
-                :key="indicator.type"
+                :key="indicator.id || indicator.type"
                 class="indicator-chip"
                 :class="getIndicatorStatusClass(config, indicator)"
               >

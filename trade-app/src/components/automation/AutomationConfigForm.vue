@@ -107,13 +107,19 @@
       <div class="form-section">
         <h2 class="section-title">Entry Indicators</h2>
         <p class="section-description">
-          All enabled indicators must pass for a trade to be executed
+          All enabled indicators must pass for a trade to be executed. Add indicators using the button below.
         </p>
         
-        <div class="indicators-list" :class="{ 'mobile-indicators': isMobile }">
+        <!-- Empty state when no indicators -->
+        <div v-if="!config.indicators.length" class="indicators-empty">
+          <i class="pi pi-filter"></i>
+          <p>No indicators configured. Add indicators to define entry criteria.</p>
+        </div>
+        
+        <div v-else class="indicators-list" :class="{ 'mobile-indicators': isMobile }">
           <div
-            v-for="(indicator, index) in config.indicators"
-            :key="indicator.type"
+            v-for="indicator in config.indicators"
+            :key="indicator.id"
             class="indicator-row"
             :class="{ 'disabled': !indicator.enabled }"
           >
@@ -153,13 +159,13 @@
               />
               <!-- Mobile test result - shown inline after Test All -->
               <span 
-                v-if="isMobile && indicatorResults[indicator.type]" 
+                v-if="isMobile && indicatorResults[indicator.id]" 
                 class="mobile-test-result" 
-                :class="getIndicatorResultClass(indicatorResults[indicator.type])"
-                :title="indicatorResults[indicator.type].stale ? `Stale: ${indicatorResults[indicator.type].error}` : ''"
+                :class="getIndicatorResultClass(indicatorResults[indicator.id])"
+                :title="indicatorResults[indicator.id].stale ? `Stale: ${indicatorResults[indicator.id].error}` : ''"
               >
-                <span v-if="indicatorResults[indicator.type].stale" class="stale-icon">⚠</span>
-                {{ indicatorResults[indicator.type].value?.toFixed(2) || 'N/A' }}
+                <span v-if="indicatorResults[indicator.id].stale" class="stale-icon">⚠</span>
+                {{ indicatorResults[indicator.id].value?.toFixed(2) || 'N/A' }}
               </span>
             </div>
             <div v-if="!isMobile" class="indicator-test">
@@ -168,26 +174,41 @@
                 class="p-button-text p-button-sm"
                 title="Test this indicator"
                 @click="testIndicator(indicator)"
-                :loading="testingIndicator === indicator.type"
+                :loading="testingIndicator === indicator.id"
                 :disabled="!indicator.enabled"
               />
               <span 
-                v-if="indicatorResults[indicator.type]" 
+                v-if="indicatorResults[indicator.id]" 
                 class="test-result" 
-                :class="getIndicatorResultClass(indicatorResults[indicator.type])"
-                :title="indicatorResults[indicator.type].stale ? `Stale: ${indicatorResults[indicator.type].error}` : ''"
+                :class="getIndicatorResultClass(indicatorResults[indicator.id])"
+                :title="indicatorResults[indicator.id].stale ? `Stale: ${indicatorResults[indicator.id].error}` : ''"
               >
-                <span v-if="indicatorResults[indicator.type].stale" class="stale-icon">⚠</span>
-                {{ indicatorResults[indicator.type].value?.toFixed(2) || 'N/A' }}
+                <span v-if="indicatorResults[indicator.id].stale" class="stale-icon">⚠</span>
+                {{ indicatorResults[indicator.id].value?.toFixed(2) || 'N/A' }}
               </span>
+            </div>
+            <div class="indicator-remove">
+              <Button
+                icon="pi pi-times"
+                class="p-button-text p-button-danger p-button-sm"
+                title="Remove indicator"
+                @click="removeIndicator(indicator.id)"
+              />
             </div>
           </div>
         </div>
 
-        <div class="test-all-section">
+        <div class="indicators-actions">
           <Button
+            icon="pi pi-plus"
+            label="Add Indicator"
+            class="p-button-outlined"
+            @click="showAddIndicatorDialog = true"
+          />
+          <Button
+            v-if="config.indicators.length > 0"
             icon="pi pi-play"
-            label="Test All Indicators"
+            label="Test All"
             class="p-button-outlined"
             @click="testAllIndicators"
             :loading="testingAll"
@@ -197,6 +218,33 @@
           </span>
         </div>
       </div>
+
+      <!-- Add Indicator Dialog -->
+      <Dialog
+        v-model:visible="showAddIndicatorDialog"
+        header="Add Indicator"
+        :modal="true"
+        :style="{ width: '400px' }"
+      >
+        <div class="add-indicator-content">
+          <p class="add-indicator-description">
+            Select an indicator type to add. You can add multiple instances of the same type.
+          </p>
+          <div class="indicator-type-options">
+            <div
+              v-for="type in indicatorTypes"
+              :key="type.value"
+              class="indicator-type-option"
+              @click="addIndicator(type.value)"
+            >
+              <div class="option-header">
+                <span class="option-label">{{ type.label }}</span>
+              </div>
+              <p class="option-description">{{ type.description }}</p>
+            </div>
+          </div>
+        </div>
+      </Dialog>
 
       <!-- Trade Configuration Section -->
       <div class="form-section">
@@ -510,13 +558,16 @@ export default {
     const testingAll = ref(false)
     const indicatorResults = ref({})
     const allIndicatorsResult = ref(null)
+    
+    // Add indicator dialog
+    const showAddIndicatorDialog = ref(false)
 
     // Strike preview
     const loadingPreview = ref(false)
     const strikePreview = ref(null)
     const previewError = ref(null)
 
-    // Config data
+    // Config data - starts with empty indicators for new configs
     const config = ref({
       name: '',
       symbol: 'NDX',
@@ -524,13 +575,7 @@ export default {
       entry_timezone: 'America/New_York',
       recurrence: 'once',
       enabled: true,
-      indicators: [
-        { type: 'vix', enabled: true, operator: 'gt', threshold: 13.5, symbol: 'VIX' },
-        { type: 'gap', enabled: true, operator: 'lt', threshold: 1.0, symbol: 'QQQ' },
-        { type: 'range', enabled: true, operator: 'lt', threshold: 2.5, symbol: 'QQQ' },
-        { type: 'trend', enabled: true, operator: 'lt', threshold: 1.5, symbol: 'QQQ' },
-        { type: 'calendar', enabled: true, operator: 'eq', threshold: 0, symbol: '' },
-      ],
+      indicators: [], // Empty - user adds indicators via Add Indicator dialog
       trade_config: {
         strategy: 'put_spread',
         width: 20,
@@ -588,6 +633,15 @@ export default {
       { label: 'Run Once', value: 'once' },
       { label: 'Daily (Repeat Each Day)', value: 'daily' },
     ]
+    
+    // Indicator types for add indicator dialog
+    const indicatorTypes = [
+      { value: 'vix', label: 'VIX Level', description: 'CBOE Volatility Index level' },
+      { value: 'gap', label: 'Gap %', description: '(Open - Prev Close) / Prev Close * 100' },
+      { value: 'range', label: 'Range %', description: '(High - Low) / Open * 100' },
+      { value: 'trend', label: 'Trend %', description: '(Current - Open) / Open * 100' },
+      { value: 'calendar', label: 'FOMC Calendar', description: '0 = not FOMC day, 1 = FOMC day' },
+    ]
 
     // Methods
     const formatIndicatorType = (type) => {
@@ -628,6 +682,32 @@ export default {
         return 'Will automatically reset and trade again each trading day'
       }
       return 'Will stop after one successful trade'
+    }
+
+    // Generate unique ID for indicators (frontend-side until saved)
+    const generateIndicatorId = () => {
+      return `ind_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`
+    }
+
+    // Add a new indicator
+    const addIndicator = (type) => {
+      const newIndicator = {
+        id: generateIndicatorId(),
+        type: type,
+        enabled: true,
+        operator: 'eq', // Default operator
+        threshold: 0,   // No default value - user must set
+        symbol: '',     // No default symbol - user must set
+      }
+      config.value.indicators.push(newIndicator)
+      showAddIndicatorDialog.value = false
+    }
+
+    // Remove an indicator
+    const removeIndicator = (indicatorId) => {
+      config.value.indicators = config.value.indicators.filter(ind => ind.id !== indicatorId)
+      // Also remove any test results for this indicator
+      delete indicatorResults.value[indicatorId]
     }
 
     const getIndicatorResultClass = (result) => {
@@ -713,17 +793,18 @@ export default {
     }
 
     const testIndicator = async (indicator) => {
-      testingIndicator.value = indicator.type
+      testingIndicator.value = indicator.id
       try {
         const response = await api.previewAutomationIndicators({
           indicators: [indicator]
         })
         // Handle response format: data.indicators is an array
         const indicators = response.data?.indicators || response.indicators || []
+        // Find result by type (API returns type, not id)
         const result = indicators.find(ind => ind.type === indicator.type)
         if (result) {
-          // Map API format to our expected format
-          indicatorResults.value[indicator.type] = {
+          // Map API format to our expected format, keyed by indicator ID
+          indicatorResults.value[indicator.id] = {
             value: result.value,
             passed: result.pass,
             operator: result.operator,
@@ -755,17 +836,33 @@ export default {
         const indicators = response.data?.indicators || response.indicators || []
         const allPass = response.data?.all_pass ?? response.all_pass ?? false
         
-        // Convert array to object keyed by type
+        // Convert array to object keyed by indicator ID
+        // Match results to original indicators by type and index
+        const enabledByType = {}
+        enabledIndicators.forEach(ind => {
+          if (!enabledByType[ind.type]) enabledByType[ind.type] = []
+          enabledByType[ind.type].push(ind)
+        })
+        
+        const typeCounters = {}
         indicators.forEach(result => {
-          indicatorResults.value[result.type] = {
-            value: result.value,
-            passed: result.pass,
-            operator: result.operator,
-            threshold: result.threshold,
-            symbol: result.symbol,
-            details: result.details,
-            stale: result.stale || false,
-            error: result.error || ''
+          // Find the matching indicator by type (in order)
+          const typeList = enabledByType[result.type] || []
+          const typeIdx = typeCounters[result.type] || 0
+          typeCounters[result.type] = typeIdx + 1
+          
+          const matchingIndicator = typeList[typeIdx]
+          if (matchingIndicator) {
+            indicatorResults.value[matchingIndicator.id] = {
+              value: result.value,
+              passed: result.pass,
+              operator: result.operator,
+              threshold: result.threshold,
+              symbol: result.symbol,
+              details: result.details,
+              stale: result.stale || false,
+              error: result.error || ''
+            }
           }
         })
         allIndicatorsResult.value = allPass
@@ -850,9 +947,13 @@ export default {
       timeInForceOptions,
       expirationModes,
       recurrenceOptions,
+      indicatorTypes,
       
       // Mobile
       isMobile,
+      
+      // Add indicator dialog
+      showAddIndicatorDialog,
 
       // Methods
       formatIndicatorType,
@@ -860,6 +961,8 @@ export default {
       getIndicatorDefaultSymbol,
       getRecurrenceHint,
       getIndicatorResultClass,
+      addIndicator,
+      removeIndicator,
       saveConfig,
       cancel,
       testIndicator,
@@ -1123,6 +1226,46 @@ export default {
 .mobile-test-result .stale-icon {
   font-size: 10px;
   margin-right: 2px;
+}
+
+/* Indicators Empty State */
+.indicators-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-xl);
+  text-align: center;
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--border-secondary);
+  margin-bottom: var(--spacing-md);
+}
+
+.indicators-empty i {
+  font-size: var(--font-size-2xl);
+  color: var(--text-tertiary);
+  margin-bottom: var(--spacing-sm);
+}
+
+.indicators-empty p {
+  color: var(--text-secondary);
+  margin: 0;
+}
+
+/* Indicator Remove Button */
+.indicator-remove {
+  flex-shrink: 0;
+}
+
+/* Indicators Actions (Add + Test All) */
+.indicators-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border-primary);
 }
 
 .test-all-section {
@@ -1461,5 +1604,54 @@ export default {
 
 .mobile-preview .spread-value {
   font-size: var(--font-size-xs);
+}
+
+/* Add Indicator Dialog */
+.add-indicator-content {
+  padding: var(--spacing-sm);
+}
+
+.add-indicator-description {
+  color: var(--text-secondary);
+  margin: 0 0 var(--spacing-md) 0;
+  font-size: var(--font-size-sm);
+}
+
+.indicator-type-options {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.indicator-type-option {
+  padding: var(--spacing-md);
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-fast);
+}
+
+.indicator-type-option:hover {
+  border-color: var(--color-brand);
+  background: var(--bg-secondary);
+}
+
+.indicator-type-option .option-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-xs);
+}
+
+.indicator-type-option .option-label {
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.indicator-type-option .option-description {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  margin: 0;
 }
 </style>

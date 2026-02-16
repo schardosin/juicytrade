@@ -1,6 +1,7 @@
 package types
 
 import (
+	"fmt"
 	"time"
 
 	"trade-backend-go/internal/models"
@@ -53,11 +54,12 @@ const (
 
 // IndicatorConfig defines configuration for a single indicator
 type IndicatorConfig struct {
+	ID        string        `json:"id,omitempty"` // Unique ID to support multiple instances of same type
 	Type      IndicatorType `json:"type"`
 	Enabled   bool          `json:"enabled"`
 	Operator  Operator      `json:"operator"`
 	Threshold float64       `json:"threshold"`
-	// Symbol is optional, used for symbol-specific indicators (VIX uses "VIX" by default)
+	// Symbol is optional, used for symbol-specific indicators
 	Symbol string `json:"symbol,omitempty"`
 }
 
@@ -219,37 +221,22 @@ type DailyData struct {
 	Timestamp     time.Time `json:"timestamp"`
 }
 
-// NewIndicatorConfig creates a new indicator config with defaults
+// GenerateIndicatorID creates a unique ID for an indicator
+func GenerateIndicatorID() string {
+	return fmt.Sprintf("ind_%d_%s", time.Now().UnixNano(), randomString(4))
+}
+
+// NewIndicatorConfig creates a new indicator config with minimal defaults
+// User must configure threshold and symbol themselves - no suggested values
 func NewIndicatorConfig(indicatorType IndicatorType) IndicatorConfig {
-	config := IndicatorConfig{
-		Type:    indicatorType,
-		Enabled: true,
+	return IndicatorConfig{
+		ID:        GenerateIndicatorID(),
+		Type:      indicatorType,
+		Enabled:   true,
+		Operator:  OperatorEqual, // Default operator, user can change
+		Threshold: 0,             // No default value - user must set
+		Symbol:    "",            // No default symbol - user must set
 	}
-
-	// Set default thresholds based on indicator type
-	switch indicatorType {
-	case IndicatorVIX:
-		config.Operator = OperatorGreaterThan
-		config.Threshold = 13.5
-		config.Symbol = "VIX"
-	case IndicatorGap:
-		config.Operator = OperatorLessThan
-		config.Threshold = 0  // Gap < 0 means gap down
-		config.Symbol = "QQQ" // Default to QQQ for market reference
-	case IndicatorRange:
-		config.Operator = OperatorLessThan
-		config.Threshold = 2.10 // Range < 2.10%
-		config.Symbol = "QQQ"   // Default to QQQ for market reference
-	case IndicatorTrend:
-		config.Operator = OperatorLessThan
-		config.Threshold = 1.00 // Change from open < 1.00%
-		config.Symbol = "QQQ"   // Default to QQQ for market reference
-	case IndicatorCalendar:
-		config.Operator = OperatorEqual
-		config.Threshold = 0 // 0 = not FOMC day (pass)
-	}
-
-	return config
 }
 
 // NewTradeConfiguration creates a new trade config with defaults
@@ -269,18 +256,13 @@ func NewTradeConfiguration() TradeConfiguration {
 }
 
 // NewAutomationConfig creates a new automation config with defaults
+// Note: Indicators array starts empty - user adds only the indicators they need
 func NewAutomationConfig(name, symbol string) *AutomationConfig {
 	return &AutomationConfig{
-		ID:     generateID(),
-		Name:   name,
-		Symbol: symbol,
-		Indicators: []IndicatorConfig{
-			NewIndicatorConfig(IndicatorVIX),
-			NewIndicatorConfig(IndicatorGap),
-			NewIndicatorConfig(IndicatorRange),
-			NewIndicatorConfig(IndicatorTrend),
-			NewIndicatorConfig(IndicatorCalendar),
-		},
+		ID:            generateID(),
+		Name:          name,
+		Symbol:        symbol,
+		Indicators:    []IndicatorConfig{}, // Empty - user adds indicators via UI
 		EntryTime:     "12:25",
 		EntryTimezone: "America/New_York",
 		Enabled:       true,

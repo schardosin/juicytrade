@@ -12,8 +12,9 @@ import (
 )
 
 // cacheKey generates a unique key for caching indicator results
-func cacheKey(configID string, indicatorType types.IndicatorType) string {
-	return fmt.Sprintf("%s:%s", configID, indicatorType)
+// Uses indicator ID to support multiple instances of the same indicator type
+func cacheKey(configID string, indicatorID string) string {
+	return fmt.Sprintf("%s:%s", configID, indicatorID)
 }
 
 // cachedResult stores a successful indicator result for fallback
@@ -106,17 +107,17 @@ func (s *Service) setCachedQuote(symbol string, price float64) {
 }
 
 // getCachedResult retrieves a cached indicator result
-func (s *Service) getCachedResult(configID string, indicatorType types.IndicatorType) *cachedResult {
+func (s *Service) getCachedResult(configID string, indicatorID string) *cachedResult {
 	s.cacheMu.RLock()
 	defer s.cacheMu.RUnlock()
-	return s.cache[cacheKey(configID, indicatorType)]
+	return s.cache[cacheKey(configID, indicatorID)]
 }
 
 // setCachedResult stores a successful indicator result
-func (s *Service) setCachedResult(configID string, indicatorType types.IndicatorType, value float64) {
+func (s *Service) setCachedResult(configID string, indicatorID string, value float64) {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
-	s.cache[cacheKey(configID, indicatorType)] = &cachedResult{
+	s.cache[cacheKey(configID, indicatorID)] = &cachedResult{
 		Value:     value,
 		Timestamp: time.Now(),
 	}
@@ -259,14 +260,15 @@ func (s *Service) EvaluateIndicator(ctx context.Context, configID string, config
 		result.Stale = true
 
 		// Try to use last known good value for display (only if we have a configID for caching)
-		if configID != "" {
-			if cached := s.getCachedResult(configID, config.Type); cached != nil {
+		if configID != "" && config.ID != "" {
+			if cached := s.getCachedResult(configID, config.ID); cached != nil {
 				result.Value = cached.Value
 				result.LastGoodValue = &cached.Value
 				result.Details = fmt.Sprintf("STALE: Last good value from %s - %s",
 					cached.Timestamp.Format("15:04:05"), err.Error())
 				slog.Warn("Indicator evaluation failed, using cached value",
 					"type", config.Type,
+					"indicatorID", config.ID,
 					"cachedValue", cached.Value,
 					"cachedAt", cached.Timestamp,
 					"error", err)
@@ -274,6 +276,7 @@ func (s *Service) EvaluateIndicator(ctx context.Context, configID string, config
 				result.Details = fmt.Sprintf("STALE: No cached value available - %s", err.Error())
 				slog.Error("Indicator evaluation failed, no cached value available",
 					"type", config.Type,
+					"indicatorID", config.ID,
 					"error", err)
 			}
 		} else {
@@ -283,9 +286,9 @@ func (s *Service) EvaluateIndicator(ctx context.Context, configID string, config
 		return result
 	}
 
-	// Success - cache this result (only if we have a configID)
-	if configID != "" {
-		s.setCachedResult(configID, config.Type, result.Value)
+	// Success - cache this result (only if we have a configID and indicatorID)
+	if configID != "" && config.ID != "" {
+		s.setCachedResult(configID, config.ID, result.Value)
 	}
 
 	// Evaluate the condition

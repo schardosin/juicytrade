@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"trade-backend-go/internal/automation/types"
 	"trade-backend-go/internal/utils"
 )
 
@@ -75,11 +76,45 @@ func (s *Storage) load() error {
 		s.configs = make(map[string]*AutomationConfig)
 	}
 
+	// Migrate existing indicators to have IDs (for backward compatibility)
+	if s.migrateIndicatorIDs() {
+		// Save the migrated configs
+		if err := s.saveWithoutLock(); err != nil {
+			slog.Warn("Failed to save migrated indicator IDs", "error", err)
+		}
+	}
+
 	return nil
 }
 
-// save writes configurations to disk
+// migrateIndicatorIDs ensures all indicators have unique IDs
+// Returns true if any migrations were made
+func (s *Storage) migrateIndicatorIDs() bool {
+	migrated := false
+
+	for _, config := range s.configs {
+		for i := range config.Indicators {
+			if config.Indicators[i].ID == "" {
+				config.Indicators[i].ID = types.GenerateIndicatorID()
+				slog.Info("Migrated indicator ID",
+					"automation", config.Name,
+					"type", config.Indicators[i].Type,
+					"newID", config.Indicators[i].ID)
+				migrated = true
+			}
+		}
+	}
+
+	return migrated
+}
+
+// save writes configurations to disk (acquires lock)
 func (s *Storage) save() error {
+	return s.saveWithoutLock()
+}
+
+// saveWithoutLock writes configurations to disk (caller must hold lock)
+func (s *Storage) saveWithoutLock() error {
 	storageData := StorageData{
 		Version:   "1.0",
 		UpdatedAt: time.Now(),
