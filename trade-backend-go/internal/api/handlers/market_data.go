@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"trade-backend-go/internal/models"
+	"trade-backend-go/internal/utils"
 
 	"github.com/gin-gonic/gin"
 )
@@ -14,6 +15,7 @@ import (
 // Exact conversion of Python market data endpoints.
 type MarketDataHandler struct {
 	providerManager ProviderManagerInterface
+	expirationCache *utils.ExpirationCache
 }
 
 // ProviderManagerInterface defines the interface for provider manager
@@ -26,6 +28,7 @@ type ProviderManagerInterface interface {
 func NewMarketDataHandler(providerManager ProviderManagerInterface) *MarketDataHandler {
 	return &MarketDataHandler{
 		providerManager: providerManager,
+		expirationCache: utils.NewExpirationCache(),
 	}
 }
 
@@ -44,13 +47,13 @@ func (h *MarketDataHandler) GetStockPrices(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, response)
 		return
 	}
-	
+
 	// Parse symbols (same as Python)
 	symbols := strings.Split(symbolsParam, ",")
 	for i, symbol := range symbols {
 		symbols[i] = strings.TrimSpace(strings.ToUpper(symbol))
 	}
-	
+
 	// Get quotes from provider
 	quotes, err := h.providerManager.GetStockQuotes(c.Request.Context(), symbols)
 	if err != nil {
@@ -63,7 +66,7 @@ func (h *MarketDataHandler) GetStockPrices(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, response)
 		return
 	}
-	
+
 	// Convert to response format (same structure as Python)
 	result := make(map[string]interface{})
 	for symbol, quote := range quotes {
@@ -75,19 +78,20 @@ func (h *MarketDataHandler) GetStockPrices(c *gin.Context) {
 			"timestamp": quote.Timestamp,
 		}
 	}
-	
+
 	response := models.NewApiResponse(
 		true,
 		result,
 		nil,
 		stringPtr("Stock quotes retrieved successfully"),
 	)
-	
+
 	c.JSON(http.StatusOK, response)
 }
 
 // GetExpirationDates handles the /expiration_dates endpoint.
 // Exact conversion of Python get_expiration_dates endpoint.
+// Uses an in-memory cache with same-day invalidation to avoid redundant provider calls.
 func (h *MarketDataHandler) GetExpirationDates(c *gin.Context) {
 	// Get symbol parameter (same as Python)
 	symbol := c.Query("symbol")
@@ -101,11 +105,26 @@ func (h *MarketDataHandler) GetExpirationDates(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, response)
 		return
 	}
-	
+
 	// Normalize symbol (same as Python)
 	symbol = strings.TrimSpace(strings.ToUpper(symbol))
-	
-	// Get expiration dates from provider
+
+	// Check cache first - expiration dates are stable within a trading day
+	if cachedDates, found := h.expirationCache.GetExpirationDates(symbol); found {
+		result := map[string]interface{}{
+			"expiration_dates": cachedDates,
+		}
+		response := models.NewApiResponse(
+			true,
+			result,
+			nil,
+			stringPtr("Expiration dates retrieved from cache"),
+		)
+		c.JSON(http.StatusOK, response)
+		return
+	}
+
+	// Cache miss - fetch from provider
 	dates, err := h.providerManager.GetExpirationDates(c.Request.Context(), symbol)
 	if err != nil {
 		response := models.NewApiResponse(
@@ -117,18 +136,23 @@ func (h *MarketDataHandler) GetExpirationDates(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, response)
 		return
 	}
-	
+
+	// Store in cache for subsequent requests
+	if dates != nil {
+		h.expirationCache.SetExpirationDates(symbol, dates)
+	}
+
 	// Wrap the dates in the expected structure with expiration_dates node
 	result := map[string]interface{}{
 		"expiration_dates": dates,
 	}
-	
+
 	response := models.NewApiResponse(
 		true,
 		result,
 		nil,
 		stringPtr("Expiration dates retrieved successfully"),
 	)
-	
+
 	c.JSON(http.StatusOK, response)
 }

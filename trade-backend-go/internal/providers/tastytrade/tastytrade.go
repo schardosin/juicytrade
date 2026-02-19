@@ -27,6 +27,16 @@ var weeklyMap = map[string]string{
 	"VIX": "VIXW",
 }
 
+// weeklyRootSymbols is the reverse of weeklyMap — maps weekly root symbols back to their parent.
+// Used to detect that e.g. NDXP is a weekly variant of NDX.
+var weeklyRootSymbols = func() map[string]string {
+	m := make(map[string]string, len(weeklyMap))
+	for parent, weekly := range weeklyMap {
+		m[weekly] = parent
+	}
+	return m
+}()
+
 // TastyTradeProvider implements the Provider interface for TastyTrade.
 // Exact conversion of Python TastyTradeProvider class.
 type TastyTradeProvider struct {
@@ -561,10 +571,17 @@ func (p *TastyTradeProvider) GetExpirationDates(ctx context.Context, symbol stri
 		if expDate != "" {
 			key := fmt.Sprintf("%s-%s", expDate, rootSymbol)
 			if _, exists := dateSymbolMap[key]; !exists {
-				// Determine type based on expiration type from TastyTrade
-				symbolType := typeMapping[strings.ToLower(expType)]
-				if symbolType == "" {
-					symbolType = strings.ToLower(expType)
+				// Determine type: if the root symbol is a known weekly variant
+				// (e.g. NDXP, SPXW), classify as "weekly" regardless of TastyTrade's
+				// expiration-type field, which reports "Regular" for these.
+				var symbolType string
+				if _, isWeekly := weeklyRootSymbols[rootSymbol]; isWeekly {
+					symbolType = "weekly"
+				} else {
+					symbolType = typeMapping[strings.ToLower(expType)]
+					if symbolType == "" {
+						symbolType = strings.ToLower(expType)
+					}
 				}
 
 				dateSymbolMap[key] = map[string]interface{}{
@@ -635,10 +652,12 @@ func (p *TastyTradeProvider) GetOptionsChainBasic(ctx context.Context, symbol, e
 		}
 
 		// Filter by root symbol to ensure exact chain scoping (parity with Python)
-		// Also accept weekly root symbols (e.g., NDXP for NDX, SPXW for SPX)
 		rootMatches := strings.EqualFold(item.RootSymbol, symbol)
-		if !rootMatches {
-			// Check if the root symbol is a weekly variant of the requested symbol
+		if !rootMatches && optionType == nil {
+			// Only expand to weekly variants (e.g., NDXP for NDX, SPXW for SPX)
+			// when no explicit optionType is specified. When the caller requests a
+			// specific type (monthly/weekly), they pass the exact root symbol they
+			// want and we must not mix in contracts from another root.
 			if weeklyRoot, ok := weeklyMap[strings.ToUpper(symbol)]; ok {
 				rootMatches = strings.EqualFold(item.RootSymbol, weeklyRoot)
 			}

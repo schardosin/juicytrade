@@ -43,7 +43,7 @@
     <div v-else class="expiration-groups">
       <div
         v-for="expiration in expirationGroups"
-        :key="expiration.date"
+        :key="expiration.uniqueKey"
         class="expiration-group"
         :class="{ expanded: expiration.isExpanded }"
       >
