@@ -105,8 +105,9 @@ func (pm *ProviderManager) createProviderInstance(providerType, accountType stri
 		refreshToken, _ := credentials["refresh_token"].(string)
 		authCode, _ := credentials["authorization_code"].(string)
 		redirectURI, _ := credentials["redirect_uri"].(string)
+		accountStreamURL, _ := credentials["account_stream_url"].(string)
 
-		return tastytrade.NewTastyTradeProvider(accountID, baseURL, clientID, clientSecret, refreshToken, authCode, redirectURI)
+		return tastytrade.NewTastyTradeProvider(accountID, baseURL, clientID, clientSecret, refreshToken, authCode, redirectURI, accountStreamURL)
 
 	case "tradier":
 		accountID, _ := credentials["account_id"].(string)

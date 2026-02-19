@@ -2157,11 +2157,11 @@ func (e *Engine) isEntryTime(config *types.AutomationConfig) bool {
 	entryToday := time.Date(now.Year(), now.Month(), now.Day(),
 		entryTime.Hour(), entryTime.Minute(), 0, 0, loc)
 
-	// Allow 5-minute window around entry time
-	windowStart := entryToday.Add(-2 * time.Minute)
-	windowEnd := entryToday.Add(3 * time.Minute)
+	// Allow 5-minute window starting exactly at entry time
+	windowStart := entryToday
+	windowEnd := entryToday.Add(5 * time.Minute)
 
-	return now.After(windowStart) && now.Before(windowEnd)
+	return !now.Before(windowStart) && now.Before(windowEnd)
 }
 
 func abs(x float64) float64 {

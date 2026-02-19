@@ -23,11 +23,11 @@ type ProviderCapabilities struct {
 // ProviderType represents a provider type definition.
 // Exact conversion of Python provider type structure.
 type ProviderType struct {
-	Name                  string                           `json:"name"`
-	Description           string                           `json:"description"`
-	SupportsAccountTypes  []string                         `json:"supports_account_types"`
-	Capabilities          ProviderCapabilities             `json:"capabilities"`
-	CredentialFields      map[string][]CredentialField     `json:"credential_fields"`
+	Name                 string                       `json:"name"`
+	Description          string                       `json:"description"`
+	SupportsAccountTypes []string                     `json:"supports_account_types"`
+	Capabilities         ProviderCapabilities         `json:"capabilities"`
+	CredentialFields     map[string][]CredentialField `json:"credential_fields"`
 }
 
 // Provider type definitions with credential field specifications.
@@ -111,6 +111,7 @@ var ProviderTypes = map[string]ProviderType{
 				{Name: "redirect_uri", Label: "Redirect URI", Type: "text", Required: false, Placeholder: "Optional redirect URI for auth code exchange"},
 				{Name: "account_id", Label: "Account ID", Type: "text", Required: true, Placeholder: "Your TastyTrade Account ID"},
 				{Name: "base_url", Label: "Base URL", Type: "text", Required: false, Default: "https://api.tastytrade.com"},
+				{Name: "account_stream_url", Label: "Account Stream URL", Type: "text", Required: false, Default: "wss://streamer.tastyworks.com"},
 			},
 			"paper": {
 				{Name: "client_id", Label: "Client ID", Type: "text", Required: false, Placeholder: "Your TastyTrade Sandbox OAuth2 Client ID"},
@@ -120,6 +121,7 @@ var ProviderTypes = map[string]ProviderType{
 				{Name: "redirect_uri", Label: "Redirect URI", Type: "text", Required: false, Placeholder: "Optional redirect URI for auth code exchange"},
 				{Name: "account_id", Label: "Account ID", Type: "text", Required: true, Placeholder: "Your TastyTrade Sandbox Account ID"},
 				{Name: "base_url", Label: "Base URL", Type: "text", Required: false, Default: "https://api.cert.tastyworks.com"},
+				{Name: "account_stream_url", Label: "Account Stream URL", Type: "text", Required: false, Default: "wss://streamer.cert.tastyworks.com"},
 			},
 		},
 	},
@@ -217,7 +219,7 @@ func GetCredentialFields(providerType, accountType string) []CredentialField {
 func ValidateCredentials(providerType, accountType string, credentials map[string]interface{}) []string {
 	var errors []string
 	fields := GetCredentialFields(providerType, accountType)
-	
+
 	for _, field := range fields {
 		if field.Required {
 			if value, exists := credentials[field.Name]; !exists || value == "" {
@@ -225,7 +227,7 @@ func ValidateCredentials(providerType, accountType string, credentials map[strin
 			}
 		}
 	}
-	
+
 	return errors
 }
 
@@ -234,19 +236,19 @@ func ValidateCredentials(providerType, accountType string, credentials map[strin
 func ApplyDefaults(providerType, accountType string, credentials map[string]interface{}) map[string]interface{} {
 	fields := GetCredentialFields(providerType, accountType)
 	result := make(map[string]interface{})
-	
+
 	// Copy existing credentials
 	for k, v := range credentials {
 		result[k] = v
 	}
-	
+
 	// Apply defaults for missing fields
 	for _, field := range fields {
 		if _, exists := result[field.Name]; !exists && field.Default != "" {
 			result[field.Name] = field.Default
 		}
 	}
-	
+
 	return result
 }
 
@@ -255,7 +257,7 @@ func ApplyDefaults(providerType, accountType string, credentials map[string]inte
 func IsSensitiveField(fieldName string) bool {
 	sensitiveFields := []string{"password", "api_key", "api_secret", "client_secret", "refresh_token"}
 	fieldLower := strings.ToLower(fieldName)
-	
+
 	for _, sensitive := range sensitiveFields {
 		if strings.Contains(fieldLower, sensitive) {
 			return true
@@ -269,13 +271,13 @@ func IsSensitiveField(fieldName string) bool {
 func GetVisibleCredentials(instanceData map[string]interface{}) map[string]interface{} {
 	credentials, _ := instanceData["credentials"].(map[string]interface{})
 	visibleCreds := make(map[string]interface{})
-	
+
 	for fieldName, fieldValue := range credentials {
 		if !IsSensitiveField(fieldName) {
 			visibleCreds[fieldName] = fieldValue
 		}
 	}
-	
+
 	return visibleCreds
 }
 
@@ -284,14 +286,14 @@ func GetVisibleCredentials(instanceData map[string]interface{}) map[string]inter
 func GetMaskedCredentials(instanceData map[string]interface{}) map[string]bool {
 	credentials, _ := instanceData["credentials"].(map[string]interface{})
 	maskedCreds := make(map[string]bool)
-	
+
 	for fieldName, fieldValue := range credentials {
 		if IsSensitiveField(fieldName) {
 			valueStr, _ := fieldValue.(string)
 			maskedCreds[fieldName] = valueStr != "" && strings.TrimSpace(valueStr) != ""
 		}
 	}
-	
+
 	return maskedCreds
 }
 
@@ -300,13 +302,13 @@ func GetMaskedCredentials(instanceData map[string]interface{}) map[string]bool {
 func GetDefaultCredentials(providerType, accountType string) map[string]interface{} {
 	fields := GetCredentialFields(providerType, accountType)
 	defaults := make(map[string]interface{})
-	
+
 	for _, field := range fields {
 		if field.Default != "" {
 			defaults[field.Name] = field.Default
 		}
 	}
-	
+
 	return defaults
 }
 

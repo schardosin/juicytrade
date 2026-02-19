@@ -55,7 +55,15 @@ type TastyTradeProvider struct {
 
 // NewTastyTradeProvider creates a new TastyTrade provider instance.
 // Exact conversion of Python TastyTradeProvider.__init__ method.
-func NewTastyTradeProvider(accountID, baseURL, clientID, clientSecret, refreshToken, authCode, redirectURI string) *TastyTradeProvider {
+// accountStreamURL: WebSocket URL for account/order events streaming.
+//   - Live: wss://streamer.tastyworks.com
+//   - Paper/Sandbox: wss://streamer.cert.tastyworks.com
+func NewTastyTradeProvider(accountID, baseURL, clientID, clientSecret, refreshToken, authCode, redirectURI, accountStreamURL string) *TastyTradeProvider {
+	// Default to live account stream URL if not provided
+	if accountStreamURL == "" {
+		accountStreamURL = "wss://streamer.tastyworks.com"
+	}
+
 	provider := &TastyTradeProvider{
 		BaseProviderImpl: base.NewBaseProvider("TastyTrade"),
 		accountID:        accountID,
@@ -66,8 +74,8 @@ func NewTastyTradeProvider(accountID, baseURL, clientID, clientSecret, refreshTo
 		authCode:         authCode,
 		redirectURI:      redirectURI,
 		httpClient:       utils.NewHTTPClient(),
-		// Account Streamer for order events
-		accountStreamURL:      "wss://streamer.tastyworks.com",
+		// Account Streamer for order events - URL varies by environment (live vs paper)
+		accountStreamURL:      accountStreamURL,
 		accountStreamStopChan: make(chan struct{}),
 		accountStreamDoneChan: make(chan struct{}),
 	}
@@ -4877,33 +4885,9 @@ func (p *TastyTradeProvider) StartAccountStream(ctx context.Context) error {
 		"request-id": 1,
 	}
 
-	tokenPrefix := authToken
-	if len(tokenPrefix) > 10 {
-		tokenPrefix = tokenPrefix[:10] + "..."
-	}
-
 	slog.Info("TastyTrade: Sending Account Streamer connect message",
 		"account", p.accountID,
-		"token_length", len(authToken),
-		"token_prefix", tokenPrefix)
-
-	if err := conn.WriteJSON(connectMsg); err != nil {
-		conn.Close()
-		p.accountStreamConn = nil
-		return fmt.Errorf("failed to send connect message: %w", err)
-	}
-
-	slog.Info("TastyTrade: Sending Account Streamer connect message",
-		"account", p.accountID,
-		"token_length", len(authToken),
-		"token_prefix", func() string {
-			if len(authToken) > 10 {
-				return authToken[:10] + "..."
-			} else {
-				return authToken
-			}
-		}(),
-		"message", connectMsg)
+		"url", p.accountStreamURL)
 
 	if err := conn.WriteJSON(connectMsg); err != nil {
 		conn.Close()
@@ -4919,10 +4903,12 @@ func (p *TastyTradeProvider) StartAccountStream(ctx context.Context) error {
 		return fmt.Errorf("failed to read connect response: %w", err)
 	}
 
-	slog.Info("TastyTrade: Account Streamer response", "response", response)
+	// Log response without sensitive data
+	status, _ := response["status"].(string)
+	sessionID, _ := response["web-socket-session-id"].(string)
+	slog.Info("TastyTrade: Account Streamer response", "status", status, "session_id", sessionID)
 
 	// Check if connection was successful
-	status, _ := response["status"].(string)
 	if status != "ok" {
 		errMsg, _ := response["message"].(string)
 		conn.Close()
@@ -4948,6 +4934,10 @@ func (p *TastyTradeProvider) processAccountStream(ctx context.Context, authToken
 	maxReconnectAttempts := 10
 
 	defer func() {
+		// Recover from any panics (e.g., "repeated read on failed websocket connection")
+		if r := recover(); r != nil {
+			slog.Error("TastyTrade: Account Streamer recovered from panic", "panic", r)
+		}
 		p.accountStreamLock.Lock()
 		if p.accountStreamConn != nil {
 			p.accountStreamConn.Close()
@@ -5016,12 +5006,24 @@ func (p *TastyTradeProvider) processAccountStream(ctx context.Context, authToken
 			// Set read deadline
 			conn.SetReadDeadline(time.Now().Add(60 * time.Second))
 
+			// Read message with panic recovery for failed websocket connections
 			var message map[string]interface{}
-			if err := conn.ReadJSON(&message); err != nil {
-				if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
+			var readErr error
+			func() {
+				defer func() {
+					if r := recover(); r != nil {
+						slog.Error("TastyTrade: Recovered from ReadJSON panic", "panic", r)
+						readErr = fmt.Errorf("websocket read panic: %v", r)
+					}
+				}()
+				readErr = conn.ReadJSON(&message)
+			}()
+
+			if readErr != nil {
+				if netErr, ok := readErr.(interface{ Timeout() bool }); ok && netErr.Timeout() {
 					continue
 				}
-				slog.Error("TastyTrade: Account Streamer read error, will attempt reconnect", "error", err)
+				slog.Error("TastyTrade: Account Streamer read error, will attempt reconnect", "error", readErr)
 
 				p.accountStreamLock.Lock()
 				if p.accountStreamConn != nil {
@@ -5098,10 +5100,21 @@ func (p *TastyTradeProvider) attemptAccountStreamReconnect(ctx context.Context, 
 		return p.attemptAccountStreamReconnect(ctx, authToken, attempts, maxAttempts)
 	}
 
-	// Wait for response
+	// Wait for response with panic recovery
 	var response map[string]interface{}
-	if err := conn.ReadJSON(&response); err != nil {
-		slog.Error("TastyTrade: Failed to read connect response during reconnect", "error", err)
+	var readErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				slog.Error("TastyTrade: Recovered from ReadJSON panic during reconnect", "panic", r)
+				readErr = fmt.Errorf("websocket read panic: %v", r)
+			}
+		}()
+		readErr = conn.ReadJSON(&response)
+	}()
+
+	if readErr != nil {
+		slog.Error("TastyTrade: Failed to read connect response during reconnect", "error", readErr)
 		conn.Close()
 		return p.attemptAccountStreamReconnect(ctx, authToken, attempts, maxAttempts)
 	}
