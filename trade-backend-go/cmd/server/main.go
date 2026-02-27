@@ -1072,9 +1072,12 @@ func main() {
 		if success {
 			log.Printf("🔄 [1/5] Config saved successfully")
 
-			// Restart streaming with new config
+			// Restart streaming with new config.
+			// Use context.Background() instead of c.Request.Context() because the
+			// streaming reconnection runs asynchronously and must survive beyond this
+			// HTTP request's lifetime.
 			log.Printf("🔄 [2/5] Calling RestartWithNewConfig...")
-			streamingCtx := c.Request.Context()
+			streamingCtx := context.Background()
 			if err := streamingMgr.RestartWithNewConfig(streamingCtx); err != nil {
 				log.Printf("⚠️ Failed to restart streaming: %v", err)
 			}

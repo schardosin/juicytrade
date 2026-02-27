@@ -798,9 +798,11 @@ func (sm *StreamingManager) RestartWithNewConfig(ctx context.Context) error {
 	// Reset shutdown event for reconnection
 	sm.shutdownEvent = make(chan struct{})
 
-	// Return immediately, perform reconnection asynchronously
+	// Return immediately, perform reconnection asynchronously.
+	// CRITICAL: Use context.Background() because this goroutine outlives the caller
+	// (which may be an HTTP request handler whose context is canceled on response).
 	slog.Info("🔄 [RestartWithNewConfig] Starting async reconnection...")
-	go sm.asyncReconnectWithSubscriptions(ctx, currentQuoteSubscriptions, currentGreeksSubscriptions)
+	go sm.asyncReconnectWithSubscriptions(context.Background(), currentQuoteSubscriptions, currentGreeksSubscriptions)
 
 	slog.Info("✅ [RestartWithNewConfig] Returning immediately")
 	return nil

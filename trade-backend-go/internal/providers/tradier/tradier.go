@@ -2181,13 +2181,19 @@ func (t *TradierProvider) ConnectStreaming(ctx context.Context) (bool, error) {
 		return nil
 	})
 
-	// Start ping ticker in its own goroutine (cancelled by streamCtx)
+	// Start stream handler with proper context - it will signal ready when truly ready
+	streamCtx, cancel := context.WithCancel(context.Background())
+	t.streamCancel = cancel
+
+	// Start ping ticker in its own goroutine, tied to streamCtx so it lives
+	// as long as the stream connection itself (not the caller's context which
+	// may be an HTTP request or recovery context that gets canceled).
 	go func() {
 		ticker := time.NewTicker(25 * time.Second)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-streamCtx.Done():
 				return
 			case <-ticker.C:
 				t.writeMutex.Lock()
@@ -2200,10 +2206,6 @@ func (t *TradierProvider) ConnectStreaming(ctx context.Context) (bool, error) {
 			}
 		}
 	}()
-
-	// Start stream handler with proper context - it will signal ready when truly ready
-	streamCtx, cancel := context.WithCancel(context.Background())
-	t.streamCancel = cancel
 
 	// Mark as connected before starting handler (handler needs this flag)
 	t.IsConnected = true

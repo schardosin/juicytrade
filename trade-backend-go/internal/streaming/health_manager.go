@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -361,7 +362,9 @@ func (hm *StreamingHealthManager) RecordError(connectionID string, err string) {
 	}
 }
 
-// StartMonitoring starts the health monitoring system
+// StartMonitoring starts the health monitoring system.
+// Uses its own background context so the health monitor is never killed by
+// a caller's (e.g. HTTP request) context cancellation.
 func (hm *StreamingHealthManager) StartMonitoring(ctx context.Context) {
 	hm.mutex.Lock()
 	if hm.isMonitoring {
@@ -370,11 +373,17 @@ func (hm *StreamingHealthManager) StartMonitoring(ctx context.Context) {
 		return
 	}
 	hm.isMonitoring = true
+	// Recreate shutdownChan so the new loop has a fresh, open channel.
+	// After StopMonitoring the previous channel is closed and would cause
+	// an immediate exit on the next select.
+	hm.shutdownChan = make(chan struct{})
 	hm.mutex.Unlock()
 
 	slog.Info("🏥 Streaming health monitoring started")
 
-	go hm.healthMonitorLoop(ctx)
+	// Always use a background context so the health monitor survives beyond the
+	// lifetime of whatever triggered the Connect (e.g. an HTTP request context).
+	go hm.healthMonitorLoop(context.Background())
 }
 
 // StopMonitoring stops the health monitoring system
@@ -719,12 +728,21 @@ func (hm *StreamingHealthManager) recoverConnection(ctx context.Context, connect
 		// Step 4: Restore subscriptions
 		if len(subscribedSymbols) > 0 {
 			slog.Info(fmt.Sprintf("🔄 [%d/%d] Restoring %d subscriptions for %s", attempt, maxRetries, len(subscribedSymbols), connectionID))
+			// Determine correct data types based on connection type.
+			// Greeks-only connections (connectionID ends with "_greeks") need ["Greeks"],
+			// while quote connections need ["Quote", "Trade"].
+			var dataTypes []string
+			if strings.HasSuffix(connectionID, "_greeks") {
+				dataTypes = []string{"Greeks"}
+			} else {
+				dataTypes = []string{"Quote", "Trade"}
+			}
 			// Use Background context so subscriptions survive recovery completion
-			success, err := provider.SubscribeToSymbols(context.Background(), subscribedSymbols, []string{"Quote"})
+			success, err := provider.SubscribeToSymbols(context.Background(), subscribedSymbols, dataTypes)
 			if err != nil || !success {
 				slog.Error(fmt.Sprintf("❌ Subscription restore failed: %v", err))
 			} else {
-				slog.Info(fmt.Sprintf("✅ Restored %d subscriptions", len(subscribedSymbols)))
+				slog.Info(fmt.Sprintf("✅ Restored %d subscriptions with data types %v", len(subscribedSymbols), dataTypes))
 			}
 		}
 
