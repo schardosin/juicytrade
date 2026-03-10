@@ -11,19 +11,21 @@ import (
 
 // Re-export type aliases
 type (
-	IndicatorType      = types.IndicatorType
-	Operator           = types.Operator
-	AutomationStatus   = types.AutomationStatus
-	TradeStrategy      = types.TradeStrategy
-	IndicatorConfig    = types.IndicatorConfig
-	IndicatorResult    = types.IndicatorResult
-	TradeConfiguration = types.TradeConfiguration
-	AutomationConfig   = types.AutomationConfig
-	PlacedOrder        = types.PlacedOrder
-	AutomationLog      = types.AutomationLog
-	ActiveAutomation   = types.ActiveAutomation
-	StrikeSelection    = types.StrikeSelection
-	DailyData          = types.DailyData
+	IndicatorType             = types.IndicatorType
+	Operator                  = types.Operator
+	AutomationStatus          = types.AutomationStatus
+	TradeStrategy             = types.TradeStrategy
+	IndicatorConfig           = types.IndicatorConfig
+	IndicatorResult           = types.IndicatorResult
+	TradeConfiguration        = types.TradeConfiguration
+	IronCondorSideConfig      = types.IronCondorSideConfig
+	IronCondorStrikeSelection = types.IronCondorStrikeSelection
+	AutomationConfig          = types.AutomationConfig
+	PlacedOrder               = types.PlacedOrder
+	AutomationLog             = types.AutomationLog
+	ActiveAutomation          = types.ActiveAutomation
+	StrikeSelection           = types.StrikeSelection
+	DailyData                 = types.DailyData
 )
 
 // Re-export constants

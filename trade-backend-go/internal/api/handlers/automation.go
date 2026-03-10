@@ -457,10 +457,15 @@ func (h *AutomationHandler) ToggleEnabled(c *gin.Context) {
 type PreviewStrikesRequest struct {
 	Symbol           string  `json:"symbol" binding:"required"`
 	Strategy         string  `json:"strategy" binding:"required"`
-	TargetDelta      float64 `json:"target_delta" binding:"required"`
-	Width            int     `json:"width" binding:"required"`
+	TargetDelta      float64 `json:"target_delta"` // Used for put_spread/call_spread
+	Width            int     `json:"width"`        // Used for put_spread/call_spread
 	ExpirationMode   string  `json:"expiration_mode"`
 	CustomExpiration string  `json:"custom_expiration"`
+	// Iron Condor specific - per-side configuration
+	PutTargetDelta  float64 `json:"put_target_delta"`  // Put side target delta (iron_condor only)
+	PutWidth        int     `json:"put_width"`         // Put side width (iron_condor only)
+	CallTargetDelta float64 `json:"call_target_delta"` // Call side target delta (iron_condor only)
+	CallWidth       int     `json:"call_width"`        // Call side width (iron_condor only)
 }
 
 // GetAutomationLogs returns logs for a specific automation
@@ -518,11 +523,70 @@ func (h *AutomationHandler) PreviewStrikes(c *gin.Context) {
 		request.ExpirationMode = "0dte"
 	}
 
-	// Build a temporary config for the preview
+	strategy := types.TradeStrategy(request.Strategy)
+
+	// Iron Condor: preview both sides
+	if strategy == types.StrategyIronCondor {
+		config := &types.AutomationConfig{
+			Symbol: request.Symbol,
+			TradeConfig: types.TradeConfiguration{
+				Strategy:         strategy,
+				ExpirationMode:   request.ExpirationMode,
+				CustomExpiration: request.CustomExpiration,
+				PutSideConfig: &types.IronCondorSideConfig{
+					TargetDelta: request.PutTargetDelta,
+					Width:       request.PutWidth,
+				},
+				CallSideConfig: &types.IronCondorSideConfig{
+					TargetDelta: request.CallTargetDelta,
+					Width:       request.CallWidth,
+				},
+			},
+		}
+
+		icStrikes, err := h.engine.PreviewStrikesIronCondor(c.Request.Context(), config)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{
+				"success": false,
+				"message": "Failed to preview Iron Condor strikes: " + err.Error(),
+			})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{
+			"success": true,
+			"data": map[string]interface{}{
+				"strategy": "iron_condor",
+				"put_side": map[string]interface{}{
+					"short_leg":      icStrikes.PutSide.ShortLeg,
+					"long_leg":       icStrikes.PutSide.LongLeg,
+					"natural_credit": icStrikes.PutSide.NaturalCredit,
+					"mid_credit":     icStrikes.PutSide.MidCredit,
+					"option_type":    icStrikes.PutSide.OptionType,
+				},
+				"call_side": map[string]interface{}{
+					"short_leg":      icStrikes.CallSide.ShortLeg,
+					"long_leg":       icStrikes.CallSide.LongLeg,
+					"natural_credit": icStrikes.CallSide.NaturalCredit,
+					"mid_credit":     icStrikes.CallSide.MidCredit,
+					"option_type":    icStrikes.CallSide.OptionType,
+				},
+				"spread": map[string]interface{}{
+					"total_natural_credit": icStrikes.TotalNaturalCredit,
+					"total_mid_credit":     icStrikes.TotalMidCredit,
+					"expiry":               icStrikes.Expiry,
+				},
+			},
+			"message": "Iron Condor strike preview generated successfully",
+		})
+		return
+	}
+
+	// Credit spread: existing single-side preview
 	config := &types.AutomationConfig{
 		Symbol: request.Symbol,
 		TradeConfig: types.TradeConfiguration{
-			Strategy:         types.TradeStrategy(request.Strategy),
+			Strategy:         strategy,
 			TargetDelta:      request.TargetDelta,
 			Width:            request.Width,
 			ExpirationMode:   request.ExpirationMode,

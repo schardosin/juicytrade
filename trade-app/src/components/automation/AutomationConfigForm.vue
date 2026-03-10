@@ -262,30 +262,35 @@
               placeholder="Select Strategy"
             />
           </div>
-          <div class="form-field">
-            <label for="targetDelta">Target Delta</label>
-            <InputNumber
-              id="targetDelta"
-              v-model="config.trade_config.target_delta"
-              :minFractionDigits="2"
-              :maxFractionDigits="3"
-              :min="0.01"
-              :max="0.50"
-              placeholder="e.g., 0.05"
-            />
-            <small class="field-hint">Short strike delta (e.g., 0.05 = 5 delta)</small>
-          </div>
-          <div class="form-field">
-            <label for="width">Spread Width</label>
-            <InputNumber
-              id="width"
-              v-model="config.trade_config.width"
-              :min="5"
-              :max="100"
-              placeholder="e.g., 20"
-            />
-            <small class="field-hint">Strike width in points</small>
-          </div>
+
+          <!-- Single-side config: Target Delta + Width for credit spreads -->
+          <template v-if="!isIronCondor">
+            <div class="form-field">
+              <label for="targetDelta">Target Delta</label>
+              <InputNumber
+                id="targetDelta"
+                v-model="config.trade_config.target_delta"
+                :minFractionDigits="2"
+                :maxFractionDigits="3"
+                :min="0.01"
+                :max="0.50"
+                placeholder="e.g., 0.05"
+              />
+              <small class="field-hint">Short strike delta (e.g., 0.05 = 5 delta)</small>
+            </div>
+            <div class="form-field">
+              <label for="width">Spread Width</label>
+              <InputNumber
+                id="width"
+                v-model="config.trade_config.width"
+                :min="5"
+                :max="100"
+                placeholder="e.g., 20"
+              />
+              <small class="field-hint">Strike width in points</small>
+            </div>
+          </template>
+
           <div class="form-field">
             <label for="maxCapital">Max Capital</label>
             <InputNumber
@@ -299,6 +304,65 @@
             <small class="field-hint">Maximum capital to risk on this trade</small>
           </div>
         </div>
+
+        <!-- Iron Condor per-side configuration -->
+        <template v-if="isIronCondor">
+          <h3 class="subsection-title">Put Side (Bull Put Spread)</h3>
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="putTargetDelta">Target Delta</label>
+              <InputNumber
+                id="putTargetDelta"
+                v-model="config.trade_config.put_side_config.target_delta"
+                :minFractionDigits="2"
+                :maxFractionDigits="3"
+                :min="0.01"
+                :max="0.50"
+                placeholder="e.g., 0.05"
+              />
+              <small class="field-hint">Put short strike delta</small>
+            </div>
+            <div class="form-field">
+              <label for="putWidth">Spread Width</label>
+              <InputNumber
+                id="putWidth"
+                v-model="config.trade_config.put_side_config.width"
+                :min="5"
+                :max="100"
+                placeholder="e.g., 50"
+              />
+              <small class="field-hint">Put side strike width in points</small>
+            </div>
+          </div>
+
+          <h3 class="subsection-title">Call Side (Bear Call Spread)</h3>
+          <div class="form-grid">
+            <div class="form-field">
+              <label for="callTargetDelta">Target Delta</label>
+              <InputNumber
+                id="callTargetDelta"
+                v-model="config.trade_config.call_side_config.target_delta"
+                :minFractionDigits="2"
+                :maxFractionDigits="3"
+                :min="0.01"
+                :max="0.50"
+                placeholder="e.g., 0.07"
+              />
+              <small class="field-hint">Call short strike delta</small>
+            </div>
+            <div class="form-field">
+              <label for="callWidth">Spread Width</label>
+              <InputNumber
+                id="callWidth"
+                v-model="config.trade_config.call_side_config.width"
+                :min="5"
+                :max="100"
+                placeholder="e.g., 30"
+              />
+              <small class="field-hint">Call side strike width in points</small>
+            </div>
+          </div>
+        </template>
 
         <h3 class="subsection-title">Order Settings</h3>
         <div class="form-grid">
@@ -443,70 +507,194 @@
             <div class="preview-expiry">
               <strong>Exp:</strong> {{ strikePreview.spread?.expiry || 'N/A' }}
             </div>
-            
-            <div class="preview-legs">
-              <div class="preview-leg short-leg">
-                <h4>Short (Sell)</h4>
-                <div class="leg-details">
-                  <div class="leg-row">
-                    <span class="leg-label">Strike:</span>
-                    <span class="leg-value">{{ strikePreview.short_leg?.strike?.toFixed(0) || 'N/A' }}</span>
+
+            <!-- Iron Condor: show both sides -->
+            <template v-if="isIronCondor">
+              <h4 class="ic-side-title">Put Side (Bull Put Spread)</h4>
+              <div class="preview-legs">
+                <div class="preview-leg short-leg">
+                  <h4>Short Put (Sell)</h4>
+                  <div class="leg-details">
+                    <div class="leg-row">
+                      <span class="leg-label">Strike:</span>
+                      <span class="leg-value">{{ strikePreview.put_side?.short_leg?.strike?.toFixed(0) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Delta:</span>
+                      <span class="leg-value">{{ strikePreview.put_side?.short_leg?.delta?.toFixed(3) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Bid/Ask:</span>
+                      <span class="leg-value">{{ formatPrice(strikePreview.put_side?.short_leg?.bid) }}/{{ formatPrice(strikePreview.put_side?.short_leg?.ask) }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Mid:</span>
+                      <span class="leg-value highlight">{{ formatPrice(strikePreview.put_side?.short_leg?.mid) }}</span>
+                    </div>
                   </div>
-                  <div class="leg-row">
-                    <span class="leg-label">Delta:</span>
-                    <span class="leg-value">{{ strikePreview.short_leg?.delta?.toFixed(3) || 'N/A' }}</span>
+                </div>
+                <div class="preview-leg long-leg">
+                  <h4>Long Put (Buy)</h4>
+                  <div class="leg-details">
+                    <div class="leg-row">
+                      <span class="leg-label">Strike:</span>
+                      <span class="leg-value">{{ strikePreview.put_side?.long_leg?.strike?.toFixed(0) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Delta:</span>
+                      <span class="leg-value">{{ strikePreview.put_side?.long_leg?.delta?.toFixed(3) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Bid/Ask:</span>
+                      <span class="leg-value">{{ formatPrice(strikePreview.put_side?.long_leg?.bid) }}/{{ formatPrice(strikePreview.put_side?.long_leg?.ask) }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Mid:</span>
+                      <span class="leg-value highlight">{{ formatPrice(strikePreview.put_side?.long_leg?.mid) }}</span>
+                    </div>
                   </div>
-                  <div class="leg-row">
-                    <span class="leg-label">Bid/Ask:</span>
-                    <span class="leg-value">{{ formatPrice(strikePreview.short_leg?.bid) }}/{{ formatPrice(strikePreview.short_leg?.ask) }}</span>
+                </div>
+              </div>
+              <div class="ic-side-credit">
+                <span class="spread-label">Put Side Credit:</span>
+                <span class="spread-value">{{ formatPrice(strikePreview.put_side?.mid_credit) }}</span>
+              </div>
+
+              <h4 class="ic-side-title">Call Side (Bear Call Spread)</h4>
+              <div class="preview-legs">
+                <div class="preview-leg short-leg">
+                  <h4>Short Call (Sell)</h4>
+                  <div class="leg-details">
+                    <div class="leg-row">
+                      <span class="leg-label">Strike:</span>
+                      <span class="leg-value">{{ strikePreview.call_side?.short_leg?.strike?.toFixed(0) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Delta:</span>
+                      <span class="leg-value">{{ strikePreview.call_side?.short_leg?.delta?.toFixed(3) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Bid/Ask:</span>
+                      <span class="leg-value">{{ formatPrice(strikePreview.call_side?.short_leg?.bid) }}/{{ formatPrice(strikePreview.call_side?.short_leg?.ask) }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Mid:</span>
+                      <span class="leg-value highlight">{{ formatPrice(strikePreview.call_side?.short_leg?.mid) }}</span>
+                    </div>
                   </div>
-                  <div class="leg-row">
-                    <span class="leg-label">Mid:</span>
-                    <span class="leg-value highlight">{{ formatPrice(strikePreview.short_leg?.mid) }}</span>
+                </div>
+                <div class="preview-leg long-leg">
+                  <h4>Long Call (Buy)</h4>
+                  <div class="leg-details">
+                    <div class="leg-row">
+                      <span class="leg-label">Strike:</span>
+                      <span class="leg-value">{{ strikePreview.call_side?.long_leg?.strike?.toFixed(0) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Delta:</span>
+                      <span class="leg-value">{{ strikePreview.call_side?.long_leg?.delta?.toFixed(3) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Bid/Ask:</span>
+                      <span class="leg-value">{{ formatPrice(strikePreview.call_side?.long_leg?.bid) }}/{{ formatPrice(strikePreview.call_side?.long_leg?.ask) }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Mid:</span>
+                      <span class="leg-value highlight">{{ formatPrice(strikePreview.call_side?.long_leg?.mid) }}</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="ic-side-credit">
+                <span class="spread-label">Call Side Credit:</span>
+                <span class="spread-value">{{ formatPrice(strikePreview.call_side?.mid_credit) }}</span>
+              </div>
+
+              <div class="preview-spread">
+                <h4>Iron Condor Summary</h4>
+                <div class="spread-details">
+                  <div class="spread-row">
+                    <span class="spread-label">Total Natural:</span>
+                    <span class="spread-value">{{ formatPrice(strikePreview.spread?.total_natural_credit) }}</span>
+                  </div>
+                  <div class="spread-row">
+                    <span class="spread-label">Total Mid Credit:</span>
+                    <span class="spread-value highlight">{{ formatPrice(strikePreview.spread?.total_mid_credit) }}</span>
+                  </div>
+                  <div class="spread-row" v-if="config.trade_config.starting_offset > 0">
+                    <span class="spread-label">Start Price:</span>
+                    <span class="spread-value highlight-green">{{ formatPrice(calculateStartingPrice()) }}</span>
+                  </div>
+                </div>
+              </div>
+            </template>
+
+            <!-- Credit Spread: show single side -->
+            <template v-else>
+              <div class="preview-legs">
+                <div class="preview-leg short-leg">
+                  <h4>Short (Sell)</h4>
+                  <div class="leg-details">
+                    <div class="leg-row">
+                      <span class="leg-label">Strike:</span>
+                      <span class="leg-value">{{ strikePreview.short_leg?.strike?.toFixed(0) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Delta:</span>
+                      <span class="leg-value">{{ strikePreview.short_leg?.delta?.toFixed(3) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Bid/Ask:</span>
+                      <span class="leg-value">{{ formatPrice(strikePreview.short_leg?.bid) }}/{{ formatPrice(strikePreview.short_leg?.ask) }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Mid:</span>
+                      <span class="leg-value highlight">{{ formatPrice(strikePreview.short_leg?.mid) }}</span>
+                    </div>
+                  </div>
+                </div>
+                
+                <div class="preview-leg long-leg">
+                  <h4>Long (Buy)</h4>
+                  <div class="leg-details">
+                    <div class="leg-row">
+                      <span class="leg-label">Strike:</span>
+                      <span class="leg-value">{{ strikePreview.long_leg?.strike?.toFixed(0) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Delta:</span>
+                      <span class="leg-value">{{ strikePreview.long_leg?.delta?.toFixed(3) || 'N/A' }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Bid/Ask:</span>
+                      <span class="leg-value">{{ formatPrice(strikePreview.long_leg?.bid) }}/{{ formatPrice(strikePreview.long_leg?.ask) }}</span>
+                    </div>
+                    <div class="leg-row">
+                      <span class="leg-label">Mid:</span>
+                      <span class="leg-value highlight">{{ formatPrice(strikePreview.long_leg?.mid) }}</span>
+                    </div>
                   </div>
                 </div>
               </div>
               
-              <div class="preview-leg long-leg">
-                <h4>Long (Buy)</h4>
-                <div class="leg-details">
-                  <div class="leg-row">
-                    <span class="leg-label">Strike:</span>
-                    <span class="leg-value">{{ strikePreview.long_leg?.strike?.toFixed(0) || 'N/A' }}</span>
+              <div class="preview-spread">
+                <h4>Spread Summary</h4>
+                <div class="spread-details">
+                  <div class="spread-row">
+                    <span class="spread-label">Natural:</span>
+                    <span class="spread-value">{{ formatPrice(strikePreview.spread?.natural_credit) }}</span>
                   </div>
-                  <div class="leg-row">
-                    <span class="leg-label">Delta:</span>
-                    <span class="leg-value">{{ strikePreview.long_leg?.delta?.toFixed(3) || 'N/A' }}</span>
+                  <div class="spread-row">
+                    <span class="spread-label">Mid Credit:</span>
+                    <span class="spread-value highlight">{{ formatPrice(strikePreview.spread?.mid_credit) }}</span>
                   </div>
-                  <div class="leg-row">
-                    <span class="leg-label">Bid/Ask:</span>
-                    <span class="leg-value">{{ formatPrice(strikePreview.long_leg?.bid) }}/{{ formatPrice(strikePreview.long_leg?.ask) }}</span>
-                  </div>
-                  <div class="leg-row">
-                    <span class="leg-label">Mid:</span>
-                    <span class="leg-value highlight">{{ formatPrice(strikePreview.long_leg?.mid) }}</span>
+                  <div class="spread-row" v-if="config.trade_config.starting_offset > 0">
+                    <span class="spread-label">Start Price:</span>
+                    <span class="spread-value highlight-green">{{ formatPrice(calculateStartingPrice()) }}</span>
                   </div>
                 </div>
               </div>
-            </div>
-            
-            <div class="preview-spread">
-              <h4>Spread Summary</h4>
-              <div class="spread-details">
-                <div class="spread-row">
-                  <span class="spread-label">Natural:</span>
-                  <span class="spread-value">{{ formatPrice(strikePreview.spread?.natural_credit) }}</span>
-                </div>
-                <div class="spread-row">
-                  <span class="spread-label">Mid Credit:</span>
-                  <span class="spread-value highlight">{{ formatPrice(strikePreview.spread?.mid_credit) }}</span>
-                </div>
-                <div class="spread-row" v-if="config.trade_config.starting_offset > 0">
-                  <span class="spread-label">Start Price:</span>
-                  <span class="spread-value highlight-green">{{ formatPrice(calculateStartingPrice()) }}</span>
-                </div>
-              </div>
-            </div>
+            </template>
           </div>
           
           <div v-if="previewError" class="preview-error">
@@ -591,8 +779,14 @@ export default {
         min_credit: 0.30,
         expiration_mode: '0dte',
         custom_expiration: '',
+        // Iron Condor per-side configs
+        put_side_config: { target_delta: 0.05, width: 20 },
+        call_side_config: { target_delta: 0.05, width: 20 },
       }
     })
+
+    // Computed: is the current strategy an Iron Condor
+    const isIronCondor = computed(() => config.value.trade_config.strategy === 'iron_condor')
 
     // Options
     const symbols = ['NDX', 'SPX']
@@ -614,6 +808,7 @@ export default {
     const strategies = [
       { label: 'Put Credit Spread', value: 'put_spread' },
       { label: 'Call Credit Spread', value: 'call_spread' },
+      { label: 'Iron Condor', value: 'iron_condor' },
     ]
     const orderTypes = [
       { label: 'Limit', value: 'limit' },
@@ -880,14 +1075,27 @@ export default {
       previewError.value = null
       
       try {
-        const response = await api.previewStrikes({
+        const tc = config.value.trade_config
+        let payload = {
           symbol: config.value.symbol,
-          strategy: config.value.trade_config.strategy,
-          target_delta: config.value.trade_config.target_delta,
-          width: config.value.trade_config.width,
-          expiration_mode: config.value.trade_config.expiration_mode || '0dte',
-          custom_expiration: config.value.trade_config.custom_expiration || '',
-        })
+          strategy: tc.strategy,
+          expiration_mode: tc.expiration_mode || '0dte',
+          custom_expiration: tc.custom_expiration || '',
+        }
+
+        if (tc.strategy === 'iron_condor') {
+          // Iron Condor: send per-side config
+          payload.put_target_delta = tc.put_side_config.target_delta
+          payload.put_width = tc.put_side_config.width
+          payload.call_target_delta = tc.call_side_config.target_delta
+          payload.call_width = tc.call_side_config.width
+        } else {
+          // Credit spread: send single delta/width
+          payload.target_delta = tc.target_delta
+          payload.width = tc.width
+        }
+
+        const response = await api.previewStrikes(payload)
         
         if (response.success && response.data) {
           strikePreview.value = response.data
@@ -908,8 +1116,10 @@ export default {
     }
 
     const calculateStartingPrice = () => {
-      if (!strikePreview.value?.spread?.mid_credit) return null
-      const midCredit = strikePreview.value.spread.mid_credit
+      // For iron condor, use total_mid_credit from spread
+      const midCredit = strikePreview.value?.spread?.mid_credit 
+        || strikePreview.value?.spread?.total_mid_credit
+      if (!midCredit) return null
       const offset = config.value.trade_config.starting_offset || 0
       return midCredit - offset
     }
@@ -935,6 +1145,7 @@ export default {
       loadingPreview,
       strikePreview,
       previewError,
+      isIronCondor,
 
       // Options
       symbols,
@@ -1394,6 +1605,26 @@ export default {
   border-radius: var(--radius-sm);
   color: var(--color-danger);
   font-size: var(--font-size-sm);
+}
+
+/* Iron Condor Side Headers */
+.ic-side-title {
+  margin: var(--spacing-md) 0 var(--spacing-sm) 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.ic-side-credit {
+  display: flex;
+  justify-content: space-between;
+  padding: var(--spacing-xs) var(--spacing-sm);
+  margin-bottom: var(--spacing-sm);
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+  border-bottom: 1px solid var(--border-primary);
 }
 
 /* Enable Toggle */

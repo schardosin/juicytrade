@@ -115,14 +115,26 @@
               <span class="summary-label">Entry Time</span>
               <span class="summary-value">{{ config.entry_time }} {{ config.entry_timezone }}</span>
             </div>
-            <div class="summary-item">
-              <span class="summary-label">Delta</span>
-              <span class="summary-value">{{ config.trade_config?.target_delta || 'N/A' }}</span>
-            </div>
-            <div class="summary-item">
-              <span class="summary-label">Width</span>
-              <span class="summary-value">{{ config.trade_config?.width || 'N/A' }}</span>
-            </div>
+            <template v-if="config.trade_config?.strategy === 'iron_condor'">
+              <div class="summary-item">
+                <span class="summary-label">Put Delta/Width</span>
+                <span class="summary-value">{{ config.trade_config?.put_side_config?.target_delta || 'N/A' }} / {{ config.trade_config?.put_side_config?.width || 'N/A' }}</span>
+              </div>
+              <div class="summary-item">
+                <span class="summary-label">Call Delta/Width</span>
+                <span class="summary-value">{{ config.trade_config?.call_side_config?.target_delta || 'N/A' }} / {{ config.trade_config?.call_side_config?.width || 'N/A' }}</span>
+              </div>
+            </template>
+            <template v-else>
+              <div class="summary-item">
+                <span class="summary-label">Delta</span>
+                <span class="summary-value">{{ config.trade_config?.target_delta || 'N/A' }}</span>
+              </div>
+              <div class="summary-item">
+                <span class="summary-label">Width</span>
+                <span class="summary-value">{{ config.trade_config?.width || 'N/A' }}</span>
+              </div>
+            </template>
             <div class="summary-item">
               <span class="summary-label">Max Capital</span>
               <span class="summary-value">${{ formatNumber(config.trade_config?.max_capital) }}</span>
@@ -573,7 +585,8 @@ export default {
     const formatStrategy = (strategy) => {
       const strategies = {
         put_spread: 'Put Spread',
-        call_spread: 'Call Spread'
+        call_spread: 'Call Spread',
+        iron_condor: 'Iron Condor'
       }
       return strategies[strategy] || strategy || 'N/A'
     }

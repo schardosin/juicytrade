@@ -519,34 +519,7 @@ func (e *Engine) handleTradingState(id string, active *types.ActiveAutomation, s
 	active.AddLog("info", "Finding strikes for target delta")
 	e.mu.Unlock()
 
-	// Find strikes for target delta
-	strikes, err := e.findStrikesForDelta(ctx, active.Config)
-	if err != nil {
-		e.mu.Lock()
-		active.ErrorCount++
-		active.AddLog("error", fmt.Sprintf("Failed to find strikes: %v", err))
-		if active.ErrorCount >= 3 {
-			// For daily automations, mark as traded today and wait for next day
-			if active.Config.Recurrence == types.RecurrenceDaily {
-				active.TradedToday = true
-				active.Status = types.StatusWaiting
-				active.Message = "Failed to find strikes - waiting for next trading day"
-				active.AddLog("warn", "Max strike-finding attempts reached - will retry next trading day")
-				slog.Info("🔄 Strike finding failed, waiting for next trading day",
-					"id", id,
-					"errorCount", active.ErrorCount,
-				)
-			} else {
-				active.Status = types.StatusFailed
-				active.Message = "Failed to find strikes after multiple attempts"
-			}
-		}
-		e.mu.Unlock()
-		e.notifyUpdate(id, active)
-		return
-	}
-
-	// Calculate position size
+	// Calculate position size (works for both spreads and iron condor)
 	units := active.Config.TradeConfig.CalculateUnits()
 	if units == 0 {
 		e.mu.Lock()
@@ -558,8 +531,67 @@ func (e *Engine) handleTradingState(id string, active *types.ActiveAutomation, s
 		return
 	}
 
-	// Place the order
-	order, err := e.placeSpreadOrder(ctx, id, active.Config, strikes, units)
+	var order *types.PlacedOrder
+	var err error
+
+	if active.Config.TradeConfig.Strategy == types.StrategyIronCondor {
+		// Iron Condor: find strikes for both sides and place 4-leg order
+		icStrikes, findErr := e.findStrikesForIronCondor(ctx, active.Config)
+		if findErr != nil {
+			e.mu.Lock()
+			active.ErrorCount++
+			active.AddLog("error", fmt.Sprintf("Failed to find Iron Condor strikes: %v", findErr))
+			if active.ErrorCount >= 3 {
+				if active.Config.Recurrence == types.RecurrenceDaily {
+					active.TradedToday = true
+					active.Status = types.StatusWaiting
+					active.Message = "Failed to find strikes - waiting for next trading day"
+					active.AddLog("warn", "Max strike-finding attempts reached - will retry next trading day")
+					slog.Info("🔄 Strike finding failed, waiting for next trading day",
+						"id", id,
+						"errorCount", active.ErrorCount,
+					)
+				} else {
+					active.Status = types.StatusFailed
+					active.Message = "Failed to find strikes after multiple attempts"
+				}
+			}
+			e.mu.Unlock()
+			e.notifyUpdate(id, active)
+			return
+		}
+
+		order, err = e.placeIronCondorOrder(ctx, id, active.Config, icStrikes, units)
+	} else {
+		// Credit spread: find strikes for single side and place 2-leg order
+		strikes, findErr := e.findStrikesForDelta(ctx, active.Config)
+		if findErr != nil {
+			e.mu.Lock()
+			active.ErrorCount++
+			active.AddLog("error", fmt.Sprintf("Failed to find strikes: %v", findErr))
+			if active.ErrorCount >= 3 {
+				if active.Config.Recurrence == types.RecurrenceDaily {
+					active.TradedToday = true
+					active.Status = types.StatusWaiting
+					active.Message = "Failed to find strikes - waiting for next trading day"
+					active.AddLog("warn", "Max strike-finding attempts reached - will retry next trading day")
+					slog.Info("🔄 Strike finding failed, waiting for next trading day",
+						"id", id,
+						"errorCount", active.ErrorCount,
+					)
+				} else {
+					active.Status = types.StatusFailed
+					active.Message = "Failed to find strikes after multiple attempts"
+				}
+			}
+			e.mu.Unlock()
+			e.notifyUpdate(id, active)
+			return
+		}
+
+		order, err = e.placeSpreadOrder(ctx, id, active.Config, strikes, units)
+	}
+
 	if err != nil {
 		e.mu.Lock()
 		active.ErrorCount++
@@ -788,51 +820,96 @@ func (e *Engine) handleOrderAdjustment(ctx context.Context, id string, active *t
 
 		// Check for delta drift if DeltaDriftLimit is configured
 		if config.DeltaDriftLimit > 0 {
-			driftDetected, newStrikes := e.checkDeltaDrift(ctx, id, active)
-			if driftDetected && newStrikes != nil {
-				// Delta has drifted - cancel current order and place new one with updated strikes
-				if err := e.cancelOrder(ctx, active.CurrentOrder.OrderID); err != nil {
-					e.mu.Lock()
-					active.AddLog("warn", fmt.Sprintf("Failed to cancel order for delta drift: %v", err))
-					e.mu.Unlock()
-					return
-				}
+			// Iron Condor: check both short legs for drift
+			if active.Config.TradeConfig.Strategy == types.StrategyIronCondor {
+				driftDetected, newICStrikes := e.checkDeltaDriftIronCondor(ctx, id, active)
+				if driftDetected && newICStrikes != nil {
+					// Cancel current order and place new 4-leg order
+					if err := e.cancelOrder(ctx, active.CurrentOrder.OrderID); err != nil {
+						e.mu.Lock()
+						active.AddLog("warn", fmt.Sprintf("Failed to cancel IC order for delta drift: %v", err))
+						e.mu.Unlock()
+						return
+					}
 
-				// Calculate units (same as original)
-				units := config.CalculateUnits()
-				if units == 0 {
+					units := config.CalculateUnits()
+					if units == 0 {
+						e.mu.Lock()
+						active.Status = types.StatusFailed
+						active.Message = "Insufficient capital for position size"
+						active.AddLog("error", "Insufficient capital after IC delta drift")
+						e.mu.Unlock()
+						e.notifyUpdate(id, active)
+						return
+					}
+
+					newOrder, err := e.placeIronCondorOrder(ctx, id, active.Config, newICStrikes, units)
+					if err != nil {
+						e.mu.Lock()
+						active.AddLog("error", fmt.Sprintf("Failed to place IC order after delta drift: %v", err))
+						e.mu.Unlock()
+						return
+					}
+
 					e.mu.Lock()
-					active.Status = types.StatusFailed
-					active.Message = "Insufficient capital for position size"
-					active.AddLog("error", "Insufficient capital after delta drift")
+					active.CurrentOrder = newOrder
+					active.PlacedOrders = append(active.PlacedOrders, *newOrder)
+					active.AddLog("info", fmt.Sprintf("IC order replaced due to delta drift, new price %.2f",
+						newOrder.LimitPrice))
 					e.mu.Unlock()
+
+					slog.Info("IC order replaced due to delta drift", "id", id)
 					e.notifyUpdate(id, active)
 					return
 				}
+			} else {
+				// Credit spread: check single short leg for drift
+				driftDetected, newStrikes := e.checkDeltaDrift(ctx, id, active)
+				if driftDetected && newStrikes != nil {
+					// Delta has drifted - cancel current order and place new one with updated strikes
+					if err := e.cancelOrder(ctx, active.CurrentOrder.OrderID); err != nil {
+						e.mu.Lock()
+						active.AddLog("warn", fmt.Sprintf("Failed to cancel order for delta drift: %v", err))
+						e.mu.Unlock()
+						return
+					}
 
-				// Place new order with updated strikes
-				newOrder, err := e.placeSpreadOrder(ctx, id, active.Config, newStrikes, units)
-				if err != nil {
+					// Calculate units (same as original)
+					units := config.CalculateUnits()
+					if units == 0 {
+						e.mu.Lock()
+						active.Status = types.StatusFailed
+						active.Message = "Insufficient capital for position size"
+						active.AddLog("error", "Insufficient capital after delta drift")
+						e.mu.Unlock()
+						e.notifyUpdate(id, active)
+						return
+					}
+
+					// Place new order with updated strikes
+					newOrder, err := e.placeSpreadOrder(ctx, id, active.Config, newStrikes, units)
+					if err != nil {
+						e.mu.Lock()
+						active.AddLog("error", fmt.Sprintf("Failed to place order after delta drift: %v", err))
+						e.mu.Unlock()
+						return
+					}
+
 					e.mu.Lock()
-					active.AddLog("error", fmt.Sprintf("Failed to place order after delta drift: %v", err))
+					active.CurrentOrder = newOrder
+					active.PlacedOrders = append(active.PlacedOrders, *newOrder)
+					active.AddLog("info", fmt.Sprintf("Order replaced due to delta drift: new delta %.4f at strike %.0f, price %.2f",
+						newStrikes.ShortDelta, newStrikes.ShortStrike, newOrder.LimitPrice))
 					e.mu.Unlock()
+
+					slog.Info("Order replaced due to delta drift",
+						"id", id,
+						"oldDelta", active.CurrentOrder.ActualDelta,
+						"newDelta", newStrikes.ShortDelta,
+						"newStrike", newStrikes.ShortStrike)
+					e.notifyUpdate(id, active)
 					return
 				}
-
-				e.mu.Lock()
-				active.CurrentOrder = newOrder
-				active.PlacedOrders = append(active.PlacedOrders, *newOrder)
-				active.AddLog("info", fmt.Sprintf("Order replaced due to delta drift: new delta %.4f at strike %.0f, price %.2f",
-					newStrikes.ShortDelta, newStrikes.ShortStrike, newOrder.LimitPrice))
-				e.mu.Unlock()
-
-				slog.Info("Order replaced due to delta drift",
-					"id", id,
-					"oldDelta", active.CurrentOrder.ActualDelta,
-					"newDelta", newStrikes.ShortDelta,
-					"newStrike", newStrikes.ShortStrike)
-				e.notifyUpdate(id, active)
-				return
 			}
 		}
 
@@ -974,6 +1051,115 @@ func (e *Engine) checkDeltaDrift(ctx context.Context, id string, active *types.A
 		}
 
 		return true, newStrikes
+	}
+
+	return false, nil
+}
+
+// checkDeltaDriftIronCondor checks if either short leg of an Iron Condor has drifted beyond the limit
+// Returns (driftDetected, newStrikes) - newStrikes is nil if no drift or error getting new strikes
+func (e *Engine) checkDeltaDriftIronCondor(ctx context.Context, id string, active *types.ActiveAutomation) (bool, *types.IronCondorStrikeSelection) {
+	if active.CurrentOrder == nil || len(active.CurrentOrder.Legs) == 0 {
+		return false, nil
+	}
+
+	config := active.Config.TradeConfig
+	driftLimit := config.DeltaDriftLimit
+
+	if config.PutSideConfig == nil || config.CallSideConfig == nil {
+		slog.Warn("Iron condor missing side configs for delta drift check", "id", id)
+		return false, nil
+	}
+
+	// Collect all short leg symbols (there should be 2: one put, one call)
+	var shortLegSymbols []string
+	for _, leg := range active.CurrentOrder.Legs {
+		if leg.Side == "sell_to_open" {
+			shortLegSymbols = append(shortLegSymbols, leg.Symbol)
+		}
+	}
+
+	if len(shortLegSymbols) < 2 {
+		slog.Warn("Could not find both short leg symbols for IC delta drift check", "id", id, "found", len(shortLegSymbols))
+		return false, nil
+	}
+
+	// Get current Greeks for both short legs
+	greeks, err := e.providerManager.GetOptionsGreeksBatch(ctx, shortLegSymbols)
+	if err != nil {
+		slog.Warn("Failed to get Greeks for IC delta drift check", "id", id, "error", err)
+		return false, nil
+	}
+
+	// Check each short leg for drift
+	for _, symbol := range shortLegSymbols {
+		greeksData, ok := greeks[symbol]
+		if !ok || greeksData == nil {
+			slog.Warn("No Greeks data for IC short leg", "id", id, "symbol", symbol)
+			continue
+		}
+
+		var currentDelta float64
+		switch d := greeksData["delta"].(type) {
+		case float64:
+			currentDelta = d
+		case *float64:
+			if d != nil {
+				currentDelta = *d
+			}
+		default:
+			continue
+		}
+
+		// Make delta absolute for comparison
+		if currentDelta < 0 {
+			currentDelta = -currentDelta
+		}
+
+		// Determine which side this leg belongs to based on option type
+		// Put options have negative delta, call options have positive delta
+		var targetDelta float64
+		optType := "unknown"
+		if rawDelta, ok := greeksData["delta"].(float64); ok && rawDelta < 0 {
+			// Negative delta = put
+			targetDelta = config.PutSideConfig.TargetDelta
+			optType = "put"
+		} else {
+			// Positive delta = call
+			targetDelta = config.CallSideConfig.TargetDelta
+			optType = "call"
+		}
+
+		deltaDrift := abs(currentDelta - targetDelta)
+
+		slog.Info("IC delta drift check",
+			"id", id,
+			"side", optType,
+			"symbol", symbol,
+			"targetDelta", targetDelta,
+			"currentDelta", currentDelta,
+			"drift", deltaDrift,
+			"limit", driftLimit)
+
+		if deltaDrift > driftLimit {
+			slog.Info("IC delta drift detected, finding new strikes for both sides",
+				"id", id,
+				"side", optType,
+				"drift", deltaDrift,
+				"limit", driftLimit)
+
+			// Re-select strikes for the entire IC
+			newStrikes, err := e.findStrikesForIronCondor(ctx, active.Config)
+			if err != nil {
+				slog.Warn("Failed to find new IC strikes after delta drift", "id", id, "error", err)
+				e.mu.Lock()
+				active.AddLog("warn", fmt.Sprintf("IC delta drifted on %s side (%.4f) but failed to find new strikes: %v", optType, deltaDrift, err))
+				e.mu.Unlock()
+				return true, nil
+			}
+
+			return true, newStrikes
+		}
 	}
 
 	return false, nil
@@ -2052,6 +2238,143 @@ func (e *Engine) placeSpreadOrder(ctx context.Context, automationID string, conf
 	e.trackingStore.TrackOrder(placedOrder)
 
 	return placedOrder, nil
+}
+
+// findStrikesForIronCondor finds strikes for both sides of an Iron Condor
+func (e *Engine) findStrikesForIronCondor(ctx context.Context, config *types.AutomationConfig) (*types.IronCondorStrikeSelection, error) {
+	if config.TradeConfig.PutSideConfig == nil || config.TradeConfig.CallSideConfig == nil {
+		return nil, fmt.Errorf("iron condor requires both put_side_config and call_side_config")
+	}
+
+	// Build a temporary config for the put side
+	putConfig := &types.AutomationConfig{
+		Symbol: config.Symbol,
+		TradeConfig: types.TradeConfiguration{
+			Strategy:         types.StrategyPutSpread,
+			TargetDelta:      config.TradeConfig.PutSideConfig.TargetDelta,
+			Width:            config.TradeConfig.PutSideConfig.Width,
+			ExpirationMode:   config.TradeConfig.ExpirationMode,
+			CustomExpiration: config.TradeConfig.CustomExpiration,
+		},
+	}
+
+	// Build a temporary config for the call side
+	callConfig := &types.AutomationConfig{
+		Symbol: config.Symbol,
+		TradeConfig: types.TradeConfiguration{
+			Strategy:         types.StrategyCallSpread,
+			TargetDelta:      config.TradeConfig.CallSideConfig.TargetDelta,
+			Width:            config.TradeConfig.CallSideConfig.Width,
+			ExpirationMode:   config.TradeConfig.ExpirationMode,
+			CustomExpiration: config.TradeConfig.CustomExpiration,
+		},
+	}
+
+	// Find strikes for both sides
+	putStrikes, err := e.findStrikesForDelta(ctx, putConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find put side strikes: %w", err)
+	}
+
+	callStrikes, err := e.findStrikesForDelta(ctx, callConfig)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find call side strikes: %w", err)
+	}
+
+	return &types.IronCondorStrikeSelection{
+		PutSide:            putStrikes,
+		CallSide:           callStrikes,
+		Expiry:             putStrikes.Expiry,
+		TotalNaturalCredit: putStrikes.NaturalCredit + callStrikes.NaturalCredit,
+		TotalMidCredit:     putStrikes.MidCredit + callStrikes.MidCredit,
+	}, nil
+}
+
+// placeIronCondorOrder places a 4-leg Iron Condor order (put credit spread + call credit spread)
+func (e *Engine) placeIronCondorOrder(ctx context.Context, automationID string, config *types.AutomationConfig, icStrikes *types.IronCondorStrikeSelection, units int) (*types.PlacedOrder, error) {
+	// Build 4-leg order: put short, put long, call short, call long
+	legs := []interface{}{
+		map[string]interface{}{
+			"symbol": icStrikes.PutSide.ShortSymbol,
+			"side":   "sell_to_open",
+			"qty":    float64(units),
+		},
+		map[string]interface{}{
+			"symbol": icStrikes.PutSide.LongSymbol,
+			"side":   "buy_to_open",
+			"qty":    float64(units),
+		},
+		map[string]interface{}{
+			"symbol": icStrikes.CallSide.ShortSymbol,
+			"side":   "sell_to_open",
+			"qty":    float64(units),
+		},
+		map[string]interface{}{
+			"symbol": icStrikes.CallSide.LongSymbol,
+			"side":   "buy_to_open",
+			"qty":    float64(units),
+		},
+	}
+
+	slog.Info("Placing Iron Condor order",
+		"putShort", icStrikes.PutSide.ShortSymbol,
+		"putLong", icStrikes.PutSide.LongSymbol,
+		"callShort", icStrikes.CallSide.ShortSymbol,
+		"callLong", icStrikes.CallSide.LongSymbol,
+		"units", units,
+		"totalMidCredit", icStrikes.TotalMidCredit)
+
+	// Calculate starting price: total mid credit minus starting offset
+	startingOffset := config.TradeConfig.StartingOffset
+	startingCredit := icStrikes.TotalMidCredit - startingOffset
+
+	// Check minimum credit threshold
+	if config.TradeConfig.MinCredit > 0 && startingCredit < config.TradeConfig.MinCredit {
+		return nil, fmt.Errorf("starting credit %.2f is below minimum credit threshold %.2f", startingCredit, config.TradeConfig.MinCredit)
+	}
+
+	// Ensure credit is positive
+	if startingCredit <= 0 {
+		return nil, fmt.Errorf("starting credit %.2f is not positive (totalMid: %.2f, offset: %.2f)", startingCredit, icStrikes.TotalMidCredit, startingOffset)
+	}
+
+	limitPrice := -startingCredit // Negative for credit
+
+	orderData := map[string]interface{}{
+		"legs":          legs,
+		"limit_price":   limitPrice,
+		"order_type":    config.TradeConfig.OrderType,
+		"time_in_force": config.TradeConfig.TimeInForce,
+	}
+
+	order, err := e.providerManager.PlaceMultiLegOrder(ctx, orderData)
+	if err != nil {
+		return nil, err
+	}
+
+	// Use the put side's short delta as the primary tracking delta
+	placedOrder := &types.PlacedOrder{
+		OrderID:       order.ID,
+		AutomationID:  automationID,
+		ConfigName:    config.Name,
+		Legs:          order.Legs,
+		LimitPrice:    startingCredit, // Store as positive credit
+		TargetDelta:   config.TradeConfig.PutSideConfig.TargetDelta,
+		ActualDelta:   icStrikes.PutSide.ShortDelta,
+		AttemptNumber: 1,
+		Status:        "open",
+		PlacedAt:      time.Now(),
+	}
+
+	// Track the order in the tracking store
+	e.trackingStore.TrackOrder(placedOrder)
+
+	return placedOrder, nil
+}
+
+// PreviewStrikesIronCondor previews strikes for both sides of an Iron Condor
+func (e *Engine) PreviewStrikesIronCondor(ctx context.Context, config *types.AutomationConfig) (*types.IronCondorStrikeSelection, error) {
+	return e.findStrikesForIronCondor(ctx, config)
 }
 
 // checkOrderStatus checks the status of an order

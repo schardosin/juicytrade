@@ -79,11 +79,17 @@ type IndicatorResult struct {
 	Error         string        `json:"error,omitempty"`
 }
 
+// IronCondorSideConfig defines per-side configuration for an Iron Condor
+type IronCondorSideConfig struct {
+	TargetDelta float64 `json:"target_delta"` // Target delta for this side's short strike (e.g., 0.05)
+	Width       int     `json:"width"`        // Spread width in points for this side (e.g., 50)
+}
+
 // TradeConfiguration defines the trade parameters for an automation
 type TradeConfiguration struct {
 	Strategy         TradeStrategy `json:"strategy"`                    // "put_spread", "call_spread", "iron_condor"
-	Width            int           `json:"width"`                       // Spread width (e.g., 20, 30)
-	TargetDelta      float64       `json:"target_delta"`                // Target delta for short strike (e.g., 0.05)
+	Width            int           `json:"width"`                       // Spread width (e.g., 20, 30) - used for put_spread/call_spread
+	TargetDelta      float64       `json:"target_delta"`                // Target delta for short strike (e.g., 0.05) - used for put_spread/call_spread
 	MaxCapital       float64       `json:"max_capital"`                 // Maximum capital to use
 	OrderType        string        `json:"order_type"`                  // "limit" or "market"
 	TimeInForce      string        `json:"time_in_force"`               // "day" or "gtc"
@@ -95,6 +101,9 @@ type TradeConfiguration struct {
 	MinCredit        float64       `json:"min_credit,omitempty"`        // Minimum acceptable credit (stop if below)
 	ExpirationMode   string        `json:"expiration_mode,omitempty"`   // "0dte", "1dte", "2dte", "custom"
 	CustomExpiration string        `json:"custom_expiration,omitempty"` // Custom expiration date (YYYY-MM-DD)
+	// Iron Condor specific - per-side delta and width configuration
+	PutSideConfig  *IronCondorSideConfig `json:"put_side_config,omitempty"`  // Put side config (iron_condor only)
+	CallSideConfig *IronCondorSideConfig `json:"call_side_config,omitempty"` // Call side config (iron_condor only)
 }
 
 // RecurrenceMode defines how the automation repeats
@@ -208,6 +217,15 @@ type StrikeSelection struct {
 	LongLeg  *LegDetail `json:"long_leg,omitempty"`
 }
 
+// IronCondorStrikeSelection represents selected strikes for both sides of an Iron Condor
+type IronCondorStrikeSelection struct {
+	PutSide            *StrikeSelection `json:"put_side"`
+	CallSide           *StrikeSelection `json:"call_side"`
+	Expiry             string           `json:"expiry"`
+	TotalNaturalCredit float64          `json:"total_natural_credit"` // Sum of both sides' natural credits
+	TotalMidCredit     float64          `json:"total_mid_credit"`     // Sum of both sides' mid credits
+}
+
 // DailyData holds daily OHLC data for indicator calculations
 type DailyData struct {
 	Symbol        string    `json:"symbol"`
@@ -312,11 +330,25 @@ func (r *IndicatorResult) Evaluate() bool {
 
 // CalculateUnits calculates the number of spread units based on capital and width
 func (tc *TradeConfiguration) CalculateUnits() int {
-	if tc.Width <= 0 {
+	width := tc.Width
+
+	// For Iron Condor, use the wider of the two sides for position sizing
+	// Max loss in an IC is the wider spread minus total credit received
+	if tc.Strategy == StrategyIronCondor && tc.PutSideConfig != nil && tc.CallSideConfig != nil {
+		putWidth := tc.PutSideConfig.Width
+		callWidth := tc.CallSideConfig.Width
+		if putWidth > callWidth {
+			width = putWidth
+		} else {
+			width = callWidth
+		}
+	}
+
+	if width <= 0 {
 		return 0
 	}
 	// Max risk per unit = width * 100 (options multiplier)
-	maxRiskPerUnit := float64(tc.Width) * 100.0
+	maxRiskPerUnit := float64(width) * 100.0
 	units := int(tc.MaxCapital / maxRiskPerUnit)
 	if units < 1 {
 		return 0
