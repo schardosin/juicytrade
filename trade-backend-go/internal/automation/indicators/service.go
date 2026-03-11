@@ -130,6 +130,22 @@ func (s *Service) ClearCache() {
 	s.cache = make(map[string]*cachedResult)
 }
 
+// getParamOrDefault extracts a parameter value from the config's Params map.
+// If the key is missing or Params is nil, returns the provided default value.
+func getParamOrDefault(config types.IndicatorConfig, key string, defaultVal float64) float64 {
+	if config.Params != nil {
+		if val, ok := config.Params[key]; ok {
+			return val
+		}
+	}
+	return defaultVal
+}
+
+// getIntParam is a convenience wrapper that returns the param as an int.
+func getIntParam(config types.IndicatorConfig, key string, defaultVal int) int {
+	return int(getParamOrDefault(config, key, float64(defaultVal)))
+}
+
 // getQuoteWithCache fetches a quote with race-condition-safe caching.
 // Uses a per-symbol lock to ensure only one goroutine fetches while others wait,
 // eliminating the check-then-act race condition.
@@ -250,6 +266,209 @@ func (s *Service) EvaluateIndicator(ctx context.Context, configID string, config
 	case types.IndicatorCalendar:
 		result.Value, err = s.GetFOMCValue(ctx)
 		result.Symbol = "FOMC"
+
+	// ---- New: Momentum indicators ----
+	case types.IndicatorRSI:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		period := getIntParam(config, "period", 14)
+		barsNeeded := period * 3
+		_, _, _, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcRSI(closes, period)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d", period)
+
+	case types.IndicatorMACD:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		fastPeriod := getIntParam(config, "fast_period", 12)
+		slowPeriod := getIntParam(config, "slow_period", 26)
+		signalPeriod := getIntParam(config, "signal_period", 9)
+		barsNeeded := slowPeriod + signalPeriod + slowPeriod
+		_, _, _, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcMACD(closes, fastPeriod, slowPeriod, signalPeriod)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d/%d/%d", fastPeriod, slowPeriod, signalPeriod)
+
+	case types.IndicatorMomentum:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		period := getIntParam(config, "period", 10)
+		barsNeeded := period + 1
+		_, _, _, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcMomentum(closes, period)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d", period)
+
+	case types.IndicatorCMO:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		period := getIntParam(config, "period", 14)
+		barsNeeded := period + 1
+		_, _, _, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcCMO(closes, period)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d", period)
+
+	case types.IndicatorStoch:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		kPeriod := getIntParam(config, "k_period", 14)
+		dPeriod := getIntParam(config, "d_period", 3)
+		barsNeeded := kPeriod + dPeriod
+		_, highs, lows, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcStochastic(highs, lows, closes, kPeriod, dPeriod)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d/%d", kPeriod, dPeriod)
+
+	case types.IndicatorStochRSI:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		rsiPeriod := getIntParam(config, "rsi_period", 14)
+		stochPeriod := getIntParam(config, "stoch_period", 14)
+		kPeriod := getIntParam(config, "k_period", 3)
+		dPeriod := getIntParam(config, "d_period", 3)
+		barsNeeded := rsiPeriod*3 + stochPeriod
+		_, _, _, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcStochRSI(closes, rsiPeriod, stochPeriod, kPeriod, dPeriod)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d/%d/%d/%d", rsiPeriod, stochPeriod, kPeriod, dPeriod)
+
+	// ---- New: Trend indicators ----
+	case types.IndicatorADX:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		period := getIntParam(config, "period", 14)
+		barsNeeded := period * 3
+		_, highs, lows, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcADX(highs, lows, closes, period)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d", period)
+
+	case types.IndicatorCCI:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		period := getIntParam(config, "period", 20)
+		barsNeeded := period
+		_, highs, lows, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcCCI(highs, lows, closes, period)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d", period)
+
+	case types.IndicatorSMA:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		period := getIntParam(config, "period", 20)
+		barsNeeded := period
+		_, _, _, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcSMA(closes, period)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d", period)
+
+	case types.IndicatorEMA:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		period := getIntParam(config, "period", 20)
+		barsNeeded := period * 2
+		_, _, _, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcEMA(closes, period)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d", period)
+
+	// ---- New: Volatility indicators ----
+	case types.IndicatorATR:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		period := getIntParam(config, "period", 14)
+		barsNeeded := period * 2
+		_, highs, lows, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcATR(highs, lows, closes, period)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d", period)
+
+	case types.IndicatorBBPercent:
+		symbol := config.Symbol
+		if symbol == "" {
+			symbol = "QQQ"
+		}
+		period := getIntParam(config, "period", 20)
+		stdDev := getParamOrDefault(config, "std_dev", 2.0)
+		barsNeeded := period
+		_, _, _, closes, actualSymbol, fetchErr := s.getHistoricalBarsForIndicator(ctx, symbol, barsNeeded)
+		if fetchErr != nil {
+			err = fetchErr
+		} else {
+			result.Value, err = CalcBollingerPercentB(closes, period, stdDev)
+		}
+		result.Symbol = actualSymbol
+		result.ParamSummary = fmt.Sprintf("%d/%.1f", period, stdDev)
+
 	default:
 		err = fmt.Errorf("unknown indicator type: %s", config.Type)
 	}
@@ -420,6 +639,27 @@ func (s *Service) GetFOMCValue(ctx context.Context) (float64, error) {
 	return 0, nil // Not FOMC day
 }
 
+// getHistoricalBarsForIndicator fetches daily bars and returns OHLC arrays.
+// symbol defaults to "QQQ" if empty.
+func (s *Service) getHistoricalBarsForIndicator(ctx context.Context, symbol string, barsNeeded int) (
+	opens, highs, lows, closes []float64, actualSymbol string, err error) {
+
+	if symbol == "" {
+		symbol = "QQQ"
+	}
+	if barsNeeded < 50 {
+		barsNeeded = 50
+	}
+
+	bars, err := s.providerManager.GetHistoricalBars(ctx, symbol, "D", nil, nil, barsNeeded)
+	if err != nil {
+		return nil, nil, nil, nil, symbol, fmt.Errorf("failed to get historical bars for %s: %w", symbol, err)
+	}
+
+	opens, highs, lows, closes = extractOHLC(bars)
+	return opens, highs, lows, closes, symbol, nil
+}
+
 // GetDailyData fetches daily OHLC data for a symbol
 func (s *Service) GetDailyData(ctx context.Context, symbol string) (*types.DailyData, error) {
 	// Request 2 days of daily data to get previous close
@@ -492,6 +732,37 @@ func (s *Service) formatDetails(result *types.IndicatorResult) string {
 			return fmt.Sprintf("FOMC Day: Yes (%s)", passStr)
 		}
 		return fmt.Sprintf("FOMC Day: No (%s)", passStr)
+
+	// ---- New: Momentum indicators ----
+	case types.IndicatorRSI:
+		return fmt.Sprintf("RSI(%s) %.2f %s %.2f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorMACD:
+		return fmt.Sprintf("MACD(%s) %.4f %s %.4f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorMomentum:
+		return fmt.Sprintf("Momentum(%s) %.2f%% %s %.2f%% (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorCMO:
+		return fmt.Sprintf("CMO(%s) %.2f %s %.2f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorStoch:
+		return fmt.Sprintf("Stoch(%s) %.2f %s %.2f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorStochRSI:
+		return fmt.Sprintf("StochRSI(%s) %.2f %s %.2f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+
+	// ---- New: Trend indicators ----
+	case types.IndicatorADX:
+		return fmt.Sprintf("ADX(%s) %.2f %s %.2f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorCCI:
+		return fmt.Sprintf("CCI(%s) %.2f %s %.2f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorSMA:
+		return fmt.Sprintf("SMA(%s) %.2f %s %.2f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorEMA:
+		return fmt.Sprintf("EMA(%s) %.2f %s %.2f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+
+	// ---- New: Volatility indicators ----
+	case types.IndicatorATR:
+		return fmt.Sprintf("ATR(%s) %.2f %s %.2f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorBBPercent:
+		return fmt.Sprintf("BB%%B(%s) %.4f %s %.4f (%s)", result.ParamSummary, result.Value, operatorStr, result.Threshold, passStr)
+
 	default:
 		return fmt.Sprintf("%.2f %s %.2f (%s)", result.Value, operatorStr, result.Threshold, passStr)
 	}
