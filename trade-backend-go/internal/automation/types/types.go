@@ -16,6 +16,24 @@ const (
 	IndicatorRange    IndicatorType = "range"
 	IndicatorTrend    IndicatorType = "trend"
 	IndicatorCalendar IndicatorType = "calendar"
+
+	// New — Momentum
+	IndicatorRSI      IndicatorType = "rsi"
+	IndicatorMACD     IndicatorType = "macd"
+	IndicatorMomentum IndicatorType = "momentum"
+	IndicatorCMO      IndicatorType = "cmo"
+	IndicatorStoch    IndicatorType = "stoch"
+	IndicatorStochRSI IndicatorType = "stoch_rsi"
+
+	// New — Trend
+	IndicatorADX IndicatorType = "adx"
+	IndicatorCCI IndicatorType = "cci"
+	IndicatorSMA IndicatorType = "sma"
+	IndicatorEMA IndicatorType = "ema"
+
+	// New — Volatility
+	IndicatorATR       IndicatorType = "atr"
+	IndicatorBBPercent IndicatorType = "bb_percent"
 )
 
 // Operator defines comparison operators for indicators
@@ -27,6 +45,30 @@ const (
 	OperatorEqual       Operator = "eq"
 	OperatorNotEqual    Operator = "ne"
 )
+
+// IndicatorParamDef describes a single parameter for an indicator type.
+// The frontend uses this to dynamically render input fields.
+type IndicatorParamDef struct {
+	Key          string  `json:"key"`           // Parameter key, e.g. "period", "fast_period"
+	Label        string  `json:"label"`         // Display label, e.g. "Period", "Fast Period"
+	DefaultValue float64 `json:"default_value"` // Default value, e.g. 14
+	Min          float64 `json:"min"`           // Minimum allowed value
+	Max          float64 `json:"max"`           // Maximum allowed value
+	Step         float64 `json:"step"`          // Input step increment
+	Type         string  `json:"type"`          // "int" or "float"
+}
+
+// IndicatorMeta describes an indicator type's full metadata.
+// Served to the frontend via GET /api/automation/indicators/metadata.
+type IndicatorMeta struct {
+	Type        IndicatorType       `json:"type"`         // e.g. "rsi"
+	Label       string              `json:"label"`        // e.g. "RSI"
+	Description string              `json:"description"`  // Human-readable description
+	Category    string              `json:"category"`     // "momentum", "trend", "volatility", "market", "calendar"
+	Params      []IndicatorParamDef `json:"params"`       // Ordered list of parameter definitions (empty for VIX, Calendar, etc.)
+	ValueRange  string              `json:"value_range"`  // e.g. "0-100", "unbounded"
+	NeedsSymbol bool                `json:"needs_symbol"` // Whether this indicator requires a symbol input
+}
 
 // AutomationStatus defines the state of an automation
 type AutomationStatus string
@@ -61,6 +103,8 @@ type IndicatorConfig struct {
 	Threshold float64       `json:"threshold"`
 	// Symbol is optional, used for symbol-specific indicators
 	Symbol string `json:"symbol,omitempty"`
+	// Params holds indicator-specific parameters (e.g., period, fast_period)
+	Params map[string]float64 `json:"params,omitempty"`
 }
 
 // IndicatorResult contains the result of an indicator evaluation
@@ -77,6 +121,7 @@ type IndicatorResult struct {
 	Timestamp     time.Time     `json:"timestamp"`
 	Details       string        `json:"details,omitempty"`
 	Error         string        `json:"error,omitempty"`
+	ParamSummary  string        `json:"param_summary,omitempty"` // e.g., "14" or "12/26/9"
 }
 
 // IronCondorSideConfig defines per-side configuration for an Iron Condor
@@ -244,10 +289,151 @@ func GenerateIndicatorID() string {
 	return fmt.Sprintf("ind_%d_%s", time.Now().UnixNano(), randomString(4))
 }
 
-// NewIndicatorConfig creates a new indicator config with minimal defaults
+// GetIndicatorMetadata returns metadata for all available indicator types.
+// This is the single source of truth for indicator definitions.
+func GetIndicatorMetadata() []IndicatorMeta {
+	return []IndicatorMeta{
+		// ---- Existing: Market ----
+		{
+			Type: IndicatorVIX, Label: "VIX", Category: "market",
+			Description: "CBOE Volatility Index — measures market fear/uncertainty",
+			Params:      []IndicatorParamDef{}, ValueRange: "0-100+", NeedsSymbol: false,
+		},
+		{
+			Type: IndicatorGap, Label: "Gap %", Category: "market",
+			Description: "Gap percentage: (Open - PrevClose) / PrevClose × 100",
+			Params:      []IndicatorParamDef{}, ValueRange: "unbounded", NeedsSymbol: true,
+		},
+		{
+			Type: IndicatorRange, Label: "Range %", Category: "market",
+			Description: "Range percentage: (High - Low) / Open × 100",
+			Params:      []IndicatorParamDef{}, ValueRange: "0+", NeedsSymbol: true,
+		},
+		{
+			Type: IndicatorTrend, Label: "Trend %", Category: "market",
+			Description: "Trend percentage: (Current - Open) / Open × 100",
+			Params:      []IndicatorParamDef{}, ValueRange: "unbounded", NeedsSymbol: true,
+		},
+		// ---- Existing: Calendar ----
+		{
+			Type: IndicatorCalendar, Label: "FOMC Calendar", Category: "calendar",
+			Description: "FOMC meeting day indicator: 1 = FOMC day, 0 = not FOMC day",
+			Params:      []IndicatorParamDef{}, ValueRange: "0-1", NeedsSymbol: false,
+		},
+		// ---- New: Momentum ----
+		{
+			Type: IndicatorRSI, Label: "RSI", Category: "momentum",
+			Description: "Relative Strength Index — measures overbought/oversold conditions",
+			ValueRange:  "0-100", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "period", Label: "Period", DefaultValue: 14, Min: 2, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		{
+			Type: IndicatorMACD, Label: "MACD", Category: "momentum",
+			Description: "Moving Average Convergence Divergence — trend-following momentum (MACD line value)",
+			ValueRange:  "unbounded", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "fast_period", Label: "Fast Period", DefaultValue: 12, Min: 2, Max: 500, Step: 1, Type: "int"},
+				{Key: "slow_period", Label: "Slow Period", DefaultValue: 26, Min: 2, Max: 500, Step: 1, Type: "int"},
+				{Key: "signal_period", Label: "Signal Period", DefaultValue: 9, Min: 2, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		{
+			Type: IndicatorMomentum, Label: "Momentum", Category: "momentum",
+			Description: "Price momentum — rate of change: (Close - Close[n]) / Close[n] × 100",
+			ValueRange:  "unbounded", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "period", Label: "Period", DefaultValue: 10, Min: 1, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		{
+			Type: IndicatorCMO, Label: "CMO", Category: "momentum",
+			Description: "Chande Momentum Oscillator — measures momentum on a -100 to +100 scale",
+			ValueRange:  "-100 to 100", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "period", Label: "Period", DefaultValue: 14, Min: 2, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		{
+			Type: IndicatorStoch, Label: "Stochastic", Category: "momentum",
+			Description: "Stochastic Oscillator — compares closing price to price range (%K value)",
+			ValueRange:  "0-100", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "k_period", Label: "K Period", DefaultValue: 14, Min: 1, Max: 500, Step: 1, Type: "int"},
+				{Key: "d_period", Label: "D Period", DefaultValue: 3, Min: 1, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		{
+			Type: IndicatorStochRSI, Label: "Stochastic RSI", Category: "momentum",
+			Description: "Stochastic oscillator applied to RSI values (%K value)",
+			ValueRange:  "0-100", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "rsi_period", Label: "RSI Period", DefaultValue: 14, Min: 2, Max: 500, Step: 1, Type: "int"},
+				{Key: "stoch_period", Label: "Stoch Period", DefaultValue: 14, Min: 1, Max: 500, Step: 1, Type: "int"},
+				{Key: "k_period", Label: "K Period", DefaultValue: 3, Min: 1, Max: 500, Step: 1, Type: "int"},
+				{Key: "d_period", Label: "D Period", DefaultValue: 3, Min: 1, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		// ---- New: Trend ----
+		{
+			Type: IndicatorADX, Label: "ADX", Category: "trend",
+			Description: "Average Directional Index — measures trend strength regardless of direction",
+			ValueRange:  "0-100", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "period", Label: "Period", DefaultValue: 14, Min: 2, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		{
+			Type: IndicatorCCI, Label: "CCI", Category: "trend",
+			Description: "Commodity Channel Index — identifies cyclical trends",
+			ValueRange:  "unbounded", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "period", Label: "Period", DefaultValue: 20, Min: 2, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		{
+			Type: IndicatorSMA, Label: "SMA", Category: "trend",
+			Description: "Simple Moving Average — average closing price over N periods",
+			ValueRange:  "price", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "period", Label: "Period", DefaultValue: 20, Min: 1, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		{
+			Type: IndicatorEMA, Label: "EMA", Category: "trend",
+			Description: "Exponential Moving Average — weighted average favoring recent prices",
+			ValueRange:  "price", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "period", Label: "Period", DefaultValue: 20, Min: 1, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		// ---- New: Volatility ----
+		{
+			Type: IndicatorATR, Label: "ATR", Category: "volatility",
+			Description: "Average True Range — measures price volatility in points",
+			ValueRange:  "0+", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "period", Label: "Period", DefaultValue: 14, Min: 1, Max: 500, Step: 1, Type: "int"},
+			},
+		},
+		{
+			Type: IndicatorBBPercent, Label: "Bollinger %B", Category: "volatility",
+			Description: "Bollinger Band %B — position within Bollinger Bands (0=lower, 1=upper)",
+			ValueRange:  "typically 0-1", NeedsSymbol: true,
+			Params: []IndicatorParamDef{
+				{Key: "period", Label: "Period", DefaultValue: 20, Min: 2, Max: 500, Step: 1, Type: "int"},
+				{Key: "std_dev", Label: "Std Deviations", DefaultValue: 2.0, Min: 0.5, Max: 5.0, Step: 0.1, Type: "float"},
+			},
+		},
+	}
+}
+
+// NewIndicatorConfig creates a new indicator config with minimal defaults.
+// For technical indicators, default params are populated from metadata.
 // User must configure threshold and symbol themselves - no suggested values
 func NewIndicatorConfig(indicatorType IndicatorType) IndicatorConfig {
-	return IndicatorConfig{
+	config := IndicatorConfig{
 		ID:        GenerateIndicatorID(),
 		Type:      indicatorType,
 		Enabled:   true,
@@ -255,6 +441,17 @@ func NewIndicatorConfig(indicatorType IndicatorType) IndicatorConfig {
 		Threshold: 0,             // No default value - user must set
 		Symbol:    "",            // No default symbol - user must set
 	}
+	// Populate default params from metadata
+	for _, meta := range GetIndicatorMetadata() {
+		if meta.Type == indicatorType && len(meta.Params) > 0 {
+			config.Params = make(map[string]float64)
+			for _, p := range meta.Params {
+				config.Params[p.Key] = p.DefaultValue
+			}
+			break
+		}
+	}
+	return config
 }
 
 // NewTradeConfiguration creates a new trade config with defaults
