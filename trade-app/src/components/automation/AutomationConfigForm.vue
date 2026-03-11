@@ -1412,6 +1412,7 @@ export default {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
+  overflow: hidden;
 }
 
 .indicator-row {
@@ -1422,6 +1423,7 @@ export default {
   background: var(--bg-tertiary);
   border-radius: var(--radius-md);
   transition: opacity 0.2s;
+  flex-wrap: wrap;
 }
 
 .indicator-row.disabled {
@@ -1454,6 +1456,9 @@ export default {
   display: flex;
   gap: 12px;
   align-items: center;
+  flex-wrap: wrap;
+  flex: 1;
+  min-width: 0;
 }
 
 .indicator-config.dimmed {
