@@ -1405,6 +1405,17 @@ export const api = {
     }
   },
 
+  // Get indicator metadata (types, params, descriptions)
+  async getIndicatorMetadata() {
+    try {
+      const response = await apiClient.get(`${API_BASE_URL}/automation/indicators/metadata`);
+      return response.data;
+    } catch (error) {
+      console.error("Error fetching indicator metadata:", error);
+      throw error;
+    }
+  },
+
   // Preview strikes for automation config (without placing order)
   async previewStrikes(previewData) {
     try {
