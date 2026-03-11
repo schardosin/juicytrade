@@ -258,14 +258,21 @@
         v-model:visible="showAddIndicatorDialog"
         header="Add Indicator"
         :modal="true"
-        :style="{ width: '400px' }"
+        :style="{ width: '650px', maxWidth: '90vw' }"
       >
         <div class="add-indicator-content">
           <p class="add-indicator-description">
             Select an indicator type to add. You can add multiple instances of the same type.
           </p>
+          <div class="indicator-search">
+            <InputText
+              v-model="indicatorSearchQuery"
+              placeholder="Search indicators..."
+              class="indicator-search-input"
+            />
+          </div>
           <div class="indicator-type-options">
-            <div v-for="(types, category) in groupedIndicatorTypes" :key="category">
+            <div v-for="(types, category) in filteredGroupedIndicatorTypes" :key="category">
               <h4 class="category-header">{{ categoryLabels[category] || category }}</h4>
               <div
                 v-for="type in types"
@@ -280,6 +287,9 @@
               </div>
             </div>
           </div>
+          <p v-if="Object.keys(filteredGroupedIndicatorTypes).length === 0" class="no-results">
+            No indicators matching "{{ indicatorSearchQuery }}"
+          </p>
         </div>
       </Dialog>
 
@@ -786,6 +796,11 @@ export default {
     
     // Add indicator dialog
     const showAddIndicatorDialog = ref(false)
+    const indicatorSearchQuery = ref('')
+
+    watch(showAddIndicatorDialog, (val) => {
+      if (val) indicatorSearchQuery.value = ''
+    })
 
     // Expanded indicators state (keyed by indicator.id → boolean)
     const expandedIndicators = ref({})
@@ -915,6 +930,22 @@ export default {
         groups[cat].push(type)
       })
       return groups
+    })
+
+    const filteredGroupedIndicatorTypes = computed(() => {
+      const query = indicatorSearchQuery.value.toLowerCase().trim()
+      if (!query) return groupedIndicatorTypes.value
+      
+      const filtered = {}
+      for (const [category, types] of Object.entries(groupedIndicatorTypes.value)) {
+        const matching = types.filter(t => 
+          t.label.toLowerCase().includes(query) || 
+          t.description.toLowerCase().includes(query) ||
+          t.value.toLowerCase().includes(query)
+        )
+        if (matching.length > 0) filtered[category] = matching
+      }
+      return filtered
     })
 
     const categoryLabels = {
@@ -1289,6 +1320,7 @@ export default {
       recurrenceOptions,
       indicatorTypes,
       groupedIndicatorTypes,
+      filteredGroupedIndicatorTypes,
       categoryLabels,
       
       // Mobile
@@ -1296,6 +1328,7 @@ export default {
       
       // Add indicator dialog
       showAddIndicatorDialog,
+      indicatorSearchQuery,
 
       // Indicator card expand/collapse
       expandedIndicators,
@@ -1967,6 +2000,21 @@ export default {
 
 .category-header:first-child {
   margin-top: 0;
+}
+
+.indicator-search {
+  margin-bottom: var(--spacing-md);
+}
+
+.indicator-search-input {
+  width: 100%;
+}
+
+.no-results {
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: var(--spacing-lg) 0;
+  font-size: var(--font-size-sm);
 }
 
 </style>
