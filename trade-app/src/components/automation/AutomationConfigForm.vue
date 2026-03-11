@@ -127,7 +127,7 @@
               <InputSwitch v-model="indicator.enabled" />
             </div>
             <div class="indicator-type">
-              <span class="type-label">{{ formatIndicatorType(indicator.type) }}</span>
+              <span class="type-label">{{ formatIndicatorTypeWithParams(indicator) }}</span>
               <span v-if="!isMobile" class="type-description">{{ getIndicatorDescription(indicator.type) }}</span>
             </div>
             <div class="indicator-config" :class="{ 'dimmed': !indicator.enabled }">
@@ -149,8 +149,27 @@
                 :disabled="!indicator.enabled"
                 :placeholder="indicator.type === 'calendar' ? '0 or 1' : 'Value'"
               />
+              <template v-if="getIndicatorParams(indicator.type).length > 0 && indicator.params">
+                <div
+                  v-for="paramDef in getIndicatorParams(indicator.type)"
+                  :key="paramDef.key"
+                  class="param-input-group"
+                >
+                  <label class="param-label">{{ paramDef.label }}</label>
+                  <InputNumber
+                    v-model="indicator.params[paramDef.key]"
+                    :min="paramDef.min"
+                    :max="paramDef.max"
+                    :step="paramDef.step"
+                    :minFractionDigits="paramDef.type === 'float' ? 1 : 0"
+                    :maxFractionDigits="paramDef.type === 'float' ? 2 : 0"
+                    class="param-value-input"
+                    :disabled="!indicator.enabled"
+                  />
+                </div>
+              </template>
               <InputText
-                v-if="indicator.type !== 'calendar'"
+                v-if="getIndicatorNeedsSymbol(indicator.type)"
                 v-model="indicator.symbol"
                 :placeholder="getIndicatorDefaultSymbol(indicator.type)"
                 class="symbol-input"
@@ -231,16 +250,19 @@
             Select an indicator type to add. You can add multiple instances of the same type.
           </p>
           <div class="indicator-type-options">
-            <div
-              v-for="type in indicatorTypes"
-              :key="type.value"
-              class="indicator-type-option"
-              @click="addIndicator(type.value)"
-            >
-              <div class="option-header">
-                <span class="option-label">{{ type.label }}</span>
+            <div v-for="(types, category) in groupedIndicatorTypes" :key="category">
+              <h4 class="category-header">{{ categoryLabels[category] || category }}</h4>
+              <div
+                v-for="type in types"
+                :key="type.value"
+                class="indicator-type-option"
+                @click="addIndicator(type.value)"
+              >
+                <div class="option-header">
+                  <span class="option-label">{{ type.label }}</span>
+                </div>
+                <p class="option-description">{{ type.description }}</p>
               </div>
-              <p class="option-description">{{ type.description }}</p>
             </div>
           </div>
         </div>
@@ -829,47 +851,97 @@ export default {
       { label: 'Daily (Repeat Each Day)', value: 'daily' },
     ]
     
-    // Indicator types for add indicator dialog
-    const indicatorTypes = [
-      { value: 'vix', label: 'VIX Level', description: 'CBOE Volatility Index level' },
-      { value: 'gap', label: 'Gap %', description: '(Open - Prev Close) / Prev Close * 100' },
-      { value: 'range', label: 'Range %', description: '(High - Low) / Open * 100' },
-      { value: 'trend', label: 'Trend %', description: '(Current - Open) / Open * 100' },
-      { value: 'calendar', label: 'FOMC Calendar', description: '0 = not FOMC day, 1 = FOMC day' },
-    ]
+    // Indicator metadata from API
+    const indicatorMetadata = ref([])
+    const indicatorMetadataMap = ref({})
+
+    const fetchIndicatorMetadata = async () => {
+      try {
+        const response = await api.getIndicatorMetadata()
+        const indicators = response.data?.indicators || []
+        indicatorMetadata.value = indicators
+        const map = {}
+        indicators.forEach(meta => { map[meta.type] = meta })
+        indicatorMetadataMap.value = map
+      } catch (err) {
+        console.error('Failed to fetch indicator metadata:', err)
+        // Fallback: indicatorTypes computed will use hardcoded values
+      }
+    }
+
+    // Indicator types for add indicator dialog (metadata-driven with fallback)
+    const indicatorTypes = computed(() => {
+      if (indicatorMetadata.value.length === 0) {
+        // Fallback while metadata loads or if API fails
+        return [
+          { value: 'vix', label: 'VIX Level', description: 'CBOE Volatility Index level', category: 'market' },
+          { value: 'gap', label: 'Gap %', description: '(Open - Prev Close) / Prev Close * 100', category: 'market' },
+          { value: 'range', label: 'Range %', description: '(High - Low) / Open * 100', category: 'market' },
+          { value: 'trend', label: 'Trend %', description: '(Current - Open) / Open * 100', category: 'market' },
+          { value: 'calendar', label: 'FOMC Calendar', description: '0 = not FOMC day, 1 = FOMC day', category: 'calendar' },
+        ]
+      }
+      return indicatorMetadata.value.map(meta => ({
+        value: meta.type,
+        label: meta.label,
+        description: meta.description,
+        category: meta.category,
+      }))
+    })
+
+    const groupedIndicatorTypes = computed(() => {
+      const groups = {}
+      indicatorTypes.value.forEach(type => {
+        const cat = type.category || 'other'
+        if (!groups[cat]) groups[cat] = []
+        groups[cat].push(type)
+      })
+      return groups
+    })
+
+    const categoryLabels = {
+      market: 'Market',
+      calendar: 'Calendar',
+      momentum: 'Momentum',
+      trend: 'Trend',
+      volatility: 'Volatility',
+    }
 
     // Methods
     const formatIndicatorType = (type) => {
-      const types = {
-        vix: 'VIX Level',
-        gap: 'Gap %',
-        range: 'Range %',
-        trend: 'Trend %',
-        calendar: 'FOMC Calendar'
-      }
-      return types[type] || type
+      return indicatorMetadataMap.value[type]?.label || type
     }
 
     const getIndicatorDescription = (type) => {
-      const descriptions = {
-        vix: 'CBOE Volatility Index level',
-        gap: '(Open - Prev Close) / Prev Close * 100',
-        range: '(High - Low) / Open * 100',
-        trend: '(Current - Open) / Open * 100',
-        calendar: '0 = not FOMC day, 1 = FOMC day'
-      }
-      return descriptions[type] || ''
+      return indicatorMetadataMap.value[type]?.description || ''
     }
 
     const getIndicatorDefaultSymbol = (type) => {
-      const defaults = {
-        vix: 'VIX',
-        gap: 'QQQ',
-        range: 'QQQ',
-        trend: 'QQQ',
-        calendar: ''
-      }
-      return defaults[type] || ''
+      if (type === 'vix') return 'VIX'
+      if (type === 'calendar') return ''
+      return 'QQQ'
+    }
+
+    const getIndicatorParams = (type) => {
+      return indicatorMetadataMap.value[type]?.params || []
+    }
+
+    const getIndicatorNeedsSymbol = (type) => {
+      const meta = indicatorMetadataMap.value[type]
+      if (!meta) return type !== 'calendar'
+      return meta.needs_symbol
+    }
+
+    const formatIndicatorTypeWithParams = (indicator) => {
+      const label = formatIndicatorType(indicator.type)
+      const params = getIndicatorParams(indicator.type)
+      if (params.length === 0 || !indicator.params) return label
+
+      const values = params.map(p => {
+        const val = indicator.params[p.key] ?? p.default_value
+        return p.type === 'float' ? val.toFixed(1) : Math.round(val)
+      })
+      return `${label} (${values.join('/')})`
     }
 
     const getRecurrenceHint = () => {
@@ -886,6 +958,14 @@ export default {
 
     // Add a new indicator
     const addIndicator = (type) => {
+      const meta = indicatorMetadataMap.value[type]
+      const params = {}
+      if (meta && meta.params && meta.params.length > 0) {
+        meta.params.forEach(p => {
+          params[p.key] = p.default_value
+        })
+      }
+
       const newIndicator = {
         id: generateIndicatorId(),
         type: type,
@@ -893,6 +973,7 @@ export default {
         operator: 'eq', // Default operator
         threshold: 0,   // No default value - user must set
         symbol: '',     // No default symbol - user must set
+        params: Object.keys(params).length > 0 ? params : undefined,
       }
       config.value.indicators.push(newIndicator)
       showAddIndicatorDialog.value = false
@@ -1125,9 +1206,10 @@ export default {
     }
 
     // Lifecycle
-    onMounted(() => {
+    onMounted(async () => {
+      await fetchIndicatorMetadata()
       if (isEditMode.value) {
-        loadConfig()
+        await loadConfig()
       }
     })
 
@@ -1159,6 +1241,8 @@ export default {
       expirationModes,
       recurrenceOptions,
       indicatorTypes,
+      groupedIndicatorTypes,
+      categoryLabels,
       
       // Mobile
       isMobile,
@@ -1168,8 +1252,11 @@ export default {
 
       // Methods
       formatIndicatorType,
+      formatIndicatorTypeWithParams,
       getIndicatorDescription,
       getIndicatorDefaultSymbol,
+      getIndicatorParams,
+      getIndicatorNeedsSymbol,
       getRecurrenceHint,
       getIndicatorResultClass,
       addIndicator,
@@ -1884,5 +1971,52 @@ export default {
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
   margin: 0;
+}
+
+/* Parameter inputs for technical indicators */
+.param-input-group {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.param-label {
+  font-size: 0.75rem;
+  color: var(--text-tertiary, var(--text-secondary));
+  white-space: nowrap;
+}
+
+:deep(.param-value-input.p-inputnumber) {
+  width: 70px;
+}
+
+:deep(.param-value-input .p-inputnumber-input) {
+  width: 70px;
+  border-radius: var(--radius-sm);
+}
+
+/* Category headers in Add Indicator dialog */
+.category-header {
+  color: var(--color-brand);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 12px 0 6px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.category-header:first-child {
+  margin-top: 0;
+}
+
+@media (max-width: 768px) {
+  .param-input-group {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+  :deep(.param-value-input.p-inputnumber) {
+    width: 100%;
+  }
 }
 </style>
