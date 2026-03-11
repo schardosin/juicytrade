@@ -452,7 +452,7 @@ import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { useOrderManagement } from "../composables/useOrderManagement";
 import { useMobileDetection } from "../composables/useMobileDetection";
 import { smartMarketDataStore } from "../services/smartMarketDataStore.js";
-import { mapToRootSymbol } from "../utils/symbolMapping.js";
+import { mapToRootSymbol, isWeeklySymbol, mapToWeeklySymbol } from "../utils/symbolMapping.js";
 import MarketHoursUtil from "../utils/marketHours.js";
 import MobilePositionsCard from "../components/MobilePositionsCard.vue";
 import MobileNavDrawer from "../components/MobileNavDrawer.vue";
@@ -1988,11 +1988,23 @@ export default {
       return checkedCount > 0 && checkedCount < allMobilePositions.value.length;
     });
 
-    // Helper function to get symbol group (handles SPX/SPXW grouping)
+    // Helper function to get symbol group (handles weekly symbols grouping)
     const getSymbolGroup = (symbol) => {
-      if (symbol === "SPX" || symbol === "SPXW") {
-        return ["SPX", "SPXW"];
+      if (!symbol) return [symbol];
+
+      // If symbol is a weekly variant (e.g., SPXW, NDXP), include both it and its root
+      if (isWeeklySymbol(symbol)) {
+        const rootSymbol = mapToRootSymbol(symbol);
+        return [symbol, rootSymbol];
       }
+
+      // If symbol is a root with a weekly equivalent (e.g., SPX, NDX), include both
+      const weeklySymbol = mapToWeeklySymbol(symbol);
+      if (weeklySymbol !== symbol) {
+        return [symbol, weeklySymbol];
+      }
+
+      // No weekly equivalent
       return [symbol];
     };
 

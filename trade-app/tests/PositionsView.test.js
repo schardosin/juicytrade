@@ -486,7 +486,7 @@ describe('PositionsView', () => {
       
       // The component should be able to show/hide equity positions based on filter
       const vm = wrapper.vm;
-      expect(vm.showStocks).toBeDefined();
+      expect(vm.showShares).toBeDefined();
     });
 
     it('should handle both us_equity and us_option asset classes in filtering', async () => {

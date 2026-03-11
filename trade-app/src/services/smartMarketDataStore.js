@@ -10,6 +10,7 @@ import webSocketClient from "./webSocketClient.js";
 import api, { setServicesStoppingState } from "./api.js";
 import MarketHoursUtil from "../utils/marketHours.js";
 import authService from "./authService.js";
+import { mapToRootSymbol, isWeeklySymbol, mapToWeeklySymbol } from "../utils/symbolMapping.js";
 
 /**
  * Data Health Monitor - Monitors the health of all data sources
@@ -549,6 +550,9 @@ class SmartMarketDataStore {
     // Reactive data stores - Greeks data (streaming updates)
     this.optionGreeks = reactive(new Map());
 
+    // Reactive data stores - IVx data (streaming updates)
+    this.ivxData = reactive(new Map()); // symbol -> { status, expirations, progress, error }
+
     // Reactive data stores - REST API data
     this.data = reactive(new Map()); // General data store for all REST API data
 
@@ -559,6 +563,10 @@ class SmartMarketDataStore {
     // Access tracking for Greeks subscriptions (same pattern)
     this.lastGreeksAccess = new Map(); // symbol -> timestamp
     this.activeGreeksSubscriptions = new Set(); // currently subscribed Greeks symbols
+
+    // Access tracking for IVx subscriptions (same pattern as Greeks)
+    this.lastIvxAccess = new Map(); // symbol -> timestamp
+    this.activeIvxSubscriptions = new Set(); // currently subscribed IVx symbols
 
     // Component registration system for precise subscription management
     this.symbolUsageCount = new Map(); // symbol -> usage count
@@ -1339,6 +1347,11 @@ class SmartMarketDataStore {
       this.handleGreeksUpdate(data);
     });
 
+    // Register handler for all IVx message types
+    webSocketClient.onIvxUpdate((data) => {
+      this.handleIvxUpdate(data);
+    });
+
     webSocketClient.onSubscriptionConfirmed((data) => {
 
     });
@@ -1372,18 +1385,34 @@ class SmartMarketDataStore {
     const { symbol } = data;
     if (!symbol) return;
 
-    // Extract bid/ask first
+    // Extract bid/ask/last from data
     const bid = data.data?.bid;
     const ask = data.data?.ask;
     const last = data.data?.last;
 
-    // Prioritize mid price calculation from bid/ask when both are available
+    // Calculate price with proper fallback logic for "NaN" strings
     let finalPrice = null;
-    if (bid && ask) {
-      finalPrice = (bid + ask) * 0.5;
+    
+    // Parse bid/ask/last as numbers and check validity
+    const bidNum = parseFloat(bid);
+    const askNum = parseFloat(ask);
+    const lastNum = parseFloat(last);
+
+    if (!isNaN(bidNum) && !isNaN(askNum) && bidNum > 0 && askNum > 0) {
+      // Use mid price when both bid and ask are valid numbers
+      finalPrice = (bidNum + askNum) * 0.5;
+    } else if (!isNaN(lastNum) && lastNum > 0) {
+      // Fall back to last price when bid/ask unavailable (e.g., NDX off-hours)
+      finalPrice = lastNum;
     } else {
-      // Fall back to other price fields if bid/ask not available
-      finalPrice = data.price || last || data.data?.mid;
+      // Final fallback to any available price field
+      finalPrice = data.price || data.data?.mid;
+      if (finalPrice) {
+        finalPrice = parseFloat(finalPrice);
+        if (isNaN(finalPrice)) {
+          finalPrice = null;
+        }
+      }
     }
 
     if (!finalPrice) return; // Skip if no valid price
@@ -1441,21 +1470,27 @@ class SmartMarketDataStore {
     const theta = dataObj.theta;
     const vega = dataObj.vega;
     const iv = dataObj.implied_volatility;
+    const volume = dataObj.volume;
+
+    // Helper to check if value is actually present (not null or undefined)
+    const hasValue = (v) => v !== undefined && v !== null;
 
     // Skip if no valid Greeks data
-    if (delta === undefined && gamma === undefined && theta === undefined && vega === undefined && iv === undefined) {
+    if (!hasValue(delta) && !hasValue(gamma) && !hasValue(theta) && !hasValue(vega) && !hasValue(iv) && !hasValue(volume)) {
       return;
     }
 
-    console.log(`📊 Processing streaming Greeks for ${symbol}:`, { delta, gamma, theta, vega });
+    // Get existing Greeks data to merge with (preserves values not in this update)
+    const existingGreeks = this.optionGreeks.get(symbol) || {};
 
-    // Minimal Greeks data object
+    // Merge new data with existing - only update fields that have actual values (not null/undefined)
     const greeksData = {
-      delta,
-      gamma,
-      theta,
-      vega,
-      implied_volatility: iv,
+      delta: hasValue(delta) ? delta : existingGreeks.delta,
+      gamma: hasValue(gamma) ? gamma : existingGreeks.gamma,
+      theta: hasValue(theta) ? theta : existingGreeks.theta,
+      vega: hasValue(vega) ? vega : existingGreeks.vega,
+      implied_volatility: hasValue(iv) ? iv : existingGreeks.implied_volatility,
+      volume: hasValue(volume) ? volume : existingGreeks.volume,
       timestamp: Date.now(),
     };
 
@@ -1548,11 +1583,23 @@ class SmartMarketDataStore {
         return null;
       }
 
-      // Helper function to get symbol group (handles SPX/SPXW grouping)
+      // Helper function to get symbol group (handles weekly symbols grouping)
       const getSymbolGroup = (sym) => {
-        if (sym === "SPX" || sym === "SPXW") {
-          return ["SPX", "SPXW"];
+        if (!sym) return [sym];
+
+        // If symbol is a weekly variant (e.g., SPXW, NDXP), include both it and its root
+        if (isWeeklySymbol(sym)) {
+          const rootSymbol = mapToRootSymbol(sym);
+          return [sym, rootSymbol];
         }
+
+        // If symbol is a root with a weekly equivalent (e.g., SPX, NDX), include both
+        const weeklySymbol = mapToWeeklySymbol(sym);
+        if (weeklySymbol !== sym) {
+          return [sym, weeklySymbol];
+        }
+
+        // No weekly equivalent
         return [sym];
       };
 
@@ -1883,81 +1930,351 @@ class SmartMarketDataStore {
   }
 
   /**
-   * Clear cached data for a specific key
+   * Get reactive IVx data for a symbol - STREAMING-based approach
+   * Automatically handles subscription management via component registration
    */
-  clearCacheData(key) {
-    if (this.cache.has(key)) {
-      this.cache.delete(key);
-      console.log(`🗑️ Cleared cache for: ${key}`);
-      return true;
-    }
-    return false;
+  getIvxDataStreaming(symbol) {
+    if (!symbol) return computed(() => null);
+
+    // Track the previous symbol to detect changes
+    let previousSymbol = null;
+
+    // Create reactive IVx reference that tracks access AND handles symbol changes
+    const reactiveIvx = computed(() => {
+      // Return early if services are stopping
+      if (this.isServicesStopping) {
+        return null;
+      }
+      
+      // Handle computed refs - extract actual string value
+      let actualSymbol = symbol;
+      if (typeof symbol === 'function') {
+        actualSymbol = symbol();
+      } else if (symbol && typeof symbol === 'object' && 'value' in symbol) {
+        actualSymbol = symbol.value;
+      }
+
+      if (!actualSymbol) {
+        return null;
+      }
+      
+      // CRITICAL FIX: Detect symbol changes and update subscriptions
+      if (actualSymbol !== previousSymbol) {
+        // Unsubscribe from previous symbol if it exists
+        if (previousSymbol) {
+          this.unsubscribeFromIvx(previousSymbol);
+        }
+        
+        // Subscribe to new symbol
+        this.ensureIvxSubscription(actualSymbol);
+        
+        // Update previous symbol tracker
+        previousSymbol = actualSymbol;
+      }
+      
+      // Update access timestamp every time this computed is evaluated
+      this.lastIvxAccess.set(actualSymbol, Date.now());
+      return this.ivxData.get(actualSymbol) || null;
+    });
+
+    return reactiveIvx;
   }
 
   /**
-   * Track access for on-demand strategies
+   * Get reactive IVx data for a symbol - LEGACY API-based approach
+   * Uses TTL caching strategy for optimal performance and reliability
+   * DEPRECATED: Use getIvxDataStreaming() instead
+   */
+  getIvxData(symbol) {
+    return computed(() => {
+      // Return early if services are stopping
+      if (this.isServicesStopping) {
+        return { isLoading: false, expirations: [], error: 'Services stopping' };
+      }
+      
+      // Handle computed refs - extract actual string value
+      let actualSymbol = symbol;
+      if (typeof symbol === 'function') {
+        actualSymbol = symbol();
+      } else if (symbol && typeof symbol === 'object' && 'value' in symbol) {
+        actualSymbol = symbol.value;
+      }
+      
+      
+      if (!actualSymbol) {
+        return { isLoading: false, expirations: [] };
+      }
+
+      const key = `ivxData.${actualSymbol}`;
+      
+      // Check loading state
+      const isLoading = this.loading.has(key);
+      
+      // Get cached data
+      const cachedData = this.data.get(key);
+      
+      // Check for errors
+      const error = this.errors.get(key);
+      
+      if (error) {
+        return { 
+          isLoading: false, 
+          expirations: [], 
+          error: error.message,
+          status: 'error' 
+        };
+      }
+      
+      if (isLoading && !cachedData) {
+        return { 
+          isLoading: true, 
+          expirations: [],
+          status: 'loading' 
+        };
+      }
+      
+      if (cachedData && cachedData.expirations) {
+        return {
+          isLoading: false,
+          expirations: cachedData.expirations,
+          cached: cachedData.cached,
+          calculationTime: cachedData.calculation_time,
+          status: 'completed'
+        };
+      }
+      
+      // No data yet - trigger fetch but don't wait
+      const strategy = this.strategies.get('ivxData.*');
+      this.fetchOnDemandData(key, strategy).catch(err => {
+        console.error(`IVx fetch failed for ${actualSymbol}:`, err.message);
+        // Set error state so UI can show error instead of infinite loading
+        this.setError(key, err);
+      });
+      
+      return { 
+        isLoading: true, 
+        expirations: [],
+        status: 'loading' 
+      };
+    });
+  }
+
+  /**
+   * Ensure IVx subscription for a symbol (same pattern as Greeks subscriptions)
+   */
+  ensureIvxSubscription(symbol) {
+    // Handle computed refs and extract actual string value
+    let actualSymbol = symbol;
+    if (typeof symbol === 'function') {
+      actualSymbol = symbol();
+    } else if (symbol && typeof symbol === 'object' && 'value' in symbol) {
+      actualSymbol = symbol.value;
+    }
+
+    if (!actualSymbol || typeof actualSymbol !== 'string') return;
+
+    // Initialize access timestamp
+    this.lastIvxAccess.set(actualSymbol, Date.now());
+
+    // Ensure we're subscribed to IVx for this symbol
+    if (!this.activeIvxSubscriptions.has(actualSymbol)) {
+      this.subscribeToIvx(actualSymbol);
+    }
+  }
+
+  /**
+   * Subscribe to IVx for a symbol (same pattern as Greeks subscriptions)
+   */
+  async subscribeToIvx(symbol) {
+    if (!symbol) return;
+
+    this.activeIvxSubscriptions.add(symbol);
+
+    // Send WebSocket subscription message
+    try {
+      await webSocketClient.subscribeToIvx([symbol]);
+      console.log(`📊 Subscribed to IVx streaming for ${symbol}`);
+    } catch (error) {
+      console.error(`❌ Failed to subscribe to IVx for ${symbol}:`, error);
+    }
+  }
+
+  /**
+   * Unsubscribe from IVx for a symbol
+   */
+  async unsubscribeFromIvx(symbol) {
+    if (!symbol) return;
+
+    this.activeIvxSubscriptions.delete(symbol);
+
+    // Send WebSocket unsubscription message
+    try {
+      await webSocketClient.unsubscribeFromIvx([symbol]);
+      console.log(`📊 Unsubscribed from IVx streaming for ${symbol}`);
+    } catch (error) {
+      console.error(`❌ Failed to unsubscribe from IVx for ${symbol}:`, error);
+    }
+  }
+
+  /**
+   * Handle incoming IVx updates from WebSocket
+   */
+  handleIvxUpdate(data) {
+    const { symbol, type } = data;
+    if (!symbol) return;
+
+    // Get existing IVx data or create new entry
+    let ivxEntry = this.ivxData.get(symbol) || {
+      symbol,
+      status: 'loading',
+      expirations: [],
+      progress: { completed: 0, total: 0 },
+      error: null,
+      timestamp: Date.now()
+    };
+
+    // Handle different message types
+    switch (type) {
+      case 'ivx_status':
+        // Status update (progress information)
+        ivxEntry = {
+          ...ivxEntry,
+          status: data.data?.status || 'loading',
+          progress: data.data?.progress || ivxEntry.progress,
+          timestamp: Date.now()
+        };
+        break;
+
+      case 'ivx_update':
+        // CRITICAL FIX: Backend sends individual expiration data directly in data field
+        // Not wrapped in expiration_data
+        if (data.data) {
+          const newExpiration = data.data; // Direct expiration data
+          const existingIndex = ivxEntry.expirations.findIndex(
+            exp => exp.expiration_date === newExpiration.expiration_date
+          );
+
+          if (existingIndex >= 0) {
+            // Update existing expiration
+            ivxEntry.expirations[existingIndex] = newExpiration;
+          } else {
+            // Add new expiration
+            ivxEntry.expirations.push(newExpiration);
+          }
+
+          // Update status to show we're receiving data
+          ivxEntry.status = 'loading';
+          ivxEntry.timestamp = Date.now();
+        }
+        break;
+
+      case 'ivx_complete':
+        // Complete data received
+        if (data.data && data.data.expirations) {
+          ivxEntry = {
+            ...ivxEntry,
+            status: 'completed',
+            expirations: data.data.expirations,
+            progress: { 
+              completed: data.data.expirations.length, 
+              total: data.data.expirations.length 
+            },
+            timestamp: Date.now()
+          };
+        } else {
+          // Mark as completed with current expirations
+          ivxEntry.status = 'completed';
+          ivxEntry.progress = {
+            completed: ivxEntry.expirations.length,
+            total: ivxEntry.expirations.length
+          };
+          ivxEntry.timestamp = Date.now();
+        }
+        console.log(`📊 IVx complete for ${symbol} with ${ivxEntry.expirations.length} expirations`);
+        break;
+
+      case 'error':
+        // Error occurred - handle various error message structures
+        let errorMessage = 'Unknown error';
+        if (data.data) {
+          // Try different error message locations
+          errorMessage = data.data.message || data.data.error || data.data.detail || data.data;
+          if (typeof errorMessage === 'object') {
+            errorMessage = JSON.stringify(errorMessage);
+          }
+        } else if (data.message) {
+          errorMessage = data.message;
+        } else if (data.error) {
+          errorMessage = data.error;
+        }
+        
+        // CRITICAL FIX: Handle "Invalid quote data" race condition with automatic retry
+        // This happens on initial load when quote data isn't available yet
+        // Solution: Unsubscribe and resubscribe (same as switching symbols and coming back)
+        if (errorMessage === 'Invalid quote data' || errorMessage === '"Invalid quote data"') {
+          console.log(`⏳ IVx quote data not ready for ${symbol}, retrying in 1 second...`);
+          
+          // Keep status as loading
+          ivxEntry = {
+            ...ivxEntry,
+            status: 'loading',
+            timestamp: Date.now()
+          };
+          
+          // Retry after 1 second by unsubscribing and resubscribing
+          setTimeout(async () => {
+            console.log(`🔄 Retrying IVx subscription for ${symbol}...`);
+            try {
+              await this.unsubscribeFromIvx(symbol);
+              await new Promise(resolve => setTimeout(resolve, 500));
+              await this.subscribeToIvx(symbol);
+            } catch (error) {
+              console.error(`❌ Failed to retry IVx for ${symbol}:`, error);
+            }
+          }, 1000);
+        } else {
+          // For other errors, set error state
+          ivxEntry = {
+            ...ivxEntry,
+            status: 'error',
+            error: errorMessage,
+            timestamp: Date.now()
+          };
+          console.error(`❌ IVx error for ${symbol}:`, errorMessage);
+        }
+        break;
+    }
+
+    // Update IVx store
+    this.ivxData.set(symbol, ivxEntry);
+
+    // Update access timestamp if actively subscribed
+    if (this.activeIvxSubscriptions.has(symbol)) {
+      this.lastIvxAccess.set(symbol, Date.now());
+    }
+  }
+
+  /**
+   * Track data access for on-demand strategies
    */
   trackDataAccess(key) {
-    // Don't track or fetch data when services are stopping
-    if (this.isServicesStopping) {
-      return;
-    }
-    
-    let config = this.strategies.get(key);
-
-    // If exact key not found, try wildcard patterns
-    if (!config) {
-      config = this.findWildcardConfig(key);
-    }
-
-    if (config && (config.strategy === "on-demand" || config.strategy === "periodic")) {
-      // Trigger fetch if not cached or expired
-      this.getData(key).catch(console.error);
-    }
+    // This method is called when data is accessed via getReactiveData
+    // Can be used for analytics or cache management
+    // For now, it's a no-op but provides extension point
   }
 
   /**
-   * Update data (called by strategies)
+   * Update data in the store
    */
-  updateData(key, newData) {
-    this.data.set(key, newData);
-    this.errors.delete(key);
+  updateData(key, data) {
+    this.data.set(key, data);
   }
 
   /**
-   * Set error state
+   * Set error state for a key
    */
   setError(key, error) {
     this.errors.set(key, error);
-    console.error(`❌ Data error for ${key}:`, error);
-  }
-
-  /**
-   * Subscribe to a symbol
-   */
-  async subscribeToSymbol(symbol) {
-    // Don't create subscriptions when services are stopping
-    if (this.isServicesStopping) {
-      return;
-    }
-    
-    this.activeSubscriptions.add(symbol);
-
-    // For stock symbols, proactively load daily 6M data in background
-    // Only if services are running (which means auth is properly initialized and user is authenticated)
-    if (symbol.length <= 10 && this.isServicesRunning()) { // Stock symbol
-      this.ensureCurrentSymbolDaily6M(symbol).catch(err => {
-        console.warn(`⚠️ Background daily 6M load failed for ${symbol}:`, err.message);
-      });
-      
-      // NEW: Preload Overview static data asynchronously
-      this.preloadOverviewData(symbol).catch(err => {
-        console.warn(`⚠️ Background Overview data load failed for ${symbol}:`, err.message);
-      });
-    }
-
-    // Schedule backend update
-    this.scheduleBackendUpdate();
   }
 
   /**
@@ -2688,6 +3005,16 @@ class SmartMarketDataStore {
 
     // Configure additional data sources (moved from main.js)
     this.configureAdditionalDataSources();
+
+    // CRITICAL FIX: Trigger initial fetch of provider data for TopBar
+    // Provider data uses on-demand strategy, so we need to explicitly fetch it
+    // This ensures TopBar shows provider info immediately on app load
+    this.getData("providers.available").catch(err => {
+      console.warn("⚠️ Failed to load available providers:", err.message);
+    });
+    this.getData("providers.config").catch(err => {
+      console.warn("⚠️ Failed to load provider config:", err.message);
+    });
 
     // Start health monitoring
     this.startHealthMonitoring();

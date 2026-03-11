@@ -1,0 +1,31 @@
+# Exclude all configuration and data files
+data/
+*.json
+!go.mod
+!go.sum
+!package.json
+!package-lock.json
+
+# Exclude credentials
+*credentials*.json
+*config*.json
+watchlist.json
+
+# Exclude development files
+.env
+.env.*
+*.log
+
+# Exclude git
+.git/
+.gitignore
+
+# Exclude IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Exclude test files
+*_test.go
+testdata/

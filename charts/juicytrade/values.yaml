@@ -1,0 +1,92 @@
+# Default values for juicytrade.
+# This is a YAML-formatted file.
+# Declare variables to be passed into your templates.
+
+environment: dev
+
+# Image Pull Secrets
+# If you have an existing secret, add it to the list:
+imagePullSecrets: []
+# - name: gitlab-creds
+
+# If you want the chart to create the secret for you:
+registryCredentials:
+  create: false
+  name: gitlab-creds
+  registry: registry.gitlab.com
+  username: ""
+  password: ""
+  email: ""
+
+# Cert Manager Configuration
+certManager:
+  createClusterIssuer: true
+  email: "" # Email for Let's Encrypt registration
+
+backend:
+  image:
+    repository: registry.gitlab.com/schardosin/juicytrade/trade-backend
+    pullPolicy: Always
+    tag: "latest"
+  
+  replicas: 1
+  
+  service:
+    type: ClusterIP
+    port: 8008
+  
+  persistence:
+    enabled: true
+    size: 1Gi
+    # storageClass: "-" # Uncomment to use specific storage class
+    accessMode: ReadWriteOnce
+    mountPath: /app/data
+
+  resources:
+    limits:
+      cpu: 200m
+      memory: 256Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+
+  # Environment variables for the backend
+  env:
+    LOG_LEVEL: "INFO"
+    PORT: "8008"
+    # Add other default env vars here
+    # AUTH_METHOD: "oauth"
+
+frontend:
+  image:
+    repository: registry.gitlab.com/schardosin/juicytrade/trade-app
+    pullPolicy: Always
+    tag: "latest"
+  
+  replicas: 1
+  
+  service:
+    type: ClusterIP
+    port: 80
+
+  resources: {}
+
+ingress:
+  enabled: false
+  className: "traefik"
+  annotations: {}
+    # kubernetes.io/ingress.class: traefik
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: juicytrade.local
+      paths:
+        - path: /
+          pathType: Prefix
+          backend: frontend
+        - path: /api
+          pathType: Prefix
+          backend: backend
+  tls: []
+  #  - secretName: juicytrade-tls
+  #    hosts:
+  #      - juicytrade.local

@@ -55,6 +55,7 @@
               @expiration-expanded="onExpirationExpanded"
               @expiration-collapsed="onExpirationCollapsed"
               @strike-count-changed="onStrikeCountChanged"
+              @visible-symbols-changed="onVisibleSymbolsChanged"
             />
           </div>
         </div>
@@ -179,6 +180,7 @@ import { useTradeNavigation } from "../composables/useTradeNavigation.js";
 import { useMobileDetection } from "../composables/useMobileDetection.js";
 import api from "../services/api";
 import authService from "../services/authService";
+import { mapToRootSymbol, isWeeklySymbol, mapToWeeklySymbol } from "../utils/symbolMapping.js";
 // webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
 // import webSocketClient from "../services/webSocketClient";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
@@ -218,7 +220,8 @@ export default {
     
     const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
-    const { getIvxData } = useMarketData();    const {
+    const { getIvxDataStreaming } = useMarketData();
+    const {
       showOrderConfirmation,
       showOrderResult,
       orderData,
@@ -290,7 +293,8 @@ export default {
     );
 
     // Get IVx data for current symbol (after globalSymbolState is initialized)
-    const rawIvxData = getIvxData(
+    // Using streaming-based approach for real-time updates
+    const rawIvxData = getIvxDataStreaming(
       computed(() => {
         return globalSymbolState.currentSymbol;
       })
@@ -501,11 +505,23 @@ export default {
       return checkedCount > 0 && checkedCount < allMobilePositions.value.length;
     });
 
-    // Helper function to get symbol group (handles SPX/SPXW grouping)
+    // Helper function to get symbol group (handles weekly symbols grouping)
     const getSymbolGroup = (symbol) => {
-      if (symbol === "SPX" || symbol === "SPXW") {
-        return ["SPX", "SPXW"];
+      if (!symbol) return [symbol];
+
+      // If symbol is a weekly variant (e.g., SPXW, NDXP), include both it and its root
+      if (isWeeklySymbol(symbol)) {
+        const rootSymbol = mapToRootSymbol(symbol);
+        return [symbol, rootSymbol];
       }
+
+      // If symbol is a root with a weekly equivalent (e.g., SPX, NDX), include both
+      const weeklySymbol = mapToWeeklySymbol(symbol);
+      if (weeklySymbol !== symbol) {
+        return [symbol, weeklySymbol];
+      }
+
+      // No weekly equivalent
       return [symbol];
     };
 
@@ -934,6 +950,12 @@ export default {
     const onStrikeCountChanged = (newStrikeCount) => {
       currentStrikeCount.value = newStrikeCount;
       optionsManager.updateStrikeCount(newStrikeCount);
+    };
+
+    const onVisibleSymbolsChanged = (visibleSymbols) => {
+      // Handle visible symbols change from CollapsibleOptionsChain
+      // This event is emitted when the user expands/collapses expirations
+      // Currently no action needed, but method must exist to satisfy template
     };
 
     const onPriceAdjusted = (data) => {
@@ -1453,6 +1475,7 @@ export default {
       onExpirationExpanded,
       onExpirationCollapsed,
       onStrikeCountChanged,
+      onVisibleSymbolsChanged,
       onPriceAdjusted,
       adjustedNetCredit,
       additionalQuoteData,
@@ -1895,12 +1918,12 @@ export default {
   
   /* Adjust options chain for mobile */
   .options-chain-wrapper {
-    padding: 8px !important;
+    padding: 0 !important;
   }
   
   /* Mobile-optimized trading panels */
   .options-section {
-    padding: 8px;
+    padding: 8;
   }
   
   .shares-section {

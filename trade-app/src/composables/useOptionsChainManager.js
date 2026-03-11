@@ -17,7 +17,7 @@ const loadPersistedStrikeCount = () => {
   } catch (error) {
     console.warn("Failed to load persisted strike count:", error);
   }
-  return 20; // Default fallback
+  return 50; // Default fallback
 };
 
 // Save strike count to localStorage
@@ -50,6 +50,9 @@ export function useOptionsChainManager(
 
   // Set of currently subscribed option symbols
   const subscribedSymbols = ref(new Set());
+
+  // Set of currently visible option symbols (for optimized subscription)
+  const visibleOptionSymbols = ref(new Set());
 
   // Loading and error states
   const loading = ref(false); // Only true when the entire component should be blocked
@@ -106,18 +109,8 @@ export function useOptionsChainManager(
 
   // Get all currently subscribed option symbols
   const allSubscribedSymbols = computed(() => {
-    const symbols = [];
-    expandedExpirations.value.forEach((expirationKey) => {
-      const options = dataByExpiration.value[expirationKey];
-      if (options && Array.isArray(options)) {
-        options.forEach((option) => {
-          if (option.symbol) {
-            symbols.push(option.symbol);
-          }
-        });
-      }
-    });
-    return symbols;
+    // Only subscribe to explicitly visible symbols
+    return Array.from(visibleOptionSymbols.value);
   });
 
   // ===== Core Methods =====
@@ -229,8 +222,8 @@ export function useOptionsChainManager(
       await loadOptionsForExpiration(expirationKey, expirationData);
     }
   
-    // Update websocket subscriptions
-    await updateSubscriptions();
+    // Note: We do NOT call updateSubscriptions here anymore.
+    // We wait for the UI to render the new rows and report visibility.
   };
 
   /**
@@ -240,8 +233,8 @@ export function useOptionsChainManager(
     // Remove from expanded set
     expandedExpirations.value.delete(expiration);
 
-    // Update websocket subscriptions
-    await updateSubscriptions();
+    // Note: We do NOT call updateSubscriptions here.
+    // The UI component should update the visible symbols list, which will trigger subscription update.
   };
 
   /**
@@ -362,6 +355,18 @@ export function useOptionsChainManager(
     }
 
     // Update subscriptions
+    await updateSubscriptions();
+  };
+
+  /**
+   * Set the list of currently visible option symbols
+   * This is called by the UI component when the user scrolls
+   */
+  const setVisibleOptionSymbols = async (symbols) => {
+    // Update the set of visible symbols
+    visibleOptionSymbols.value = new Set(symbols);
+    
+    // Trigger subscription update
     await updateSubscriptions();
   };
 
@@ -497,6 +502,8 @@ export function useOptionsChainManager(
     clearAllData,
     updateStrikeCount,
     refreshAllData,
+    refreshAllData,
     moveStrike,
+    setVisibleOptionSymbols,
   };
 }

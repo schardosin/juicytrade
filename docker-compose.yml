@@ -1,38 +1,73 @@
 services:
-  juicytrade:
-    build: .
+  # Core Trading Backend (Go)
+  trade-backend:
+    build: ./trade-backend-go
     ports:
-      - "80:80"
-    container_name: juicytrade
+      - "8008:8008"
+    container_name: trade-backend
     restart: unless-stopped
-    env_file:
-      - .env  # Load environment variables from .env file
     environment:
-      - PYTHONUNBUFFERED=1
-      # Authentication Configuration (can be overridden by .env file)
-      - AUTH_METHOD=${AUTH_METHOD:-simple}
-      - AUTH_SIMPLE_USERNAME=${AUTH_SIMPLE_USERNAME:-admin}
-      - AUTH_SIMPLE_PASSWORD=${AUTH_SIMPLE_PASSWORD:-admin}
-      - AUTH_JWT_SECRET_KEY=${AUTH_JWT_SECRET_KEY:-juicytrade-default-secret-key-change-in-production}
-      - AUTH_JWT_EXPIRE_MINUTES=${AUTH_JWT_EXPIRE_MINUTES:-1440}
-      - AUTH_JWT_ALGORITHM=${AUTH_JWT_ALGORITHM:-HS256}
-      - AUTH_SESSION_COOKIE_NAME=${AUTH_SESSION_COOKIE_NAME:-juicytrade_session}
-      - AUTH_SESSION_MAX_AGE=${AUTH_SESSION_MAX_AGE:-86400}
-      - AUTH_SECURE_COOKIES=${AUTH_SECURE_COOKIES:-false}
-      - AUTH_COOKIE_DOMAIN=${AUTH_COOKIE_DOMAIN:-}
-      - AUTH_ENABLE_CSRF=${AUTH_ENABLE_CSRF:-true}
-      # OAuth Configuration (optional)
-      - AUTH_OAUTH_PROVIDER=${AUTH_OAUTH_PROVIDER:-}
-      - AUTH_OAUTH_CLIENT_ID=${AUTH_OAUTH_CLIENT_ID:-}
-      - AUTH_OAUTH_CLIENT_SECRET=${AUTH_OAUTH_CLIENT_SECRET:-}
-      - AUTH_OAUTH_REDIRECT_URI=${AUTH_OAUTH_REDIRECT_URI:-}
-      # Header-based Authentication (optional)
-      - AUTH_HEADER_NAME=${AUTH_HEADER_NAME:-X-Remote-User}
+      - HOST=0.0.0.0
+      - PORT=8008
+      - LOG_LEVEL=info
+      - CORS_ALLOW_ORIGINS=http://localhost:3001,http://localhost:5173
     volumes:
-      - ./data:/app/data  # Map host data directory to container data directory
+      - ./data:/app/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost/api/providers/available"]
+      test: ["CMD", "curl", "-f", "http://localhost:8008/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
+
+  # Frontend (Vue.js)
+  trade-app:
+    build: ./trade-app
+    ports:
+      - "3001:80"
+    container_name: trade-app
+    restart: unless-stopped
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8008
+      - VITE_STRATEGY_API_URL=http://localhost:8009
+    depends_on:
+      - trade-backend
+
+  # Strategy Simulation Service (Go) - On-Demand
+  strategy-simulation:
+    build: ./strategy-simulation-go
+    ports:
+      - "8009:8009"
+    container_name: strategy-simulation
+    restart: "no"  # On-demand - don't auto-restart
+    profiles:
+      - simulation  # Only start with: docker compose --profile simulation up
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8009
+      - LOG_LEVEL=info
+      - DATA_PATH=/app/data
+      - PARQUET_PATH=/app/data/parquet
+      - DBN_PATH=/app/data/dbn
+      - DATABASE_PATH=/app/data/strategies/strategies.db
+      - CORS_ALLOW_ORIGINS=http://localhost:3001,http://localhost:5173
+    volumes:
+      - ./data:/app/data  # Shared with other services
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8009/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  # Legacy Python Backend (deprecated - to be removed)
+  # juicytrade:
+  #   build: .
+  #   ports:
+  #     - "80:80"
+  #   container_name: juicytrade
+  #   restart: unless-stopped
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./data:/app/data

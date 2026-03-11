@@ -21,9 +21,12 @@ vi.mock('../src/composables/useSelectedLegs.js', () => ({
   })
 }));
 
+const mockStockPrice = ref({ value: 500, bid: 499.5, ask: 500.5 });
+
 vi.mock('../src/composables/useSmartMarketData.js', () => ({
   useSmartMarketData: () => ({
-    getOptionPrice: () => mockOptionPrice
+    getOptionPrice: () => mockOptionPrice,
+    getStockPrice: () => mockStockPrice
   })
 }));
 
@@ -72,6 +75,15 @@ vi.mock('../src/components/WatchlistSection.vue', () => ({
   default: {
     name: 'WatchlistSection',
     template: '<div class="watchlist-section"></div>'
+  }
+}));
+
+// Mock RightPanelChart to avoid lightweight-charts errors in test environment
+vi.mock('../src/components/RightPanelChart.vue', () => ({
+  default: {
+    name: 'RightPanelChart',
+    template: '<div class="right-panel-chart-mock"></div>',
+    props: ['symbol', 'currentPrice', 'height', 'livePrice']
   }
 }));
 

@@ -327,7 +327,11 @@ export default {
           timeframe: localBacktestConfig.value.timeframe
         }
         
-        const response = await api.post(`/api/strategies/${targetStrategy.strategy_id}/backtest`, backtestRequest)
+        const response = await axios.post(
+          `/api/strategies/${targetStrategy.strategy_id}/backtest`, 
+          backtestRequest,
+          { timeout: 600000 } // 10 minute timeout for long-running backtests
+        )
         
         if (response.data.success) {
           console.log('Backtest started successfully:', response.data)

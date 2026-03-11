@@ -236,6 +236,7 @@
 <script>
 import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import { useRouter, useRoute } from "vue-router";
+import axios from "axios";
 import webSocketClient from "../services/webSocketClient";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useMobileDetection } from "../composables/useMobileDetection.js";
@@ -291,7 +292,10 @@ export default {
     
     // Mobile search overlay
     const showMobileSearch = ref(false);
-
+    
+    // Strategies module connection status
+    const strategiesAvailable = ref(false);
+    
     // Get reactive data from smart data system
     const reactiveBalance = getBalance();
     const reactiveAccountInfo = getAccountInfo();
@@ -309,12 +313,34 @@ export default {
     let searchTimeout = null;
     let connectionStatusInterval = null;
 
-    // Navigation links
-    const navLinks = [
+    // Navigation links - filtered based on available services
+    const allNavLinks = [
       { label: "Dashboard", value: "Dashboard" },
       { label: "Trading", value: "Trading" },
       { label: "Strategies", value: "Strategies" },
     ];
+    
+    // Computed navLinks that filters out Strategies if not available
+    const navLinks = computed(() => {
+      if (strategiesAvailable.value) {
+        return allNavLinks;
+      }
+      return allNavLinks.filter(link => link.value !== "Strategies");
+    });
+    
+    // Check if strategies module is available
+    const checkStrategiesConnection = async () => {
+      try {
+        const response = await axios.get('/health');
+        const data = response.data;
+        if (data.success && data.data) {
+          strategiesAvailable.value = data.data.strategies_connected === true;
+        }
+      } catch (error) {
+        console.error('Failed to check strategies connection:', error);
+        strategiesAvailable.value = false;
+      }
+    };
 
     // User menu items
     const userMenuItems = [
@@ -703,11 +729,11 @@ export default {
       const config = reactiveProviderConfig.value;
       const providers = reactiveAvailableProviders.value;
       
-      if (!config || !providers) return "Unknown";
+      if (!config || !providers) return "--";
       
       const providerName = config[serviceKey];
       if (!providerName || typeof providerName !== 'string' || !providers[providerName]) {
-        return "Unknown";
+        return "--";
       }
       
       const providerData = providers[providerName];
@@ -874,6 +900,9 @@ export default {
       // Initialize activeLink based on current route
       activeLink.value = getActiveLinkFromRoute(route);
       
+      // Check if strategies module is available
+      checkStrategiesConnection();
+      
       // Initial account display update
       updateAccountDisplay();
       
@@ -891,6 +920,11 @@ export default {
       // Listen for data updates to track freshness
       webSocketClient.onPriceUpdate(handleDataReceived);
       webSocketClient.onGreeksUpdate(handleDataReceived);
+      
+      // Note: TopBar is a top-level component that persists for the app's lifetime,
+      // so cleanup for these callbacks isn't strictly necessary but would use:
+      // webSocketClient.removeCallback('price_update', handleDataReceived);
+      // webSocketClient.removeCallback('greeks_update', handleDataReceived);
       
       // Initialize connection status based on current WebSocket state
       if (webSocketClient.isConnected.value) {
@@ -980,11 +1014,11 @@ export default {
       showProviderTooltip,
 
       // Static data
-      navLinks,
       userMenuItems,
       marketDataServices,
 
       // Computed
+      navLinks,
       connectionStatus,
       connectionStatusClass,
       statusDotClass,
@@ -998,6 +1032,7 @@ export default {
       showMobileSearch,
 
       // Methods
+      checkStrategiesConnection,
       setActiveLink,
       performSearch,
       toggleUserMenu,

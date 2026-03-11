@@ -295,7 +295,7 @@ describe('WebSocketClient - Cascade Protection & Real-Time Data Integrity', () =
       mockWorkerInstance.onmessage({ data: { type: 'data', payload: priceMessage } });
       
       expect(consoleSpy).toHaveBeenCalledWith(
-        'Error in callback for message type price_update:',
+        '[WEBSOCKET] Error in callback for message type price_update:',
         expect.any(Error)
       );
       expect(goodCallback).toHaveBeenCalledWith(priceMessage);

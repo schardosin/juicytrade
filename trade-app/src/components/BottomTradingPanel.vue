@@ -139,6 +139,7 @@
                 type="number"
                 step="0.01"
                 class="price-input"
+                @input="handleManualPriceInput"
               />
               <button class="price-btn" @click="decrementPrice">-</button>
               <button class="price-btn" @click="incrementPrice">+</button>
@@ -642,6 +643,14 @@ export default {
       }
     };
 
+    const handleManualPriceInput = () => {
+      // Auto-activate price lock when user manually types a price
+      if (!priceLocked.value) {
+        priceLocked.value = true;
+        console.log("🔒 Auto-locking price due to manual input");
+      }
+    };
+
     const toggleLegSelection = (symbol) => {
       const index = internalSelectedLegs.value.indexOf(symbol);
       if (index >= 0) {
@@ -1024,6 +1033,7 @@ export default {
       handleReviewSend,
       incrementPrice,
       decrementPrice,
+      handleManualPriceInput,
       incrementQuantity,
       decrementQuantity,
       toggleLegSelection,

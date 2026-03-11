@@ -18,7 +18,8 @@ vi.mock('../src/composables/useSelectedLegs', () => ({
 
 vi.mock('../src/composables/useSmartMarketData', () => ({
   useSmartMarketData: vi.fn(() => ({
-    getOptionPrice: vi.fn(() => ({ value: { bid: 1.5, ask: 1.7, price: 1.6 } }))
+    getOptionPrice: vi.fn(() => ({ value: { bid: 1.5, ask: 1.7, price: 1.6 } })),
+    getStockPrice: vi.fn(() => ({ value: 500, bid: 499.5, ask: 500.5 }))
   }))
 }));
 
@@ -41,6 +42,8 @@ vi.mock('../src/components/QuoteDetailsSection.vue', () => ({ default: { name: '
 vi.mock('../src/components/PayoffChart.vue', () => ({ default: { name: 'PayoffChart', template: '<div>PayoffChart</div>' } }));
 vi.mock('../src/components/ActivitySection.vue', () => ({ default: { name: 'ActivitySection', template: '<div>ActivitySection</div>' } }));
 vi.mock('../src/components/WatchlistSection.vue', () => ({ default: { name: 'WatchlistSection', template: '<div>WatchlistSection</div>' } }));
+// Mock RightPanelChart to avoid lightweight-charts errors in test environment
+vi.mock('../src/components/RightPanelChart.vue', () => ({ default: { name: 'RightPanelChart', template: '<div>RightPanelChart</div>' } }));
 
 // Mock data
 const mockPositionsData = {

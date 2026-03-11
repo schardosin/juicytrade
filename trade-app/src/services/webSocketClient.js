@@ -325,11 +325,53 @@ class WebSocketStreamingClient {
   }
 
   onIvxUpdate(callback) {
-    this.addCallback('ivx_partial_data', callback);
+    // Register callback for all IVx message types
+    this.addCallback('ivx_status', callback);
+    this.addCallback('ivx_update', callback);
+    this.addCallback('ivx_complete', callback);
+    this.addCallback('error', callback);
+  }
+
+  onOrderEvent(callback) {
+    this.addCallback('order_event', callback);
+    return () => {
+      const callbacks = this.callbacks.get('order_event');
+      if (callbacks) {
+        callbacks.delete(callback);
+      }
+    };
   }
 
   onIvxStatus(callback) {
     this.addCallback('ivx_status', callback);
+  }
+
+  async subscribeToIvx(symbols) {
+    await this.connect();
+    if (!Array.isArray(symbols)) {
+      symbols = [symbols];
+    }
+    this.worker.postMessage({ 
+      command: 'message', 
+      message: { 
+        type: 'subscribe_ivx', 
+        symbols 
+      } 
+    });
+  }
+
+  async unsubscribeFromIvx(symbols) {
+    await this.connect();
+    if (!Array.isArray(symbols)) {
+      symbols = [symbols];
+    }
+    this.worker.postMessage({ 
+      command: 'message', 
+      message: { 
+        type: 'unsubscribe_ivx', 
+        symbols 
+      } 
+    });
   }
   
   addCallback(type, callback) {
@@ -337,6 +379,39 @@ class WebSocketStreamingClient {
       this.callbacks.set(type, new Set());
     }
     this.callbacks.get(type).add(callback);
+  }
+
+  /**
+   * Remove a callback for a specific message type
+   * @param {string} type - The message type (e.g., 'automation_update', 'price_update')
+   * @param {Function} callback - The callback function to remove
+   * @returns {boolean} - True if the callback was found and removed
+   */
+  removeCallback(type, callback) {
+    const callbacks = this.callbacks.get(type);
+    if (callbacks) {
+      const removed = callbacks.delete(callback);
+      if (removed) {
+        console.log(`🧹 Removed callback for message type: ${type}`);
+      }
+      // Clean up empty Sets
+      if (callbacks.size === 0) {
+        this.callbacks.delete(type);
+      }
+      return removed;
+    }
+    return false;
+  }
+
+  /**
+   * Remove all callbacks for a specific message type
+   * @param {string} type - The message type to clear all callbacks for
+   */
+  removeAllCallbacks(type) {
+    if (this.callbacks.has(type)) {
+      this.callbacks.delete(type);
+      console.log(`🧹 Removed all callbacks for message type: ${type}`);
+    }
   }
 
   handleMessage(message) {
@@ -358,17 +433,24 @@ class WebSocketStreamingClient {
     }
     
     const callbacks = this.callbacks.get(message.type);
+    
     if (callbacks) {
-      callbacks.forEach(callback => {
+      callbacks.forEach((callback) => {
         try {
-          // Pass the whole message for price_update, greeks_update, subscription_confirmed, and ivx_partial_data
-          // and just the data for others, which matches the legacy client's behavior.
-          const dataToSend = (message.type === 'price_update' || message.type === 'greeks_update' || message.type === 'subscription_confirmed' || message.type === 'ivx_partial_data')
-            ? message
-            : message.data;
+          const dataToSend = (
+            message.type === 'price_update' || 
+            message.type === 'greeks_update' || 
+            message.type === 'subscription_confirmed' ||
+            message.type === 'order_event' ||
+            message.type === 'automation_update' ||
+            message.type === 'ivx_status' ||
+            message.type === 'ivx_update' ||
+            message.type === 'ivx_complete' ||
+            message.type === 'error'
+          ) ? message : message.data;
           callback(dataToSend);
         } catch (error) {
-          console.error(`Error in callback for message type ${message.type}:`, error);
+          console.error(`[WEBSOCKET] Error in callback for message type ${message.type}:`, error);
         }
       });
     }

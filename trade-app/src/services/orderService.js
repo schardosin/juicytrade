@@ -17,21 +17,31 @@ class OrderService {
 
       const result = await api.previewOrder(orderPayload);
 
-      if (result.success && result.data.status === 'ok') {
-        console.log("OrderService: Order preview successful:", result);
+      // Handle the direct response format from backend
+      if (result.success === false || result.status === 'error') {
+        // Handle validation errors from API response
+        const errorMessage = result.validation_errors?.[0] || result.message || "Unknown error";
+        console.error("OrderService: Order preview failed with validation errors:", result.validation_errors);
+        return {
+          success: false,
+          error: errorMessage,
+          message: errorMessage, // Use just the error message, not prefixed
+          preview: result,
+        };
+      } else if (result.status === 'ok' || result.success !== false) {
         return {
           success: true,
-          preview: result.data,
+          preview: result,
           message: "Order preview generated successfully",
         };
       } else {
-        const errorMessage = result.data?.validation_errors?.[0] || result.error || "Unknown error";
+        const errorMessage = result.validation_errors?.[0] || result.message || "Unknown error";
         console.error("OrderService: Order preview failed:", errorMessage);
         return {
           success: false,
           error: errorMessage,
-          message: `Order preview failed: ${errorMessage}`,
-          preview: result.data,
+          message: errorMessage,
+          preview: result,
         };
       }
     } catch (error) {
@@ -52,7 +62,6 @@ class OrderService {
   async placeOrder(orderData) {
     try {
       const orderPayload = this.buildOrderPayload(orderData);
-      console.log("OrderService: Placing order with payload:", orderPayload);
 
       // Determine order type and route accordingly
       const orderType = this.determineOrderType(orderPayload.legs);
@@ -65,7 +74,6 @@ class OrderService {
       }
 
       if (result.success) {
-        console.log("OrderService: Order placed successfully:", result);
         return {
           success: true,
           order: result.data,

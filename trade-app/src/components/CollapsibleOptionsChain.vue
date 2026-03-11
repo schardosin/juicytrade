@@ -10,11 +10,16 @@
           class="strike-count-select"
           @change="onStrikeCountChange"
         >
-          <option value="10">10 strikes</option>
-          <option value="20">20 strikes</option>
-          <option value="30">30 strikes</option>
           <option value="50">50 strikes</option>
+          <option value="60">60 strikes</option>
+          <option value="70">70 strikes</option>
+          <option value="80">80 strikes</option>
+          <option value="90">90 strikes</option>
           <option value="100">100 strikes</option>
+          <option value="150">150 strikes</option>
+          <option value="200">200 strikes</option>
+          <option value="250">250 strikes</option>
+          <option value="300">300 strikes</option>
         </select>
       </div>
       <div class="filter-info">
@@ -38,7 +43,7 @@
     <div v-else class="expiration-groups">
       <div
         v-for="expiration in expirationGroups"
-        :key="expiration.date"
+        :key="expiration.uniqueKey"
         class="expiration-group"
         :class="{ expanded: expiration.isExpanded }"
       >
@@ -77,7 +82,9 @@
             <span v-if="expiration.ivxData?.ivx_percent" class="iv-label">
               IVx: {{ formatIvxPercent(expiration.ivxData.ivx_percent) }}% (≈${{ formatIvxMove(expiration.ivxData.expected_move_dollars) }})
             </span>
-            <!-- Keep space blank if no data - no loading, no error states -->
+            <span v-else class="iv-label iv-placeholder">
+              IVx: --% (≈$--)
+            </span>
           </div>
 
           <!-- Loading Indicator for this expiration -->
@@ -93,6 +100,7 @@
             expanded: expiration.isExpanded,
             collapsed: !expiration.isExpanded,
           }"
+          :id="`exp-content-${expiration.uniqueKey.replace(/[^a-zA-Z0-9-_]/g, '')}`"
         >
           <div class="content-wrapper">
             <!-- Options Chain for this expiration -->
@@ -102,6 +110,7 @@
               <!-- Options Chain Header -->
               <div class="options-header" :class="{ 'mobile-layout': isMobile }">
                 <div class="calls-header">
+                  <div v-if="!isMobile" class="header-cell">Vol</div>
                   <div class="header-cell">Delta</div>
                   <div v-if="!isMobile" class="header-cell">Theta</div>
                   <div class="header-cell">Bid</div>
@@ -113,6 +122,7 @@
                   <div class="header-cell">Ask</div>
                   <div v-if="!isMobile" class="header-cell">Theta</div>
                   <div class="header-cell">Delta</div>
+                  <div v-if="!isMobile" class="header-cell">Vol</div>
                 </div>
               </div>
 
@@ -122,7 +132,9 @@
                   v-for="strike in getStrikesForExpiration(expiration)"
                   :key="`${expiration.date}-${strike}`"
                   class="option-row"
-                  :class="{ 'at-the-money': isAtTheMoney(strike) }"
+                  :class="{ 'at-the-money': isAtTheMoney(strike, expiration) }"
+                  :data-symbols="[getCallOption(expiration, strike)?.symbol, getPutOption(expiration, strike)?.symbol].filter(Boolean).join(',')"
+                  :ref="el => { if (el) observeRow(el) }"
                 >
                   <!-- Call Side -->
                   <div class="call-side">
@@ -130,8 +142,10 @@
                       v-if="getCallOption(expiration, strike)"
                       class="option-data"
                       :class="[getCallSelectionClass(expiration, strike), { 'mobile-layout': isMobile }]"
-                      @click="selectCallOption(expiration, strike)"
                     >
+                      <div v-if="!isMobile" class="greek-cell volume-cell">
+                        {{ getCallVolume(expiration, strike) }}
+                      </div>
                       <div class="greek-cell">
                         {{ getCallDelta(expiration, strike) }}
                       </div>
@@ -156,6 +170,7 @@
                       </div>
                     </div>
                     <div v-else class="option-data empty" :class="{ 'mobile-layout': isMobile }">
+                      <div v-if="!isMobile" class="greek-cell">-</div>
                       <div class="greek-cell">-</div>
                       <div v-if="!isMobile" class="greek-cell">-</div>
                       <div class="price-cell">-</div>
@@ -167,7 +182,7 @@
                   <div class="strike-cell">
                     <!-- ITM label above the line (left side) -->
                     <div
-                      v-if="isAtTheMoney(strike)"
+                      v-if="isAtTheMoney(strike, expiration)"
                       class="itm-label itm-above"
                     >
                       ITM
@@ -177,7 +192,7 @@
 
                     <!-- ITM label below the line (right side) -->
                     <div
-                      v-if="isAtTheMoney(strike)"
+                      v-if="isAtTheMoney(strike, expiration)"
                       class="itm-label itm-below"
                     >
                       ITM
@@ -190,7 +205,6 @@
                       v-if="getPutOption(expiration, strike)"
                       class="option-data"
                       :class="[getPutSelectionClass(expiration, strike), { 'mobile-layout': isMobile }]"
-                      @click="selectPutOption(expiration, strike)"
                     >
                       <div
                         class="price-cell bid"
@@ -212,12 +226,16 @@
                       <div class="greek-cell">
                         {{ getPutDelta(expiration, strike) }}
                       </div>
+                      <div v-if="!isMobile" class="greek-cell volume-cell">
+                        {{ getPutVolume(expiration, strike) }}
+                      </div>
                     </div>
                     <div v-else class="option-data empty" :class="{ 'mobile-layout': isMobile }">
                       <div class="price-cell">-</div>
                       <div class="price-cell">-</div>
                       <div v-if="!isMobile" class="greek-cell">-</div>
                       <div class="greek-cell">-</div>
+                      <div v-if="!isMobile" class="greek-cell">-</div>
                     </div>
                   </div>
                 </div>
@@ -248,7 +266,7 @@
 </template>
 
 <script>
-import { ref, computed, reactive, watch, onMounted, onUnmounted } from "vue";
+import { ref, computed, reactive, watch, onMounted, onUnmounted, onUpdated, nextTick } from "vue";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { useMobileDetection } from "../composables/useMobileDetection.js";
@@ -287,7 +305,7 @@ export default {
     },
     currentStrikeCount: {
       type: Number,
-      default: 20,
+      default: 30,
     },
     ivxData: {
       type: Object,
@@ -298,6 +316,7 @@ export default {
     "expiration-expanded",
     "expiration-collapsed",
     "strike-count-changed",
+    "visible-symbols-changed",
   ],
   setup(props, { emit }) {
     const { getOptionPrice, getOptionGreeks } = useMarketData();
@@ -312,7 +331,7 @@ export default {
     const { isMobile, isTablet, isDesktop } = useMobileDetection();
 
     // Reactive state - sync with parent's current strike count
-    const strikeCount = ref(props.currentStrikeCount || 20);
+    const strikeCount = ref(props.currentStrikeCount || 30);
     const liveOptionPrices = reactive(new Map());
     const liveOptionGreeks = reactive(new Map());
 
@@ -333,6 +352,114 @@ export default {
     // Component registration system
     const componentId = `CollapsibleOptionsChain-${Math.random().toString(36).substr(2, 9)}`;
     const registeredSymbols = new Set();
+
+    // Visibility tracking
+    const visibleSymbols = new Set();
+    let observer = null;
+    let visibilityTimeout = null;
+    
+    // Scroll handling
+    const pendingScrolls = ref(new Set());
+    const isAutoScrolling = ref(false);
+    
+    const scrollToATM = (uniqueKey) => {
+      const safeKey = uniqueKey.replace(/[^a-zA-Z0-9-_]/g, '');
+      const content = document.getElementById(`exp-content-${safeKey}`);
+      if (content) {
+        const atmRow = content.querySelector('.at-the-money');
+        if (atmRow) {
+          atmRow.scrollIntoView({ block: 'center', behavior: 'smooth' });
+          return true;
+        }
+      }
+      return false;
+    };
+
+    // Debounce function for visibility updates
+    const emitVisibleSymbols = () => {
+      if (visibilityTimeout) clearTimeout(visibilityTimeout);
+      
+      visibilityTimeout = setTimeout(() => {
+        emit("visible-symbols-changed", Array.from(visibleSymbols));
+      }, 150); // 150ms debounce
+    };
+
+    // Intersection Observer callback
+    const handleIntersection = (entries) => {
+      let changed = false;
+      
+      entries.forEach(entry => {
+        const symbolsStr = entry.target.dataset.symbols;
+        if (!symbolsStr) return;
+        
+        const symbols = symbolsStr.split(',');
+        
+        if (entry.isIntersecting) {
+          symbols.forEach(symbol => {
+            if (!visibleSymbols.has(symbol)) {
+              visibleSymbols.add(symbol);
+              
+              // Register symbol usage when it becomes visible
+              smartMarketDataStore.registerSymbolUsage(symbol, componentId);
+              registeredSymbols.add(symbol);
+              
+              // Initialize live data refs if needed
+              if (!liveOptionPrices.has(symbol)) {
+                liveOptionPrices.set(symbol, getOptionPrice(symbol));
+              }
+              if (!liveOptionGreeks.has(symbol)) {
+                liveOptionGreeks.set(symbol, getOptionGreeks(symbol));
+              }
+              
+              changed = true;
+            }
+          });
+        } else {
+          symbols.forEach(symbol => {
+            if (visibleSymbols.has(symbol)) {
+              visibleSymbols.delete(symbol);
+              
+              // Unregister symbol usage when it becomes hidden
+              smartMarketDataStore.unregisterSymbolUsage(symbol, componentId);
+              registeredSymbols.delete(symbol);
+              
+              changed = true;
+            }
+          });
+        }
+      });
+      
+      if (changed) {
+        emitVisibleSymbols();
+      }
+    };
+
+    // Setup observer
+    const setupObserver = () => {
+      if (observer) observer.disconnect();
+      
+      observer = new IntersectionObserver(handleIntersection, {
+        root: null, // viewport
+        rootMargin: "100px", // pre-load 100px before viewport
+        threshold: 0 // trigger as soon as 1 pixel is visible
+      });
+    };
+
+    // Observe elements
+    const observeElements = () => {
+      if (!observer) return;
+      if (isAutoScrolling.value) return;
+      
+      // Find all option rows with data-symbols attribute
+      const elements = document.querySelectorAll('.option-row[data-symbols]');
+      elements.forEach(el => observer.observe(el));
+    };
+
+    const observeRow = (el) => {
+      if (observer && el && !isAutoScrolling.value) {
+        observer.observe(el);
+      }
+    };
 
     // Computed properties
     const expirationGroups = computed(() => {
@@ -364,6 +491,58 @@ export default {
         const optionsData = props.optionsDataByExpiration[uniqueKey] || [];
         const hasLoaded = optionsData.length > 0;
 
+        // Precompute strike maps to avoid repeated finds during render
+        // Group options by exact strike_price
+        const byStrike = new Map();
+        for (const opt of optionsData) {
+          const strike = opt.strike_price;
+          let entry = byStrike.get(strike);
+          if (!entry) {
+            entry = { call: null, put: null };
+            byStrike.set(strike, entry);
+          }
+          if (opt.type === 'call' || opt.type === 'c') {
+            entry.call = opt;
+          } else if (opt.type === 'put' || opt.type === 'p') {
+            entry.put = opt;
+          }
+        }
+
+        // Sorted strikes
+        const strikes = Array.from(byStrike.keys()).sort((a, b) => a - b);
+
+        // Compute ATM upper strike (first strike above underlying)
+        let atmUpperStrike = null;
+        if (props.underlyingPrice != null && strikes.length > 0) {
+          for (let i = 0; i < strikes.length; i++) {
+            if (strikes[i] > props.underlyingPrice) {
+              atmUpperStrike = strikes[i];
+              break;
+            }
+          }
+          // If none above, use last strike as fallback
+          if (atmUpperStrike == null) {
+            atmUpperStrike = strikes[strikes.length - 1];
+          }
+        }
+
+        // Determine visible strike window around ATM according to strikeCount
+        let visibleStrikes = strikes;
+        if (atmUpperStrike != null && strikes.length > 0 && strikeCount.value > 0) {
+          const atmIndex = strikes.indexOf(atmUpperStrike);
+          const halfDown = Math.floor(strikeCount.value / 2);
+          const halfUp = strikeCount.value - halfDown;
+          let start = Math.max(0, atmIndex - halfDown);
+          let end = Math.min(strikes.length, atmIndex + halfUp);
+          // Ensure window has desired size when near boundaries
+          const needed = strikeCount.value - (end - start);
+          if (needed > 0) {
+            start = Math.max(0, start - needed);
+            end = Math.min(strikes.length, end + Math.max(0, strikeCount.value - (end - start)));
+          }
+          visibleStrikes = strikes.slice(start, end);
+        }
+
         // Use local expandedSet so UI updates immediately on user clicks.
         const isExpandedLocal = expandedSet.value.has(uniqueKey);
         const isLoading = isExpandedLocal && !hasLoaded;
@@ -387,6 +566,11 @@ export default {
           isLoading,
           hasLoaded,
           optionsData,
+          // Precomputed helpers for performance
+          strikes,
+          visibleStrikes,
+          byStrike,
+          atmUpperStrike,
           isMonthly,
           isQuarterly,
           isEOM,
@@ -415,6 +599,7 @@ export default {
       if (wasExpanded) {
         // Update local state immediately so UI collapses
         expandedSet.value.delete(uniqueKey);
+        pendingScrolls.value.delete(uniqueKey);
 
         // Emit collapse event so parent can sync its state
         emit("expiration-collapsed", uniqueKey);
@@ -423,41 +608,74 @@ export default {
         if (expiration.optionsData && expiration.optionsData.length > 0) {
           expiration.optionsData.forEach(option => {
             if (option.symbol) {
+              // Unregister from smart store
+              if (registeredSymbols.has(option.symbol)) {
+                smartMarketDataStore.unregisterSymbolUsage(option.symbol, componentId);
+                registeredSymbols.delete(option.symbol);
+              }
+              
               liveOptionPrices.delete(option.symbol);
               liveOptionGreeks.delete(option.symbol);
+              // Remove from visible symbols tracking
+              visibleSymbols.delete(option.symbol);
             }
           });
+          // Emit update to notify parent of visibility change
+          emitVisibleSymbols();
         }
       } else {
         // Update local state immediately so UI expands
         expandedSet.value.add(uniqueKey);
+        pendingScrolls.value.add(uniqueKey);
+        isAutoScrolling.value = true;
 
         // Emit expand event so parent can sync its state and possibly start loading
         emit("expiration-expanded", uniqueKey, expiration);
+
+        // Scroll to ATM strike after expansion
+        setTimeout(() => {
+          if (pendingScrolls.value.has(uniqueKey)) {
+            if (scrollToATM(uniqueKey)) {
+              pendingScrolls.value.delete(uniqueKey);
+              
+              // Allow some time for the scroll to complete before enabling observation
+              setTimeout(() => {
+                isAutoScrolling.value = false;
+                observeElements();
+              }, 500);
+            }
+          }
+        }, 300); // Wait for transition (usually 300ms) and render
       }
     };
 
     // Option data methods (similar to original OptionsChain)
     const getStrikesForExpiration = (expiration) => {
-      if (!expiration.optionsData.length) return [];
-
-      const strikes = [
-        ...new Set(expiration.optionsData.map((opt) => opt.strike_price)),
-      ];
-      return strikes.sort((a, b) => a - b);
+      // Prefer precomputed visible strike window; fallback to full strikes
+      if (expiration && Array.isArray(expiration.visibleStrikes)) return expiration.visibleStrikes;
+      if (expiration && Array.isArray(expiration.strikes)) return expiration.strikes;
+      return [];
     };
 
     const getCallOption = (expiration, strike) => {
+      if (expiration && expiration.byStrike) {
+        const entry = expiration.byStrike.get(strike);
+        if (entry && entry.call) return entry.call;
+      }
+      // Fallback to search if map missing
       return expiration.optionsData.find(
-        (opt) =>
-          (opt.type === "call" || opt.type === "c") && Math.abs(opt.strike_price - strike) < 0.01
+        (opt) => (opt.type === "call" || opt.type === "c") && Math.abs(opt.strike_price - strike) < 0.01
       );
     };
 
     const getPutOption = (expiration, strike) => {
+      if (expiration && expiration.byStrike) {
+        const entry = expiration.byStrike.get(strike);
+        if (entry && entry.put) return entry.put;
+      }
+      // Fallback to search if map missing
       return expiration.optionsData.find(
-        (opt) =>
-          (opt.type === "put" || opt.type === "p") && Math.abs(opt.strike_price - strike) < 0.01
+        (opt) => (opt.type === "put" || opt.type === "p") && Math.abs(opt.strike_price - strike) < 0.01
       );
     };
 
@@ -472,13 +690,9 @@ export default {
     const getLivePrice = (symbol) => {
       if (!symbol) return null;
 
-      if (!liveOptionPrices.has(symbol)) {
-        // Ensure symbol is registered (only once per component)
-        ensureSymbolRegistration(symbol);
-        
-        // Call getOptionPrice only once to set up the subscription
-        liveOptionPrices.set(symbol, getOptionPrice(symbol));
-      }
+      // CRITICAL FIX: Do NOT auto-register here.
+      // Registration is now handled by IntersectionObserver (handleIntersection).
+      // If the symbol is not visible, we just return what we have (or null).
       
       const livePrice = liveOptionPrices.get(symbol)?.value;
       return livePrice;
@@ -516,13 +730,8 @@ export default {
     const getLiveGreeks = (symbol) => {
       if (!symbol) return null;
 
-      if (!liveOptionGreeks.has(symbol)) {
-        // Ensure symbol is registered (only once per component)
-        ensureSymbolRegistration(symbol);
-        
-        // Call getOptionGreeks only once to set up the subscription
-        liveOptionGreeks.set(symbol, getOptionGreeks(symbol));
-      }
+      // CRITICAL FIX: Do NOT auto-register here.
+      // Registration is now handled by IntersectionObserver.
       
       const liveGreeks = liveOptionGreeks.get(symbol)?.value;
       return liveGreeks;
@@ -568,6 +777,37 @@ export default {
       return theta ? theta.toFixed(2) : "-";
     };
 
+    // Format volume with K/M suffixes for readability
+    const formatVolume = (volume) => {
+      if (volume === null || volume === undefined || isNaN(volume)) return "-";
+      if (volume >= 1000000) {
+        return (volume / 1000000).toFixed(1) + "M";
+      } else if (volume >= 1000) {
+        return (volume / 1000).toFixed(1) + "K";
+      }
+      return Math.round(volume).toString();
+    };
+
+    const getCallVolume = (expiration, strike) => {
+      const option = getCallOption(expiration, strike);
+      if (!option) return "-";
+      
+      // Use live Greeks (which includes volume) if available, fallback to static data
+      const liveGreeks = getLiveGreeks(option.symbol);
+      const volume = liveGreeks?.volume ?? option.volume;
+      return formatVolume(volume);
+    };
+
+    const getPutVolume = (expiration, strike) => {
+      const option = getPutOption(expiration, strike);
+      if (!option) return "-";
+      
+      // Use live Greeks (which includes volume) if available, fallback to static data
+      const liveGreeks = getLiveGreeks(option.symbol);
+      const volume = liveGreeks?.volume ?? option.volume;
+      return formatVolume(volume);
+    };
+
     const formatPrice = (price) => {
       if (price === null || price === undefined) return "-";
       return price.toFixed(2);
@@ -587,33 +827,20 @@ export default {
       }
     };
 
-    const isAtTheMoney = (strike) => {
+    const isAtTheMoney = (strike, expiration) => {
       if (!props.underlyingPrice) return false;
-      
-      // Get all available strikes for any loaded expiration
-      const strikes = getStrikesForExpiration(
-        expirationGroups.value.find(
-          (exp) => exp.hasLoaded && exp.optionsData.length > 0
-        ) || { optionsData: [] }
-      );
+      if (expiration && expiration.atmUpperStrike != null) {
+        return strike === expiration.atmUpperStrike;
+      }
+      // Fallback computation if precomputed not available
+      const strikes = getStrikesForExpiration(expiration);
       if (strikes.length === 0) return false;
-
-      // Sort strikes to ensure proper ordering
-      const sortedStrikes = strikes.sort((a, b) => a - b);
-      
-      // Find the first strike that is above the underlying price
-      // The ATM line should appear at this strike to create the visual effect
-      // of the line being between the strikes that contain the current price
-      let upperStrike = null;
-      for (let i = 0; i < sortedStrikes.length; i++) {
-        if (sortedStrikes[i] > props.underlyingPrice) {
-          upperStrike = sortedStrikes[i];
-          break;
+      for (let i = 0; i < strikes.length; i++) {
+        if (strikes[i] > props.underlyingPrice) {
+          return strike === strikes[i];
         }
       }
-      
-      // The ATM line appears at the upper strike (the first strike above the underlying price)
-      return strike === upperStrike;
+      return strike === strikes[strikes.length - 1];
     };
 
     // ITM/OTM detection functions
@@ -751,7 +978,46 @@ export default {
     // Clean up when the component is unmounted
     onUnmounted(() => {
       cleanupComponentRegistrations();
+      if (observer) {
+        observer.disconnect();
+      }
+      if (visibilityTimeout) {
+        clearTimeout(visibilityTimeout);
+      }
     });
+
+    onMounted(() => {
+      setupObserver();
+      // Ensure we observe existing elements that might have been missed during render
+      observeElements();
+    });
+
+    onUpdated(() => {
+      // Check if we have any pending scrolls that can now be fulfilled
+      if (pendingScrolls.value.size > 0) {
+        pendingScrolls.value.forEach(key => {
+          if (scrollToATM(key)) {
+            pendingScrolls.value.delete(key);
+            
+            // If we were auto-scrolling, finish it now
+            if (isAutoScrolling.value) {
+              setTimeout(() => {
+                isAutoScrolling.value = false;
+                observeElements();
+              }, 500);
+            }
+          }
+        });
+      }
+    });
+
+    // Watch for expansion changes to re-observe elements
+    watch(expandedSet, () => {
+      // Wait for DOM update
+      setTimeout(observeElements, 100);
+    }, { deep: true });
+
+
 
     return {
       // Mobile detection
@@ -778,9 +1044,12 @@ export default {
       getPutAsk,
       getCallDelta,
       getCallTheta,
+      getCallVolume,
       getPutDelta,
       getPutTheta,
+      getPutVolume,
       formatPrice,
+      formatVolume,
       formatStrike,
       isAtTheMoney,
       getITMLabel,
@@ -791,6 +1060,7 @@ export default {
       getIvxForExpiration,
       formatIvxPercent,
       formatIvxMove,
+      observeRow,
     };
   },
 };
@@ -1080,7 +1350,7 @@ export default {
 .calls-header,
 .puts-header {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
   gap: var(--spacing-sm);
   padding: var(--spacing-md) var(--spacing-lg);
 }
@@ -1186,7 +1456,7 @@ export default {
 
 .option-data {
   display: grid;
-  grid-template-columns: 1fr 1fr 1fr 1fr;
+  grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
   gap: var(--spacing-sm);
   padding: var(--spacing-md) var(--spacing-lg);
   width: 100%;
@@ -1230,6 +1500,11 @@ export default {
 .greek-cell {
   color: var(--text-secondary);
   font-weight: var(--font-weight-medium);
+}
+
+.greek-cell.volume-cell {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
 }
 
 .price-cell {
@@ -1463,12 +1738,12 @@ export default {
 
   /* Adjust font sizes for very small screens */
   .strike-price {
-    font-size: var(--font-size-sm); /* Slightly smaller */
+    font-size: var(--font-size-md); /* Slightly smaller */
   }
 
   .greek-cell,
   .price-cell {
-    font-size: var(--font-size-xs); /* Smaller for tight spaces */
+    font-size: var(--font-size-base); /* Smaller for tight spaces */
     padding: 2px; /* Reduced padding */
   }
 
@@ -1478,11 +1753,11 @@ export default {
 
   /* Reduce touch target slightly for very small screens */
   .price-cell {
-    min-height: 28px; /* Smaller but still touch-friendly */
+    min-height: 38px; /* Smaller but still touch-friendly */
   }
 
   .option-data.mobile-layout {
-    min-height: 36px; /* Smaller but still usable */
+    min-height: 46px; /* Smaller but still usable */
   }
 
   /* Adjust ITM labels for small screens */
@@ -1493,7 +1768,7 @@ export default {
 
   /* Adjust expiration header for small screens */
   .date-label {
-    font-size: var(--font-size-sm); /* Smaller */
+    font-size: var(--font-size-base); /* Smaller */
   }
 
   .days-label {
