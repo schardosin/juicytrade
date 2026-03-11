@@ -1714,6 +1714,9 @@ func registerAutomationRoutes(g *gin.RouterGroup, h *handlers.AutomationHandler)
 	// FOMC dates (must be before :id routes)
 	g.GET("/automation/fomc-dates", h.GetFOMCDates)
 
+	// Indicator metadata (must be before :id routes)
+	g.GET("/automation/indicators/metadata", h.GetIndicatorMetadata)
+
 	// Tracking endpoints (must be before :id routes)
 	g.GET("/automation/tracking/orders", h.GetTrackedOrders)
 	g.GET("/automation/tracking/positions", h.GetTrackedPositions)

@@ -116,84 +116,118 @@
           <p>No indicators configured. Add indicators to define entry criteria.</p>
         </div>
         
-        <div v-else class="indicators-list" :class="{ 'mobile-indicators': isMobile }">
+        <div v-else class="indicators-list">
           <div
             v-for="indicator in config.indicators"
             :key="indicator.id"
-            class="indicator-row"
+            class="indicator-card"
             :class="{ 'disabled': !indicator.enabled }"
           >
-            <div class="indicator-toggle">
-              <InputSwitch v-model="indicator.enabled" />
+            <!-- HEADER: Always visible summary row -->
+            <div class="indicator-header" @click="toggleIndicatorExpand(indicator.id)">
+              <div class="indicator-toggle" @click.stop>
+                <InputSwitch v-model="indicator.enabled" />
+              </div>
+              <div class="indicator-summary">
+                <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
+                <span class="indicator-rule">
+                  {{ getOperatorLabel(indicator.operator) }} {{ formatThreshold(indicator) }}
+                </span>
+                <span v-if="getIndicatorParams(indicator.type).length > 0 && indicator.params" class="indicator-params-summary">
+                  ({{ formatParamsSummary(indicator) }})
+                </span>
+              </div>
+              <div class="indicator-header-actions">
+                <span 
+                  v-if="indicatorResults[indicator.id]" 
+                  class="test-result" 
+                  :class="getIndicatorResultClass(indicatorResults[indicator.id])"
+                  :title="indicatorResults[indicator.id].stale ? `Stale: ${indicatorResults[indicator.id].error}` : ''"
+                >
+                  <span v-if="indicatorResults[indicator.id].stale" class="stale-icon">⚠</span>
+                  {{ indicatorResults[indicator.id].value?.toFixed(2) || 'N/A' }}
+                </span>
+                <Button
+                  v-if="!isMobile"
+                  icon="pi pi-sync"
+                  class="p-button-text p-button-sm"
+                  title="Test this indicator"
+                  @click.stop="testIndicator(indicator)"
+                  :loading="testingIndicator === indicator.id"
+                  :disabled="!indicator.enabled"
+                />
+                <Button
+                  icon="pi pi-times"
+                  class="p-button-text p-button-danger p-button-sm"
+                  title="Remove indicator"
+                  @click.stop="removeIndicator(indicator.id)"
+                />
+                <i 
+                  class="pi expand-icon"
+                  :class="isIndicatorExpanded(indicator.id) ? 'pi-chevron-up' : 'pi-chevron-down'"
+                />
+              </div>
             </div>
-            <div class="indicator-type">
-              <span class="type-label">{{ formatIndicatorType(indicator.type) }}</span>
-              <span v-if="!isMobile" class="type-description">{{ getIndicatorDescription(indicator.type) }}</span>
-            </div>
-            <div class="indicator-config" :class="{ 'dimmed': !indicator.enabled }">
-              <Dropdown
-                v-model="indicator.operator"
-                :options="displayOperators"
-                optionLabel="label"
-                optionValue="value"
-                class="operator-dropdown"
-                :class="{ 'mobile-operator': isMobile }"
-                :disabled="!indicator.enabled"
-              />
-              <InputNumber
-                v-model="indicator.threshold"
-                :minFractionDigits="indicator.type === 'calendar' ? 0 : 2"
-                :maxFractionDigits="indicator.type === 'calendar' ? 0 : 2"
-                class="threshold-input"
-                :class="{ 'mobile-threshold': isMobile }"
-                :disabled="!indicator.enabled"
-                :placeholder="indicator.type === 'calendar' ? '0 or 1' : 'Value'"
-              />
-              <InputText
-                v-if="indicator.type !== 'calendar'"
-                v-model="indicator.symbol"
-                :placeholder="getIndicatorDefaultSymbol(indicator.type)"
-                class="symbol-input"
-                :class="{ 'mobile-symbol': isMobile }"
-                :disabled="!indicator.enabled"
-              />
-              <!-- Mobile test result - shown inline after Test All -->
-              <span 
-                v-if="isMobile && indicatorResults[indicator.id]" 
-                class="mobile-test-result" 
-                :class="getIndicatorResultClass(indicatorResults[indicator.id])"
-                :title="indicatorResults[indicator.id].stale ? `Stale: ${indicatorResults[indicator.id].error}` : ''"
-              >
-                <span v-if="indicatorResults[indicator.id].stale" class="stale-icon">⚠</span>
-                {{ indicatorResults[indicator.id].value?.toFixed(2) || 'N/A' }}
-              </span>
-            </div>
-            <div v-if="!isMobile" class="indicator-test">
-              <Button
-                icon="pi pi-sync"
-                class="p-button-text p-button-sm"
-                title="Test this indicator"
-                @click="testIndicator(indicator)"
-                :loading="testingIndicator === indicator.id"
-                :disabled="!indicator.enabled"
-              />
-              <span 
-                v-if="indicatorResults[indicator.id]" 
-                class="test-result" 
-                :class="getIndicatorResultClass(indicatorResults[indicator.id])"
-                :title="indicatorResults[indicator.id].stale ? `Stale: ${indicatorResults[indicator.id].error}` : ''"
-              >
-                <span v-if="indicatorResults[indicator.id].stale" class="stale-icon">⚠</span>
-                {{ indicatorResults[indicator.id].value?.toFixed(2) || 'N/A' }}
-              </span>
-            </div>
-            <div class="indicator-remove">
-              <Button
-                icon="pi pi-times"
-                class="p-button-text p-button-danger p-button-sm"
-                title="Remove indicator"
-                @click="removeIndicator(indicator.id)"
-              />
+
+            <!-- BODY: Collapsible configuration area -->
+            <div class="indicator-body" v-show="isIndicatorExpanded(indicator.id)">
+              <div class="indicator-config-grid">
+                <!-- Rule fields -->
+                <div class="config-field">
+                  <label class="config-label">Operator</label>
+                  <Dropdown
+                    v-model="indicator.operator"
+                    :options="displayOperators"
+                    optionLabel="label"
+                    optionValue="value"
+                    class="config-input"
+                    :disabled="!indicator.enabled"
+                  />
+                </div>
+                <div class="config-field">
+                  <label class="config-label">Threshold</label>
+                  <InputNumber
+                    v-model="indicator.threshold"
+                    :minFractionDigits="indicator.type === 'calendar' ? 0 : 2"
+                    :maxFractionDigits="indicator.type === 'calendar' ? 0 : 2"
+                    class="config-input"
+                    :disabled="!indicator.enabled"
+                    :placeholder="indicator.type === 'calendar' ? '0 or 1' : 'Value'"
+                  />
+                </div>
+
+                <!-- Dynamic parameter fields -->
+                <template v-if="getIndicatorParams(indicator.type).length > 0 && indicator.params">
+                  <div
+                    v-for="paramDef in getIndicatorParams(indicator.type)"
+                    :key="paramDef.key"
+                    class="config-field"
+                  >
+                    <label class="config-label">{{ paramDef.label }}</label>
+                    <InputNumber
+                      v-model="indicator.params[paramDef.key]"
+                      :min="paramDef.min"
+                      :max="paramDef.max"
+                      :step="paramDef.step"
+                      :minFractionDigits="paramDef.type === 'float' ? 1 : 0"
+                      :maxFractionDigits="paramDef.type === 'float' ? 2 : 0"
+                      class="config-input"
+                      :disabled="!indicator.enabled"
+                    />
+                  </div>
+                </template>
+
+                <!-- Symbol field with label -->
+                <div v-if="getIndicatorNeedsSymbol(indicator.type)" class="config-field">
+                  <label class="config-label">Symbol</label>
+                  <InputText
+                    v-model="indicator.symbol"
+                    :placeholder="getIndicatorDefaultSymbol(indicator.type)"
+                    class="config-input"
+                    :disabled="!indicator.enabled"
+                  />
+                </div>
+              </div>
             </div>
           </div>
         </div>
@@ -224,25 +258,38 @@
         v-model:visible="showAddIndicatorDialog"
         header="Add Indicator"
         :modal="true"
-        :style="{ width: '400px' }"
+        :style="{ width: '650px', maxWidth: '90vw' }"
       >
         <div class="add-indicator-content">
           <p class="add-indicator-description">
             Select an indicator type to add. You can add multiple instances of the same type.
           </p>
+          <div class="indicator-search">
+            <InputText
+              v-model="indicatorSearchQuery"
+              placeholder="Search indicators..."
+              class="indicator-search-input"
+            />
+          </div>
           <div class="indicator-type-options">
-            <div
-              v-for="type in indicatorTypes"
-              :key="type.value"
-              class="indicator-type-option"
-              @click="addIndicator(type.value)"
-            >
-              <div class="option-header">
-                <span class="option-label">{{ type.label }}</span>
+            <div v-for="(types, category) in filteredGroupedIndicatorTypes" :key="category">
+              <h4 class="category-header">{{ categoryLabels[category] || category }}</h4>
+              <div
+                v-for="type in types"
+                :key="type.value"
+                class="indicator-type-option"
+                @click="addIndicator(type.value)"
+              >
+                <div class="option-header">
+                  <span class="option-label">{{ type.label }}</span>
+                </div>
+                <p class="option-description">{{ type.description }}</p>
               </div>
-              <p class="option-description">{{ type.description }}</p>
             </div>
           </div>
+          <p v-if="Object.keys(filteredGroupedIndicatorTypes).length === 0" class="no-results">
+            No indicators matching "{{ indicatorSearchQuery }}"
+          </p>
         </div>
       </Dialog>
 
@@ -749,6 +796,14 @@ export default {
     
     // Add indicator dialog
     const showAddIndicatorDialog = ref(false)
+    const indicatorSearchQuery = ref('')
+
+    watch(showAddIndicatorDialog, (val) => {
+      if (val) indicatorSearchQuery.value = ''
+    })
+
+    // Expanded indicators state (keyed by indicator.id → boolean)
+    const expandedIndicators = ref({})
 
     // Strike preview
     const loadingPreview = ref(false)
@@ -829,47 +884,140 @@ export default {
       { label: 'Daily (Repeat Each Day)', value: 'daily' },
     ]
     
-    // Indicator types for add indicator dialog
-    const indicatorTypes = [
-      { value: 'vix', label: 'VIX Level', description: 'CBOE Volatility Index level' },
-      { value: 'gap', label: 'Gap %', description: '(Open - Prev Close) / Prev Close * 100' },
-      { value: 'range', label: 'Range %', description: '(High - Low) / Open * 100' },
-      { value: 'trend', label: 'Trend %', description: '(Current - Open) / Open * 100' },
-      { value: 'calendar', label: 'FOMC Calendar', description: '0 = not FOMC day, 1 = FOMC day' },
-    ]
+    // Indicator metadata from API
+    const indicatorMetadata = ref([])
+    const indicatorMetadataMap = ref({})
+
+    const fetchIndicatorMetadata = async () => {
+      try {
+        const response = await api.getIndicatorMetadata()
+        const indicators = response.data?.indicators || []
+        indicatorMetadata.value = indicators
+        const map = {}
+        indicators.forEach(meta => { map[meta.type] = meta })
+        indicatorMetadataMap.value = map
+      } catch (err) {
+        console.error('Failed to fetch indicator metadata:', err)
+        // Fallback: indicatorTypes computed will use hardcoded values
+      }
+    }
+
+    // Indicator types for add indicator dialog (metadata-driven with fallback)
+    const indicatorTypes = computed(() => {
+      if (indicatorMetadata.value.length === 0) {
+        // Fallback while metadata loads or if API fails
+        return [
+          { value: 'vix', label: 'VIX Level', description: 'CBOE Volatility Index level', category: 'market' },
+          { value: 'gap', label: 'Gap %', description: '(Open - Prev Close) / Prev Close * 100', category: 'market' },
+          { value: 'range', label: 'Range %', description: '(High - Low) / Open * 100', category: 'market' },
+          { value: 'trend', label: 'Trend %', description: '(Current - Open) / Open * 100', category: 'market' },
+          { value: 'calendar', label: 'FOMC Calendar', description: '0 = not FOMC day, 1 = FOMC day', category: 'calendar' },
+        ]
+      }
+      return indicatorMetadata.value.map(meta => ({
+        value: meta.type,
+        label: meta.label,
+        description: meta.description,
+        category: meta.category,
+      }))
+    })
+
+    const groupedIndicatorTypes = computed(() => {
+      const groups = {}
+      indicatorTypes.value.forEach(type => {
+        const cat = type.category || 'other'
+        if (!groups[cat]) groups[cat] = []
+        groups[cat].push(type)
+      })
+      return groups
+    })
+
+    const filteredGroupedIndicatorTypes = computed(() => {
+      const query = indicatorSearchQuery.value.toLowerCase().trim()
+      if (!query) return groupedIndicatorTypes.value
+      
+      const filtered = {}
+      for (const [category, types] of Object.entries(groupedIndicatorTypes.value)) {
+        const matching = types.filter(t => 
+          t.label.toLowerCase().includes(query) || 
+          t.description.toLowerCase().includes(query) ||
+          t.value.toLowerCase().includes(query)
+        )
+        if (matching.length > 0) filtered[category] = matching
+      }
+      return filtered
+    })
+
+    const categoryLabels = {
+      market: 'Market',
+      calendar: 'Calendar',
+      momentum: 'Momentum',
+      trend: 'Trend',
+      volatility: 'Volatility',
+    }
 
     // Methods
     const formatIndicatorType = (type) => {
-      const types = {
-        vix: 'VIX Level',
-        gap: 'Gap %',
-        range: 'Range %',
-        trend: 'Trend %',
-        calendar: 'FOMC Calendar'
-      }
-      return types[type] || type
+      return indicatorMetadataMap.value[type]?.label || type
     }
 
     const getIndicatorDescription = (type) => {
-      const descriptions = {
-        vix: 'CBOE Volatility Index level',
-        gap: '(Open - Prev Close) / Prev Close * 100',
-        range: '(High - Low) / Open * 100',
-        trend: '(Current - Open) / Open * 100',
-        calendar: '0 = not FOMC day, 1 = FOMC day'
-      }
-      return descriptions[type] || ''
+      return indicatorMetadataMap.value[type]?.description || ''
     }
 
     const getIndicatorDefaultSymbol = (type) => {
-      const defaults = {
-        vix: 'VIX',
-        gap: 'QQQ',
-        range: 'QQQ',
-        trend: 'QQQ',
-        calendar: ''
-      }
-      return defaults[type] || ''
+      if (type === 'vix') return 'VIX'
+      if (type === 'calendar') return ''
+      return 'QQQ'
+    }
+
+    const getIndicatorParams = (type) => {
+      return indicatorMetadataMap.value[type]?.params || []
+    }
+
+    const getIndicatorNeedsSymbol = (type) => {
+      const meta = indicatorMetadataMap.value[type]
+      if (!meta) return type !== 'calendar'
+      return meta.needs_symbol
+    }
+
+    const formatIndicatorTypeWithParams = (indicator) => {
+      const label = formatIndicatorType(indicator.type)
+      const params = getIndicatorParams(indicator.type)
+      if (params.length === 0 || !indicator.params) return label
+
+      const values = params.map(p => {
+        const val = indicator.params[p.key] ?? p.default_value
+        return p.type === 'float' ? val.toFixed(1) : Math.round(val)
+      })
+      return `${label} (${values.join('/')})`
+    }
+
+    const getOperatorLabel = (op) => {
+      const map = { gt: '>', lt: '<', eq: '=', ne: '!=' }
+      return map[op] || op
+    }
+
+    const formatThreshold = (indicator) => {
+      if (indicator.type === 'calendar') return indicator.threshold
+      return indicator.threshold?.toFixed(2) ?? '0.00'
+    }
+
+    const formatParamsSummary = (indicator) => {
+      const params = getIndicatorParams(indicator.type)
+      if (!params.length || !indicator.params) return ''
+      return params.map(p => {
+        const val = indicator.params[p.key] ?? p.default_value
+        return p.type === 'float' ? val.toFixed(1) : Math.round(val)
+      }).join('/')
+    }
+
+    const toggleIndicatorExpand = (indicatorId) => {
+      expandedIndicators.value[indicatorId] = !expandedIndicators.value[indicatorId]
+    }
+
+    const isIndicatorExpanded = (indicatorId) => {
+      return !!expandedIndicators.value[indicatorId]
     }
 
     const getRecurrenceHint = () => {
@@ -886,6 +1034,14 @@ export default {
 
     // Add a new indicator
     const addIndicator = (type) => {
+      const meta = indicatorMetadataMap.value[type]
+      const params = {}
+      if (meta && meta.params && meta.params.length > 0) {
+        meta.params.forEach(p => {
+          params[p.key] = p.default_value
+        })
+      }
+
       const newIndicator = {
         id: generateIndicatorId(),
         type: type,
@@ -893,8 +1049,10 @@ export default {
         operator: 'eq', // Default operator
         threshold: 0,   // No default value - user must set
         symbol: '',     // No default symbol - user must set
+        params: Object.keys(params).length > 0 ? params : undefined,
       }
       config.value.indicators.push(newIndicator)
+      expandedIndicators.value[newIndicator.id] = true
       showAddIndicatorDialog.value = false
     }
 
@@ -903,6 +1061,7 @@ export default {
       config.value.indicators = config.value.indicators.filter(ind => ind.id !== indicatorId)
       // Also remove any test results for this indicator
       delete indicatorResults.value[indicatorId]
+      delete expandedIndicators.value[indicatorId]
     }
 
     const getIndicatorResultClass = (result) => {
@@ -1125,9 +1284,10 @@ export default {
     }
 
     // Lifecycle
-    onMounted(() => {
+    onMounted(async () => {
+      await fetchIndicatorMetadata()
       if (isEditMode.value) {
-        loadConfig()
+        await loadConfig()
       }
     })
 
@@ -1159,17 +1319,32 @@ export default {
       expirationModes,
       recurrenceOptions,
       indicatorTypes,
+      groupedIndicatorTypes,
+      filteredGroupedIndicatorTypes,
+      categoryLabels,
       
       // Mobile
       isMobile,
       
       // Add indicator dialog
       showAddIndicatorDialog,
+      indicatorSearchQuery,
+
+      // Indicator card expand/collapse
+      expandedIndicators,
+      getOperatorLabel,
+      formatThreshold,
+      formatParamsSummary,
+      toggleIndicatorExpand,
+      isIndicatorExpanded,
 
       // Methods
       formatIndicatorType,
+      formatIndicatorTypeWithParams,
       getIndicatorDescription,
       getIndicatorDefaultSymbol,
+      getIndicatorParams,
+      getIndicatorNeedsSymbol,
       getRecurrenceHint,
       getIndicatorResultClass,
       addIndicator,
@@ -1325,89 +1500,116 @@ export default {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
-}
-
-.indicator-row {
-  display: flex;
-  align-items: center;
-  gap: var(--spacing-md);
-  padding: var(--spacing-md);
-  background: var(--bg-tertiary);
-  border-radius: var(--radius-md);
-  transition: opacity 0.2s;
-}
-
-.indicator-row.disabled {
-  opacity: 0.5;
+  overflow: hidden;
 }
 
 .indicator-toggle {
   flex-shrink: 0;
 }
 
-.indicator-type {
-  flex: 0 0 200px;
-  min-width: 150px;
-  max-width: 200px;
+/* Indicator Card */
+.indicator-card {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border-primary);
+  transition: opacity 0.2s;
+  overflow: hidden;
+  margin-bottom: var(--spacing-sm);
 }
 
-.type-label {
-  display: block;
-  font-weight: var(--font-weight-medium);
-  color: var(--text-primary);
-}
-
-.type-description {
-  display: block;
-  font-size: var(--font-size-xs);
-  color: var(--text-tertiary);
-}
-
-.indicator-config {
-  display: flex;
-  gap: 12px;
-  align-items: center;
-}
-
-.indicator-config.dimmed {
+.indicator-card.disabled {
   opacity: 0.5;
 }
 
-.operator-dropdown {
-  flex: 0 0 auto;
-}
-
-:deep(.operator-dropdown.p-dropdown) {
-  width: 220px;
-}
-
-.threshold-input {
-  flex: 0 0 auto;
-}
-
-:deep(.threshold-input.p-inputnumber) {
-  width: 100px;
-}
-
-:deep(.threshold-input .p-inputnumber-input) {
-  width: 100px;
-  border-radius: var(--radius-sm);
-}
-
-.symbol-input {
-  flex: 0 0 auto;
-}
-
-:deep(.symbol-input.p-inputtext) {
-  width: 80px;
-  border-radius: var(--radius-sm);
-}
-
-.indicator-test {
+/* Header: always-visible summary */
+.indicator-header {
   display: flex;
   align-items: center;
   gap: var(--spacing-sm);
-  flex: 0 0 auto;
+  padding: var(--spacing-sm) var(--spacing-md);
+  cursor: pointer;
+  user-select: none;
+}
+
+.indicator-header:hover {
+  background: var(--bg-secondary);
+}
+
+.indicator-summary {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.indicator-name {
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  white-space: nowrap;
+}
+
+.indicator-rule {
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+.indicator-params-summary {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-xs);
+  white-space: nowrap;
+}
+
+.indicator-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  flex-shrink: 0;
+}
+
+.expand-icon {
+  color: var(--text-tertiary);
+  font-size: var(--font-size-sm);
+  transition: transform 0.2s;
+  margin-left: var(--spacing-xs);
+}
+
+/* Body: collapsible configuration */
+.indicator-body {
+  border-top: 1px solid var(--border-primary);
+  padding: var(--spacing-md);
+  background: var(--bg-secondary);
+}
+
+.indicator-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: var(--spacing-md);
+}
+
+/* Individual field: label on top */
+.config-field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+}
+
+.config-label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+/* Make inputs fill their grid cell */
+.config-field :deep(.p-dropdown),
+.config-field :deep(.p-inputtext),
+.config-field :deep(.p-inputnumber),
+.config-field :deep(.p-inputnumber-input) {
+  width: 100%;
 }
 
 .test-result {
@@ -1433,8 +1635,7 @@ export default {
   border: 1px dashed var(--color-warning);
 }
 
-.test-result .stale-icon,
-.mobile-test-result .stale-icon {
+.test-result .stale-icon {
   font-size: 10px;
   margin-right: 2px;
 }
@@ -1462,11 +1663,6 @@ export default {
 .indicators-empty p {
   color: var(--text-secondary);
   margin: 0;
-}
-
-/* Indicator Remove Button */
-.indicator-remove {
-  flex-shrink: 0;
 }
 
 /* Indicators Actions (Add + Test All) */
@@ -1659,116 +1855,21 @@ export default {
     grid-template-columns: 1fr;
   }
 
-  .indicator-row {
-    flex-wrap: wrap;
+  .indicator-card-header,
+  .indicator-header {
+    padding: var(--spacing-xs) var(--spacing-sm);
+    gap: var(--spacing-xs);
   }
 
-  .indicator-config {
-    width: 100%;
-    flex-wrap: wrap;
+  .indicator-params-summary {
+    display: none;
+  }
+
+  .indicator-config-grid {
+    grid-template-columns: 1fr 1fr;
   }
 }
 
-/* Mobile Indicators - Single Line Layout */
-.mobile-indicators .indicator-row {
-  flex-wrap: nowrap;
-  padding: var(--spacing-sm);
-  gap: var(--spacing-xs);
-  align-items: center;
-}
-
-.mobile-indicators .indicator-toggle {
-  flex: 0 0 auto;
-}
-
-.mobile-indicators .indicator-type {
-  flex: 0 0 auto;
-  min-width: auto;
-  max-width: none;
-}
-
-.mobile-indicators .type-label {
-  font-size: var(--font-size-sm);
-  white-space: nowrap;
-}
-
-.mobile-indicators .indicator-config {
-  flex: 1;
-  display: flex;
-  gap: var(--spacing-xs);
-  flex-wrap: nowrap;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
-.mobile-indicators .indicator-config.dimmed {
-  opacity: 0.5;
-}
-
-/* Mobile operator dropdown - compact, no trigger arrow */
-:deep(.mobile-operator.p-dropdown) {
-  width: 44px !important;
-  min-width: 44px !important;
-}
-
-:deep(.mobile-operator .p-dropdown-label) {
-  padding: 6px 8px;
-  font-size: var(--font-size-sm);
-  text-align: center;
-  text-overflow: clip;
-  overflow: visible;
-}
-
-:deep(.mobile-operator .p-dropdown-trigger) {
-  display: none;
-}
-
-/* Mobile threshold input - compact */
-:deep(.mobile-threshold.p-inputnumber) {
-  width: 60px !important;
-}
-
-:deep(.mobile-threshold .p-inputnumber-input) {
-  width: 60px !important;
-  padding: 6px 4px;
-  font-size: var(--font-size-sm);
-  text-align: center;
-}
-
-/* Mobile symbol input - compact */
-:deep(.mobile-symbol.p-inputtext) {
-  width: 50px !important;
-  padding: 6px 4px;
-  font-size: var(--font-size-sm);
-  text-align: center;
-}
-
-/* Mobile test result - inline display */
-.mobile-test-result {
-  font-size: var(--font-size-xs);
-  font-weight: var(--font-weight-semibold);
-  padding: 4px 6px;
-  border-radius: var(--radius-sm);
-  white-space: nowrap;
-  min-width: 40px;
-  text-align: center;
-}
-
-.mobile-test-result.passed {
-  background: rgba(34, 197, 94, 0.15);
-  color: var(--color-success);
-}
-
-.mobile-test-result.failed {
-  background: rgba(239, 68, 68, 0.15);
-  color: var(--color-danger);
-}
-
-.mobile-test-result.stale {
-  background: rgba(251, 191, 36, 0.15);
-  color: var(--color-warning);
-  border: 1px dashed var(--color-warning);
-}
 
 /* Mobile Strike Preview */
 .mobile-preview {
@@ -1885,4 +1986,35 @@ export default {
   color: var(--text-secondary);
   margin: 0;
 }
+
+/* Category headers in Add Indicator dialog */
+.category-header {
+  color: var(--color-brand);
+  font-size: 0.85rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin: 12px 0 6px 0;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.category-header:first-child {
+  margin-top: 0;
+}
+
+.indicator-search {
+  margin-bottom: var(--spacing-md);
+}
+
+.indicator-search-input {
+  width: 100%;
+}
+
+.no-results {
+  color: var(--text-tertiary);
+  text-align: center;
+  padding: var(--spacing-lg) 0;
+  font-size: var(--font-size-sm);
+}
+
 </style>

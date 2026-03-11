@@ -414,6 +414,19 @@ func (h *AutomationHandler) GetFOMCDates(c *gin.Context) {
 	})
 }
 
+// GetIndicatorMetadata returns metadata for all available indicator types
+func (h *AutomationHandler) GetIndicatorMetadata(c *gin.Context) {
+	metadata := types.GetIndicatorMetadata()
+	c.JSON(http.StatusOK, gin.H{
+		"success": true,
+		"data": gin.H{
+			"indicators": metadata,
+			"total":      len(metadata),
+		},
+		"message": "Retrieved indicator metadata",
+	})
+}
+
 // ToggleEnabled enables or disables an automation config
 func (h *AutomationHandler) ToggleEnabled(c *gin.Context) {
 	id := c.Param("id")
