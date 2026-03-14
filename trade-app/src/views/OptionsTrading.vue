@@ -184,6 +184,7 @@ import { mapToRootSymbol, isWeeklySymbol, mapToWeeklySymbol } from "../utils/sym
 // webSocketClient no longer needed - global state is automatically updated by SmartMarketDataStore
 // import webSocketClient from "../services/webSocketClient";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
+import { calculateT0Payoffs } from "../utils/blackScholes";
 
 export default {
   name: "OptionsTrading",
@@ -220,7 +221,7 @@ export default {
     
     const { pendingOrder, clearPendingOrder } = useTradeNavigation();
     // Use centralized order management with cleanup callback
-    const { getIvxDataStreaming } = useMarketData();
+    const { getIvxDataStreaming, getOptionGreeks } = useMarketData();
     const {
       showOrderConfirmation,
       showOrderResult,
@@ -755,6 +756,49 @@ export default {
       isRightPanelExpanded.value = false;
     };
 
+    /**
+     * Attempt to compute T+0 payoff data for the given positions.
+     * Returns null if IV data is not available for ALL legs.
+     */
+    const computeT0ForPositions = (positions, payoffData) => {
+      const optionPositions = positions.filter(
+        (pos) => pos.asset_class === "us_option"
+      );
+      if (optionPositions.length === 0) return null;
+
+      const now = new Date();
+      const legs = [];
+
+      for (const pos of optionPositions) {
+        const greeksRef = getOptionGreeks(pos.symbol);
+        const greeks = greeksRef.value;
+
+        if (!greeks || !greeks.implied_volatility) {
+          return null; // Per FR-6: if ANY leg lacks IV, skip T+0 entirely
+        }
+
+        const expiryDate = new Date(pos.expiry_date + "T16:00:00");
+        const msToExpiry = expiryDate.getTime() - now.getTime();
+        const T = Math.max(msToExpiry / (365.25 * 24 * 60 * 60 * 1000), 0);
+
+        legs.push({
+          strike_price: pos.strike_price,
+          option_type: pos.option_type,
+          qty: pos.qty,
+          avg_entry_price: pos.avg_entry_price || 0,
+          iv: greeks.implied_volatility,
+          T: T,
+        });
+      }
+
+      return calculateT0Payoffs({
+        prices: payoffData.prices,
+        legs: legs,
+        riskFreeRate: 0.05,
+        creditAdjustment: payoffData._creditAdjustment || 0,
+      });
+    };
+
     const updateChartData = async (positions = null) => {
       // Chart ONLY uses positions from RightPanel checkboxes
       // No fallback to selectedLegs - if no positions are checked, show no chart
@@ -771,11 +815,24 @@ export default {
           adjustedNetCredit.value
         );
 
-        // Force reactivity by creating a new object reference
-        chartData.value = {
-          ...payoffData,
-          timestamp: Date.now(), // Add timestamp to ensure object reference changes
-        };
+        if (payoffData) {
+          // Attempt T+0 calculation (optional — fails silently)
+          let t0Payoffs = null;
+          try {
+            t0Payoffs = computeT0ForPositions(positions, payoffData);
+          } catch (e) {
+            console.warn("T+0 calculation failed:", e.message);
+          }
+          payoffData.t0Payoffs = t0Payoffs;
+
+          // Force reactivity by creating a new object reference
+          chartData.value = {
+            ...payoffData,
+            timestamp: Date.now(), // Add timestamp to ensure object reference changes
+          };
+        } else {
+          chartData.value = null;
+        }
       } catch (error) {
         console.error("Error generating payoff chart:", error);
         chartData.value = null;
