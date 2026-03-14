@@ -615,6 +615,7 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
     netCredit,
     positionCount: optionPositions.length,
     strikes, // expose original strike prices so the chart can compute a better initial view
+    _creditAdjustment: creditAdjustment, // expose for T+0 calculation reuse
   };
 
   // Debug logging removed for production
@@ -794,6 +795,7 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
     { x: underlyingPrice, y: Math.min(...payoffs) - Math.abs(maxLoss) * 0.1 },
     { x: underlyingPrice, y: Math.max(...payoffs) + Math.abs(maxProfit) * 0.1 },
   ];
+  // Build datasets array incrementally so we can conditionally insert the T+0 dataset
   const datasets = [
     {
       label: `Position Payoff (${positionCount} legs)`,
@@ -832,6 +834,30 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
         return gradient;
       },
     },
+  ];
+
+  // Conditionally add T+0 dataset (renders above expiration line)
+  if (chartData.t0Payoffs && chartData.t0Payoffs.length === prices.length) {
+    const t0ChartPoints = prices.map((price, index) => ({
+      x: price,
+      y: chartData.t0Payoffs[index],
+    }));
+
+    datasets.push({
+      label: "Today (T+0)",
+      data: t0ChartPoints,
+      borderColor: "rgb(0, 150, 255)",
+      borderWidth: 2,
+      borderDash: [6, 3],
+      pointRadius: 0,
+      fill: false,
+      tension: 0,
+      order: 0, // Render ABOVE the expiration line (lower order = on top)
+    });
+  }
+
+  // Zero Line and Current Price datasets (always present)
+  datasets.push(
     {
       label: "Zero Line",
       data: zeroLinePoints,
@@ -852,7 +878,7 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
       fill: false,
       order: 3,
     },
-  ];
+  );
 
   const customCrosshairPlugin = {
     id: "customCrosshair",
@@ -910,15 +936,36 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
         ctx.fill();
       }
 
+      // 3b. Interpolate T+0 P&L and draw second circle (if T+0 data available)
+      let t0YVal = null;
+      let t0YPixel = null;
+      if (options.t0Payoffs && options.t0Payoffs.length > 0) {
+        const t0Y1 = options.t0Payoffs[i - 1];
+        const t0Y2 = options.t0Payoffs[i];
+        t0YVal = t0Y1 + t * (t0Y2 - t0Y1);
+        t0YPixel = scales.y.getPixelForValue(t0YVal);
+
+        if (t0YPixel >= top && t0YPixel <= bottom) {
+          ctx.beginPath();
+          ctx.fillStyle = "rgb(0, 150, 255)";
+          ctx.arc(crosshair.x, t0YPixel, 5, 0, 2 * Math.PI);
+          ctx.fill();
+        }
+      }
+
       // 4. Draw the Text Box with Price and P&L
       // Round tooltip numbers to integer values for a stable, flat display
+      const hasT0 = t0YVal !== null;
       const priceText = `$${Math.round(xVal)}`;
-      const plText = `P&L: $${Math.round(yVal)}`;
+      const expiryPlText = hasT0 ? `Expiry P&L: $${Math.round(yVal)}` : `P&L: $${Math.round(yVal)}`;
+      const todayPlText = hasT0 ? `Today P&L: $${Math.round(t0YVal)}` : null;
+
       ctx.font = "bold 12px sans-serif";
       const priceWidth = ctx.measureText(priceText).width;
-      const plWidth = ctx.measureText(plText).width;
-      const boxWidth = Math.max(priceWidth, plWidth) + 16;
-      const boxHeight = 40;
+      const expiryPlWidth = ctx.measureText(expiryPlText).width;
+      const todayPlWidth = hasT0 ? ctx.measureText(todayPlText).width : 0;
+      const boxWidth = Math.max(priceWidth, expiryPlWidth, todayPlWidth) + 16;
+      const boxHeight = hasT0 ? 56 : 40;
 
       // Position box smartly to avoid edges
       let boxX =
@@ -942,7 +989,11 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
       ctx.fillStyle = "#333";
       ctx.textAlign = "left";
       ctx.fillText(priceText, boxX + 8, boxY + 16);
-      ctx.fillText(plText, boxX + 8, boxY + 32);
+      ctx.fillText(expiryPlText, boxX + 8, boxY + 32);
+      if (hasT0) {
+        ctx.fillStyle = "rgb(0, 150, 255)";
+        ctx.fillText(todayPlText, boxX + 8, boxY + 48);
+      }
 
       ctx.restore();
     },
@@ -965,6 +1016,7 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
         customCrosshair: {
           prices: prices,
           payoffs: payoffs,
+          t0Payoffs: chartData.t0Payoffs || null,
         },
         // IMPORTANT: Disable the default tooltip
         tooltip: {
@@ -1090,6 +1142,15 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
                 }
               }
 
+              // Also consider T+0 payoffs for Y-axis range (if present)
+              if (chartData.t0Payoffs) {
+                for (let i = 0; i < prices.length; i++) {
+                  if (prices[i] >= visibleMin && prices[i] <= visibleMax) {
+                    visiblePayoffs.push(chartData.t0Payoffs[i]);
+                  }
+                }
+              }
+
               if (visiblePayoffs.length === 0) {
                 // Fallback if no data in visible range
                 return -1000;
@@ -1138,6 +1199,15 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
               for (let i = 0; i < prices.length; i++) {
                 if (prices[i] >= visibleMin && prices[i] <= visibleMax) {
                   visiblePayoffs.push(payoffs[i]);
+                }
+              }
+
+              // Also consider T+0 payoffs for Y-axis range (if present)
+              if (chartData.t0Payoffs) {
+                for (let i = 0; i < prices.length; i++) {
+                  if (prices[i] >= visibleMin && prices[i] <= visibleMax) {
+                    visiblePayoffs.push(chartData.t0Payoffs[i]);
+                  }
                 }
               }
 
