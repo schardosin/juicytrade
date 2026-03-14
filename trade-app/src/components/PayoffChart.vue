@@ -518,6 +518,13 @@ export default {
           return;
         }
 
+        // Fall back to full update if dataset count changed (T+0 appeared/disappeared)
+        if (config.data.datasets.length !== chart.value.data.datasets.length) {
+          console.log("Dataset count changed, falling back to full update");
+          await performChartUpdate();
+          return;
+        }
+
         // Mutate existing datasets data in place
         config.data.datasets.forEach((newDs, j) => {
           const ds = chart.value.data.datasets[j];
