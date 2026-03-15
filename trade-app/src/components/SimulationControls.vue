@@ -4,13 +4,12 @@
     <div class="controls-main-row">
       <div class="control-zone date-zone">
         <span class="zone-label">Date</span>
-        <Button
-          icon="pi pi-chevron-left"
-          class="p-button-sm p-button-text p-button-plain"
+        <button
+          class="sim-btn"
           @click="handleDecrementDate"
           :disabled="isMinDate || !hasPositions"
-          v-tooltip="'Previous day'"
-        />
+          title="Previous day"
+        ><i class="pi pi-chevron-left"></i></button>
         <Calendar
           v-model="selectedDateValue"
           :minDate="minDateValue"
@@ -21,23 +20,21 @@
           :disabled="!hasPositions"
           :manualInput="false"
         />
-        <Button
-          icon="pi pi-chevron-right"
-          class="p-button-sm p-button-text p-button-plain"
+        <button
+          class="sim-btn"
           @click="handleIncrementDate"
           :disabled="isMaxDate || !hasPositions"
-          v-tooltip="'Next day'"
-        />
+          title="Next day"
+        ><i class="pi pi-chevron-right"></i></button>
       </div>
       <div class="control-zone iv-zone">
         <span class="zone-label">IV</span>
-        <Button
-          label="-"
-          class="p-button-sm p-button-text p-button-plain"
+        <button
+          class="sim-btn"
           @click="handleDecrementIV"
           :disabled="isMinIV || !ivAvailable || !hasPositions"
-          v-tooltip="ivTooltip"
-        />
+          :title="ivTooltip"
+        >&#8722;</button>
         <InputNumber
           v-model="ivPercentValue"
           :min="5"
@@ -48,21 +45,19 @@
           class="iv-input"
           v-tooltip="ivTooltip"
         />
-        <Button
-          label="+"
-          class="p-button-sm p-button-text p-button-plain"
+        <button
+          class="sim-btn"
           @click="handleIncrementIV"
           :disabled="isMaxIV || !ivAvailable || !hasPositions"
-          v-tooltip="ivTooltip"
-        />
+          :title="ivTooltip"
+        >+</button>
       </div>
-      <Button
-        icon="pi pi-refresh"
-        class="p-button-sm p-button-text p-button-rounded reset-btn"
+      <button
+        class="sim-btn"
         @click="handleReset"
         :disabled="isDefaultState || !hasPositions"
-        v-tooltip="'Reset to Defaults'"
-      />
+        title="Reset to Defaults"
+      ><i class="pi pi-refresh"></i></button>
     </div>
 
     <!-- Row 2: Hint/info text -->
@@ -90,21 +85,31 @@
     <!-- Row 3: Line toggles -->
     <div class="controls-toggles-row">
       <div class="toggle-item">
-        <Checkbox
-          v-model="showExpirationLineValue"
-          inputId="exp-line"
-          :binary="true"
-          :disabled="!hasPositions"
-        />
+        <div class="position-checkbox">
+          <input
+            type="checkbox"
+            id="exp-line"
+            :checked="showExpirationLineValue"
+            @change="showExpirationLineValue = $event.target.checked"
+            :disabled="!hasPositions"
+            class="custom-checkbox"
+          />
+          <label for="exp-line" class="checkbox-label"></label>
+        </div>
         <label for="exp-line" class="toggle-label">P/L at Expiration</label>
       </div>
       <div class="toggle-item">
-        <Checkbox
-          v-model="showTheoreticalLineValue"
-          inputId="theo-line"
-          :binary="true"
-          :disabled="!hasPositions || !ivAvailable"
-        />
+        <div class="position-checkbox">
+          <input
+            type="checkbox"
+            id="theo-line"
+            :checked="showTheoreticalLineValue"
+            @change="showTheoreticalLineValue = $event.target.checked"
+            :disabled="!hasPositions || !ivAvailable"
+            class="custom-checkbox"
+          />
+          <label for="theo-line" class="checkbox-label"></label>
+        </div>
         <label for="theo-line" class="toggle-label">P/L Theoretical</label>
       </div>
     </div>
@@ -113,19 +118,15 @@
 
 <script>
 import { computed, ref, watch } from 'vue';
-import Button from 'primevue/button';
 import Calendar from 'primevue/calendar';
 import InputNumber from 'primevue/inputnumber';
-import Checkbox from 'primevue/checkbox';
 import { useSimulationState } from '../composables/useSimulationState.js';
 
 export default {
   name: 'SimulationControls',
   components: {
-    Button,
     Calendar,
     InputNumber,
-    Checkbox,
   },
   props: {
     positions: {
@@ -380,12 +381,32 @@ export default {
   max-width: 60px;
 }
 
-/* Reset button — icon only, compact */
-.reset-btn {
+/* Sim buttons — matching BottomTradingPanel .price-btn pattern */
+.sim-btn {
+  background-color: #333;
+  border: 1px solid #444;
+  color: #ccc;
   width: 28px;
   height: 28px;
-  padding: 0;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
   flex-shrink: 0;
+  padding: 0;
+}
+
+.sim-btn:hover:not(:disabled) {
+  background-color: #444;
+  color: #fff;
+}
+
+.sim-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
 }
 
 /* Row 2: Info/hint text — matches grid alignment */
@@ -398,13 +419,13 @@ export default {
 .date-hint {
   font-size: 10px;
   color: var(--text-tertiary, #888888);
-  padding-left: 32px;
+  padding-left: 60px;
 }
 
 .iv-info {
   font-size: 10px;
   color: var(--text-tertiary, #888888);
-  padding-left: 20px;
+  padding-left: 46px;
 }
 
 .iv-unavailable {
@@ -448,10 +469,6 @@ export default {
   .iv-zone {
     grid-column: 1;
   }
-  .reset-btn {
-    grid-row: 1;
-    grid-column: 2;
-  }
   .controls-info-row {
     grid-template-columns: 1fr 1fr;
   }
@@ -463,8 +480,10 @@ export default {
   border-color: var(--border-secondary, #2a2d33) !important;
   color: var(--text-primary, #ffffff) !important;
   height: 28px;
+  min-height: 28px;
   padding: 4px 8px;
   font-size: 11px;
+  box-sizing: border-box;
 }
 
 :deep(.p-calendar-input:focus) {
@@ -487,32 +506,51 @@ export default {
 
 :deep(.p-datepicker-trigger) {
   height: 28px !important;
+  min-height: 28px !important;
   width: 28px !important;
+  box-sizing: border-box !important;
 }
 
-.control-zone :deep(.p-button.p-button-sm) {
-  height: 28px;
-  width: 28px;
-  min-width: 28px;
-  padding: 0;
+/* Native checkbox — matching RightPanel.vue pattern */
+.position-checkbox {
+  position: relative;
+  width: 20px;
+  height: 20px;
 }
 
-:deep(.p-checkbox-box) {
-  background-color: var(--bg-tertiary, #1a1d23) !important;
-  border-color: var(--text-tertiary, #555555) !important;
+.custom-checkbox {
+  opacity: 0;
+  position: absolute;
+  width: 100%;
+  height: 100%;
+  cursor: pointer;
 }
 
-:deep(.p-checkbox-box.p-highlight) {
-  background-color: #007bff !important;
-  border-color: #007bff !important;
+.checkbox-label {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--border-secondary, #2a2d33);
+  border-radius: 3px;
+  background-color: var(--bg-primary, #0b0d10);
+  cursor: pointer;
+  transition: all 0.2s ease;
 }
 
-:deep(.p-button.p-button-text) {
-  color: var(--text-secondary, #cccccc);
+.custom-checkbox:checked + .checkbox-label {
+  background-color: #007bff;
+  border-color: #007bff;
 }
 
-:deep(.p-button.p-button-text:hover) {
-  background-color: var(--bg-tertiary, #1a1d23);
-  color: var(--text-primary, #ffffff);
+.custom-checkbox:checked + .checkbox-label::after {
+  content: "\2713";
+  position: absolute;
+  top: -2px;
+  left: 2px;
+  color: white;
+  font-size: 12px;
+  font-weight: bold;
 }
 </style>
