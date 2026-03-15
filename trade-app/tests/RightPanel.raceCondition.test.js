@@ -44,6 +44,14 @@ vi.mock('../src/components/ActivitySection.vue', () => ({ default: { name: 'Acti
 vi.mock('../src/components/WatchlistSection.vue', () => ({ default: { name: 'WatchlistSection', template: '<div>WatchlistSection</div>' } }));
 // Mock RightPanelChart to avoid lightweight-charts errors in test environment
 vi.mock('../src/components/RightPanelChart.vue', () => ({ default: { name: 'RightPanelChart', template: '<div>RightPanelChart</div>' } }));
+vi.mock('../src/components/SimulationControls.vue', () => ({
+  default: {
+    name: 'SimulationControls',
+    template: '<div class="simulation-controls-mock"></div>',
+    props: ['positions', 'marketData', 'modelValue'],
+    emits: ['update:modelValue']
+  }
+}));
 
 // Mock data
 const mockPositionsData = {

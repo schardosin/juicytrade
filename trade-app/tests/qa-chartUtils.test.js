@@ -1,20 +1,20 @@
 /**
  * QA-specific integration tests for chartUtils.js
  *
- * Verifies T+0 dataset configuration, crosshair plugin, Y-axis range,
+ * Verifies P/L Theoretical dataset configuration, crosshair plugin, Y-axis range,
  * backward compatibility, and _creditAdjustment exposure.
  *
  * Covers:
  *  1.  _creditAdjustment exposed by generateMultiLegPayoff()
- *  2.  T+0 dataset present when t0Payoffs provided
- *  3.  T+0 dataset absent when t0Payoffs is null
- *  4.  T+0 dataset absent when t0Payoffs is undefined
- *  5.  T+0 dataset visual properties (exact values)
- *  6.  T+0 label is exactly "Today (T+0)"
- *  7.  Expiration dataset unchanged when T+0 is present
+ *  2.  P/L Theoretical dataset present when t0Payoffs provided
+ *  3.  P/L Theoretical dataset absent when t0Payoffs is null
+ *  4.  P/L Theoretical dataset absent when t0Payoffs is undefined
+ *  5.  P/L Theoretical dataset visual properties (exact values)
+ *  6.  P/L Theoretical label is exactly "P/L Theoretical"
+ *  7.  Expiration dataset unchanged when P/L Theoretical is present
  *  8.  Plugin options include t0Payoffs when provided
  *  9.  Plugin options t0Payoffs is null when not provided
- *  10. T+0 dataset length matches prices length
+ *  10. P/L Theoretical dataset length matches prices length
  *  11. Backward compatibility: 3 datasets when no t0Payoffs
  *  12. With t0Payoffs: exactly 4 datasets
  */
@@ -126,65 +126,65 @@ describe("QA: _creditAdjustment exposed by generateMultiLegPayoff", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 2. T+0 dataset present when t0Payoffs provided
+// 2. P/L Theoretical dataset present when t0Payoffs provided
 // ---------------------------------------------------------------------------
-describe("QA: T+0 dataset present when t0Payoffs provided", () => {
-  it('a dataset with label "Today (T+0)" exists in datasets', () => {
+describe("QA: P/L Theoretical dataset present when t0Payoffs provided", () => {
+  it('a dataset with label "P/L Theoretical" exists in datasets', () => {
     const { chartData, underlyingPrice } = makeBaseChartData();
     const chartDataWithT0 = withT0Payoffs(chartData);
     const config = createMultiLegChartConfig(chartDataWithT0, underlyingPrice);
 
     const t0Dataset = config.data.datasets.find(
-      (ds) => ds.label === "Today (T+0)"
+      (ds) => ds.label === "P/L Theoretical"
     );
     expect(t0Dataset).toBeDefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// 3. T+0 dataset absent when t0Payoffs is null
+// 3. P/L Theoretical dataset absent when t0Payoffs is null
 // ---------------------------------------------------------------------------
-describe("QA: T+0 dataset absent when t0Payoffs is null", () => {
-  it('no dataset with label "Today (T+0)" when t0Payoffs is null', () => {
+describe("QA: P/L Theoretical dataset absent when t0Payoffs is null", () => {
+  it('no dataset with label "P/L Theoretical" when t0Payoffs is null', () => {
     const { chartData, underlyingPrice } = makeBaseChartData();
     const chartDataNull = { ...chartData, t0Payoffs: null };
     const config = createMultiLegChartConfig(chartDataNull, underlyingPrice);
 
     const t0Dataset = config.data.datasets.find(
-      (ds) => ds.label === "Today (T+0)"
+      (ds) => ds.label === "P/L Theoretical"
     );
     expect(t0Dataset).toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// 4. T+0 dataset absent when t0Payoffs is undefined
+// 4. P/L Theoretical dataset absent when t0Payoffs is undefined
 // ---------------------------------------------------------------------------
-describe("QA: T+0 dataset absent when t0Payoffs is undefined", () => {
-  it('no dataset with label "Today (T+0)" when t0Payoffs is not set', () => {
+describe("QA: P/L Theoretical dataset absent when t0Payoffs is undefined", () => {
+  it('no dataset with label "P/L Theoretical" when t0Payoffs is not set', () => {
     const { chartData, underlyingPrice } = makeBaseChartData();
     // chartData from generateMultiLegPayoff does not have t0Payoffs by default
     expect(chartData.t0Payoffs).toBeUndefined();
 
     const config = createMultiLegChartConfig(chartData, underlyingPrice);
     const t0Dataset = config.data.datasets.find(
-      (ds) => ds.label === "Today (T+0)"
+      (ds) => ds.label === "P/L Theoretical"
     );
     expect(t0Dataset).toBeUndefined();
   });
 });
 
 // ---------------------------------------------------------------------------
-// 5. T+0 dataset visual properties
+// 5. P/L Theoretical dataset visual properties
 // ---------------------------------------------------------------------------
-describe("QA: T+0 dataset visual properties", () => {
+describe("QA: P/L Theoretical dataset visual properties", () => {
   let t0Dataset;
 
   // Set up once for all property checks
   const { chartData, underlyingPrice } = makeBaseChartData();
   const chartDataWithT0 = withT0Payoffs(chartData);
   const config = createMultiLegChartConfig(chartDataWithT0, underlyingPrice);
-  t0Dataset = config.data.datasets.find((ds) => ds.label === "Today (T+0)");
+  t0Dataset = config.data.datasets.find((ds) => ds.label === "P/L Theoretical");
 
   it('borderColor is exactly "rgb(0, 150, 255)"', () => {
     expect(t0Dataset.borderColor).toBe("rgb(0, 150, 255)");
@@ -198,7 +198,7 @@ describe("QA: T+0 dataset visual properties", () => {
     expect(t0Dataset.fill).toBe(false);
   });
 
-  it("order is 0 (renders above expiration line)", () => {
+  it("order is 0 (renders above P/L At Expiration line)", () => {
     expect(t0Dataset.order).toBe(0);
   });
 
@@ -212,37 +212,38 @@ describe("QA: T+0 dataset visual properties", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 6. T+0 label is exactly "Today (T+0)"
+// 6. P/L Theoretical label is exactly "P/L Theoretical"
 // ---------------------------------------------------------------------------
-describe('QA: T+0 label is exactly "Today (T+0)"', () => {
-  it('label is not "T+0", "Today", or any other variant', () => {
+describe('QA: P/L Theoretical label is exactly "P/L Theoretical"', () => {
+  it('label is not "T+0", "Today", "Today (T+0)", or any other variant', () => {
     const { chartData, underlyingPrice } = makeBaseChartData();
     const chartDataWithT0 = withT0Payoffs(chartData);
     const config = createMultiLegChartConfig(chartDataWithT0, underlyingPrice);
 
     const t0Dataset = config.data.datasets.find(
-      (ds) => ds.label === "Today (T+0)"
+      (ds) => ds.label === "P/L Theoretical"
     );
     expect(t0Dataset).toBeDefined();
-    expect(t0Dataset.label).toBe("Today (T+0)");
+    expect(t0Dataset.label).toBe("P/L Theoretical");
 
     // Ensure no other T+0-like labels exist
     const otherT0 = config.data.datasets.filter(
       (ds) =>
-        ds.label !== "Today (T+0)" &&
+        ds.label !== "P/L Theoretical" &&
         (ds.label === "T+0" ||
           ds.label === "Today" ||
           ds.label === "T0" ||
-          ds.label === "Today T+0")
+          ds.label === "Today T+0" ||
+          ds.label === "Today (T+0)")
     );
     expect(otherT0).toHaveLength(0);
   });
 });
 
 // ---------------------------------------------------------------------------
-// 7. Expiration dataset unchanged when T+0 is present
+// 7. Expiration dataset unchanged when P/L Theoretical is present
 // ---------------------------------------------------------------------------
-describe("QA: Expiration dataset unchanged when T+0 is present", () => {
+describe("QA: Expiration dataset unchanged when P/L Theoretical is present", () => {
   it('expiration dataset label still starts with "Position Payoff"', () => {
     const { chartData, underlyingPrice } = makeBaseChartData();
     const chartDataWithT0 = withT0Payoffs(chartData);
@@ -263,7 +264,7 @@ describe("QA: Expiration dataset unchanged when T+0 is present", () => {
     expect(config.data.datasets[0].label).toMatch(/^Position Payoff/);
   });
 
-  it("expiration dataset has order=1 (below T+0 which has order=0)", () => {
+  it("expiration dataset has order=1 (below P/L Theoretical which has order=0)", () => {
     const { chartData, underlyingPrice } = makeBaseChartData();
     const chartDataWithT0 = withT0Payoffs(chartData);
     const config = createMultiLegChartConfig(chartDataWithT0, underlyingPrice);
@@ -332,27 +333,27 @@ describe("QA: plugin options t0Payoffs is null when not provided", () => {
 });
 
 // ---------------------------------------------------------------------------
-// 10. T+0 dataset length matches prices length
+// 10. P/L Theoretical dataset length matches prices length
 // ---------------------------------------------------------------------------
-describe("QA: T+0 dataset length matches prices length", () => {
-  it("T+0 data array has same length as prices array", () => {
+describe("QA: P/L Theoretical dataset length matches prices length", () => {
+  it("P/L Theoretical data array has same length as prices array", () => {
     const { chartData, underlyingPrice } = makeBaseChartData();
     const chartDataWithT0 = withT0Payoffs(chartData);
     const config = createMultiLegChartConfig(chartDataWithT0, underlyingPrice);
 
     const t0Dataset = config.data.datasets.find(
-      (ds) => ds.label === "Today (T+0)"
+      (ds) => ds.label === "P/L Theoretical"
     );
     expect(t0Dataset.data).toHaveLength(chartData.prices.length);
   });
 
-  it("each T+0 data point has x matching prices and y matching t0Payoffs", () => {
+  it("each P/L Theoretical data point has x matching prices and y matching t0Payoffs", () => {
     const { chartData, underlyingPrice } = makeBaseChartData();
     const chartDataWithT0 = withT0Payoffs(chartData);
     const config = createMultiLegChartConfig(chartDataWithT0, underlyingPrice);
 
     const t0Dataset = config.data.datasets.find(
-      (ds) => ds.label === "Today (T+0)"
+      (ds) => ds.label === "P/L Theoretical"
     );
 
     for (let i = 0; i < chartData.prices.length; i++) {
@@ -396,14 +397,14 @@ describe("QA: 4 datasets when t0Payoffs provided", () => {
     expect(config.data.datasets).toHaveLength(4);
   });
 
-  it('datasets are: "Position Payoff (...)", "Today (T+0)", "Zero Line", "Current Price"', () => {
+  it('datasets are: "Position Payoff (...)", "P/L Theoretical", "Zero Line", "Current Price"', () => {
     const { chartData, underlyingPrice } = makeBaseChartData();
     const chartDataWithT0 = withT0Payoffs(chartData);
     const config = createMultiLegChartConfig(chartDataWithT0, underlyingPrice);
 
     const labels = config.data.datasets.map((ds) => ds.label);
     expect(labels[0]).toMatch(/^Position Payoff/);
-    expect(labels[1]).toBe("Today (T+0)");
+    expect(labels[1]).toBe("P/L Theoretical");
     expect(labels[2]).toBe("Zero Line");
     expect(labels[3]).toBe("Current Price");
   });

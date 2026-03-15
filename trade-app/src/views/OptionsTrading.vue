@@ -1569,6 +1569,11 @@ export default {
       handleOrderConfirmation,
       handleOrderCancellation,
       handleOrderResultClose,
+
+      // Simulation / payoff chart controls
+      showExpirationLine,
+      showTheoreticalLine,
+      onSimulationChange,
     };
   },
 };
