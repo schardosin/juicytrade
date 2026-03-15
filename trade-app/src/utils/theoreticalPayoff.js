@@ -9,6 +9,13 @@
 
 import { calculateT0Payoffs } from './blackScholes.js';
 
+// Calendar-day-based time-to-expiry (365.25 days/year).
+// Industry standard for options pricing uses trading days (252/year), but calendar
+// days are acceptable for T+X simulation purposes. The difference is cosmetic:
+// calendar days spread theta more evenly across weekends, while trading days
+// concentrate it on trading days only. Both produce the same expiration-day result.
+// TODO: A future enhancement could offer a trading-days mode for users who prefer
+// industry-standard time calculation.
 const MS_PER_YEAR = 365.25 * 24 * 60 * 60 * 1000;
 const MARKET_CLOSE_HOUR = 16;
 
@@ -29,6 +36,15 @@ export function calculateTimesToExpiry(selectedDate, positions) {
     return [];
   }
 
+  // NOTE: Black-Scholes theta (time decay) is proportional to 1/sqrt(T).
+  // This means time decay accelerates exponentially as expiration approaches:
+  //   - At 30 DTE, daily theta is modest
+  //   - At 7 DTE, daily theta roughly doubles
+  //   - At 1 DTE, daily theta is very large
+  // The resulting "hockey stick" shape in the P/L curve near expiration is
+  // mathematically correct and expected. The theoretical line will show minimal
+  // movement for most of the date range, then converge rapidly to the
+  // expiration line in the final days.
   return positions.map((pos) => {
     if (!pos.expiry_date) {
       return 0;

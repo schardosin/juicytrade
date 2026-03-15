@@ -577,4 +577,53 @@ describe("calculateTheoreticalPayoffs", () => {
     expect(result).toHaveLength(1);
     expect(result[0]).toBeCloseTo(1000, 0);
   });
+
+  it("time decay accelerates near expiration (theta verification)", () => {
+    // Verify the "hockey stick" behavior: daily P/L change near expiration
+    // is significantly larger than daily P/L change far from expiration.
+    const positions = [makePosition({
+      strike_price: 500,
+      option_type: "call",
+      qty: 1,
+      avg_entry_price: 10,
+      expiry_date: "2026-06-19",
+    })];
+    const getIV = mockGetIV({ SPY_CALL_500: 0.25 });
+    const pricePoint = [500]; // ATM
+
+    // P/L at 30 DTE
+    const date30 = new Date("2026-05-20T00:00:00");
+    const pl30 = calculateTheoreticalPayoffs({
+      prices: pricePoint, positions, selectedDate: date30,
+      selectedIV: 0.25, getIV,
+    });
+
+    // P/L at 29 DTE
+    const date29 = new Date("2026-05-21T00:00:00");
+    const pl29 = calculateTheoreticalPayoffs({
+      prices: pricePoint, positions, selectedDate: date29,
+      selectedIV: 0.25, getIV,
+    });
+
+    // P/L at 2 DTE
+    const date2 = new Date("2026-06-17T00:00:00");
+    const pl2 = calculateTheoreticalPayoffs({
+      prices: pricePoint, positions, selectedDate: date2,
+      selectedIV: 0.25, getIV,
+    });
+
+    // P/L at 1 DTE
+    const date1 = new Date("2026-06-18T00:00:00");
+    const pl1 = calculateTheoreticalPayoffs({
+      prices: pricePoint, positions, selectedDate: date1,
+      selectedIV: 0.25, getIV,
+    });
+
+    // Daily theta (P/L decrease) should be much larger near expiration
+    const dailyChange30to29 = Math.abs(pl30[0] - pl29[0]);
+    const dailyChange2to1 = Math.abs(pl2[0] - pl1[0]);
+
+    // The 2->1 DTE change should be at least 2x larger than 30->29 DTE
+    expect(dailyChange2to1).toBeGreaterThan(dailyChange30to29 * 2);
+  });
 });
