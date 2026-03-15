@@ -364,6 +364,8 @@ export default {
   font-weight: 500;
   color: var(--text-secondary, #cccccc);
   white-space: nowrap;
+  line-height: 28px;
+  align-self: center;
 }
 
 /* Calendar and IV input sizing */
@@ -373,8 +375,9 @@ export default {
 }
 
 .iv-input {
-  flex: 1;
-  min-width: 50px;
+  flex: 0 0 auto;
+  width: 60px;
+  max-width: 60px;
 }
 
 /* Reset button — icon only, compact */
@@ -459,6 +462,9 @@ export default {
   background-color: var(--bg-tertiary, #1a1d23) !important;
   border-color: var(--border-secondary, #2a2d33) !important;
   color: var(--text-primary, #ffffff) !important;
+  height: 28px;
+  padding: 4px 8px;
+  font-size: 11px;
 }
 
 :deep(.p-calendar-input:focus) {
@@ -470,10 +476,25 @@ export default {
   border-color: var(--border-secondary, #2a2d33) !important;
   color: var(--text-primary, #ffffff) !important;
   text-align: center;
+  height: 28px;
+  padding: 4px 6px;
+  font-size: 11px;
 }
 
 :deep(.p-inputnumber-input:focus) {
   border-color: var(--color-brand, #ff6b35) !important;
+}
+
+:deep(.p-datepicker-trigger) {
+  height: 28px !important;
+  width: 28px !important;
+}
+
+.control-zone :deep(.p-button.p-button-sm) {
+  height: 28px;
+  width: 28px;
+  min-width: 28px;
+  padding: 0;
 }
 
 :deep(.p-checkbox-box) {
