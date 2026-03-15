@@ -436,7 +436,7 @@ export default {
 
 :deep(.p-checkbox-box) {
   background-color: var(--bg-tertiary, #1a1d23) !important;
-  border-color: var(--border-secondary, #2a2d33) !important;
+  border-color: var(--text-tertiary, #555555) !important;
 }
 
 :deep(.p-checkbox-box.p-highlight) {
