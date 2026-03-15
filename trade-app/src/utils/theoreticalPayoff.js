@@ -34,6 +34,17 @@ export function calculateTimesToExpiry(selectedDate, positions) {
       return 0;
     }
 
+    // On expiration day, force T=0 so Black-Scholes returns pure intrinsic value,
+    // ensuring the theoretical line perfectly overlays the expiration line.
+    const [expiryYear, expiryMonth, expiryDay] = pos.expiry_date.split('-').map(Number);
+    const selYear = selectedDate.getFullYear();
+    const selMonth = selectedDate.getMonth() + 1;
+    const selDay = selectedDate.getDate();
+
+    if (expiryYear === selYear && expiryMonth === selMonth && expiryDay === selDay) {
+      return 0;
+    }
+
     const expiryDate = new Date(`${pos.expiry_date}T${MARKET_CLOSE_HOUR}:00:00`);
     const msToExpiry = expiryDate.getTime() - selectedDate.getTime();
     const T = msToExpiry / MS_PER_YEAR;

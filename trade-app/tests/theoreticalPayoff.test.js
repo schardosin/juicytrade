@@ -55,14 +55,35 @@ describe("calculateTimesToExpiry", () => {
     expect(result[0]).toBe(0);
   });
 
-  it("uses 4 PM market close time for expiry", () => {
-    const now = new Date("2026-06-19T09:00:00");
+  it("returns T=0 when selected date matches expiry calendar day (midnight)", () => {
+    const selectedDate = new Date("2026-06-19T00:00:00");
+    const positions = [makePosition({ expiry_date: "2026-06-19" })];
+
+    const result = calculateTimesToExpiry(selectedDate, positions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(0);
+  });
+
+  it("returns T=0 when selected date is later in the expiry day (9 AM)", () => {
+    const selectedDate = new Date("2026-06-19T09:00:00");
+    const positions = [makePosition({ expiry_date: "2026-06-19" })];
+
+    const result = calculateTimesToExpiry(selectedDate, positions);
+
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBe(0);
+  });
+
+  it("uses 4 PM market close time for expiry (non-expiry day)", () => {
+    const now = new Date("2026-06-18T09:00:00");
     const positions = [makePosition({ expiry_date: "2026-06-19" })];
 
     const result = calculateTimesToExpiry(now, positions);
 
     expect(result[0]).toBeGreaterThan(0);
-    const expectedHours = 7;
+    // From June 18 09:00 to June 19 16:00 = 31 hours
+    const expectedHours = 31;
     const expectedT = expectedHours / 24 / 365.25;
     expect(result[0]).toBeCloseTo(expectedT, 4);
   });
@@ -528,5 +549,32 @@ describe("calculateTheoreticalPayoffs", () => {
     expect(resultNow).not.toBeNull();
     expect(resultCloser).not.toBeNull();
     expect(resultNow[0]).not.toBeCloseTo(resultCloser[0], 1);
+  });
+
+  it("theoretical P/L equals intrinsic value when selected date is expiration day", () => {
+    // Long call: strike=500, qty=1, avg_entry_price=10, expiry=2026-06-19
+    // At price=520: intrinsic = (520-500) * 1 * 100 = 2000
+    // Cost = 10 * 1 * 100 = 1000
+    // Expected P/L = 2000 - 1000 = 1000
+    const positions = [makePosition({
+      strike_price: 500,
+      option_type: "call",
+      qty: 1,
+      avg_entry_price: 10,
+      expiry_date: "2026-06-19",
+    })];
+    const getIV = mockGetIV({ SPY_CALL_500: 0.25 });
+
+    const result = calculateTheoreticalPayoffs({
+      prices: [520],
+      positions,
+      selectedDate: new Date("2026-06-19T00:00:00"),
+      selectedIV: 0.25,
+      getIV,
+    });
+
+    expect(result).not.toBeNull();
+    expect(result).toHaveLength(1);
+    expect(result[0]).toBeCloseTo(1000, 0);
   });
 });
