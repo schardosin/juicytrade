@@ -15,8 +15,9 @@ The payoff chart currently displays two lines:
 This enhancement transforms the static T+0 line into an interactive **P/L Theoretical** line that allows traders to:
 - **Select a target date** between today and expiration to simulate how the position would behave at different points in time (T+X simulation)
 - **Adjust implied volatility** to simulate how the position would perform under different volatility scenarios
+- **Simulate spot price changes** to see P&L at different underlying prices
 
-This feature is inspired by TastyTrade's "Expiration Implied Volatility" control, which shows the current combined IV but allows users to modify it for scenario analysis.
+This feature follows the **TastyTrade Desktop Platform** approach for their Analysis Mode.
 
 ---
 
@@ -60,19 +61,27 @@ The user shall be able to select a target date for the theoretical P&L calculati
 - **Maximum date:** The latest expiration date among all legs in the position
 - **Default:** Today (T+0) — maintains current behavior
 
-#### FR-2.2: UI Control
-A date selection control shall be added to the Payoff Chart section in the Analysis tab. Options:
-- **Option A (Preferred):** A slider control with date labels
-  - Slider range: 0 to days-to-expiration
-  - Labels: "Today", "Expiration", and intermediate dates
-  - Visual feedback: Show selected date and days remaining
-- **Option B:** A date picker input
-  - Min/max constraints enforced
-  - Shows days remaining for selected date
+#### FR-2.2: UI Control (TastyTrade Style)
+A date selection control shall be added following TastyTrade's pattern:
+
+```
+┌─────────────────────────────────────────────────┐
+│ Evaluate at Date                                │
+│ ┌─────┐  ┌────────────────┐  ┌─────┐           │
+│ │  ◀  │  │  Jan 30, 2025  │  │ 📅  │           │
+│ └─────┘  └────────────────┘  └─────┘           │
+│          (click to open calendar picker)        │
+└─────────────────────────────────────────────────┘
+```
+
+- **Date display field:** Shows the currently selected date (e.g., "Jan 30, 2025")
+- **Arrow buttons (◀/▶):** Increment/decrement the date by one day
+- **Calendar icon (📅):** Opens a date picker to jump to any specific date
+- **Label:** "Evaluate at Date" (matching TastyTrade terminology)
 
 #### FR-2.3: Calculation
 When the user selects a date:
-1. Calculate time-to-expiration for each leg as: `(selectedDate - today) + (expiryDate - selectedDate)` = time remaining from selected date to each leg's expiration
+1. Calculate time-to-expiration for each leg from the selected date
 2. For legs already expired at the selected date, use intrinsic value only
 3. Use Black-Scholes pricing with the adjusted time-to-expiration
 4. Recalculate the theoretical P&L array
@@ -81,84 +90,183 @@ When the user selects a date:
 For positions with legs expiring on different dates (calendar spreads, diagonals):
 - Each leg uses its own time-to-expiration from the selected date
 - If a leg expires before the selected date, it contributes $0 to the position (closed/expired)
-- The date slider maximum is the **latest** expiration date among all legs
+- The date picker maximum is the **latest** expiration date among all legs
 
 ### FR-3: Volatility Adjustment Control
 
 The user shall be able to adjust the implied volatility used in the theoretical P&L calculation.
 
-#### FR-3.1: Default Volatility
-- **Default:** Current combined IV of the position (weighted average of all legs' IVs)
-- **Label:** "Expiration Implied Volatility" (matching TastyTrade terminology)
+#### FR-3.1: Two IV Modes (TastyTrade Style)
 
-#### FR-3.2: UI Control
-A volatility adjustment control shall be added to the Payoff Chart section:
-- **Control type:** Slider with percentage display
-- **Range:** 10% to 200% of the default IV (or absolute range: 5% to 150% IV)
+**Mode 1: Expiration IV (Default)**
+- Uses a single IV value for all legs in the same expiration
+- Shows current expiration IV with increment/decrement buttons
+- Label: "Expiration Implied Volatility"
+
+**Mode 2: Per-Contract IV**
+- Uses each option's individual IV
+- Checkbox to enable: "Use per-contract IVs"
+- When enabled, shows IV for each leg with individual adjustment controls
+
+#### FR-3.2: UI Control - Expiration IV Mode (TastyTrade Style)
+
+```
+┌─────────────────────────────────────────────────┐
+│ Implied Volatility                               │
+│ ┌─────┐  ┌─────────────┐  ┌─────┐               │
+│ │  −  │  │   37.7%     │  │  +  │               │
+│ └─────┘  └─────────────┘  └─────┘               │
+│          Current: 32.7% (+5.0%)                 │
+│                                                 │
+│ ☐ Use per-contract IVs                         │
+└─────────────────────────────────────────────────┘
+```
+
+- **IV display field:** Shows the currently selected IV (e.g., "37.7%")
+- **Increment button (+):** Increases IV by 1% per click
+- **Decrement button (−):** Decreases IV by 1% per click
+- **Delta indicator:** Shows difference from current IV (e.g., "+5.0%")
+- **Current IV label:** Shows the actual market IV (e.g., "Current: 32.7%")
+- **Per-contract checkbox:** Switches to per-leg IV mode
+
+#### FR-3.3: UI Control - Per-Contract IV Mode
+
+When "Use per-contract IVs" is checked:
+
+```
+┌─────────────────────────────────────────────────┐
+│ Implied Volatility                               │
+│ ☑ Use per-contract IVs                         │
+│                                                 │
+│ NFLX Feb 15 600 Call    IV: 35.2%  [−][+]      │
+│ NFLX Feb 15 620 Call    IV: 32.1%  [−][+]      │
+└─────────────────────────────────────────────────┘
+```
+
+- Each leg shows its own IV with individual increment/decrement buttons
+- Default values are the actual IV for each option
+
+#### FR-3.4: IV Range
+- **Minimum:** 5% absolute IV
+- **Maximum:** 200% absolute IV
 - **Step size:** 1% increments
-- **Display:** Show current IV value as percentage (e.g., "IV: 28.5%")
 
-#### FR-3.3: Calculation
-When the user adjusts volatility:
-1. Apply the user-selected IV to **all legs** uniformly (flat vol assumption)
-2. Recalculate Black-Scholes prices with the adjusted IV
-3. Recalculate the theoretical P&L array
+#### FR-3.5: Default IV Calculation
+- **Expiration IV mode:** Weighted average of all legs' IVs, weighted by absolute delta or notional
+- **Per-contract IV mode:** Each leg uses its own market IV as default
 
-#### FR-3.4: Per-Leg IV Override (Future Consideration)
-For this iteration, a single IV adjustment applies to all legs uniformly. Per-leg IV control is out of scope but may be considered for future enhancement.
+### FR-4: Spot Price Simulation (TastyTrade Style)
 
-### FR-4: Combined Simulation (Date + Volatility)
+The user shall be able to simulate the P&L at a different underlying price.
 
-The user shall be able to adjust **both** date and volatility simultaneously. The theoretical P&L line shall update to reflect:
-- Time decay from the selected date
-- Volatility impact from the selected IV
+#### FR-4.1: UI Control
 
-This combined simulation enables powerful scenario analysis:
-- *"In 20 days, if IV drops to 20%, what's my P&L?"*
+```
+┌─────────────────────────────────────────────────┐
+│ Theo Spot Price                                  │
+│ ┌─────┐  ┌─────────────┐  ┌─────┐               │
+│ │  −  │  │   $580.00   │  │  +  │               │
+│ └─────┘  └─────────────┘  └─────┘               │
+│          Current: $565.50                       │
+└─────────────────────────────────────────────────┘
+```
 
-### FR-5: Reset to Defaults
+- **Price display field:** Shows the theoretical spot price
+- **Increment/decrement buttons:** Adjust price by $1 (or appropriate increment for the underlying)
+- **Current price label:** Shows the actual market price
+- **Crosshair sync:** When adjusted, the chart crosshair moves to the theoretical price position
 
-A **"Reset"** button shall be provided to restore both controls to their default values:
+#### FR-4.2: Behavior
+- Adjusting the spot price shows the theoretical P&L at that price
+- The P/L Theoretical line updates to show P&L across all prices, with a marker at the theoretical spot
+- The header/metrics area shows the P&L at the theoretical spot price
+
+### FR-5: Line Visibility Toggles
+
+The user shall be able to toggle the visibility of each P/L line independently.
+
+#### FR-5.1: Toggle Controls
+
+```
+┌─────────────────────────────────────────────────┐
+│ Lines                                            │
+│ ☑ P/L at Expiration                             │
+│ ☑ P/L Theoretical                               │
+└─────────────────────────────────────────────────┘
+```
+
+- **P/L at Expiration toggle:** Show/hide the expiration payoff line (green)
+- **P/L Theoretical toggle:** Show/hide the theoretical payoff line (blue)
+- Both are enabled by default
+
+#### FR-5.2: Zone Display Toggle
+- **"At Expiration" zones:** Green/red areas based on expiration P/L
+- **"Theo" zones:** Green/red areas based on theoretical P/L
+- User can switch between zone display modes
+
+### FR-6: Greek Overlay (Optional Enhancement)
+
+The user may optionally display Greek values as an overlay on the chart.
+
+#### FR-6.1: Greek Selector
+
+```
+┌─────────────────────────────────────────────────┐
+│ Greek Overlay                                    │
+│ [No Greek ▼]                                    │
+│                                                 │
+│ Options: None, Delta, Gamma, Theta, Vega        │
+└─────────────────────────────────────────────────┘
+```
+
+- **Dropdown selector:** Choose which Greek to display
+- **Options:** None (default), Delta, Gamma, Theta, Vega
+- **Display:** Purple line showing the selected Greek across price points
+
+### FR-7: Combined Simulation
+
+All controls work together for comprehensive scenario analysis:
+- Date + IV + Spot Price can all be adjusted simultaneously
+- The theoretical P&L line reflects all adjustments
+- Example: *"In 20 days, if IV drops to 25% and price moves to $580, what's my P&L?"*
+
+### FR-8: Reset to Defaults
+
+A **"Reset"** button shall restore all controls to their default values:
 - Date: Today (T+0)
-- Volatility: Current combined IV
+- IV: Current market IV (expiration mode)
+- Spot Price: Current market price
 
-### FR-6: Visual Feedback
+### FR-9: Data Flow & State Management
 
-The controls shall provide clear visual feedback:
-- **Date control:** Show selected date and days remaining (e.g., "Jan 15 (20 days)")
-- **Volatility control:** Show current IV percentage (e.g., "IV: 28.5%")
-- **Difference indicator:** Optionally show how far the selected values deviate from defaults (e.g., "IV: 28.5% (-5.2% from current)")
-
-### FR-7: Data Flow & State Management
-
-#### FR-7.1: Control State
-The date and volatility selections shall be:
+#### FR-9.1: Control State
+The simulation controls state shall be:
 - **Persistent during session:** Selections persist while the user views the same position
 - **Reset on position change:** When the user selects different legs or changes the underlying symbol, controls reset to defaults
 - **Not persisted across sessions:** No localStorage or backend persistence required
 
-#### FR-7.2: Reactive Updates
+#### FR-9.2: Reactive Updates
 The theoretical P&L line shall update:
-- **Immediately** when the user adjusts either control (no debounce for slider interactions)
+- **Immediately** when the user adjusts any control
 - **Smoothly** without flickering or full chart re-render
 - **Efficiently** using the existing minor update path where possible
 
-### FR-8: Graceful Degradation
+### FR-10: Graceful Degradation
 
-#### FR-8.1: Missing IV Data
+#### FR-10.1: Missing IV Data
 If IV data is not available for any leg:
 - The volatility control shall be **disabled** (grayed out)
 - A tooltip shall explain: "IV data unavailable"
 - The theoretical P&L line shall not be rendered (current behavior)
 
-#### FR-8.2: Single Expiration Date
+#### FR-10.2: Single Expiration Date
 For positions with all legs expiring on the same date:
-- The date slider maximum is that expiration date
+- The date picker maximum is that expiration date
 - Normal behavior
 
-#### FR-8.3: 0 DTE Position
+#### FR-10.3: 0 DTE Position
 For positions expiring today:
-- Date slider range is 0 to 0 (effectively disabled)
+- Date picker range is 0 to 0 (effectively disabled)
 - Volatility control remains functional
 - Theoretical P&L converges with expiration P&L
 
@@ -174,17 +282,17 @@ The customer previously noted: *"We need to be very careful with the modificatio
 - No new Chart.js re-renders or destructions shall be introduced — the dataset shall be updated in place
 
 ### NFR-2: Performance
-- Black-Scholes recalculation for slider interactions must complete in **<50ms** for typical 4-leg strategies
-- Slider dragging must feel responsive (no perceptible lag)
-- Consider using a **debounce (100-200ms)** for slider updates to balance responsiveness and performance
+- Black-Scholes recalculation for control adjustments must complete in **<50ms** for typical 4-leg strategies
+- Button clicks must feel responsive (no perceptible lag)
+- Consider using a **debounce (100-150ms)** for rapid adjustments
 
 ### NFR-3: Code Organization
-- The date/volatility calculation logic shall be implemented as **pure utility functions** in `blackScholes.js`
+- The date/volatility/spot calculation logic shall be implemented as **pure utility functions** in `blackScholes.js`
 - The UI controls shall be implemented in a new component or as part of `RightPanel.vue`'s Analysis section
 - The state management shall use Vue reactivity (refs, computed) without introducing new external state management
 
 ### NFR-4: Mobile Consideration
-- The controls must be usable on mobile devices (touch-friendly slider, appropriate sizing)
+- The controls must be usable on mobile devices (touch-friendly buttons, appropriate sizing)
 - The mobile overlay chart (if applicable) should also support these controls
 
 ---
@@ -193,13 +301,13 @@ The customer previously noted: *"We need to be very careful with the modificatio
 
 | Out of Scope | Rationale |
 |---|---|
-| Per-leg IV adjustment | Single IV control is sufficient for this iteration; per-leg control adds significant UI complexity |
 | IV smile/skew modeling | Flat vol assumption is standard for this type of simulation |
-- | Saving/loading simulation presets | Future enhancement if users request it |
+| Saving/loading simulation presets | Future enhancement if users request it |
 | Historical IV data | Only current IV is used; no historical IV lookup |
-| Greeks display on chart | Showing delta, gamma, theta, vega values is not part of this request |
 | Risk-free rate adjustment | Use hardcoded 5% as in current implementation |
 | Multiple theoretical lines | Only one theoretical line at a time; not "what-if" comparison overlays |
+| Dividend yield adjustment | Not part of this request |
+| Adding legs in analysis mode | TastyTrade allows adding new legs for analysis; out of scope for now |
 
 ---
 
@@ -208,21 +316,25 @@ The customer previously noted: *"We need to be very careful with the modificatio
 | # | Criterion | Verification |
 |---|-----------|--------------|
 | AC-1 | The T+0 line is renamed to "P/L Theoretical" in the legend and tooltip | Visual inspection |
-| AC-2 | A date selection control is visible in the Analysis tab's Payoff Chart section | Visual inspection |
+| AC-2 | A date selection control is visible in the Analysis tab with calendar picker and arrow buttons | Visual inspection |
 | AC-3 | The date control allows selection from Today to the latest expiration date | Interact with control, verify range |
 | AC-4 | Selecting a future date updates the theoretical P&L line to show P&L at that date | Select date, verify line shape changes (time decay visible) |
-| AC-5 | A volatility adjustment control is visible in the Analysis tab's Payoff Chart section | Visual inspection |
-| AC-6 | The volatility control shows the current combined IV as default | Verify default value matches weighted average of legs' IVs |
-| AC-7 | Adjusting the volatility updates the theoretical P&L line | Adjust IV slider, verify line shape changes (vega impact visible) |
-| AC-8 | Both controls can be adjusted simultaneously with correct combined effect | Adjust both, verify P&L reflects both time and vol changes |
-| AC-9 | A Reset button restores both controls to defaults | Click Reset, verify controls return to T+0 and current IV |
-| AC-10 | Controls reset to defaults when the user changes position/legs | Select different legs, verify controls reset |
-| AC-11 | When IV data is unavailable, the volatility control is disabled and theoretical line is not shown | Test with symbol lacking IV data |
-| AC-12 | All existing chart interactions (zoom, pan, crosshair) continue to work | Interact with chart, verify no regressions |
-| AC-13 | Chart updates smoothly without flickering when controls are adjusted | Drag sliders, verify smooth visual updates |
-| AC-14 | For 0 DTE positions, the theoretical line matches the expiration line | Select 0 DTE position, verify lines overlap |
-| AC-15 | For mixed-expiration positions, the date slider maximum is the latest expiration | Select calendar spread, verify date range |
-| AC-16 | All existing frontend tests continue to pass | Run `npm test` in `trade-app/` |
+| AC-5 | An IV adjustment control is visible with increment/decrement buttons | Visual inspection |
+| AC-6 | The IV control shows the current expiration IV as default | Verify default value matches weighted average of legs' IVs |
+| AC-7 | Adjusting the IV updates the theoretical P&L line | Adjust IV, verify line shape changes (vega impact visible) |
+| AC-8 | "Use per-contract IVs" checkbox enables per-leg IV adjustment | Enable checkbox, verify individual leg IV controls appear |
+| AC-9 | A spot price simulation control is visible with increment/decrement buttons | Visual inspection |
+| AC-10 | Adjusting the spot price shows P&L at the theoretical price | Adjust spot price, verify P&L updates |
+| AC-11 | Line visibility toggles work for both P/L at Expiration and P/L Theoretical | Toggle each line, verify visibility changes |
+| AC-12 | All controls can be adjusted simultaneously with correct combined effect | Adjust all, verify P&L reflects all changes |
+| AC-13 | A Reset button restores all controls to defaults | Click Reset, verify controls return to defaults |
+| AC-14 | Controls reset to defaults when the user changes position/legs | Select different legs, verify controls reset |
+| AC-15 | When IV data is unavailable, the volatility control is disabled | Test with symbol lacking IV data |
+| AC-16 | All existing chart interactions (zoom, pan, crosshair) continue to work | Interact with chart, verify no regressions |
+| AC-17 | Chart updates smoothly without flickering when controls are adjusted | Click buttons, verify smooth visual updates |
+| AC-18 | For 0 DTE positions, the theoretical line matches the expiration line | Select 0 DTE position, verify lines overlap |
+| AC-19 | For mixed-expiration positions, the date picker maximum is the latest expiration | Select calendar spread, verify date range |
+| AC-20 | All existing frontend tests continue to pass | Run `npm test` in `trade-app/` |
 
 ---
 
@@ -232,10 +344,10 @@ The customer previously noted: *"We need to be very careful with the modificatio
 
 | File | Role |
 |---|---|
-| `trade-app/src/utils/blackScholes.js` | Black-Scholes pricing; extend to support custom date and IV |
+| `trade-app/src/utils/blackScholes.js` | Black-Scholes pricing; extend to support custom date, IV, and spot price |
 | `trade-app/src/utils/chartUtils.js` | Chart configuration; rename T+0 dataset to P/L Theoretical |
 | `trade-app/src/components/PayoffChart.vue` | Chart component; may need to accept control state as props |
-| `trade-app/src/components/RightPanel.vue` | Analysis section; add date and volatility controls |
+| `trade-app/src/components/RightPanel.vue` | Analysis section; add simulation controls |
 | `trade-app/src/views/OptionsTrading.vue` | Data flow; may need to pass control state through chartData |
 | `trade-app/src/services/smartMarketDataStore.js` | Greeks data; already provides IV per option symbol |
 
@@ -257,13 +369,18 @@ OptionsTrading.vue
 RightPanel.vue (new state)
   → selectedDate = ref(today)
   → selectedIV = ref(currentCombinedIV)
+  → selectedSpotPrice = ref(currentSpotPrice)
+  → usePerContractIV = ref(false)
+  → perContractIVs = ref({})
+  → showExpirationLine = ref(true)
+  → showTheoreticalLine = ref(true)
   → emit control changes to parent
 
 OptionsTrading.vue
   → receives control state from RightPanel (or manages it locally)
-  → updateChartData(positions, selectedDate, selectedIV)
+  → updateChartData(positions, simulationState)
     → generateMultiLegPayoff() → expiration payoffs (unchanged)
-    → computeTheoreticalPayoffs(positions, selectedDate, selectedIV) → theoretical payoffs
+    → computeTheoreticalPayoffs(positions, selectedDate, selectedIV, selectedSpotPrice) → theoretical payoffs
   → chartData = { prices, payoffs, t0Payoffs: theoreticalPayoffs, ... }
   → RightPanel.vue
     → PayoffChart.vue
@@ -300,66 +417,86 @@ const T = Math.max(timeFromSelectedToExpiry, 0); // 0 if expired at selected dat
 ## 8. UI/UX Design Notes
 
 ### 8.1 Control Placement
-The controls should be placed **above the payoff chart** in the Analysis tab, within the "Payoff Chart" section. Suggested layout:
+The controls should be placed in the **right panel** within the Analysis section, above the payoff chart. Following TastyTrade's layout:
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│ Payoff Chart                                    [−] │
+│ Analysis Mode                                        │
+├─────────────────────────────────────────────────────┤
+│ Position: NFLX Vertical Call Spread                 │
+│ P/L Open: -$23.00                                   │
 ├─────────────────────────────────────────────────────┤
 │ ┌─────────────────────────────────────────────────┐ │
-│ │ Date: [====●=========] Jan 28 (Today)           │ │
-│ │        Today                    Expiration      │ │
+│ │ Evaluate at Date                                │ │
+│ │  [◀]  [  Jan 30, 2025  ]  [📅]                 │ │
 │ └─────────────────────────────────────────────────┘ │
 │ ┌─────────────────────────────────────────────────┐ │
-│ │ IV:   [========●====] 28.5%                    │ │
-│ │        10%                      150%            │ │
-│ │                              [Reset]            │ │
+│ │ Implied Volatility                              │ │
+│ │  [−]  [   37.7%   ]  [+]                        │ │
+│ │  Current: 32.7% (+5.0%)                         │ │
+│ │  ☐ Use per-contract IVs                         │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ Theo Spot Price                                 │ │
+│ │  [−]  [   $580.00   ]  [+]                      │ │
+│ │  Current: $565.50                               │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ Lines                                           │ │
+│ │  ☑ P/L at Expiration   ☑ P/L Theoretical       │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │ Greek Overlay: [No Greek ▼]                    │ │
+│ └─────────────────────────────────────────────────┘ │
+│ ┌─────────────────────────────────────────────────┐ │
+│ │            [Reset to Defaults]                  │ │
 │ └─────────────────────────────────────────────────┘ │
 │ ┌─────────────────────────────────────────────────┐ │
 │ │                                                 │ │
 │ │            [Payoff Chart Canvas]                │ │
 │ │                                                 │ │
 │ └─────────────────────────────────────────────────┘ │
-│ 💡 Interactive Chart: Use +/- buttons to zoom...   │
 └─────────────────────────────────────────────────────┘
 ```
 
-### 8.2 Slider Behavior
-- **Date slider:** 
-  - Linear scale from 0 to max days
-  - Snap to integer days
-  - Label shows formatted date and days remaining
-  
-- **IV slider:**
-  - Linear or logarithmic scale (TBD based on typical IV ranges)
-  - Snap to 0.5% or 1% increments
-  - Label shows current IV percentage
+### 8.2 Control Styling
+- Use PrimeVue InputNumber component for numeric inputs with increment/decrement buttons
+- Use PrimeVue Calendar component for date picker
+- Use PrimeVue Checkbox for toggles
+- Use PrimeVue Dropdown for Greek selector
+- Match existing dark theme colors from `theme.css`
 
-### 8.3 Styling
-- Use existing PrimeVue slider component if available, or custom styled range input
-- Match existing dark theme colors
-- Controls should be compact but touch-friendly
+### 8.3 Button Behavior
+- **Date arrows:** Increment/decrement by 1 day
+- **IV buttons:** Increment/decrement by 1% absolute IV
+- **Spot price buttons:** Increment/decrement by appropriate amount (e.g., $1 for stocks, $0.01 for some underlyings)
 
 ---
 
-## 9. Questions for Customer
+## 9. Implementation Phases
 
-Before proceeding with implementation, please confirm:
+### Phase 1: Core Controls (MVP)
+- FR-1: Rename T+0 to P/L Theoretical
+- FR-2: Date selection control
+- FR-3.1-3.2: Expiration IV mode only
+- FR-5: Line visibility toggles
+- FR-8: Reset button
 
-1. **Date control format:** Would you prefer a slider (as shown above) or a date picker input? Slider provides quicker interaction; date picker allows precise date selection.
+### Phase 2: Enhanced Features
+- FR-3.3: Per-contract IV mode
+- FR-4: Spot price simulation
+- FR-6: Greek overlay (optional)
 
-2. **IV range:** What should be the minimum and maximum IV values? Suggested: 5% to 150% absolute IV. Is this appropriate for your use cases?
-
-3. **Control placement:** Should the controls be inside the Payoff Chart section (as proposed) or in a separate "Simulation Controls" section?
-
-4. **Default IV display:** Should the default IV be the weighted average of all legs' IVs, or would you prefer a different calculation (e.g., ATM IV, IVx of the underlying)?
-
-5. **Per-leg IV control:** Is the single IV control sufficient for now, or do you need per-leg IV adjustment in this iteration?
+### Phase 3: Polish
+- Performance optimization
+- Mobile responsiveness
+- Additional edge case handling
 
 ---
 
 ## 10. References
 
 - **Previous implementation:** `docs/issue-14-enhance-payoff-chart/` — T+0 line requirements and architecture
-- **TastyTrade reference:** Their "Expiration Implied Volatility" control shows combined IV and allows user adjustment
-- **ThinkorSwim reference:** Their "Theoretical P&L" tool allows date and volatility simulation
+- **TastyTrade Desktop Platform:** Analysis Mode with P/L Theo, IV adjustment, and date simulation
+- **YouTube - "Analyzing Theoretical Scenarios on Open Positions":** https://www.youtube.com/watch?v=nnshba7E-Bk
+- **YouTube - "Analysis Mode Overview (tastytrade Desktop Platform)":** https://www.youtube.com/watch?v=AF3uy8cHPs0
