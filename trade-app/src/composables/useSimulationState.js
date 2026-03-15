@@ -1,7 +1,7 @@
 import { ref, computed, watch } from 'vue';
 import { calculateWeightedAverageIV } from '../utils/theoreticalPayoff.js';
 
-const IV_MIN = 0.05;
+const IV_MIN = 0;
 const IV_MAX = 2.0;
 const IV_STEP = 0.01;
 

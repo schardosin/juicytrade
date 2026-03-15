@@ -43,7 +43,7 @@
           >&#8722;</button>
           <InputNumber
             v-model="ivPercentValue"
-            :min="5"
+            :min="0"
             :max="200"
             :step="1"
             suffix="%"
