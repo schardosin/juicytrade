@@ -3,70 +3,62 @@
     <!-- Row 1: Main controls — Date + IV + Reset -->
     <div class="controls-main-row">
       <div class="control-zone date-zone">
-        <span class="zone-label">Date</span>
-        <button
-          class="sim-btn"
-          @click="handleDecrementDate"
-          :disabled="isMinDate || !hasPositions"
-          title="Previous day"
-        ><i class="pi pi-chevron-left"></i></button>
-        <Calendar
-          v-model="selectedDateValue"
-          :minDate="minDateValue"
-          :maxDate="maxDateValue"
-          dateFormat="M d, yy"
-          :showIcon="true"
-          class="date-calendar"
-          :disabled="!hasPositions"
-          :manualInput="false"
-        />
-        <button
-          class="sim-btn"
-          @click="handleIncrementDate"
-          :disabled="isMaxDate || !hasPositions"
-          title="Next day"
-        ><i class="pi pi-chevron-right"></i></button>
+        <div class="zone-controls">
+          <span class="zone-label">Date</span>
+          <button
+            class="sim-btn"
+            @click="handleDecrementDate"
+            :disabled="isMinDate || !hasPositions"
+            title="Previous day"
+          ><i class="pi pi-chevron-left"></i></button>
+          <Calendar
+            v-model="selectedDateValue"
+            :minDate="minDateValue"
+            :maxDate="maxDateValue"
+            dateFormat="M d, yy"
+            :showIcon="true"
+            class="date-calendar"
+            :disabled="!hasPositions"
+            :manualInput="false"
+          />
+          <button
+            class="sim-btn"
+            @click="handleIncrementDate"
+            :disabled="isMaxDate || !hasPositions"
+            title="Next day"
+          ><i class="pi pi-chevron-right"></i></button>
+        </div>
+        <div class="zone-info date-hint" v-if="hasPositions && maxDateValue">
+          Exp: {{ formatDate(maxDateValue) }}
+        </div>
       </div>
       <div class="control-zone iv-zone">
-        <span class="zone-label">IV</span>
-        <button
-          class="sim-btn"
-          @click="handleDecrementIV"
-          :disabled="isMinIV || !ivAvailable || !hasPositions"
-          :title="ivTooltip"
-        >&#8722;</button>
-        <InputNumber
-          v-model="ivPercentValue"
-          :min="5"
-          :max="200"
-          :step="1"
-          suffix="%"
-          :disabled="!ivAvailable || !hasPositions"
-          class="iv-input"
-          v-tooltip="ivTooltip"
-        />
-        <button
-          class="sim-btn"
-          @click="handleIncrementIV"
-          :disabled="isMaxIV || !ivAvailable || !hasPositions"
-          :title="ivTooltip"
-        >+</button>
-      </div>
-      <button
-        class="sim-btn"
-        @click="handleReset"
-        :disabled="isDefaultState || !hasPositions"
-        title="Reset to Defaults"
-      ><i class="pi pi-refresh"></i></button>
-    </div>
-
-    <!-- Row 2: Hint/info text -->
-    <div v-if="hasPositions && (maxDateValue || ivAvailable)" class="controls-info-row">
-      <div class="date-hint">
-        <span v-if="maxDateValue">Exp: {{ formatDate(maxDateValue) }}</span>
-      </div>
-      <div class="iv-info">
-        <span v-if="ivAvailable && defaultIVValue !== null">
+        <div class="zone-controls">
+          <span class="zone-label">IV</span>
+          <button
+            class="sim-btn"
+            @click="handleDecrementIV"
+            :disabled="isMinIV || !ivAvailable || !hasPositions"
+            :title="ivTooltip"
+          >&#8722;</button>
+          <InputNumber
+            v-model="ivPercentValue"
+            :min="5"
+            :max="200"
+            :step="1"
+            suffix="%"
+            :disabled="!ivAvailable || !hasPositions"
+            class="iv-input"
+            v-tooltip="ivTooltip"
+          />
+          <button
+            class="sim-btn"
+            @click="handleIncrementIV"
+            :disabled="isMaxIV || !ivAvailable || !hasPositions"
+            :title="ivTooltip"
+          >+</button>
+        </div>
+        <div class="zone-info iv-info" v-if="ivAvailable && defaultIVValue !== null">
           Current: {{ formatPercent(defaultIVValue) }}
           <span
             v-if="ivDeltaValue !== 0"
@@ -74,12 +66,17 @@
           >
             ({{ ivDeltaValue > 0 ? '+' : '' }}{{ ivDeltaValue.toFixed(1) }}%)
           </span>
-        </span>
-        <span v-else class="iv-unavailable">
-          IV data unavailable
-        </span>
+        </div>
+        <div class="zone-info iv-info" v-else-if="hasPositions">
+          <span class="iv-unavailable">IV data unavailable</span>
+        </div>
       </div>
-      <div></div>
+      <button
+        class="sim-btn"
+        @click="handleReset"
+        :disabled="isDefaultState || !hasPositions"
+        title="Reset to Defaults"
+      ><i class="pi pi-refresh"></i></button>
     </div>
 
     <!-- Row 3: Line toggles -->
@@ -348,15 +345,29 @@ export default {
   display: grid;
   grid-template-columns: 1fr 1fr auto;
   gap: 8px;
-  align-items: center;
+  align-items: start;
 }
 
-/* Each control zone: inline flex row */
+/* Each control zone: vertical stack (controls + label) */
 .control-zone {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* Horizontal row of controls within a zone */
+.zone-controls {
   display: flex;
   align-items: center;
   gap: 4px;
-  min-width: 0;
+}
+
+/* Info label below controls */
+.zone-info {
+  font-size: 10px;
+  color: var(--text-tertiary, #888888);
+  text-align: left;
 }
 
 /* Inline zone labels */
@@ -376,9 +387,8 @@ export default {
 }
 
 .iv-input {
-  flex: 0 0 auto;
-  width: 60px;
-  max-width: 60px;
+  flex: 1;
+  min-width: 60px;
   overflow: hidden;
 }
 
@@ -410,23 +420,14 @@ export default {
   cursor: not-allowed;
 }
 
-/* Row 2: Info/hint text — matches grid alignment */
-.controls-info-row {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
-  gap: 8px;
-}
-
 .date-hint {
   font-size: 10px;
   color: var(--text-tertiary, #888888);
-  padding-left: 60px;
 }
 
 .iv-info {
   font-size: 10px;
   color: var(--text-tertiary, #888888);
-  padding-left: 50px;
 }
 
 .iv-unavailable {
@@ -469,9 +470,6 @@ export default {
   }
   .iv-zone {
     grid-column: 1;
-  }
-  .controls-info-row {
-    grid-template-columns: 1fr 1fr;
   }
 }
 
