@@ -6,7 +6,9 @@ const IV_MAX = 2.0;
 const IV_STEP = 0.01;
 
 export function useSimulationState(positions, marketData) {
-  const selectedDate = ref(new Date());
+  const now = new Date();
+  now.setHours(0, 0, 0, 0);
+  const selectedDate = ref(now);
   const selectedIVOverride = ref(null);
   const showExpirationLine = ref(true);
   const showTheoreticalLine = ref(true);
@@ -94,7 +96,9 @@ export function useSimulationState(positions, marketData) {
   });
 
   const reset = () => {
-    selectedDate.value = new Date();
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    selectedDate.value = today;
     selectedIVOverride.value = null;
     showExpirationLine.value = true;
     showTheoreticalLine.value = true;
@@ -104,10 +108,15 @@ export function useSimulationState(positions, marketData) {
     const current = selectedDate.value;
     const next = new Date(current);
     next.setDate(next.getDate() + 1);
+    next.setHours(0, 0, 0, 0);
     
     const max = maxDate.value;
-    if (max && next > max) {
-      return;
+    if (max) {
+      const maxNormalized = new Date(max);
+      maxNormalized.setHours(0, 0, 0, 0);
+      if (next > maxNormalized) {
+        return;
+      }
     }
     
     selectedDate.value = next;
@@ -117,6 +126,7 @@ export function useSimulationState(positions, marketData) {
     const current = selectedDate.value;
     const prev = new Date(current);
     prev.setDate(prev.getDate() - 1);
+    prev.setHours(0, 0, 0, 0);
     
     const min = minDate.value;
     if (prev < min) {
