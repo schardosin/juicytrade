@@ -114,19 +114,6 @@
         <!-- Analysis Section -->
         <div v-else-if="activeSection === 'analysis'" class="section-content">
           <RightPanelSection
-            title="Simulation"
-            icon="pi pi-sliders-h"
-            :defaultExpanded="true"
-            @toggle="onSectionToggle"
-          >
-            <SimulationControls
-              :positions="checkedPositionsList"
-              :marketData="smartMarketDataStore"
-              @update:modelValue="onSimulationChange"
-            />
-          </RightPanelSection>
-
-          <RightPanelSection
             title="Payoff Chart"
             icon="pi pi-chart-line"
             :defaultExpanded="true"
@@ -149,6 +136,19 @@
                 <p>Select options to view payoff chart</p>
               </div>
             </div>
+          </RightPanelSection>
+
+          <RightPanelSection
+            title="Simulation"
+            icon="pi pi-sliders-h"
+            :defaultExpanded="true"
+            @toggle="onSectionToggle"
+          >
+            <SimulationControls
+              :positions="checkedPositionsList"
+              :marketData="smartMarketDataStore"
+              @update:modelValue="onSimulationChange"
+            />
           </RightPanelSection>
 
           <RightPanelSection
