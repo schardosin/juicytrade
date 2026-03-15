@@ -482,8 +482,8 @@ export default {
 }
 
 :deep(.p-checkbox-box.p-highlight) {
-  background-color: var(--color-brand, #ff6b35) !important;
-  border-color: var(--color-brand, #ff6b35) !important;
+  background-color: #007bff !important;
+  border-color: #007bff !important;
 }
 
 :deep(.p-button.p-button-text) {
