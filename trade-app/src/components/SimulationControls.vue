@@ -379,6 +379,7 @@ export default {
   flex: 0 0 auto;
   width: 60px;
   max-width: 60px;
+  overflow: hidden;
 }
 
 /* Sim buttons — matching BottomTradingPanel .price-btn pattern */
@@ -425,7 +426,7 @@ export default {
 .iv-info {
   font-size: 10px;
   color: var(--text-tertiary, #888888);
-  padding-left: 46px;
+  padding-left: 50px;
 }
 
 .iv-unavailable {
@@ -475,32 +476,44 @@ export default {
 }
 
 /* PrimeVue deep overrides */
-:deep(.p-calendar-input) {
+.date-calendar :deep(.p-inputtext) {
   background-color: var(--bg-tertiary, #1a1d23) !important;
   border-color: var(--border-secondary, #2a2d33) !important;
   color: var(--text-primary, #ffffff) !important;
-  height: 28px;
-  min-height: 28px;
-  padding: 4px 8px;
-  font-size: 11px;
-  box-sizing: border-box;
+  height: 28px !important;
+  min-height: 28px !important;
+  max-height: 28px !important;
+  padding: 4px 8px !important;
+  font-size: 11px !important;
+  box-sizing: border-box !important;
+  line-height: 1 !important;
 }
 
-:deep(.p-calendar-input:focus) {
+.date-calendar :deep(.p-inputtext:focus) {
   border-color: var(--color-brand, #ff6b35) !important;
 }
 
-:deep(.p-inputnumber-input) {
+.iv-input :deep(.p-inputnumber) {
+  width: 100%;
+}
+
+.iv-input :deep(.p-inputtext) {
+  width: 100% !important;
+  max-width: 100% !important;
+  height: 28px !important;
+  min-height: 28px !important;
+  max-height: 28px !important;
+  padding: 4px 2px !important;
+  font-size: 11px !important;
+  text-align: center !important;
+  box-sizing: border-box !important;
+  line-height: 1 !important;
   background-color: var(--bg-tertiary, #1a1d23) !important;
   border-color: var(--border-secondary, #2a2d33) !important;
   color: var(--text-primary, #ffffff) !important;
-  text-align: center;
-  height: 28px;
-  padding: 4px 6px;
-  font-size: 11px;
 }
 
-:deep(.p-inputnumber-input:focus) {
+.iv-input :deep(.p-inputtext:focus) {
   border-color: var(--color-brand, #ff6b35) !important;
 }
 
