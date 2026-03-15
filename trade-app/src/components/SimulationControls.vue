@@ -1,8 +1,9 @@
 <template>
   <div class="simulation-controls">
-    <div class="control-group date-selector">
-      <label class="control-label">Evaluate at Date</label>
-      <div class="control-row">
+    <!-- Row 1: Main controls — Date + IV + Reset -->
+    <div class="controls-main-row">
+      <div class="control-zone date-zone">
+        <span class="zone-label">Date</span>
         <Button
           icon="pi pi-chevron-left"
           class="p-button-sm p-button-text p-button-plain"
@@ -28,14 +29,8 @@
           v-tooltip="'Next day'"
         />
       </div>
-      <div v-if="hasPositions && maxDateValue" class="date-hint">
-        Expires: {{ formatDate(maxDateValue) }}
-      </div>
-    </div>
-
-    <div class="control-group iv-selector">
-      <label class="control-label">Implied Volatility</label>
-      <div class="control-row">
+      <div class="control-zone iv-zone">
+        <span class="zone-label">IV</span>
         <Button
           label="-"
           class="p-button-sm p-button-text p-button-plain"
@@ -61,7 +56,21 @@
           v-tooltip="ivTooltip"
         />
       </div>
-      <div v-if="hasPositions" class="iv-info">
+      <Button
+        icon="pi pi-refresh"
+        class="p-button-sm p-button-text p-button-rounded reset-btn"
+        @click="handleReset"
+        :disabled="isDefaultState || !hasPositions"
+        v-tooltip="'Reset to Defaults'"
+      />
+    </div>
+
+    <!-- Row 2: Hint/info text -->
+    <div v-if="hasPositions && (maxDateValue || ivAvailable)" class="controls-info-row">
+      <div class="date-hint">
+        <span v-if="maxDateValue">Exp: {{ formatDate(maxDateValue) }}</span>
+      </div>
+      <div class="iv-info">
         <span v-if="ivAvailable && defaultIVValue !== null">
           Current: {{ formatPercent(defaultIVValue) }}
           <span
@@ -75,11 +84,12 @@
           IV data unavailable
         </span>
       </div>
+      <div></div>
     </div>
 
-    <div class="control-group line-toggles">
-      <label class="control-label">Lines</label>
-      <div class="toggle-row">
+    <!-- Row 3: Line toggles -->
+    <div class="controls-toggles-row">
+      <div class="toggle-item">
         <Checkbox
           v-model="showExpirationLineValue"
           inputId="exp-line"
@@ -88,7 +98,7 @@
         />
         <label for="exp-line" class="toggle-label">P/L at Expiration</label>
       </div>
-      <div class="toggle-row">
+      <div class="toggle-item">
         <Checkbox
           v-model="showTheoreticalLineValue"
           inputId="theo-line"
@@ -98,14 +108,6 @@
         <label for="theo-line" class="toggle-label">P/L Theoretical</label>
       </div>
     </div>
-
-    <Button
-      label="Reset to Defaults"
-      icon="pi pi-refresh"
-      class="p-button-sm p-button-outlined reset-btn"
-      @click="handleReset"
-      :disabled="isDefaultState || !hasPositions"
-    />
   </div>
 </template>
 
@@ -330,52 +332,76 @@ export default {
 </script>
 
 <style scoped>
+/* Container */
 .simulation-controls {
   display: flex;
   flex-direction: column;
-  gap: 16px;
-  padding: 12px;
+  gap: 6px;
+  padding: 8px 12px;
   background-color: var(--bg-primary, #0b0d10);
   border-radius: var(--radius-md, 6px);
 }
 
-.control-group {
-  display: flex;
-  flex-direction: column;
+/* Row 1: Main controls — 3-column grid */
+.controls-main-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
   gap: 8px;
+  align-items: center;
 }
 
-.control-label {
-  font-size: var(--font-size-sm, 11px);
-  font-weight: var(--font-weight-medium, 500);
-  color: var(--text-secondary, #cccccc);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-}
-
-.control-row {
+/* Each control zone: inline flex row */
+.control-zone {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 4px;
+  min-width: 0;
 }
 
+/* Inline zone labels */
+.zone-label {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-secondary, #cccccc);
+  white-space: nowrap;
+}
+
+/* Calendar and IV input sizing */
 .date-calendar {
   flex: 1;
-}
-
-.date-hint {
-  font-size: var(--font-size-xs, 10px);
-  color: var(--text-tertiary, #888888);
+  min-width: 110px;
 }
 
 .iv-input {
   flex: 1;
-  min-width: 80px;
+  min-width: 50px;
+}
+
+/* Reset button — icon only, compact */
+.reset-btn {
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+/* Row 2: Info/hint text — matches grid alignment */
+.controls-info-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr auto;
+  gap: 8px;
+}
+
+.date-hint {
+  font-size: 10px;
+  color: var(--text-tertiary, #888888);
+  padding-left: 32px;
 }
 
 .iv-info {
-  font-size: var(--font-size-xs, 10px);
+  font-size: 10px;
   color: var(--text-tertiary, #888888);
+  padding-left: 20px;
 }
 
 .iv-unavailable {
@@ -390,29 +416,45 @@ export default {
   color: var(--color-danger, #ff4444);
 }
 
-.line-toggles {
+/* Row 3: Toggle checkboxes — horizontal */
+.controls-toggles-row {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 16px;
+  padding-top: 2px;
+}
+
+.toggle-item {
+  display: flex;
+  align-items: center;
   gap: 6px;
 }
 
-.toggle-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
 .toggle-label {
-  font-size: var(--font-size-base, 12px);
+  font-size: 12px;
   color: var(--text-primary, #ffffff);
   cursor: pointer;
+  white-space: nowrap;
 }
 
-.reset-btn {
-  width: 100%;
-  margin-top: 8px;
+/* Responsive: narrow panels */
+@media (max-width: 900px) {
+  .controls-main-row {
+    grid-template-columns: 1fr auto;
+  }
+  .iv-zone {
+    grid-column: 1;
+  }
+  .reset-btn {
+    grid-row: 1;
+    grid-column: 2;
+  }
+  .controls-info-row {
+    grid-template-columns: 1fr 1fr;
+  }
 }
 
+/* PrimeVue deep overrides */
 :deep(.p-calendar-input) {
   background-color: var(--bg-tertiary, #1a1d23) !important;
   border-color: var(--border-secondary, #2a2d33) !important;
@@ -451,16 +493,5 @@ export default {
 :deep(.p-button.p-button-text:hover) {
   background-color: var(--bg-tertiary, #1a1d23);
   color: var(--text-primary, #ffffff);
-}
-
-:deep(.p-button.p-button-outlined) {
-  border-color: var(--border-secondary, #2a2d33);
-  color: var(--text-secondary, #cccccc);
-}
-
-:deep(.p-button.p-button-outlined:hover) {
-  background-color: var(--bg-tertiary, #1a1d23);
-  border-color: var(--color-brand, #ff6b35);
-  color: var(--color-brand, #ff6b35);
 }
 </style>
