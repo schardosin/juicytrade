@@ -87,6 +87,15 @@ vi.mock('../src/components/RightPanelChart.vue', () => ({
   }
 }));
 
+vi.mock('../src/components/SimulationControls.vue', () => ({
+  default: {
+    name: 'SimulationControls',
+    template: '<div class="simulation-controls-mock"></div>',
+    props: ['positions', 'marketData', 'modelValue'],
+    emits: ['update:modelValue']
+  }
+}));
+
 describe('RightPanel - Core Logic Tests', () => {
   let wrapper;
   

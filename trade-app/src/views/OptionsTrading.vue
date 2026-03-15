@@ -84,8 +84,11 @@
         :adjustedNetCredit="adjustedNetCredit"
         :forceExpanded="isRightPanelExpanded"
         :forceSection="rightPanelSection"
+        :showExpirationLine="showExpirationLine"
+        :showTheoreticalLine="showTheoreticalLine"
         @panel-collapsed="onRightPanelCollapsed"
         @positions-changed="onPositionsChanged"
+        @simulation-change="onSimulationChange"
       />
     </div>
 
@@ -185,6 +188,7 @@ import { mapToRootSymbol, isWeeklySymbol, mapToWeeklySymbol } from "../utils/sym
 // import webSocketClient from "../services/webSocketClient";
 import { generateMultiLegPayoff } from "../utils/chartUtils";
 import { calculateT0Payoffs } from "../utils/blackScholes";
+import { calculateTheoreticalPayoffs } from "../utils/theoreticalPayoff";
 
 export default {
   name: "OptionsTrading",
@@ -327,6 +331,11 @@ export default {
     const currentStrikeCount = ref(20);
     const adjustedNetCredit = ref(null);
     const rightPanelControlsChart = ref(false); // Flag to indicate RightPanel is controlling chart
+
+    // Simulation state for T+X payoff
+    const simulationState = ref(null);
+    const showExpirationLine = ref(true);
+    const showTheoreticalLine = ref(true);
 
     // Legacy data for backward compatibility (will be removed gradually)
     const optionsChainData = ref([]);
@@ -760,43 +769,33 @@ export default {
      * Attempt to compute T+0 payoff data for the given positions.
      * Returns null if IV data is not available for ALL legs.
      */
-    const computeT0ForPositions = (positions, payoffData) => {
+    const computeT0ForPositions = (positions, payoffData, simState = null) => {
       const optionPositions = positions.filter(
         (pos) => pos.asset_class === "us_option"
       );
       if (optionPositions.length === 0) return null;
 
-      const now = new Date();
-      const legs = [];
+      const selectedDate = simState?.selectedDate ? new Date(simState.selectedDate) : new Date();
+      const selectedIV = simState?.effectiveIV ?? null;
 
-      for (const pos of optionPositions) {
-        const greeksRef = getOptionGreeks(pos.symbol);
+      const getIV = (symbol) => {
+        const greeksRef = getOptionGreeks(symbol);
         const greeks = greeksRef.value;
+        if (!greeks || !greeks.implied_volatility) return null;
+        return greeks.implied_volatility;
+      };
 
-        if (!greeks || !greeks.implied_volatility) {
-          return null; // Per FR-6: if ANY leg lacks IV, skip T+0 entirely
-        }
-
-        const expiryDate = new Date(pos.expiry_date + "T16:00:00");
-        const msToExpiry = expiryDate.getTime() - now.getTime();
-        const T = Math.max(msToExpiry / (365.25 * 24 * 60 * 60 * 1000), 0);
-
-        legs.push({
-          strike_price: pos.strike_price,
-          option_type: pos.option_type,
-          qty: pos.qty,
-          avg_entry_price: pos.avg_entry_price || 0,
-          iv: greeks.implied_volatility,
-          T: T,
-        });
-      }
-
-      return calculateT0Payoffs({
+      const result = calculateTheoreticalPayoffs({
         prices: payoffData.prices,
-        legs: legs,
+        positions: optionPositions,
+        selectedDate: selectedDate,
+        selectedIV: selectedIV,
+        getIV: getIV,
         riskFreeRate: 0.05,
         creditAdjustment: payoffData._creditAdjustment || 0,
       });
+
+      return result;
     };
 
     const updateChartData = async (positions = null) => {
@@ -816,12 +815,12 @@ export default {
         );
 
         if (payoffData) {
-          // Attempt T+0 calculation (optional — fails silently)
+          // Attempt T+0/Theoretical calculation (optional — fails silently)
           let t0Payoffs = null;
           try {
-            t0Payoffs = computeT0ForPositions(positions, payoffData);
+            t0Payoffs = computeT0ForPositions(positions, payoffData, simulationState.value);
           } catch (e) {
-            console.warn("T+0 calculation failed:", e.message);
+            console.warn("T+0/Theoretical calculation failed:", e.message);
           }
           payoffData.t0Payoffs = t0Payoffs;
 
@@ -993,6 +992,18 @@ export default {
     const onPositionsChanged = (checkedPositions) => {
       activePositions.value = checkedPositions;
       // The watcher on activePositions will handle the chart update
+    };
+
+    // Handle simulation state changes from SimulationControls
+    const onSimulationChange = (simState) => {
+      simulationState.value = simState;
+      showExpirationLine.value = simState?.showExpirationLine ?? true;
+      showTheoreticalLine.value = simState?.showTheoreticalLine ?? true;
+      
+      // Recalculate chart if we have active positions
+      if (activePositions.value && activePositions.value.length > 0) {
+        updateChartData(activePositions.value);
+      }
     };
 
     // CollapsibleOptionsChain event handlers - now using centralized manager
@@ -1558,6 +1569,11 @@ export default {
       handleOrderConfirmation,
       handleOrderCancellation,
       handleOrderResultClose,
+
+      // Simulation / payoff chart controls
+      showExpirationLine,
+      showTheoreticalLine,
+      onSimulationChange,
     };
   },
 };

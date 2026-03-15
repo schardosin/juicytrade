@@ -844,7 +844,7 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
     }));
 
     datasets.push({
-      label: "Today (T+0)",
+      label: "P/L Theoretical",
       data: t0ChartPoints,
       borderColor: "rgb(0, 150, 255)",
       borderWidth: 2,
@@ -958,7 +958,7 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
       const hasT0 = t0YVal !== null;
       const priceText = `$${Math.round(xVal)}`;
       const expiryPlText = hasT0 ? `Expiry P&L: $${Math.round(yVal)}` : `P&L: $${Math.round(yVal)}`;
-      const todayPlText = hasT0 ? `Today P&L: $${Math.round(t0YVal)}` : null;
+      const todayPlText = hasT0 ? `Theoretical P/L: $${Math.round(t0YVal)}` : null;
 
       ctx.font = "bold 12px sans-serif";
       const priceWidth = ctx.measureText(priceText).width;

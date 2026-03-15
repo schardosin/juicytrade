@@ -129,11 +129,26 @@
                 height="350px"
                 :symbol="currentSymbol"
                 :isLivePrice="isLivePrice"
+                :showExpirationLine="showExpirationLine"
+                :showTheoreticalLine="showTheoreticalLine"
               />
               <div v-else class="no-chart-message">
                 <p>Select options to view payoff chart</p>
               </div>
             </div>
+          </RightPanelSection>
+
+          <RightPanelSection
+            title="Simulation"
+            icon="pi pi-sliders-h"
+            :defaultExpanded="true"
+            @toggle="onSectionToggle"
+          >
+            <SimulationControls
+              :positions="checkedPositionsList"
+              :marketData="smartMarketDataStore"
+              @update:modelValue="onSimulationChange"
+            />
           </RightPanelSection>
 
           <RightPanelSection
@@ -284,6 +299,7 @@ import RightPanelChart from "./RightPanelChart.vue";
 import PayoffChart from "./PayoffChart.vue";
 import ActivitySection from "./ActivitySection.vue";
 import WatchlistSection from "./WatchlistSection.vue";
+import SimulationControls from "./SimulationControls.vue";
 import { useMarketData } from "../composables/useMarketData.js";
 import { useSelectedLegs } from "../composables/useSelectedLegs.js";
 import { useSmartMarketData } from "../composables/useSmartMarketData.js";
@@ -300,6 +316,7 @@ export default {
     PayoffChart,
     ActivitySection,
     WatchlistSection,
+    SimulationControls,
   },
   props: {
     currentSymbol: {
@@ -342,8 +359,16 @@ export default {
       type: String,
       default: null,
     },
+    showExpirationLine: {
+      type: Boolean,
+      default: true,
+    },
+    showTheoreticalLine: {
+      type: Boolean,
+      default: true,
+    },
   },
-  emits: ["panel-collapsed", "positions-changed"],
+  emits: ["panel-collapsed", "positions-changed", "simulation-change"],
   setup(props, { emit }) {
     // Use unified market data composable and centralized selected legs
     const { getPositionsForSymbol } = useMarketData();
@@ -920,6 +945,18 @@ export default {
       return priceData?.value || null;
     });
 
+    // Computed list of checked positions for SimulationControls
+    const checkedPositionsList = computed(() => {
+      return allPositions.value.filter((pos) =>
+        checkedPositions.value.has(pos.id)
+      );
+    });
+
+    // Handle simulation state changes from SimulationControls
+    const onSimulationChange = (simState) => {
+      emit("simulation-change", simState);
+    };
+
     // REMOVED: This watcher was causing race conditions with the parent's flag system
     // The parent (OptionsTrading) now properly manages the priority between selectedLegs and position selections
     // watch(
@@ -954,6 +991,10 @@ export default {
       updateChartWithCheckedPositions,
       isInTheMoney,
       formatEnhancedOptionDescription,
+      // SimulationControls
+      smartMarketDataStore,
+      checkedPositionsList,
+      onSimulationChange,
     };
   },
 };

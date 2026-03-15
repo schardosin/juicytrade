@@ -131,6 +131,14 @@ export default {
       type: Boolean,
       default: false,
     },
+    showExpirationLine: {
+      type: Boolean,
+      default: true,
+    },
+    showTheoreticalLine: {
+      type: Boolean,
+      default: true,
+    },
   },
   setup(props) {
     const chartCanvas = ref(null);
@@ -535,6 +543,22 @@ export default {
           }
         });
 
+        // Apply line visibility based on props
+        const positionDataset = chart.value.data.datasets.find(
+          (d) => d.label && d.label.startsWith("Position Payoff")
+        );
+        const theoreticalDataset = chart.value.data.datasets.find(
+          (d) => d.label === "P/L Theoretical"
+        );
+
+        if (positionDataset) {
+          positionDataset.hidden = !props.showExpirationLine;
+        }
+        if (theoreticalDataset) {
+          const hasT0Payoffs = props.chartData && props.chartData.t0Payoffs && props.chartData.t0Payoffs.length > 0;
+          theoreticalDataset.hidden = !props.showTheoreticalLine || !hasT0Payoffs;
+        }
+
         // Update annotations
         if (config.options?.plugins?.annotation?.annotations) {
           chart.value.options.plugins.annotation.annotations = config.options.plugins.annotation.annotations;
@@ -643,6 +667,23 @@ export default {
 
         if (ctx && config) {
           chart.value = new Chart(chartCanvas.value, config);
+
+          // Apply line visibility based on props after chart creation
+          const positionDataset = chart.value.data.datasets.find(
+            (d) => d.label && d.label.startsWith("Position Payoff")
+          );
+          const theoreticalDataset = chart.value.data.datasets.find(
+            (d) => d.label === "P/L Theoretical"
+          );
+
+          if (positionDataset) {
+            positionDataset.hidden = !props.showExpirationLine;
+          }
+          if (theoreticalDataset) {
+            const hasT0Payoffs = props.chartData && props.chartData.t0Payoffs && props.chartData.t0Payoffs.length > 0;
+            theoreticalDataset.hidden = !props.showTheoreticalLine || !hasT0Payoffs;
+          }
+
           // Restore view state after chart is created
           await nextTick();
           if (
@@ -710,6 +751,22 @@ export default {
           // Update labels and datasets
           chart.value.data.labels = config.data.labels;
           chart.value.data.datasets = config.data.datasets;
+
+          // Apply line visibility based on props
+          const positionDataset = chart.value.data.datasets.find(
+            (d) => d.label && d.label.startsWith("Position Payoff")
+          );
+          const theoreticalDataset = chart.value.data.datasets.find(
+            (d) => d.label === "P/L Theoretical"
+          );
+
+          if (positionDataset) {
+            positionDataset.hidden = !props.showExpirationLine;
+          }
+          if (theoreticalDataset) {
+            const hasT0Payoffs = props.chartData && props.chartData.t0Payoffs && props.chartData.t0Payoffs.length > 0;
+            theoreticalDataset.hidden = !props.showTheoreticalLine || !hasT0Payoffs;
+          }
 
           // Update the vertical line annotation for current price
           if (config.options?.plugins?.annotation?.annotations) {
@@ -827,6 +884,31 @@ export default {
         }
       },
       { immediate: true }
+    );
+
+    // Watch for line visibility changes
+    watch(
+      [() => props.showExpirationLine, () => props.showTheoreticalLine],
+      () => {
+        if (chart.value && props.chartData) {
+          const positionDataset = chart.value.data.datasets.find(
+            (d) => d.label && d.label.startsWith("Position Payoff")
+          );
+          const theoreticalDataset = chart.value.data.datasets.find(
+            (d) => d.label === "P/L Theoretical"
+          );
+
+          if (positionDataset) {
+            positionDataset.hidden = !props.showExpirationLine;
+          }
+          if (theoreticalDataset) {
+            const hasT0Payoffs = props.chartData && props.chartData.t0Payoffs && props.chartData.t0Payoffs.length > 0;
+            theoreticalDataset.hidden = !props.showTheoreticalLine || !hasT0Payoffs;
+          }
+
+          chart.value.update('none');
+        }
+      }
     );
 
     // Initial chart creation
