@@ -87,18 +87,8 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 }
 
 // =============================================================================
-// Market Data Methods
+// Market Data Methods (stubs — implemented methods are in market_data.go)
 // =============================================================================
-
-// GetStockQuote gets the latest stock quote for a symbol.
-func (s *SchwabProvider) GetStockQuote(ctx context.Context, symbol string) (*models.StockQuote, error) {
-	return nil, fmt.Errorf("schwab: GetStockQuote not yet implemented")
-}
-
-// GetStockQuotes gets stock quotes for multiple symbols.
-func (s *SchwabProvider) GetStockQuotes(ctx context.Context, symbols []string) (map[string]*models.StockQuote, error) {
-	return nil, fmt.Errorf("schwab: GetStockQuotes not yet implemented")
-}
 
 // GetExpirationDates gets available expiration dates for options on a symbol.
 func (s *SchwabProvider) GetExpirationDates(ctx context.Context, symbol string) ([]map[string]interface{}, error) {
