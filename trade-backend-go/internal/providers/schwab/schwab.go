@@ -87,27 +87,12 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 }
 
 // =============================================================================
-// Account & Portfolio Methods
+// Account & Portfolio Methods (implemented in account.go)
 // =============================================================================
-
-// GetPositions gets all current positions.
-func (s *SchwabProvider) GetPositions(ctx context.Context) ([]*models.Position, error) {
-	return nil, fmt.Errorf("schwab: GetPositions not yet implemented")
-}
-
-// GetPositionsEnhanced gets enhanced positions with hierarchical grouping.
-func (s *SchwabProvider) GetPositionsEnhanced(ctx context.Context) (*models.EnhancedPositionsResponse, error) {
-	return nil, fmt.Errorf("schwab: GetPositionsEnhanced not yet implemented")
-}
 
 // GetOrders gets orders with optional status filter.
 func (s *SchwabProvider) GetOrders(ctx context.Context, status string) ([]*models.Order, error) {
 	return nil, fmt.Errorf("schwab: GetOrders not yet implemented")
-}
-
-// GetAccount gets account information including balance and buying power.
-func (s *SchwabProvider) GetAccount(ctx context.Context) (*models.Account, error) {
-	return nil, fmt.Errorf("schwab: GetAccount not yet implemented")
 }
 
 // =============================================================================
