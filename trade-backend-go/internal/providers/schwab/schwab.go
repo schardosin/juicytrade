@@ -2,8 +2,10 @@ package schwab
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 
@@ -238,9 +240,81 @@ func (s *SchwabProvider) IsAccountStreamConnected() bool {
 // Utility Methods
 // =============================================================================
 
-// TestCredentials tests provider credentials by making a real API call.
+// TestCredentials validates credentials by refreshing the token and verifying
+// the account hash against the Schwab accountNumbers endpoint.
 func (s *SchwabProvider) TestCredentials(ctx context.Context) (map[string]interface{}, error) {
-	return nil, fmt.Errorf("schwab: TestCredentials not yet implemented")
+	// Step 1: Attempt token refresh
+	if err := s.ensureValidToken(); err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("Authentication failed: %s", err.Error()),
+		}, nil
+	}
+
+	// Step 2: Fetch account numbers to verify account hash
+	url := s.buildTraderURL("/accounts/accountNumbers")
+	body, statusCode, err := s.doAuthenticatedRequest(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("Failed to fetch account numbers: %s", err.Error()),
+		}, nil
+	}
+
+	if statusCode != http.StatusOK {
+		return map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("Schwab API returned status %d when fetching account numbers", statusCode),
+		}, nil
+	}
+
+	// Step 3: Parse response — array of {accountNumber, hashValue}
+	var accounts []struct {
+		AccountNumber string `json:"accountNumber"`
+		HashValue     string `json:"hashValue"`
+	}
+	if err := json.Unmarshal(body, &accounts); err != nil {
+		return map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("Failed to parse account numbers response: %s", err.Error()),
+		}, nil
+	}
+
+	if len(accounts) == 0 {
+		return map[string]interface{}{
+			"success": false,
+			"message": "No accounts found for these credentials",
+		}, nil
+	}
+
+	// Step 4: Verify account hash matches
+	hashFound := false
+	for _, acct := range accounts {
+		if acct.HashValue == s.accountHash {
+			hashFound = true
+			break
+		}
+	}
+
+	if !hashFound {
+		return map[string]interface{}{
+			"success": false,
+			"message": fmt.Sprintf("Account hash %q not found among %d accounts returned by Schwab", truncateToken(s.accountHash), len(accounts)),
+		}, nil
+	}
+
+	// Success — add sandbox warning for paper accounts
+	message := "Schwab credentials validated successfully"
+	if s.accountType == "paper" {
+		message = "Schwab sandbox credentials validated. Note: The Schwab sandbox has known limitations — some order types may be rejected and behavior may be inconsistent with production."
+	}
+
+	s.logger.Info("credentials validated", "account_count", len(accounts))
+
+	return map[string]interface{}{
+		"success": true,
+		"message": message,
+	}, nil
 }
 
 // HealthCheck performs a health check on the provider.
@@ -248,7 +322,7 @@ func (s *SchwabProvider) HealthCheck(ctx context.Context) (map[string]interface{
 	return s.BaseProviderImpl.HealthCheck(ctx)
 }
 
-// Ping verifies connection health.
+// Ping verifies connection health by ensuring the token is valid.
 func (s *SchwabProvider) Ping(ctx context.Context) error {
-	return fmt.Errorf("schwab: Ping not yet implemented")
+	return s.ensureValidToken()
 }
