@@ -88,12 +88,8 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 
 // =============================================================================
 // Account & Portfolio Methods (implemented in account.go)
+// Orders: GetOrders, CancelOrder implemented in orders.go
 // =============================================================================
-
-// GetOrders gets orders with optional status filter.
-func (s *SchwabProvider) GetOrders(ctx context.Context, status string) ([]*models.Order, error) {
-	return nil, fmt.Errorf("schwab: GetOrders not yet implemented")
-}
 
 // =============================================================================
 // Order Management Methods
@@ -114,10 +110,7 @@ func (s *SchwabProvider) PreviewOrder(ctx context.Context, orderData map[string]
 	return nil, fmt.Errorf("schwab: order preview not supported by Schwab API")
 }
 
-// CancelOrder cancels an existing order.
-func (s *SchwabProvider) CancelOrder(ctx context.Context, orderID string) (bool, error) {
-	return false, fmt.Errorf("schwab: CancelOrder not yet implemented")
-}
+// CancelOrder — implemented in orders.go
 
 // =============================================================================
 // Streaming Methods
