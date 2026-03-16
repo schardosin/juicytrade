@@ -943,3 +943,329 @@ func TestTransformSchwabOptionsChain_NoGreeks(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// Historical bars fixtures and tests
+// =============================================================================
+
+const schwabPriceHistoryResponse = `{
+	"candles": [
+		{"open": 149.0, "high": 150.0, "low": 148.0, "close": 149.5, "volume": 10000000, "datetime": 1715731200000},
+		{"open": 149.5, "high": 151.0, "low": 149.0, "close": 150.25, "volume": 12000000, "datetime": 1715817600000},
+		{"open": 150.25, "high": 152.0, "low": 150.0, "close": 151.5, "volume": 11000000, "datetime": 1715904000000}
+	],
+	"symbol": "AAPL",
+	"empty": false
+}`
+
+func TestGetHistoricalBars_Daily(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/pricehistory"):
+			if r.URL.Query().Get("frequencyType") != "daily" {
+				t.Errorf("expected frequencyType=daily, got %s", r.URL.Query().Get("frequencyType"))
+			}
+			if r.URL.Query().Get("frequency") != "1" {
+				t.Errorf("expected frequency=1, got %s", r.URL.Query().Get("frequency"))
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, schwabPriceHistoryResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "1D", nil, nil, 0)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(bars) != 3 {
+		t.Fatalf("expected 3 bars, got %d", len(bars))
+	}
+
+	// Verify first bar
+	bar := bars[0]
+	if bar["open"] != 149.0 {
+		t.Errorf("expected open 149.0, got %v", bar["open"])
+	}
+	if bar["high"] != 150.0 {
+		t.Errorf("expected high 150.0, got %v", bar["high"])
+	}
+	if bar["low"] != 148.0 {
+		t.Errorf("expected low 148.0, got %v", bar["low"])
+	}
+	if bar["close"] != 149.5 {
+		t.Errorf("expected close 149.5, got %v", bar["close"])
+	}
+	if bar["volume"] != 10000000.0 {
+		t.Errorf("expected volume 10000000, got %v", bar["volume"])
+	}
+	// Verify timestamp is ISO 8601
+	ts, ok := bar["timestamp"].(string)
+	if !ok || ts == "" {
+		t.Error("expected timestamp string")
+	}
+	if _, err := time.Parse(time.RFC3339, ts); err != nil {
+		t.Errorf("timestamp is not valid RFC3339: %s", ts)
+	}
+}
+
+func TestGetHistoricalBars_Minute(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/pricehistory"):
+			if r.URL.Query().Get("frequencyType") != "minute" {
+				t.Errorf("expected frequencyType=minute, got %s", r.URL.Query().Get("frequencyType"))
+			}
+			if r.URL.Query().Get("frequency") != "5" {
+				t.Errorf("expected frequency=5, got %s", r.URL.Query().Get("frequency"))
+			}
+			if r.URL.Query().Get("periodType") != "day" {
+				t.Errorf("expected periodType=day, got %s", r.URL.Query().Get("periodType"))
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, schwabPriceHistoryResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "5min", nil, nil, 0)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(bars) != 3 {
+		t.Fatalf("expected 3 bars, got %d", len(bars))
+	}
+}
+
+func TestGetHistoricalBars_WithDateRange(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/pricehistory"):
+			// Verify date params are present as epoch millis
+			startDate := r.URL.Query().Get("startDate")
+			endDate := r.URL.Query().Get("endDate")
+			if startDate == "" {
+				t.Error("expected startDate param")
+			}
+			if endDate == "" {
+				t.Error("expected endDate param")
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, schwabPriceHistoryResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	start := "2024-05-01"
+	end := "2024-05-15"
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "1D", &start, &end, 0)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(bars) != 3 {
+		t.Fatalf("expected 3 bars, got %d", len(bars))
+	}
+}
+
+func TestGetHistoricalBars_WithLimit(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/pricehistory"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, schwabPriceHistoryResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	// Request with limit=2 — should return last 2 of 3 candles
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "1D", nil, nil, 2)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(bars) != 2 {
+		t.Fatalf("expected 2 bars (limited), got %d", len(bars))
+	}
+	// Verify it's the last 2 bars (not first 2)
+	if bars[0]["close"] != 150.25 {
+		t.Errorf("expected second candle close 150.25, got %v", bars[0]["close"])
+	}
+	if bars[1]["close"] != 151.5 {
+		t.Errorf("expected third candle close 151.5, got %v", bars[1]["close"])
+	}
+}
+
+func TestGetHistoricalBars_EmptyCandles(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/pricehistory"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"candles": [], "symbol": "AAPL", "empty": true}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "1D", nil, nil, 0)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(bars) != 0 {
+		t.Fatalf("expected 0 bars for empty candles, got %d", len(bars))
+	}
+}
+
+// =============================================================================
+// GetNextMarketDate tests
+// =============================================================================
+
+func TestGetNextMarketDate(t *testing.T) {
+	p := newTestProvider("http://unused")
+	p.accessToken = "token"
+	p.tokenExpiry = time.Now().Add(30 * time.Minute)
+
+	date, err := p.GetNextMarketDate(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if date == "" {
+		t.Fatal("expected non-empty date")
+	}
+
+	// Verify it's a valid date
+	parsed, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		t.Fatalf("expected valid YYYY-MM-DD date, got %q: %v", date, err)
+	}
+
+	// Should be a weekday
+	day := parsed.Weekday()
+	if day == time.Saturday || day == time.Sunday {
+		t.Errorf("expected weekday, got %s", day)
+	}
+}
+
+// =============================================================================
+// mapTimeframe tests
+// =============================================================================
+
+func TestMapTimeframe(t *testing.T) {
+	tests := []struct {
+		input         string
+		frequencyType string
+		frequency     string
+		periodType    string
+	}{
+		{"1min", "minute", "1", "day"},
+		{"5min", "minute", "5", "day"},
+		{"15min", "minute", "15", "day"},
+		{"30min", "minute", "30", "day"},
+		{"1hour", "minute", "30", "day"},
+		{"1H", "minute", "30", "day"},
+		{"1D", "daily", "1", "year"},
+		{"daily", "daily", "1", "year"},
+		{"1W", "weekly", "1", "year"},
+		{"weekly", "weekly", "1", "year"},
+		{"unknown", "daily", "1", "year"}, // default
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			params := mapTimeframe(tt.input)
+			if params.frequencyType != tt.frequencyType {
+				t.Errorf("frequencyType: expected %s, got %s", tt.frequencyType, params.frequencyType)
+			}
+			if params.frequency != tt.frequency {
+				t.Errorf("frequency: expected %s, got %s", tt.frequency, params.frequency)
+			}
+			if params.periodType != tt.periodType {
+				t.Errorf("periodType: expected %s, got %s", tt.periodType, params.periodType)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// dateToEpochMs tests
+// =============================================================================
+
+func TestDateToEpochMs(t *testing.T) {
+	ms, err := dateToEpochMs("2024-05-15")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if ms <= 0 {
+		t.Fatalf("expected positive epoch ms, got %d", ms)
+	}
+
+	// Verify round-trip
+	roundTrip := time.UnixMilli(ms).UTC().Format("2006-01-02")
+	if roundTrip != "2024-05-15" {
+		t.Errorf("expected 2024-05-15, got %s", roundTrip)
+	}
+}
+
+func TestDateToEpochMs_Invalid(t *testing.T) {
+	_, err := dateToEpochMs("not-a-date")
+	if err == nil {
+		t.Fatal("expected error for invalid date, got nil")
+	}
+}
+
+func TestIsWeekday(t *testing.T) {
+	// Monday 2024-05-13
+	mon := time.Date(2024, 5, 13, 12, 0, 0, 0, time.UTC)
+	if !isWeekday(mon) {
+		t.Error("expected Monday to be a weekday")
+	}
+	// Friday 2024-05-17
+	fri := time.Date(2024, 5, 17, 12, 0, 0, 0, time.UTC)
+	if !isWeekday(fri) {
+		t.Error("expected Friday to be a weekday")
+	}
+	// Saturday 2024-05-18
+	sat := time.Date(2024, 5, 18, 12, 0, 0, 0, time.UTC)
+	if isWeekday(sat) {
+		t.Error("expected Saturday to NOT be a weekday")
+	}
+	// Sunday 2024-05-19
+	sun := time.Date(2024, 5, 19, 12, 0, 0, 0, time.UTC)
+	if isWeekday(sun) {
+		t.Error("expected Sunday to NOT be a weekday")
+	}
+}

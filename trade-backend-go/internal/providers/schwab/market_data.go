@@ -582,3 +582,170 @@ func transformSchwabOptionContract(data map[string]interface{}, underlyingSymbol
 
 	return contract
 }
+
+// =============================================================================
+// Historical Bars
+// =============================================================================
+
+// schwabTimeframeParams holds the Schwab API parameters for a given timeframe.
+type schwabTimeframeParams struct {
+	periodType    string
+	frequencyType string
+	frequency     string
+}
+
+// mapTimeframe maps a JuicyTrade timeframe string to Schwab API parameters.
+func mapTimeframe(timeframe string) schwabTimeframeParams {
+	switch strings.ToLower(timeframe) {
+	case "1min":
+		return schwabTimeframeParams{"day", "minute", "1"}
+	case "5min":
+		return schwabTimeframeParams{"day", "minute", "5"}
+	case "15min":
+		return schwabTimeframeParams{"day", "minute", "15"}
+	case "30min":
+		return schwabTimeframeParams{"day", "minute", "30"}
+	case "1hour", "1h", "60min":
+		// Schwab doesn't have hourly — approximate with 30-min
+		return schwabTimeframeParams{"day", "minute", "30"}
+	case "1d", "daily":
+		return schwabTimeframeParams{"year", "daily", "1"}
+	case "1w", "weekly":
+		return schwabTimeframeParams{"year", "weekly", "1"}
+	default:
+		// Default to daily
+		return schwabTimeframeParams{"year", "daily", "1"}
+	}
+}
+
+// GetHistoricalBars gets historical OHLCV bars for charting.
+// Uses GET /marketdata/v1/pricehistory with timeframe mapping.
+func (s *SchwabProvider) GetHistoricalBars(ctx context.Context, symbol, timeframe string, startDate, endDate *string, limit int) ([]map[string]interface{}, error) {
+	tf := mapTimeframe(timeframe)
+
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	params.Set("periodType", tf.periodType)
+	params.Set("frequencyType", tf.frequencyType)
+	params.Set("frequency", tf.frequency)
+
+	// Add date range if provided (convert YYYY-MM-DD to epoch millis)
+	if startDate != nil && *startDate != "" {
+		if ms, err := dateToEpochMs(*startDate); err == nil {
+			params.Set("startDate", strconv.FormatInt(ms, 10))
+		}
+	}
+	if endDate != nil && *endDate != "" {
+		if ms, err := dateToEpochMs(*endDate); err == nil {
+			params.Set("endDate", strconv.FormatInt(ms, 10))
+		}
+	}
+
+	reqURL := s.buildMarketDataURL("/pricehistory?" + params.Encode())
+
+	body, _, err := s.doAuthenticatedRequest(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("schwab: GetHistoricalBars failed for %s: %w", symbol, err)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("schwab: failed to parse pricehistory response: %w", err)
+	}
+
+	// Extract candles array
+	candlesRaw, ok := response["candles"]
+	if !ok {
+		return []map[string]interface{}{}, nil
+	}
+	candlesArr, ok := candlesRaw.([]interface{})
+	if !ok {
+		return []map[string]interface{}{}, nil
+	}
+
+	var bars []map[string]interface{}
+	for _, c := range candlesArr {
+		candle, ok := c.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		bar := map[string]interface{}{}
+		if v, ok := extractFloat64(candle, "open"); ok {
+			bar["open"] = v
+		}
+		if v, ok := extractFloat64(candle, "high"); ok {
+			bar["high"] = v
+		}
+		if v, ok := extractFloat64(candle, "low"); ok {
+			bar["low"] = v
+		}
+		if v, ok := extractFloat64(candle, "close"); ok {
+			bar["close"] = v
+		}
+		if v, ok := extractFloat64(candle, "volume"); ok {
+			bar["volume"] = v
+		}
+		// Convert datetime epoch millis to ISO 8601
+		if dtMs, ok := extractFloat64(candle, "datetime"); ok && dtMs > 0 {
+			bar["timestamp"] = time.UnixMilli(int64(dtMs)).Format(time.RFC3339)
+		}
+
+		bars = append(bars, bar)
+	}
+
+	// Apply limit — return only the last N bars
+	if limit > 0 && len(bars) > limit {
+		bars = bars[len(bars)-limit:]
+	}
+
+	s.logger.Debug("GetHistoricalBars completed",
+		"symbol", symbol, "timeframe", timeframe, "bars", len(bars))
+	return bars, nil
+}
+
+// dateToEpochMs converts a "YYYY-MM-DD" date string to epoch milliseconds.
+func dateToEpochMs(dateStr string) (int64, error) {
+	t, err := time.Parse("2006-01-02", dateStr)
+	if err != nil {
+		return 0, err
+	}
+	return t.UnixMilli(), nil
+}
+
+// =============================================================================
+// Market Calendar
+// =============================================================================
+
+// GetNextMarketDate returns the next US equity market trading date.
+// Uses a simple business-day calculation: advances to the next weekday,
+// skipping weekends. Does not account for market holidays.
+func (s *SchwabProvider) GetNextMarketDate(ctx context.Context) (string, error) {
+	// Use US Eastern time for market hours
+	eastern, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		// Fallback to UTC if timezone data not available
+		eastern = time.UTC
+	}
+
+	now := time.Now().In(eastern)
+
+	// If it's a weekday and before market close (4:00 PM ET), today is valid
+	if isWeekday(now) && now.Hour() < 16 {
+		return now.Format("2006-01-02"), nil
+	}
+
+	// Advance to next day and find next weekday
+	next := now.AddDate(0, 0, 1)
+	for !isWeekday(next) {
+		next = next.AddDate(0, 0, 1)
+	}
+
+	return next.Format("2006-01-02"), nil
+}
+
+// isWeekday returns true if the given time falls on a weekday (Mon-Fri).
+func isWeekday(t time.Time) bool {
+	day := t.Weekday()
+	return day != time.Saturday && day != time.Sunday
+}

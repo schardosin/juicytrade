@@ -90,19 +90,9 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 // Market Data Methods (stubs — implemented methods are in market_data.go)
 // =============================================================================
 
-// GetNextMarketDate gets the next trading date.
-func (s *SchwabProvider) GetNextMarketDate(ctx context.Context) (string, error) {
-	return "", fmt.Errorf("schwab: GetNextMarketDate not yet implemented")
-}
-
 // LookupSymbols searches for symbols matching the query.
 func (s *SchwabProvider) LookupSymbols(ctx context.Context, query string) ([]*models.SymbolSearchResult, error) {
 	return nil, fmt.Errorf("schwab: LookupSymbols not yet implemented")
-}
-
-// GetHistoricalBars gets historical OHLCV bars for charting.
-func (s *SchwabProvider) GetHistoricalBars(ctx context.Context, symbol, timeframe string, startDate, endDate *string, limit int) ([]map[string]interface{}, error) {
-	return nil, fmt.Errorf("schwab: GetHistoricalBars not yet implemented")
 }
 
 // =============================================================================
