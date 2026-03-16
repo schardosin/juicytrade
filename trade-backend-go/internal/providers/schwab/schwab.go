@@ -101,18 +101,8 @@ func (s *SchwabProvider) PreviewOrder(ctx context.Context, orderData map[string]
 }
 
 // =============================================================================
-// Streaming Methods
+// Streaming Methods (ConnectStreaming, DisconnectStreaming in streaming.go)
 // =============================================================================
-
-// ConnectStreaming connects to the Schwab streaming service via WebSocket.
-func (s *SchwabProvider) ConnectStreaming(ctx context.Context) (bool, error) {
-	return false, fmt.Errorf("schwab: ConnectStreaming not yet implemented")
-}
-
-// DisconnectStreaming disconnects from the Schwab streaming service.
-func (s *SchwabProvider) DisconnectStreaming(ctx context.Context) (bool, error) {
-	return false, fmt.Errorf("schwab: DisconnectStreaming not yet implemented")
-}
 
 // SubscribeToSymbols subscribes to real-time data for symbols.
 func (s *SchwabProvider) SubscribeToSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
