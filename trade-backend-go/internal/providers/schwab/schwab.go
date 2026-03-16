@@ -105,14 +105,10 @@ func (s *SchwabProvider) PreviewOrder(ctx context.Context, orderData map[string]
 // =============================================================================
 
 // SubscribeToSymbols subscribes to real-time data for symbols.
-func (s *SchwabProvider) SubscribeToSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
-	return false, fmt.Errorf("schwab: SubscribeToSymbols not yet implemented")
-}
+// Implemented in streaming.go.
 
 // UnsubscribeFromSymbols unsubscribes from real-time data for symbols.
-func (s *SchwabProvider) UnsubscribeFromSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
-	return false, fmt.Errorf("schwab: UnsubscribeFromSymbols not yet implemented")
-}
+// Implemented in streaming.go.
 
 // =============================================================================
 // Account Event Streaming Methods

@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
+	"strings"
 	"sync/atomic"
 	"time"
+
+	"trade-backend-go/internal/models"
 
 	"github.com/gorilla/websocket"
 )
@@ -255,8 +258,176 @@ func (s *SchwabProvider) DisconnectStreaming(ctx context.Context) (bool, error) 
 }
 
 // =============================================================================
-// Stream Read Loop
+// Subscribe / Unsubscribe
 // =============================================================================
+
+// subscribeBatchSize is the maximum number of symbols to send in a single
+// SUBS message. Schwab's streaming API may reject excessively large payloads.
+const subscribeBatchSize = 50
+
+// SubscribeToSymbols subscribes to real-time data for the given symbols.
+//
+// Symbols are classified into equities and options via classifySymbols().
+// Option symbols in OCC format are converted to Schwab space-padded format
+// before subscribing. Symbols are batched in groups of 50 with a 100ms delay
+// between batches to avoid overwhelming the WebSocket connection.
+func (s *SchwabProvider) SubscribeToSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
+	if !s.IsConnected {
+		return false, fmt.Errorf("schwab: cannot subscribe — streaming not connected")
+	}
+
+	if len(symbols) == 0 {
+		return true, nil
+	}
+
+	// Classify symbols into equities and options
+	equities, options := classifySymbols(symbols)
+
+	// Convert option symbols from OCC to Schwab format for subscription
+	schwabOptions := make([]string, len(options))
+	for i, opt := range options {
+		schwabOptions[i] = convertOCCToSchwab(opt)
+	}
+
+	// Subscribe to equities (LEVELONE_EQUITIES service)
+	if len(equities) > 0 {
+		if err := s.subscribeBatched(ctx, "LEVELONE_EQUITIES", equities, equitySubscriptionFields); err != nil {
+			return false, fmt.Errorf("schwab: failed to subscribe equities: %w", err)
+		}
+	}
+
+	// Subscribe to options (LEVELONE_OPTIONS service)
+	if len(schwabOptions) > 0 {
+		if err := s.subscribeBatched(ctx, "LEVELONE_OPTIONS", schwabOptions, optionSubscriptionFields); err != nil {
+			return false, fmt.Errorf("schwab: failed to subscribe options: %w", err)
+		}
+	}
+
+	// Track subscribed symbols using the original (OCC/equity) symbols
+	for _, sym := range symbols {
+		s.SubscribedSymbols[sym] = true
+	}
+
+	s.logger.Info("subscribed to symbols",
+		"equities", len(equities), "options", len(options), "total", len(symbols))
+
+	return true, nil
+}
+
+// subscribeBatched sends SUBS messages for a list of symbols in batches of
+// subscribeBatchSize, with a 100ms delay between batches.
+func (s *SchwabProvider) subscribeBatched(ctx context.Context, service string, symbols []string, fields string) error {
+	for i := 0; i < len(symbols); i += subscribeBatchSize {
+		end := i + subscribeBatchSize
+		if end > len(symbols) {
+			end = len(symbols)
+		}
+		batch := symbols[i:end]
+
+		req := schwabStreamRequest{
+			Requests: []schwabStreamRequestItem{
+				{
+					RequestID:              s.nextRequestID(),
+					Service:                service,
+					Command:                "SUBS",
+					SchwabClientCustomerID: s.streamCustomerID,
+					SchwabClientCorrelID:   s.streamCorrelID,
+					Parameters: map[string]interface{}{
+						"keys":   strings.Join(batch, ","),
+						"fields": fields,
+					},
+				},
+			},
+		}
+
+		if err := s.sendStreamMessage(req); err != nil {
+			return err
+		}
+
+		// Delay between batches to avoid overwhelming the connection
+		if end < len(symbols) {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+
+	return nil
+}
+
+// UnsubscribeFromSymbols unsubscribes from real-time data for the given symbols.
+func (s *SchwabProvider) UnsubscribeFromSymbols(ctx context.Context, symbols []string, dataTypes []string) (bool, error) {
+	if !s.IsConnected {
+		return true, nil // Already disconnected, nothing to unsubscribe
+	}
+
+	if len(symbols) == 0 {
+		return true, nil
+	}
+
+	// Classify symbols into equities and options
+	equities, options := classifySymbols(symbols)
+
+	// Convert option symbols from OCC to Schwab format for unsubscription
+	schwabOptions := make([]string, len(options))
+	for i, opt := range options {
+		schwabOptions[i] = convertOCCToSchwab(opt)
+	}
+
+	// Unsubscribe equities
+	if len(equities) > 0 {
+		req := schwabStreamRequest{
+			Requests: []schwabStreamRequestItem{
+				{
+					RequestID:              s.nextRequestID(),
+					Service:                "LEVELONE_EQUITIES",
+					Command:                "UNSUBS",
+					SchwabClientCustomerID: s.streamCustomerID,
+					SchwabClientCorrelID:   s.streamCorrelID,
+					Parameters: map[string]interface{}{
+						"keys": strings.Join(equities, ","),
+					},
+				},
+			},
+		}
+		if err := s.sendStreamMessage(req); err != nil {
+			return false, fmt.Errorf("schwab: failed to unsubscribe equities: %w", err)
+		}
+	}
+
+	// Unsubscribe options
+	if len(schwabOptions) > 0 {
+		req := schwabStreamRequest{
+			Requests: []schwabStreamRequestItem{
+				{
+					RequestID:              s.nextRequestID(),
+					Service:                "LEVELONE_OPTIONS",
+					Command:                "UNSUBS",
+					SchwabClientCustomerID: s.streamCustomerID,
+					SchwabClientCorrelID:   s.streamCorrelID,
+					Parameters: map[string]interface{}{
+						"keys": strings.Join(schwabOptions, ","),
+					},
+				},
+			},
+		}
+		if err := s.sendStreamMessage(req); err != nil {
+			return false, fmt.Errorf("schwab: failed to unsubscribe options: %w", err)
+		}
+	}
+
+	// Remove from tracked subscriptions
+	for _, sym := range symbols {
+		delete(s.SubscribedSymbols, sym)
+	}
+
+	s.logger.Info("unsubscribed from symbols",
+		"equities", len(equities), "options", len(options), "total", len(symbols))
+
+	return true, nil
+}
 
 // streamReadLoop reads messages from the WebSocket in a loop.
 // It runs in its own goroutine and exits when streamStopChan is closed
@@ -325,11 +496,57 @@ func (s *SchwabProvider) streamReadLoop() {
 	}
 }
 
-// processStreamData processes a streaming data message.
-// Placeholder — full implementation in step 4.2.
+// processStreamData processes a streaming data message by decoding numerical
+// field keys into named fields using the appropriate field map, then
+// dispatching the decoded data as models.MarketData.
 func (s *SchwabProvider) processStreamData(data schwabStreamDataItem) {
-	// Will be implemented in step 4.2 with field decoding and MarketData dispatch
-	s.logger.Debug("stream data received", "service", data.Service, "items", len(data.Content))
+	service := data.Service
+
+	// Select the appropriate field map based on the service
+	var fieldMap map[string]string
+	switch service {
+	case "LEVELONE_EQUITIES":
+		fieldMap = equityFieldMap
+	case "LEVELONE_OPTIONS":
+		fieldMap = optionFieldMap
+	default:
+		s.logger.Debug("unhandled stream data service", "service", service, "items", len(data.Content))
+		return
+	}
+
+	for _, item := range data.Content {
+		// Decode numerical field keys → named fields
+		decoded := make(map[string]interface{}, len(item))
+		var symbol string
+
+		for key, value := range item {
+			if fieldName, ok := fieldMap[key]; ok {
+				decoded[fieldName] = value
+				if key == "0" { // Field 0 is always SYMBOL
+					if sym, ok := value.(string); ok {
+						symbol = sym
+					}
+				}
+			} else {
+				// Keep unknown fields with their original numerical key
+				decoded[key] = value
+			}
+		}
+
+		if symbol == "" {
+			s.logger.Warn("stream data missing symbol", "service", service)
+			continue
+		}
+
+		// For options, convert Schwab symbol back to OCC format
+		if service == "LEVELONE_OPTIONS" {
+			occSymbol := convertSchwabOptionToOCC(symbol)
+			decoded["SYMBOL"] = occSymbol
+			symbol = occSymbol
+		}
+
+		s.dispatchMarketData(service, symbol, decoded)
+	}
 }
 
 // processStreamResponse handles subscription confirmations and other responses.
@@ -344,6 +561,121 @@ func (s *SchwabProvider) processStreamResponse(resp schwabStreamResponseItem) {
 		s.logger.Warn("stream response error",
 			"service", resp.Service, "command", resp.Command,
 			"code", code, "msg", msg)
+	}
+}
+
+// =============================================================================
+// Market Data Dispatch
+// =============================================================================
+
+// dispatchMarketData converts decoded streaming fields to a models.MarketData
+// and sends it to the StreamingCache (preferred) or StreamingQueue (fallback).
+//
+// For equities the DataType is "quote". For options the DataType is "quote"
+// with Greeks fields embedded in the Data map alongside quote fields.
+func (s *SchwabProvider) dispatchMarketData(service, symbol string, decoded map[string]interface{}) {
+	// Build the data map for models.MarketData using standardized field names
+	data := make(map[string]interface{}, len(decoded))
+
+	switch service {
+	case "LEVELONE_EQUITIES":
+		mapEquityFields(decoded, data)
+	case "LEVELONE_OPTIONS":
+		mapOptionFields(decoded, data)
+	}
+
+	// Determine the data type — options with Greeks get "quote" with Greeks embedded
+	dataType := "quote"
+
+	timestamp := time.Now().Format(time.RFC3339)
+	marketData := models.NewMarketData(symbol, dataType, timestamp, data)
+
+	// Dispatch: prefer StreamingCache, fall back to StreamingQueue
+	if s.StreamingCache != nil {
+		go func() {
+			if err := s.StreamingCache.Update(marketData); err != nil {
+				s.logger.Error("failed to update streaming cache",
+					"symbol", symbol, "error", err)
+			}
+		}()
+	} else if s.StreamingQueue != nil {
+		select {
+		case s.StreamingQueue <- marketData:
+		default:
+			s.logger.Warn("streaming queue full, dropping data", "symbol", symbol)
+		}
+	}
+}
+
+// mapEquityFields maps decoded equity streaming fields to standardized names
+// for the MarketData.Data map.
+func mapEquityFields(decoded, data map[string]interface{}) {
+	fieldMapping := map[string]string{
+		"BID_PRICE":    "bid",
+		"ASK_PRICE":    "ask",
+		"LAST_PRICE":   "last",
+		"BID_SIZE":     "bidsize",
+		"ASK_SIZE":     "asksize",
+		"TOTAL_VOLUME": "volume",
+		"HIGH_PRICE":   "high",
+		"LOW_PRICE":    "low",
+		"CLOSE_PRICE":  "close",
+		"OPEN_PRICE":   "open",
+		"NET_CHANGE":   "change",
+		"MARK":         "mark",
+	}
+
+	for schwabField, standardField := range fieldMapping {
+		if val, ok := decoded[schwabField]; ok {
+			data[standardField] = val
+		}
+	}
+
+	// Keep the symbol
+	if sym, ok := decoded["SYMBOL"]; ok {
+		data["symbol"] = sym
+	}
+}
+
+// mapOptionFields maps decoded option streaming fields to standardized names
+// for the MarketData.Data map, including Greeks.
+func mapOptionFields(decoded, data map[string]interface{}) {
+	fieldMapping := map[string]string{
+		"BID_PRICE":        "bid",
+		"ASK_PRICE":        "ask",
+		"LAST_PRICE":       "last",
+		"HIGH_PRICE":       "high",
+		"LOW_PRICE":        "low",
+		"CLOSE_PRICE":      "close",
+		"OPEN_PRICE":       "open",
+		"TOTAL_VOLUME":     "volume",
+		"OPEN_INTEREST":    "open_interest",
+		"VOLATILITY":       "volatility",
+		"NET_CHANGE":       "change",
+		"MARK":             "mark",
+		"UNDERLYING_PRICE": "underlying_price",
+		"CONTRACT_TYPE":    "contract_type",
+		"UNDERLYING":       "underlying",
+		"EXPIRATION_YEAR":  "expiration_year",
+		"EXPIRATION_MONTH": "expiration_month",
+		"EXPIRATION_DAY":   "expiration_day",
+		// Greeks
+		"DELTA": "delta",
+		"GAMMA": "gamma",
+		"THETA": "theta",
+		"VEGA":  "vega",
+		"RHO":   "rho",
+	}
+
+	for schwabField, standardField := range fieldMapping {
+		if val, ok := decoded[schwabField]; ok {
+			data[standardField] = val
+		}
+	}
+
+	// Keep the symbol
+	if sym, ok := decoded["SYMBOL"]; ok {
+		data["symbol"] = sym
 	}
 }
 
