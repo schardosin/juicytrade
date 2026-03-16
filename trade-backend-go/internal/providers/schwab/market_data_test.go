@@ -1269,3 +1269,183 @@ func TestIsWeekday(t *testing.T) {
 		t.Error("expected Sunday to NOT be a weekday")
 	}
 }
+
+// =============================================================================
+// LookupSymbols tests
+// =============================================================================
+
+func TestLookupSymbols_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/instruments"):
+			if r.URL.Query().Get("projection") != "symbol-search" {
+				t.Errorf("expected projection=symbol-search, got %s", r.URL.Query().Get("projection"))
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{
+				"instruments": [
+					{"symbol": "AAPL", "description": "Apple Inc", "exchange": "NASDAQ", "assetType": "EQUITY"},
+					{"symbol": "AAPX", "description": "Apple ETF Example", "exchange": "NYSE", "assetType": "ETF"},
+					{"symbol": "AAPL250117C00150000", "description": "AAPL Jan 17 2025 150 Call", "exchange": "CBOE", "assetType": "OPTION"}
+				]
+			}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	results, err := p.LookupSymbols(context.Background(), "AAP")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(results) != 3 {
+		t.Fatalf("expected 3 results, got %d", len(results))
+	}
+
+	// Verify first result
+	if results[0].Symbol != "AAPL" {
+		t.Errorf("expected symbol AAPL, got %s", results[0].Symbol)
+	}
+	if results[0].Description != "Apple Inc" {
+		t.Errorf("expected description 'Apple Inc', got %s", results[0].Description)
+	}
+	if results[0].Exchange != "NASDAQ" {
+		t.Errorf("expected exchange NASDAQ, got %s", results[0].Exchange)
+	}
+	if results[0].Type != "stock" {
+		t.Errorf("expected type 'stock', got %s", results[0].Type)
+	}
+
+	// Verify ETF mapping
+	if results[1].Type != "etf" {
+		t.Errorf("expected type 'etf', got %s", results[1].Type)
+	}
+
+	// Verify OPTION mapping
+	if results[2].Type != "option" {
+		t.Errorf("expected type 'option', got %s", results[2].Type)
+	}
+}
+
+func TestLookupSymbols_MapFormat(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/instruments"):
+			// Return map format (keyed by symbol)
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{
+				"AAPL": {"description": "Apple Inc", "exchange": "NASDAQ", "assetType": "EQUITY"},
+				"MSFT": {"description": "Microsoft Corp", "exchange": "NASDAQ", "assetType": "EQUITY"}
+			}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	results, err := p.LookupSymbols(context.Background(), "A")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(results) != 2 {
+		t.Fatalf("expected 2 results, got %d", len(results))
+	}
+
+	// Verify symbols are populated from map keys
+	symbols := make(map[string]bool)
+	for _, r := range results {
+		symbols[r.Symbol] = true
+		if r.Type != "stock" {
+			t.Errorf("expected type 'stock' for %s, got %s", r.Symbol, r.Type)
+		}
+	}
+	if !symbols["AAPL"] {
+		t.Error("expected AAPL in results")
+	}
+	if !symbols["MSFT"] {
+		t.Error("expected MSFT in results")
+	}
+}
+
+func TestLookupSymbols_NoResults(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/instruments"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"instruments": []}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	results, err := p.LookupSymbols(context.Background(), "ZZZZZ")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results, got %d", len(results))
+	}
+}
+
+func TestLookupSymbols_EmptyQuery(t *testing.T) {
+	p := newTestProvider("http://unused")
+	p.accessToken = "token"
+	p.tokenExpiry = time.Now().Add(30 * time.Minute)
+
+	results, err := p.LookupSymbols(context.Background(), "")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("expected 0 results for empty query, got %d", len(results))
+	}
+}
+
+// =============================================================================
+// mapSchwabAssetType tests
+// =============================================================================
+
+func TestMapSchwabAssetType(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"EQUITY", "stock"},
+		{"ETF", "etf"},
+		{"INDEX", "index"},
+		{"OPTION", "option"},
+		{"MUTUAL_FUND", "fund"},
+		{"BOND", "bond"},
+		{"equity", "stock"},
+		{"", ""},
+		{"UNKNOWN_TYPE", "unknown_type"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := mapSchwabAssetType(tt.input)
+			if got != tt.expected {
+				t.Errorf("mapSchwabAssetType(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}

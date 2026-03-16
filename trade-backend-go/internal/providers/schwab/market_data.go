@@ -749,3 +749,120 @@ func isWeekday(t time.Time) bool {
 	day := t.Weekday()
 	return day != time.Saturday && day != time.Sunday
 }
+
+// =============================================================================
+// Symbol Lookup
+// =============================================================================
+
+// LookupSymbols searches for symbols matching the query.
+// Uses GET /marketdata/v1/instruments?symbol={query}&projection=symbol-search
+func (s *SchwabProvider) LookupSymbols(ctx context.Context, query string) ([]*models.SymbolSearchResult, error) {
+	if query == "" {
+		return []*models.SymbolSearchResult{}, nil
+	}
+
+	reqURL := s.buildMarketDataURL("/instruments?symbol=" + url.QueryEscape(query) + "&projection=symbol-search")
+
+	body, _, err := s.doAuthenticatedRequest(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("schwab: LookupSymbols failed for %q: %w", query, err)
+	}
+
+	// Schwab may return either:
+	// 1. {"instruments": [{...}, {...}]}   (array format)
+	// 2. {"AAPL": {...}, "AAPL2": {...}}   (map format, keyed by symbol)
+	var raw json.RawMessage
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return nil, fmt.Errorf("schwab: failed to parse instruments response: %w", err)
+	}
+
+	// Try array format first
+	var arrayResponse struct {
+		Instruments []map[string]interface{} `json:"instruments"`
+	}
+	if err := json.Unmarshal(body, &arrayResponse); err == nil && len(arrayResponse.Instruments) > 0 {
+		return transformInstrumentsList(arrayResponse.Instruments), nil
+	}
+
+	// Try map format (keyed by symbol)
+	var mapResponse map[string]interface{}
+	if err := json.Unmarshal(body, &mapResponse); err == nil {
+		return transformInstrumentsMap(mapResponse), nil
+	}
+
+	return []*models.SymbolSearchResult{}, nil
+}
+
+// transformInstrumentsList transforms a Schwab instruments array into SymbolSearchResult models.
+func transformInstrumentsList(instruments []map[string]interface{}) []*models.SymbolSearchResult {
+	var results []*models.SymbolSearchResult
+	for _, inst := range instruments {
+		result := transformInstrument(inst)
+		if result != nil {
+			results = append(results, result)
+		}
+	}
+	return results
+}
+
+// transformInstrumentsMap transforms a Schwab instruments map (keyed by symbol) into SymbolSearchResult models.
+func transformInstrumentsMap(response map[string]interface{}) []*models.SymbolSearchResult {
+	var results []*models.SymbolSearchResult
+	for sym, dataRaw := range response {
+		data, ok := dataRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		// Ensure symbol is set
+		if _, exists := data["symbol"]; !exists {
+			data["symbol"] = sym
+		}
+		result := transformInstrument(data)
+		if result != nil {
+			results = append(results, result)
+		}
+	}
+	return results
+}
+
+// transformInstrument transforms a single Schwab instrument into a SymbolSearchResult.
+func transformInstrument(data map[string]interface{}) *models.SymbolSearchResult {
+	symbol, _ := extractString(data, "symbol")
+	if symbol == "" {
+		return nil
+	}
+
+	description, _ := extractString(data, "description")
+	exchange, _ := extractString(data, "exchange")
+	assetType, _ := extractString(data, "assetType")
+
+	// Map Schwab asset types to JuicyTrade types
+	symbolType := mapSchwabAssetType(assetType)
+
+	return &models.SymbolSearchResult{
+		Symbol:      symbol,
+		Description: description,
+		Exchange:    exchange,
+		Type:        symbolType,
+	}
+}
+
+// mapSchwabAssetType maps a Schwab assetType to the JuicyTrade symbol type.
+func mapSchwabAssetType(assetType string) string {
+	switch strings.ToUpper(assetType) {
+	case "EQUITY":
+		return "stock"
+	case "ETF":
+		return "etf"
+	case "INDEX":
+		return "index"
+	case "OPTION":
+		return "option"
+	case "MUTUAL_FUND":
+		return "fund"
+	case "BOND":
+		return "bond"
+	default:
+		return strings.ToLower(assetType)
+	}
+}

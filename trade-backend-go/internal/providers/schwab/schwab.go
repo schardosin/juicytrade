@@ -87,15 +87,6 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 }
 
 // =============================================================================
-// Market Data Methods (stubs — implemented methods are in market_data.go)
-// =============================================================================
-
-// LookupSymbols searches for symbols matching the query.
-func (s *SchwabProvider) LookupSymbols(ctx context.Context, query string) ([]*models.SymbolSearchResult, error) {
-	return nil, fmt.Errorf("schwab: LookupSymbols not yet implemented")
-}
-
-// =============================================================================
 // Account & Portfolio Methods
 // =============================================================================
 
