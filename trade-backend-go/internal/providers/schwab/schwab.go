@@ -36,7 +36,6 @@ type SchwabProvider struct {
 	tokenExpiry time.Time
 
 	// --- Rate Limiter ---
-	// TODO: Initialize with newRateLimiter(120, 2.0) once rate_limiter.go is implemented.
 	rateLimiter *rateLimiter
 
 	// --- Market Data Streaming State (protected by streamMu) ---
@@ -57,14 +56,6 @@ type SchwabProvider struct {
 	// --- Logger ---
 	logger *slog.Logger
 }
-
-// rateLimiter is a placeholder type until rate_limiter.go is implemented.
-// TODO: Remove this once rate_limiter.go defines the real type.
-type rateLimiter struct{}
-
-// wait blocks until a rate limit token is available.
-// Placeholder — real implementation in rate_limiter.go.
-func (r *rateLimiter) wait() {}
 
 // NewSchwabProvider creates a new Schwab provider instance.
 // Follows the same constructor pattern as TastyTrade/Tradier providers.
@@ -87,7 +78,7 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 		baseURL:          baseURL,
 		accountType:      accountType,
 		logger:           slog.Default().With("provider", "schwab"),
-		// TODO: rateLimiter: newRateLimiter(120, 2.0),
+		rateLimiter:      newRateLimiter(120, 2.0),
 	}
 
 	return provider
