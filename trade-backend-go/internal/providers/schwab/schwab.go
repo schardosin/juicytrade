@@ -62,6 +62,10 @@ type SchwabProvider struct {
 // TODO: Remove this once rate_limiter.go defines the real type.
 type rateLimiter struct{}
 
+// wait blocks until a rate limit token is available.
+// Placeholder — real implementation in rate_limiter.go.
+func (r *rateLimiter) wait() {}
+
 // NewSchwabProvider creates a new Schwab provider instance.
 // Follows the same constructor pattern as TastyTrade/Tradier providers.
 func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash, baseURL, accountType string) *SchwabProvider {
