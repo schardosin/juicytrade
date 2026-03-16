@@ -10,6 +10,7 @@ import (
 	"trade-backend-go/internal/models"
 	"trade-backend-go/internal/providers/alpaca"
 	"trade-backend-go/internal/providers/base"
+	"trade-backend-go/internal/providers/schwab"
 	"trade-backend-go/internal/providers/tastytrade"
 	"trade-backend-go/internal/providers/tradier"
 )
@@ -116,6 +117,16 @@ func (pm *ProviderManager) createProviderInstance(providerType, accountType stri
 		streamURL, _ := credentials["stream_url"].(string)
 
 		return tradier.NewTradierProvider(accountID, apiKey, baseURL, streamURL, accountType)
+
+	case "schwab":
+		appKey, _ := credentials["app_key"].(string)
+		appSecret, _ := credentials["app_secret"].(string)
+		callbackURL, _ := credentials["callback_url"].(string)
+		refreshToken, _ := credentials["refresh_token"].(string)
+		accountHash, _ := credentials["account_hash"].(string)
+		baseURL, _ := credentials["base_url"].(string)
+
+		return schwab.NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash, baseURL, accountType)
 
 	// TODO: Add other providers (public)
 	// case "public":
