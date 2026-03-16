@@ -2,7 +2,7 @@
 
 **Issue:** [#20 - TD Ameritrade as a Provider](https://github.com/schardosin/juicytrade/issues/20)
 **Date:** 2025-07-14
-**Status:** Draft — Awaiting Customer Approval
+**Status:** Approved
 
 ---
 
@@ -37,7 +37,7 @@ Schwab is one of the largest retail brokerages in the US. Supporting it signific
 | **Token Lifetime** | Access token ~30 minutes; Refresh token ~7 days |
 | **Account Identifier** | Account hash (not raw account number) — obtained via `/accounts/accountNumbers` endpoint |
 | **Greeks Support** | ✅ REST (option chain response includes delta, gamma, theta, vega, rho) and ✅ Streaming (LEVELONE_OPTIONS includes DELTA, GAMMA, THETA, VEGA, RHO fields) |
-| **Paper Trading** | Schwab provides a sandbox environment for testing; however, it has known limitations (some asset classes/order types may not work) |
+| **Paper Trading** | Schwab provides a sandbox environment for testing. It has known limitations (some asset classes/order types may not work), but will be exposed as a "paper" account type with appropriate warnings. |
 
 ---
 
@@ -48,7 +48,7 @@ Schwab is one of the largest retail brokerages in the US. Supporting it signific
 **FR-1.1** Register a new provider type `"schwab"` in `provider_types.go` with:
 - **Name:** `"Schwab"`
 - **Description:** `"Charles Schwab Trader API (formerly TD Ameritrade)"`
-- **Supported account types:** `["live"]` (Note: Schwab has a sandbox environment, but it has significant limitations; see Section 6 for discussion on whether to expose it as "paper")
+- **Supported account types:** `["live", "paper"]` (Note: The "paper" account type uses Schwab's sandbox environment, which has known limitations — some order types may be rejected and behavior may be inconsistent. Users will be warned about these limitations.)
 - **REST capabilities:** `stock_quotes`, `options_chain`, `trade_account`, `symbol_lookup`, `historical_data`, `market_calendar`, `greeks`, `expiration_dates`, `next_market_date`
 - **Streaming capabilities:** `streaming_quotes`, `streaming_greeks`, `trade_account`
 
@@ -66,6 +66,12 @@ Schwab is one of the largest retail brokerages in the US. Supporting it signific
 **FR-1.3** Add the factory case in `manager.go` → `createProviderInstance()` to instantiate the Schwab provider from stored credentials.
 
 **FR-1.4** Add legacy provider capabilities entries for `"schwab"` in `LegacyProviderCapabilities` for backward compatibility.
+
+**FR-1.5** Support `"paper"` account type using Schwab's sandbox environment:
+- When account type is `"paper"`, use the Schwab sandbox base URL instead of the production URL
+- Display a clear warning/note in the UI (or in the credential test response) that the sandbox has known limitations: some order types may be rejected, some asset classes may not work, and behavior may be inconsistent
+- The sandbox uses the same OAuth credentials and authentication flow as production
+- If specific sandbox base URL differs from production, make it configurable via the `base_url` credential field
 
 ### FR-2: OAuth 2.0 Authentication & Token Management
 
@@ -327,7 +333,7 @@ Schwab is one of the largest retail brokerages in the US. Supporting it signific
 | **Futures trading support** | JuicyTrade focuses on equities and options; futures are out of scope |
 | **OAuth initial authorization flow in the UI** | The initial 3-legged OAuth authorization (browser redirect to Schwab login) is NOT handled within JuicyTrade. Users must obtain their refresh token externally (e.g., via the Schwab developer portal or a helper script) and paste it into the credential form. This is consistent with how TastyTrade handles OAuth. |
 | **Automatic refresh token renewal** | Refresh tokens expire after ~7 days. When this happens, the user must manually obtain a new refresh token. Automating this would require embedding a browser-based OAuth flow in JuicyTrade, which is out of scope for this initial implementation. |
-| **Schwab sandbox ("paper") account type** | The Schwab sandbox has significant limitations (some order types rejected, inconsistent behavior). It will NOT be exposed as a "paper" account type in this initial implementation. This can be added later if there is demand. |
+| **Schwab sandbox as a fully reliable paper trading environment** | The Schwab sandbox is exposed as a "paper" account type, but users should be aware it has significant limitations (some order types rejected, inconsistent behavior). JuicyTrade will display a warning about these limitations but will not attempt to work around them. |
 | **Watchlists API** | Schwab removed watchlists from their API (was available in TD Ameritrade) |
 | **Saved orders API** | Schwab removed saved orders from their API (was available in TD Ameritrade) |
 
