@@ -2,6 +2,7 @@ package schwab
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -501,5 +502,444 @@ func TestFindSymbolData_CaseInsensitive(t *testing.T) {
 	// Missing symbol
 	if data := findSymbolData(response, "MSFT"); data != nil {
 		t.Error("expected nil for missing symbol")
+	}
+}
+
+// =============================================================================
+// Schwab chain response fixtures
+// =============================================================================
+
+const schwabChainResponse = `{
+	"symbol": "AAPL",
+	"status": "SUCCESS",
+	"underlying": {"symbol": "AAPL", "last": 150.25},
+	"callExpDateMap": {
+		"2025-01-17:180": {
+			"145.0": [{
+				"putCall": "CALL",
+				"symbol": "AAPL  250117C00145000",
+				"strikePrice": 145.0,
+				"bid": 7.50,
+				"ask": 7.80,
+				"closePrice": 7.60,
+				"totalVolume": 1200,
+				"openInterest": 5000,
+				"delta": 0.65,
+				"gamma": 0.03,
+				"theta": -0.05,
+				"vega": 0.25,
+				"volatility": 28.5
+			}],
+			"150.0": [{
+				"putCall": "CALL",
+				"symbol": "AAPL  250117C00150000",
+				"strikePrice": 150.0,
+				"bid": 4.20,
+				"ask": 4.50,
+				"closePrice": 4.30,
+				"totalVolume": 3500,
+				"openInterest": 12000,
+				"delta": 0.50,
+				"gamma": 0.04,
+				"theta": -0.06,
+				"vega": 0.30,
+				"volatility": 27.0
+			}]
+		},
+		"2025-02-21:215": {
+			"150.0": [{
+				"putCall": "CALL",
+				"symbol": "AAPL  250221C00150000",
+				"strikePrice": 150.0,
+				"bid": 6.00,
+				"ask": 6.30,
+				"totalVolume": 800,
+				"openInterest": 4000,
+				"delta": 0.52,
+				"gamma": 0.025,
+				"theta": -0.04,
+				"vega": 0.35,
+				"volatility": 26.0
+			}]
+		}
+	},
+	"putExpDateMap": {
+		"2025-01-17:180": {
+			"150.0": [{
+				"putCall": "PUT",
+				"symbol": "AAPL  250117P00150000",
+				"strikePrice": 150.0,
+				"bid": 3.80,
+				"ask": 4.10,
+				"closePrice": 3.90,
+				"totalVolume": 2800,
+				"openInterest": 9500,
+				"delta": -0.50,
+				"gamma": 0.04,
+				"theta": -0.06,
+				"vega": 0.30,
+				"volatility": 27.5
+			}]
+		}
+	}
+}`
+
+// =============================================================================
+// GetExpirationDates tests
+// =============================================================================
+
+func TestGetExpirationDates_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/chains"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, schwabChainResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	dates, err := p.GetExpirationDates(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(dates) != 2 {
+		t.Fatalf("expected 2 expiration dates, got %d: %v", len(dates), dates)
+	}
+
+	// Verify both dates are present (order may vary)
+	dateSet := make(map[string]bool)
+	for _, d := range dates {
+		dateStr, _ := d["date"].(string)
+		dateSet[dateStr] = true
+		// Verify DTE is present
+		if _, ok := d["dte"]; !ok {
+			t.Errorf("expected dte field for date %s", dateStr)
+		}
+	}
+	if !dateSet["2025-01-17"] {
+		t.Error("expected 2025-01-17 in dates")
+	}
+	if !dateSet["2025-02-21"] {
+		t.Error("expected 2025-02-21 in dates")
+	}
+}
+
+func TestGetExpirationDates_EmptyChain(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/chains"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{"symbol":"AAPL","status":"SUCCESS"}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	dates, err := p.GetExpirationDates(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(dates) != 0 {
+		t.Fatalf("expected 0 dates for empty chain, got %d", len(dates))
+	}
+}
+
+// =============================================================================
+// GetOptionsChainBasic tests
+// =============================================================================
+
+func TestGetOptionsChainBasic_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/chains"):
+			// Verify params
+			if r.URL.Query().Get("symbol") != "AAPL" {
+				t.Errorf("expected symbol=AAPL, got %s", r.URL.Query().Get("symbol"))
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, schwabChainResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	contracts, err := p.GetOptionsChainBasic(context.Background(), "AAPL", "2025-01-17", nil, 0, nil, nil)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// 2 calls at 2025-01-17, 1 call at 2025-02-21, 1 put at 2025-01-17 = 4 total
+	if len(contracts) != 4 {
+		t.Fatalf("expected 4 contracts, got %d", len(contracts))
+	}
+
+	// Verify contracts have correct structure
+	for _, c := range contracts {
+		if c.UnderlyingSymbol != "AAPL" {
+			t.Errorf("expected underlying AAPL, got %s", c.UnderlyingSymbol)
+		}
+		if c.Symbol == "" {
+			t.Error("expected non-empty symbol")
+		}
+		// Should be OCC format (no spaces)
+		if strings.Contains(c.Symbol, " ") {
+			t.Errorf("expected OCC format symbol (no spaces), got %q", c.Symbol)
+		}
+		if c.Type != "call" && c.Type != "put" {
+			t.Errorf("expected type call or put, got %s", c.Type)
+		}
+		// No Greeks since includeGreeks=false
+		if c.Delta != nil {
+			t.Errorf("expected nil delta (no Greeks), got %v", *c.Delta)
+		}
+	}
+}
+
+// =============================================================================
+// GetOptionsChainSmart tests
+// =============================================================================
+
+func TestGetOptionsChainSmart_WithGreeks(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/chains"):
+			if r.URL.Query().Get("includeUnderlyingQuote") != "true" {
+				t.Error("expected includeUnderlyingQuote=true")
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, schwabChainResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	contracts, err := p.GetOptionsChainSmart(context.Background(), "AAPL", "2025-01-17", nil, 0, true, false)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(contracts) != 4 {
+		t.Fatalf("expected 4 contracts, got %d", len(contracts))
+	}
+
+	// Find the AAPL 150 call and verify Greeks
+	for _, c := range contracts {
+		if c.StrikePrice == 150.0 && c.Type == "call" && c.ExpirationDate == "2025-01-17" {
+			if c.Delta == nil || *c.Delta != 0.50 {
+				t.Errorf("expected delta 0.50, got %v", c.Delta)
+			}
+			if c.Gamma == nil || *c.Gamma != 0.04 {
+				t.Errorf("expected gamma 0.04, got %v", c.Gamma)
+			}
+			if c.Theta == nil || *c.Theta != -0.06 {
+				t.Errorf("expected theta -0.06, got %v", c.Theta)
+			}
+			if c.Vega == nil || *c.Vega != 0.30 {
+				t.Errorf("expected vega 0.30, got %v", c.Vega)
+			}
+			if c.ImpliedVolatility == nil || *c.ImpliedVolatility != 27.0 {
+				t.Errorf("expected IV 27.0, got %v", c.ImpliedVolatility)
+			}
+			return
+		}
+	}
+	t.Fatal("AAPL 150 call at 2025-01-17 not found in contracts")
+}
+
+// =============================================================================
+// GetOptionsGreeksBatch tests
+// =============================================================================
+
+func TestGetOptionsGreeksBatch_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/quotes"):
+			w.WriteHeader(http.StatusOK)
+			// Return option quote with Greeks (Schwab space-padded symbol keys)
+			fmt.Fprint(w, `{
+				"AAPL  250117C00150000": {
+					"assetMainType": "OPTION",
+					"quote": {
+						"bidPrice": 4.20,
+						"askPrice": 4.50,
+						"lastPrice": 4.35,
+						"delta": 0.50,
+						"gamma": 0.04,
+						"theta": -0.06,
+						"vega": 0.30,
+						"rho": 0.02,
+						"impliedVolatility": 27.0
+					}
+				}
+			}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	// Request with OCC format symbols
+	greeks, err := p.GetOptionsGreeksBatch(context.Background(), []string{"AAPL250117C00150000"})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(greeks) != 1 {
+		t.Fatalf("expected 1 result, got %d", len(greeks))
+	}
+
+	// Result should be keyed by OCC symbol
+	g, ok := greeks["AAPL250117C00150000"]
+	if !ok {
+		t.Fatal("expected result keyed by OCC symbol AAPL250117C00150000")
+	}
+
+	if g["delta"] != 0.50 {
+		t.Errorf("expected delta 0.50, got %v", g["delta"])
+	}
+	if g["gamma"] != 0.04 {
+		t.Errorf("expected gamma 0.04, got %v", g["gamma"])
+	}
+	if g["theta"] != -0.06 {
+		t.Errorf("expected theta -0.06, got %v", g["theta"])
+	}
+	if g["vega"] != 0.30 {
+		t.Errorf("expected vega 0.30, got %v", g["vega"])
+	}
+	if g["rho"] != 0.02 {
+		t.Errorf("expected rho 0.02, got %v", g["rho"])
+	}
+	if g["implied_volatility"] != 27.0 {
+		t.Errorf("expected IV 27.0, got %v", g["implied_volatility"])
+	}
+}
+
+func TestGetOptionsGreeksBatch_Empty(t *testing.T) {
+	p := newTestProvider("http://unused")
+	p.accessToken = "token"
+	p.tokenExpiry = time.Now().Add(30 * time.Minute)
+
+	greeks, err := p.GetOptionsGreeksBatch(context.Background(), []string{})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(greeks) != 0 {
+		t.Fatalf("expected empty map, got %d entries", len(greeks))
+	}
+}
+
+// =============================================================================
+// transformSchwabOptionsChain tests (pure function)
+// =============================================================================
+
+func TestTransformSchwabOptionsChain(t *testing.T) {
+	var response map[string]interface{}
+	if err := json.Unmarshal([]byte(schwabChainResponse), &response); err != nil {
+		t.Fatalf("failed to parse fixture: %v", err)
+	}
+
+	contracts := transformSchwabOptionsChain(response, "AAPL", true)
+
+	if len(contracts) != 4 {
+		t.Fatalf("expected 4 contracts, got %d", len(contracts))
+	}
+
+	// Count calls vs puts
+	calls, puts := 0, 0
+	for _, c := range contracts {
+		switch c.Type {
+		case "call":
+			calls++
+		case "put":
+			puts++
+		}
+	}
+	if calls != 3 {
+		t.Errorf("expected 3 calls, got %d", calls)
+	}
+	if puts != 1 {
+		t.Errorf("expected 1 put, got %d", puts)
+	}
+
+	// Verify a specific contract
+	for _, c := range contracts {
+		if c.Symbol == "AAPL250117P00150000" {
+			if c.Type != "put" {
+				t.Errorf("expected put, got %s", c.Type)
+			}
+			if c.StrikePrice != 150.0 {
+				t.Errorf("expected strike 150.0, got %f", c.StrikePrice)
+			}
+			if c.ExpirationDate != "2025-01-17" {
+				t.Errorf("expected expiry 2025-01-17, got %s", c.ExpirationDate)
+			}
+			if c.Bid == nil || *c.Bid != 3.80 {
+				t.Errorf("expected bid 3.80, got %v", c.Bid)
+			}
+			if c.Delta == nil || *c.Delta != -0.50 {
+				t.Errorf("expected delta -0.50, got %v", c.Delta)
+			}
+			return
+		}
+	}
+	t.Error("AAPL250117P00150000 not found in contracts")
+}
+
+func TestTransformSchwabOptionsChain_EmptyMap(t *testing.T) {
+	response := map[string]interface{}{}
+
+	contracts := transformSchwabOptionsChain(response, "AAPL", false)
+
+	if len(contracts) != 0 {
+		t.Fatalf("expected 0 contracts for empty response, got %d", len(contracts))
+	}
+}
+
+func TestTransformSchwabOptionsChain_NoGreeks(t *testing.T) {
+	var response map[string]interface{}
+	if err := json.Unmarshal([]byte(schwabChainResponse), &response); err != nil {
+		t.Fatalf("failed to parse fixture: %v", err)
+	}
+
+	contracts := transformSchwabOptionsChain(response, "AAPL", false)
+
+	for _, c := range contracts {
+		if c.Delta != nil {
+			t.Errorf("expected nil delta when includeGreeks=false, got %v for %s", *c.Delta, c.Symbol)
+		}
+		if c.Gamma != nil {
+			t.Errorf("expected nil gamma when includeGreeks=false, got %v for %s", *c.Gamma, c.Symbol)
+		}
 	}
 }

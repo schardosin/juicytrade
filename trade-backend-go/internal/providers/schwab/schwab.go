@@ -90,26 +90,6 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 // Market Data Methods (stubs — implemented methods are in market_data.go)
 // =============================================================================
 
-// GetExpirationDates gets available expiration dates for options on a symbol.
-func (s *SchwabProvider) GetExpirationDates(ctx context.Context, symbol string) ([]map[string]interface{}, error) {
-	return nil, fmt.Errorf("schwab: GetExpirationDates not yet implemented")
-}
-
-// GetOptionsChainBasic gets basic options chain (no Greeks) for fast loading.
-func (s *SchwabProvider) GetOptionsChainBasic(ctx context.Context, symbol, expiry string, underlyingPrice *float64, strikeCount int, optionType, underlyingSymbol *string) ([]*models.OptionContract, error) {
-	return nil, fmt.Errorf("schwab: GetOptionsChainBasic not yet implemented")
-}
-
-// GetOptionsGreeksBatch gets Greeks for multiple option symbols in batch.
-func (s *SchwabProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbols []string) (map[string]map[string]interface{}, error) {
-	return nil, fmt.Errorf("schwab: GetOptionsGreeksBatch not yet implemented")
-}
-
-// GetOptionsChainSmart gets smart options chain with configurable loading.
-func (s *SchwabProvider) GetOptionsChainSmart(ctx context.Context, symbol, expiry string, underlyingPrice *float64, atmRange int, includeGreeks, strikesOnly bool) ([]*models.OptionContract, error) {
-	return nil, fmt.Errorf("schwab: GetOptionsChainSmart not yet implemented")
-}
-
 // GetNextMarketDate gets the next trading date.
 func (s *SchwabProvider) GetNextMarketDate(ctx context.Context) (string, error) {
 	return "", fmt.Errorf("schwab: GetNextMarketDate not yet implemented")

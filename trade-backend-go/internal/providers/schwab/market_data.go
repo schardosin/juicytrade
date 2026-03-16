@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -272,4 +273,312 @@ func extractIntPtr(data map[string]interface{}, key string) *int {
 		return nil
 	}
 	return &v
+}
+
+// =============================================================================
+// Expiration Dates
+// =============================================================================
+
+// GetExpirationDates gets available option expiration dates for a symbol.
+// Uses GET /marketdata/v1/chains?symbol={sym} and extracts unique dates from
+// the callExpDateMap keys (format "2025-01-17:180" → date:DTE).
+func (s *SchwabProvider) GetExpirationDates(ctx context.Context, symbol string) ([]map[string]interface{}, error) {
+	reqURL := s.buildMarketDataURL("/chains?symbol=" + url.QueryEscape(symbol))
+
+	body, _, err := s.doAuthenticatedRequest(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("schwab: GetExpirationDates failed for %s: %w", symbol, err)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("schwab: failed to parse chains response: %w", err)
+	}
+
+	// Extract unique dates from callExpDateMap keys (preferred) or putExpDateMap
+	dateMap := extractMap(response, "callExpDateMap")
+	if dateMap == nil {
+		dateMap = extractMap(response, "putExpDateMap")
+	}
+	if dateMap == nil {
+		return []map[string]interface{}{}, nil
+	}
+
+	seen := make(map[string]bool)
+	var result []map[string]interface{}
+
+	for key := range dateMap {
+		// Key format: "2025-01-17:180" (date:DTE)
+		parts := strings.SplitN(key, ":", 2)
+		date := parts[0]
+		if seen[date] {
+			continue
+		}
+		seen[date] = true
+
+		entry := map[string]interface{}{
+			"date": date,
+		}
+		if len(parts) == 2 {
+			if dte, err := strconv.Atoi(parts[1]); err == nil {
+				entry["dte"] = dte
+			}
+		}
+		result = append(result, entry)
+	}
+
+	s.logger.Debug("GetExpirationDates completed", "symbol", symbol, "count", len(result))
+	return result, nil
+}
+
+// =============================================================================
+// Options Chain
+// =============================================================================
+
+// GetOptionsChainBasic gets an options chain without emphasis on Greeks.
+// Uses GET /marketdata/v1/chains with date filtering and optional strike/type params.
+func (s *SchwabProvider) GetOptionsChainBasic(ctx context.Context, symbol, expiry string, underlyingPrice *float64, strikeCount int, optionType, underlyingSymbol *string) ([]*models.OptionContract, error) {
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	if expiry != "" {
+		params.Set("fromDate", expiry)
+		params.Set("toDate", expiry)
+	}
+	if strikeCount > 0 {
+		params.Set("strikeCount", strconv.Itoa(strikeCount))
+	}
+	if optionType != nil && *optionType != "" {
+		params.Set("optionType", strings.ToUpper(*optionType))
+	}
+
+	reqURL := s.buildMarketDataURL("/chains?" + params.Encode())
+
+	body, _, err := s.doAuthenticatedRequest(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("schwab: GetOptionsChainBasic failed for %s: %w", symbol, err)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("schwab: failed to parse chains response: %w", err)
+	}
+
+	contracts := transformSchwabOptionsChain(response, symbol, false)
+
+	s.logger.Debug("GetOptionsChainBasic completed", "symbol", symbol, "contracts", len(contracts))
+	return contracts, nil
+}
+
+// GetOptionsChainSmart gets an options chain with configurable Greek inclusion.
+// Uses the same chains endpoint with additional parameters for ATM filtering.
+func (s *SchwabProvider) GetOptionsChainSmart(ctx context.Context, symbol, expiry string, underlyingPrice *float64, atmRange int, includeGreeks, strikesOnly bool) ([]*models.OptionContract, error) {
+	params := url.Values{}
+	params.Set("symbol", symbol)
+	if expiry != "" {
+		params.Set("fromDate", expiry)
+		params.Set("toDate", expiry)
+	}
+	if strikesOnly && atmRange > 0 {
+		params.Set("strikeCount", strconv.Itoa(atmRange))
+	}
+	params.Set("includeUnderlyingQuote", "true")
+
+	reqURL := s.buildMarketDataURL("/chains?" + params.Encode())
+
+	body, _, err := s.doAuthenticatedRequest(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("schwab: GetOptionsChainSmart failed for %s: %w", symbol, err)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("schwab: failed to parse chains response: %w", err)
+	}
+
+	contracts := transformSchwabOptionsChain(response, symbol, includeGreeks)
+
+	s.logger.Debug("GetOptionsChainSmart completed",
+		"symbol", symbol, "contracts", len(contracts), "includeGreeks", includeGreeks)
+	return contracts, nil
+}
+
+// =============================================================================
+// Greeks Batch
+// =============================================================================
+
+// GetOptionsGreeksBatch gets Greeks for multiple option symbols via the quotes endpoint.
+// Converts OCC symbols to Schwab format, fetches quotes, and extracts Greek values.
+func (s *SchwabProvider) GetOptionsGreeksBatch(ctx context.Context, optionSymbols []string) (map[string]map[string]interface{}, error) {
+	if len(optionSymbols) == 0 {
+		return make(map[string]map[string]interface{}), nil
+	}
+
+	// Convert OCC symbols to Schwab format for the API request
+	schwabSymbols := make([]string, len(optionSymbols))
+	schwabToOCC := make(map[string]string, len(optionSymbols))
+	for i, occ := range optionSymbols {
+		schwab := convertOCCToSchwab(occ)
+		schwabSymbols[i] = schwab
+		schwabToOCC[schwab] = occ
+	}
+
+	reqURL := s.buildMarketDataURL("/quotes?symbols=" + url.QueryEscape(strings.Join(schwabSymbols, ",")))
+
+	body, _, err := s.doAuthenticatedRequest(ctx, http.MethodGet, reqURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("schwab: GetOptionsGreeksBatch failed: %w", err)
+	}
+
+	var response map[string]interface{}
+	if err := json.Unmarshal(body, &response); err != nil {
+		return nil, fmt.Errorf("schwab: failed to parse option quotes response: %w", err)
+	}
+
+	result := make(map[string]map[string]interface{}, len(optionSymbols))
+
+	for schwabSym, occSym := range schwabToOCC {
+		symbolData := findSymbolData(response, schwabSym)
+		if symbolData == nil {
+			continue
+		}
+		quoteData := extractMap(symbolData, "quote")
+		if quoteData == nil {
+			quoteData = symbolData
+		}
+
+		greeks := make(map[string]interface{})
+		if v, ok := extractFloat64(quoteData, "delta"); ok {
+			greeks["delta"] = v
+		}
+		if v, ok := extractFloat64(quoteData, "gamma"); ok {
+			greeks["gamma"] = v
+		}
+		if v, ok := extractFloat64(quoteData, "theta"); ok {
+			greeks["theta"] = v
+		}
+		if v, ok := extractFloat64(quoteData, "vega"); ok {
+			greeks["vega"] = v
+		}
+		if v, ok := extractFloat64(quoteData, "rho"); ok {
+			greeks["rho"] = v
+		}
+		if v, ok := extractFloat64(quoteData, "impliedVolatility"); ok {
+			greeks["implied_volatility"] = v
+		} else if v, ok := extractFloat64(quoteData, "volatility"); ok {
+			greeks["implied_volatility"] = v
+		}
+		if v, ok := extractFloat64(quoteData, "bidPrice"); ok {
+			greeks["bid"] = v
+		}
+		if v, ok := extractFloat64(quoteData, "askPrice"); ok {
+			greeks["ask"] = v
+		}
+		if v, ok := extractFloat64(quoteData, "lastPrice"); ok {
+			greeks["last"] = v
+		}
+
+		result[occSym] = greeks
+	}
+
+	s.logger.Debug("GetOptionsGreeksBatch completed",
+		"requested", len(optionSymbols), "returned", len(result))
+	return result, nil
+}
+
+// =============================================================================
+// Options Chain Transformation
+// =============================================================================
+
+// transformSchwabOptionsChain transforms a Schwab chains response into OptionContract models.
+//
+// Schwab chain response structure:
+//
+//	{
+//	  "callExpDateMap": {
+//	    "2025-01-17:180": {
+//	      "150.0": [{"putCall":"CALL", "symbol":"AAPL  250117C00150000", ...}]
+//	    }
+//	  },
+//	  "putExpDateMap": { ... same structure ... }
+//	}
+func transformSchwabOptionsChain(response map[string]interface{}, underlyingSymbol string, includeGreeks bool) []*models.OptionContract {
+	var contracts []*models.OptionContract
+
+	for _, mapKey := range []string{"callExpDateMap", "putExpDateMap"} {
+		expDateMap := extractMap(response, mapKey)
+		if expDateMap == nil {
+			continue
+		}
+
+		for dateKey, strikesRaw := range expDateMap {
+			// dateKey format: "2025-01-17:180"
+			dateParts := strings.SplitN(dateKey, ":", 2)
+			expirationDate := dateParts[0]
+
+			strikesMap, ok := strikesRaw.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			for _, contractsRaw := range strikesMap {
+				contractList, ok := contractsRaw.([]interface{})
+				if !ok {
+					continue
+				}
+
+				for _, contractRaw := range contractList {
+					contractData, ok := contractRaw.(map[string]interface{})
+					if !ok {
+						continue
+					}
+
+					contract := transformSchwabOptionContract(contractData, underlyingSymbol, expirationDate, includeGreeks)
+					if contract != nil {
+						contracts = append(contracts, contract)
+					}
+				}
+			}
+		}
+	}
+
+	return contracts
+}
+
+// transformSchwabOptionContract transforms a single Schwab option contract into an OptionContract model.
+func transformSchwabOptionContract(data map[string]interface{}, underlyingSymbol, expirationDate string, includeGreeks bool) *models.OptionContract {
+	// Extract and convert symbol from Schwab to OCC format
+	schwabSymbol, _ := extractString(data, "symbol")
+	occSymbol := convertSchwabOptionToOCC(schwabSymbol)
+
+	// Determine option type
+	putCall, _ := extractString(data, "putCall")
+	optionType := strings.ToLower(putCall)
+	if optionType != "call" && optionType != "put" {
+		optionType = "call" // default
+	}
+
+	strikePrice, _ := extractFloat64(data, "strikePrice")
+
+	contract := &models.OptionContract{
+		Symbol:           occSymbol,
+		UnderlyingSymbol: underlyingSymbol,
+		ExpirationDate:   expirationDate,
+		StrikePrice:      strikePrice,
+		Type:             optionType,
+		Bid:              extractFloat64Ptr(data, "bid"),
+		Ask:              extractFloat64Ptr(data, "ask"),
+		ClosePrice:       extractFloat64Ptr(data, "closePrice"),
+		Volume:           extractIntPtr(data, "totalVolume"),
+		OpenInterest:     extractIntPtr(data, "openInterest"),
+	}
+
+	if includeGreeks {
+		contract.Delta = extractFloat64Ptr(data, "delta")
+		contract.Gamma = extractFloat64Ptr(data, "gamma")
+		contract.Theta = extractFloat64Ptr(data, "theta")
+		contract.Vega = extractFloat64Ptr(data, "vega")
+		contract.ImpliedVolatility = extractFloat64Ptr(data, "volatility")
+	}
+
+	return contract
 }
