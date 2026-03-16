@@ -2,7 +2,9 @@ package schwab
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -455,5 +457,415 @@ func TestMapSchwabDuration(t *testing.T) {
 				t.Errorf("mapSchwabDuration(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
+	}
+}
+
+// =============================================================================
+// PlaceOrder tests
+// =============================================================================
+
+func TestPlaceOrder_EquityBuy(t *testing.T) {
+	var receivedBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/orders") && r.Method == http.MethodPost:
+			// Capture request body
+			bodyBytes, _ := io.ReadAll(r.Body)
+			json.Unmarshal(bodyBytes, &receivedBody)
+
+			w.Header().Set("Location", "/v1/accounts/hash/orders/200001")
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"orderId": 200001}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	order, err := p.PlaceOrder(context.Background(), map[string]interface{}{
+		"symbol":        "AAPL",
+		"side":          "buy",
+		"type":          "market",
+		"qty":           100.0,
+		"time_in_force": "day",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if order == nil {
+		t.Fatal("expected non-nil order")
+	}
+	if order.OrderType != "market" {
+		t.Errorf("expected order type 'market', got %s", order.OrderType)
+	}
+	if order.Side != "buy" {
+		t.Errorf("expected side 'buy', got %s", order.Side)
+	}
+	if order.Symbol != "AAPL" {
+		t.Errorf("expected symbol 'AAPL', got %s", order.Symbol)
+	}
+
+	// Verify request body structure
+	if receivedBody["session"] != "NORMAL" {
+		t.Errorf("expected session NORMAL, got %v", receivedBody["session"])
+	}
+	if receivedBody["orderType"] != "MARKET" {
+		t.Errorf("expected orderType MARKET, got %v", receivedBody["orderType"])
+	}
+	if receivedBody["duration"] != "DAY" {
+		t.Errorf("expected duration DAY, got %v", receivedBody["duration"])
+	}
+	legs, _ := receivedBody["orderLegCollection"].([]interface{})
+	if len(legs) != 1 {
+		t.Fatalf("expected 1 leg, got %d", len(legs))
+	}
+	leg, _ := legs[0].(map[string]interface{})
+	if leg["instruction"] != "BUY" {
+		t.Errorf("expected instruction BUY, got %v", leg["instruction"])
+	}
+}
+
+func TestPlaceOrder_OptionSell(t *testing.T) {
+	var receivedBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/orders") && r.Method == http.MethodPost:
+			bodyBytes, _ := io.ReadAll(r.Body)
+			json.Unmarshal(bodyBytes, &receivedBody)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"orderId": 200002}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	order, err := p.PlaceOrder(context.Background(), map[string]interface{}{
+		"symbol":      "AAPL250117C00150000",
+		"side":        "sell",
+		"type":        "limit",
+		"qty":         5.0,
+		"price":       4.50,
+		"asset_class": "us_option",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if order == nil {
+		t.Fatal("expected non-nil order")
+	}
+	if order.AssetClass != "us_option" {
+		t.Errorf("expected asset class 'us_option', got %s", order.AssetClass)
+	}
+
+	// Verify instruction is SELL_TO_CLOSE for option sell
+	legs, _ := receivedBody["orderLegCollection"].([]interface{})
+	if len(legs) != 1 {
+		t.Fatalf("expected 1 leg, got %d", len(legs))
+	}
+	leg, _ := legs[0].(map[string]interface{})
+	if leg["instruction"] != "SELL_TO_CLOSE" {
+		t.Errorf("expected instruction SELL_TO_CLOSE, got %v", leg["instruction"])
+	}
+
+	// Verify symbol is Schwab format (space-padded)
+	inst, _ := leg["instrument"].(map[string]interface{})
+	symbol, _ := inst["symbol"].(string)
+	if !strings.Contains(symbol, " ") {
+		t.Errorf("expected Schwab format (with spaces), got %q", symbol)
+	}
+	if inst["assetType"] != "OPTION" {
+		t.Errorf("expected assetType OPTION, got %v", inst["assetType"])
+	}
+}
+
+func TestPlaceOrder_LimitOrder(t *testing.T) {
+	var receivedBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/orders") && r.Method == http.MethodPost:
+			bodyBytes, _ := io.ReadAll(r.Body)
+			json.Unmarshal(bodyBytes, &receivedBody)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"orderId": 200003}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	order, err := p.PlaceOrder(context.Background(), map[string]interface{}{
+		"symbol":        "AAPL",
+		"side":          "buy",
+		"type":          "limit",
+		"qty":           50.0,
+		"price":         150.00,
+		"time_in_force": "gtc",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if order.LimitPrice == nil || *order.LimitPrice != 150.00 {
+		t.Errorf("expected limit price 150.00, got %v", order.LimitPrice)
+	}
+	if order.TimeInForce != "gtc" {
+		t.Errorf("expected TIF 'gtc', got %s", order.TimeInForce)
+	}
+
+	// Verify request body
+	if receivedBody["orderType"] != "LIMIT" {
+		t.Errorf("expected orderType LIMIT, got %v", receivedBody["orderType"])
+	}
+	if receivedBody["price"] != 150.00 {
+		t.Errorf("expected price 150.00, got %v", receivedBody["price"])
+	}
+	if receivedBody["duration"] != "GOOD_TILL_CANCEL" {
+		t.Errorf("expected duration GOOD_TILL_CANCEL, got %v", receivedBody["duration"])
+	}
+}
+
+func TestPlaceMultiLegOrder_VerticalSpread(t *testing.T) {
+	var receivedBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/orders") && r.Method == http.MethodPost:
+			bodyBytes, _ := io.ReadAll(r.Body)
+			json.Unmarshal(bodyBytes, &receivedBody)
+			w.WriteHeader(http.StatusCreated)
+			fmt.Fprint(w, `{"orderId": 200004}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	order, err := p.PlaceMultiLegOrder(context.Background(), map[string]interface{}{
+		"type":          "net_debit",
+		"price":         2.50,
+		"time_in_force": "day",
+		"legs": []interface{}{
+			map[string]interface{}{
+				"symbol":      "AAPL250117C00150000",
+				"side":        "buy",
+				"qty":         10.0,
+				"action":      "BUY_TO_OPEN",
+				"asset_class": "us_option",
+			},
+			map[string]interface{}{
+				"symbol":      "AAPL250117C00160000",
+				"side":        "sell",
+				"qty":         10.0,
+				"action":      "SELL_TO_OPEN",
+				"asset_class": "us_option",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if order == nil {
+		t.Fatal("expected non-nil order")
+	}
+
+	// Verify request body has 2 legs
+	legs, _ := receivedBody["orderLegCollection"].([]interface{})
+	if len(legs) != 2 {
+		t.Fatalf("expected 2 legs, got %d", len(legs))
+	}
+
+	// Verify first leg
+	leg1, _ := legs[0].(map[string]interface{})
+	if leg1["instruction"] != "BUY_TO_OPEN" {
+		t.Errorf("expected first leg instruction BUY_TO_OPEN, got %v", leg1["instruction"])
+	}
+
+	// Verify second leg
+	leg2, _ := legs[1].(map[string]interface{})
+	if leg2["instruction"] != "SELL_TO_OPEN" {
+		t.Errorf("expected second leg instruction SELL_TO_OPEN, got %v", leg2["instruction"])
+	}
+
+	// Verify order type
+	if receivedBody["orderType"] != "NET_DEBIT" {
+		t.Errorf("expected orderType NET_DEBIT, got %v", receivedBody["orderType"])
+	}
+}
+
+func TestPlaceOrder_APIError(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/orders"):
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"message": "Invalid order"}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	_, err := p.PlaceOrder(context.Background(), map[string]interface{}{
+		"symbol": "AAPL",
+		"side":   "buy",
+		"type":   "market",
+		"qty":    100.0,
+	})
+	if err == nil {
+		t.Fatal("expected error for 400 response, got nil")
+	}
+}
+
+func TestPlaceOrder_MissingSymbol(t *testing.T) {
+	p := newTestProvider("http://unused")
+
+	_, err := p.PlaceOrder(context.Background(), map[string]interface{}{
+		"side": "buy",
+		"qty":  100.0,
+	})
+	if err == nil {
+		t.Fatal("expected error for missing symbol, got nil")
+	}
+	if !strings.Contains(err.Error(), "missing symbol") {
+		t.Errorf("expected 'missing symbol' error, got: %v", err)
+	}
+}
+
+// =============================================================================
+// Order mapping helper tests
+// =============================================================================
+
+func TestMapSideToInstruction(t *testing.T) {
+	tests := []struct {
+		side     string
+		isOption bool
+		expected string
+	}{
+		{"buy", false, "BUY"},
+		{"sell", false, "SELL"},
+		{"buy", true, "BUY_TO_OPEN"},
+		{"sell", true, "SELL_TO_CLOSE"},
+	}
+
+	for _, tt := range tests {
+		name := fmt.Sprintf("%s_option=%v", tt.side, tt.isOption)
+		t.Run(name, func(t *testing.T) {
+			got := mapSideToInstruction(tt.side, tt.isOption)
+			if got != tt.expected {
+				t.Errorf("got %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMapOrderTypeToSchwab(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"market", "MARKET"},
+		{"limit", "LIMIT"},
+		{"stop", "STOP"},
+		{"stop_limit", "STOP_LIMIT"},
+		{"net_debit", "NET_DEBIT"},
+		{"net_credit", "NET_CREDIT"},
+		{"", "MARKET"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := mapOrderTypeToSchwab(tt.input)
+			if got != tt.expected {
+				t.Errorf("got %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestMapDurationToSchwab(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"day", "DAY"},
+		{"gtc", "GOOD_TILL_CANCEL"},
+		{"fok", "FILL_OR_KILL"},
+		{"", "DAY"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			got := mapDurationToSchwab(tt.input)
+			if got != tt.expected {
+				t.Errorf("got %q, want %q", got, tt.expected)
+			}
+		})
+	}
+}
+
+func TestBuildSchwabOrderRequest(t *testing.T) {
+	req, err := buildSchwabOrderRequest(map[string]interface{}{
+		"symbol":        "AAPL",
+		"side":          "buy",
+		"type":          "limit",
+		"qty":           100.0,
+		"price":         150.0,
+		"time_in_force": "gtc",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if req.OrderType != "LIMIT" {
+		t.Errorf("expected LIMIT, got %s", req.OrderType)
+	}
+	if req.Duration != "GOOD_TILL_CANCEL" {
+		t.Errorf("expected GOOD_TILL_CANCEL, got %s", req.Duration)
+	}
+	if req.Price != 150.0 {
+		t.Errorf("expected price 150.0, got %f", req.Price)
+	}
+	if len(req.OrderLegCollection) != 1 {
+		t.Fatalf("expected 1 leg, got %d", len(req.OrderLegCollection))
+	}
+	if req.OrderLegCollection[0].Instruction != "BUY" {
+		t.Errorf("expected BUY, got %s", req.OrderLegCollection[0].Instruction)
+	}
+	if req.OrderLegCollection[0].Instrument.Symbol != "AAPL" {
+		t.Errorf("expected AAPL, got %s", req.OrderLegCollection[0].Instrument.Symbol)
+	}
+	if req.OrderLegCollection[0].Instrument.AssetType != "EQUITY" {
+		t.Errorf("expected EQUITY, got %s", req.OrderLegCollection[0].Instrument.AssetType)
 	}
 }

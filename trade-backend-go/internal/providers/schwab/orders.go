@@ -1,6 +1,7 @@
 package schwab
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -324,4 +325,360 @@ func mapSchwabInstruction(instruction string) string {
 	default:
 		return strings.ToLower(instruction)
 	}
+}
+
+// =============================================================================
+// Order Placement Types
+// =============================================================================
+
+// schwabOrderRequest represents the JSON body for placing an order via the Schwab API.
+type schwabOrderRequest struct {
+	Session            string           `json:"session"`
+	Duration           string           `json:"duration"`
+	OrderType          string           `json:"orderType"`
+	Price              float64          `json:"price,omitempty"`
+	StopPrice          float64          `json:"stopPrice,omitempty"`
+	OrderStrategyType  string           `json:"orderStrategyType"`
+	OrderLegCollection []schwabOrderLeg `json:"orderLegCollection"`
+}
+
+// schwabOrderLeg represents a single leg in a Schwab order.
+type schwabOrderLeg struct {
+	Instruction string           `json:"instruction"`
+	Quantity    int              `json:"quantity"`
+	Instrument  schwabInstrument `json:"instrument"`
+}
+
+// schwabInstrument represents an instrument in a Schwab order leg.
+type schwabInstrument struct {
+	Symbol    string `json:"symbol"`
+	AssetType string `json:"assetType"` // "EQUITY" or "OPTION"
+}
+
+// =============================================================================
+// Order Placement
+// =============================================================================
+
+// PlaceOrder places a single-leg trading order.
+// Uses POST /trader/v1/accounts/{accountHash}/orders
+func (s *SchwabProvider) PlaceOrder(ctx context.Context, orderData map[string]interface{}) (*models.Order, error) {
+	req, err := buildSchwabOrderRequest(orderData)
+	if err != nil {
+		return nil, fmt.Errorf("schwab: failed to build order request: %w", err)
+	}
+
+	return s.submitOrder(ctx, req)
+}
+
+// PlaceMultiLegOrder places a multi-leg trading order.
+// Uses the same endpoint as PlaceOrder with multiple legs.
+func (s *SchwabProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[string]interface{}) (*models.Order, error) {
+	req, err := buildSchwabMultiLegOrderRequest(orderData)
+	if err != nil {
+		return nil, fmt.Errorf("schwab: failed to build multi-leg order request: %w", err)
+	}
+
+	return s.submitOrder(ctx, req)
+}
+
+// submitOrder submits an order request to the Schwab API and parses the response.
+func (s *SchwabProvider) submitOrder(ctx context.Context, req *schwabOrderRequest) (*models.Order, error) {
+	jsonBody, err := json.Marshal(req)
+	if err != nil {
+		return nil, fmt.Errorf("schwab: failed to marshal order: %w", err)
+	}
+
+	reqURL := s.buildTraderURL("/accounts/" + s.accountHash + "/orders")
+
+	body, statusCode, err := s.doAuthenticatedRequest(ctx, http.MethodPost, reqURL, bytes.NewReader(jsonBody))
+	if err != nil {
+		return nil, fmt.Errorf("schwab: PlaceOrder failed: %w", err)
+	}
+
+	// Schwab returns 201 Created on success with Location header containing order ID
+	if statusCode != http.StatusCreated && statusCode != http.StatusOK {
+		return nil, fmt.Errorf("schwab: unexpected status %d placing order: %s", statusCode, string(body))
+	}
+
+	// Extract order ID from response body or construct from request
+	orderID := "pending"
+	// Try parsing response body for order ID
+	if len(body) > 0 {
+		var respData map[string]interface{}
+		if err := json.Unmarshal(body, &respData); err == nil {
+			if id := extractOrderID(respData); id != "" {
+				orderID = id
+			}
+		}
+	}
+
+	// Build primary symbol from first leg
+	primarySymbol := ""
+	primarySide := "buy"
+	primaryAssetClass := "us_equity"
+	if len(req.OrderLegCollection) > 0 {
+		leg := req.OrderLegCollection[0]
+		primarySymbol = leg.Instrument.Symbol
+		primarySide = mapSchwabInstruction(leg.Instruction)
+		if leg.Instrument.AssetType == "OPTION" {
+			primaryAssetClass = "us_option"
+			primarySymbol = convertSchwabOptionToOCC(primarySymbol)
+		}
+	}
+
+	order := &models.Order{
+		ID:          orderID,
+		Symbol:      primarySymbol,
+		AssetClass:  primaryAssetClass,
+		Side:        primarySide,
+		OrderType:   strings.ToLower(req.OrderType),
+		Qty:         float64(req.OrderLegCollection[0].Quantity),
+		Status:      "pending",
+		TimeInForce: mapSchwabDuration(req.Duration),
+		SubmittedAt: time.Now().Format(time.RFC3339),
+	}
+
+	if req.Price > 0 {
+		order.LimitPrice = &req.Price
+	}
+	if req.StopPrice > 0 {
+		order.StopPrice = &req.StopPrice
+	}
+
+	s.logger.Info("order placed", "orderID", orderID, "symbol", primarySymbol, "side", primarySide)
+	return order, nil
+}
+
+// =============================================================================
+// Order Request Builders
+// =============================================================================
+
+// buildSchwabOrderRequest constructs a single-leg Schwab order request from generic order data.
+func buildSchwabOrderRequest(orderData map[string]interface{}) (*schwabOrderRequest, error) {
+	symbol, _ := orderData["symbol"].(string)
+	if symbol == "" {
+		return nil, fmt.Errorf("missing symbol in order data")
+	}
+
+	side, _ := orderData["side"].(string)
+	orderType, _ := orderData["type"].(string)
+	if orderType == "" {
+		orderType, _ = orderData["order_type"].(string)
+	}
+	duration, _ := orderData["time_in_force"].(string)
+	if duration == "" {
+		duration, _ = orderData["duration"].(string)
+	}
+
+	qty := extractOrderQty(orderData)
+	if qty <= 0 {
+		return nil, fmt.Errorf("missing or invalid quantity in order data")
+	}
+
+	// Determine asset type and instruction
+	assetClass, _ := orderData["asset_class"].(string)
+	isOption := strings.Contains(strings.ToLower(assetClass), "option") || isOptionSymbol(symbol)
+
+	assetType := "EQUITY"
+	schwabSymbol := symbol
+	if isOption {
+		assetType = "OPTION"
+		schwabSymbol = convertOCCToSchwab(symbol)
+	}
+
+	instruction := mapSideToInstruction(side, isOption)
+
+	req := &schwabOrderRequest{
+		Session:           "NORMAL",
+		Duration:          mapDurationToSchwab(duration),
+		OrderType:         mapOrderTypeToSchwab(orderType),
+		OrderStrategyType: "SINGLE",
+		OrderLegCollection: []schwabOrderLeg{
+			{
+				Instruction: instruction,
+				Quantity:    qty,
+				Instrument: schwabInstrument{
+					Symbol:    schwabSymbol,
+					AssetType: assetType,
+				},
+			},
+		},
+	}
+
+	// Set price for limit orders
+	if price, ok := orderData["price"].(float64); ok && price > 0 {
+		req.Price = price
+	} else if price, ok := orderData["limit_price"].(float64); ok && price > 0 {
+		req.Price = price
+	}
+
+	// Set stop price for stop orders
+	if stopPrice, ok := orderData["stop_price"].(float64); ok && stopPrice > 0 {
+		req.StopPrice = stopPrice
+	}
+
+	return req, nil
+}
+
+// buildSchwabMultiLegOrderRequest constructs a multi-leg Schwab order request.
+func buildSchwabMultiLegOrderRequest(orderData map[string]interface{}) (*schwabOrderRequest, error) {
+	orderType, _ := orderData["type"].(string)
+	if orderType == "" {
+		orderType, _ = orderData["order_type"].(string)
+	}
+	duration, _ := orderData["time_in_force"].(string)
+	if duration == "" {
+		duration, _ = orderData["duration"].(string)
+	}
+
+	req := &schwabOrderRequest{
+		Session:           "NORMAL",
+		Duration:          mapDurationToSchwab(duration),
+		OrderType:         mapOrderTypeToSchwab(orderType),
+		OrderStrategyType: "SINGLE",
+	}
+
+	// Set price
+	if price, ok := orderData["price"].(float64); ok && price > 0 {
+		req.Price = price
+	}
+
+	// Build legs from orderData["legs"]
+	legsRaw, ok := orderData["legs"]
+	if !ok {
+		return nil, fmt.Errorf("missing legs in multi-leg order data")
+	}
+	legsArr, ok := legsRaw.([]interface{})
+	if !ok {
+		return nil, fmt.Errorf("invalid legs format in multi-leg order data")
+	}
+
+	for _, legRaw := range legsArr {
+		legData, ok := legRaw.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		symbol, _ := legData["symbol"].(string)
+		side, _ := legData["side"].(string)
+		legQty := extractOrderQty(legData)
+
+		assetClass, _ := legData["asset_class"].(string)
+		isOption := strings.Contains(strings.ToLower(assetClass), "option") || isOptionSymbol(symbol)
+
+		assetType := "EQUITY"
+		schwabSymbol := symbol
+		if isOption {
+			assetType = "OPTION"
+			schwabSymbol = convertOCCToSchwab(symbol)
+		}
+
+		action, _ := legData["action"].(string)
+		instruction := mapActionToInstruction(action, side, isOption)
+
+		req.OrderLegCollection = append(req.OrderLegCollection, schwabOrderLeg{
+			Instruction: instruction,
+			Quantity:    legQty,
+			Instrument: schwabInstrument{
+				Symbol:    schwabSymbol,
+				AssetType: assetType,
+			},
+		})
+	}
+
+	if len(req.OrderLegCollection) == 0 {
+		return nil, fmt.Errorf("no valid legs in multi-leg order data")
+	}
+
+	return req, nil
+}
+
+// =============================================================================
+// Order Mapping Helpers
+// =============================================================================
+
+// mapSideToInstruction maps a JuicyTrade side to a Schwab instruction.
+func mapSideToInstruction(side string, isOption bool) string {
+	switch strings.ToLower(side) {
+	case "buy":
+		if isOption {
+			return "BUY_TO_OPEN"
+		}
+		return "BUY"
+	case "sell":
+		if isOption {
+			return "SELL_TO_CLOSE"
+		}
+		return "SELL"
+	default:
+		return strings.ToUpper(side)
+	}
+}
+
+// mapActionToInstruction maps an action string to a Schwab instruction,
+// with optional side fallback.
+func mapActionToInstruction(action, side string, isOption bool) string {
+	switch strings.ToUpper(action) {
+	case "BUY_TO_OPEN":
+		return "BUY_TO_OPEN"
+	case "BUY_TO_CLOSE":
+		return "BUY_TO_CLOSE"
+	case "SELL_TO_OPEN":
+		return "SELL_TO_OPEN"
+	case "SELL_TO_CLOSE":
+		return "SELL_TO_CLOSE"
+	default:
+		return mapSideToInstruction(side, isOption)
+	}
+}
+
+// mapDurationToSchwab maps a JuicyTrade time-in-force to a Schwab duration.
+func mapDurationToSchwab(duration string) string {
+	switch strings.ToLower(duration) {
+	case "day", "":
+		return "DAY"
+	case "gtc":
+		return "GOOD_TILL_CANCEL"
+	case "fok":
+		return "FILL_OR_KILL"
+	default:
+		return "DAY"
+	}
+}
+
+// mapOrderTypeToSchwab maps a JuicyTrade order type to a Schwab order type.
+func mapOrderTypeToSchwab(orderType string) string {
+	switch strings.ToLower(orderType) {
+	case "market", "":
+		return "MARKET"
+	case "limit":
+		return "LIMIT"
+	case "stop":
+		return "STOP"
+	case "stop_limit":
+		return "STOP_LIMIT"
+	case "net_debit":
+		return "NET_DEBIT"
+	case "net_credit":
+		return "NET_CREDIT"
+	default:
+		return strings.ToUpper(orderType)
+	}
+}
+
+// extractOrderQty extracts an integer quantity from order data.
+func extractOrderQty(data map[string]interface{}) int {
+	if v, ok := data["qty"].(float64); ok {
+		return int(v)
+	}
+	if v, ok := data["quantity"].(float64); ok {
+		return int(v)
+	}
+	if v, ok := data["qty"].(int); ok {
+		return v
+	}
+	if v, ok := data["quantity"].(int); ok {
+		return v
+	}
+	return 0
 }

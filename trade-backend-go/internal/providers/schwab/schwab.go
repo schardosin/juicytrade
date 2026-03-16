@@ -92,25 +92,13 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 // =============================================================================
 
 // =============================================================================
-// Order Management Methods
+// Order Management Methods (PlaceOrder, PlaceMultiLegOrder in orders.go; CancelOrder in orders.go)
 // =============================================================================
-
-// PlaceOrder places a trading order.
-func (s *SchwabProvider) PlaceOrder(ctx context.Context, orderData map[string]interface{}) (*models.Order, error) {
-	return nil, fmt.Errorf("schwab: PlaceOrder not yet implemented")
-}
-
-// PlaceMultiLegOrder places a multi-leg trading order.
-func (s *SchwabProvider) PlaceMultiLegOrder(ctx context.Context, orderData map[string]interface{}) (*models.Order, error) {
-	return nil, fmt.Errorf("schwab: PlaceMultiLegOrder not yet implemented")
-}
 
 // PreviewOrder previews a trading order to get cost estimates and validation.
 func (s *SchwabProvider) PreviewOrder(ctx context.Context, orderData map[string]interface{}) (map[string]interface{}, error) {
 	return nil, fmt.Errorf("schwab: order preview not supported by Schwab API")
 }
-
-// CancelOrder — implemented in orders.go
 
 // =============================================================================
 // Streaming Methods
