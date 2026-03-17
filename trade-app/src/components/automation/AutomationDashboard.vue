@@ -502,7 +502,7 @@ export default {
         switch (status.state) {
           case 'waiting':
           case 'evaluating':
-            return 'status-waiting'
+            return status.all_indicators_pass === true ? 'status-running' : 'status-waiting'
           case 'trading':
           case 'monitoring':
             return 'status-running'
