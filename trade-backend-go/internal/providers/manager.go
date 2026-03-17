@@ -126,7 +126,7 @@ func (pm *ProviderManager) createProviderInstance(providerType, accountType stri
 		accountHash, _ := credentials["account_hash"].(string)
 		baseURL, _ := credentials["base_url"].(string)
 
-		return schwab.NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash, baseURL, accountType)
+		return schwab.NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash, baseURL, accountType, "", nil)
 
 	// TODO: Add other providers (public)
 	// case "public":

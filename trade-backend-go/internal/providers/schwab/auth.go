@@ -80,6 +80,7 @@ func (s *SchwabProvider) refreshAccessToken() error {
 
 	// Handle error status codes
 	if resp.StatusCode == http.StatusUnauthorized {
+		s.authExpired = true
 		return ErrRefreshTokenExpired
 	}
 	if resp.StatusCode != http.StatusOK {
@@ -105,13 +106,23 @@ func (s *SchwabProvider) refreshAccessToken() error {
 		"token_type", tokenResp.TokenType,
 	)
 
-	// Warn about token rotation — we cannot persist the new refresh token
-	// back to the credential store from within the provider.
+	// Handle token rotation — persist the new refresh token if possible
 	if tokenResp.RefreshToken != "" && tokenResp.RefreshToken != s.refreshToken {
-		s.logger.Warn("schwab: refresh token was rotated by server — new token cannot be persisted automatically",
-			"old_prefix", truncateToken(s.refreshToken),
-			"new_prefix", truncateToken(tokenResp.RefreshToken),
-		)
+		s.refreshToken = tokenResp.RefreshToken // Always update in-memory
+
+		if s.credentialUpdater != nil && s.instanceID != "" {
+			if err := s.credentialUpdater(s.instanceID, map[string]interface{}{
+				"refresh_token": tokenResp.RefreshToken,
+			}); err != nil {
+				s.logger.Error("failed to persist rotated refresh token", "error", err)
+			} else {
+				s.logger.Info("persisted rotated refresh token to credential store")
+			}
+		} else {
+			s.logger.Warn("refresh token rotated but persistence not configured",
+				"old_prefix", truncateToken(s.refreshToken),
+			)
+		}
 	}
 
 	return nil

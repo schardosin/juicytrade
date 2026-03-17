@@ -15,7 +15,7 @@ import (
 // =============================================================================
 
 func TestNewSchwabProvider(t *testing.T) {
-	p := NewSchwabProvider("key", "secret", "https://cb.example.com", "refresh-tok", "hash123", "https://custom.api.com", "live")
+	p := NewSchwabProvider("key", "secret", "https://cb.example.com", "refresh-tok", "hash123", "https://custom.api.com", "live", "", nil)
 
 	if p.appKey != "key" {
 		t.Errorf("expected appKey 'key', got %q", p.appKey)
@@ -47,7 +47,7 @@ func TestNewSchwabProvider(t *testing.T) {
 }
 
 func TestNewSchwabProvider_Defaults(t *testing.T) {
-	p := NewSchwabProvider("key", "secret", "https://cb.example.com", "tok", "hash", "", "")
+	p := NewSchwabProvider("key", "secret", "https://cb.example.com", "tok", "hash", "", "", "", nil)
 
 	if p.baseURL != "https://api.schwabapi.com" {
 		t.Errorf("expected default baseURL 'https://api.schwabapi.com', got %q", p.baseURL)
@@ -55,6 +55,39 @@ func TestNewSchwabProvider_Defaults(t *testing.T) {
 	if p.accountType != "live" {
 		t.Errorf("expected default accountType 'live', got %q", p.accountType)
 	}
+}
+
+func TestNewSchwabProvider_WithUpdater(t *testing.T) {
+	updater := CredentialUpdater(func(instanceID string, updates map[string]interface{}) error {
+		return nil
+	})
+
+	p := NewSchwabProvider("key", "secret", "https://cb.example.com", "tok", "hash",
+		"https://api.schwabapi.com", "live",
+		"schwab_live_MyAccount", updater,
+	)
+
+	if p.instanceID != "schwab_live_MyAccount" {
+		t.Errorf("expected instanceID 'schwab_live_MyAccount', got %q", p.instanceID)
+	}
+	if p.credentialUpdater == nil {
+		t.Error("expected credentialUpdater to be set")
+	}
+}
+
+func TestNewSchwabProvider_NilUpdater(t *testing.T) {
+	p := NewSchwabProvider("key", "secret", "https://cb.example.com", "tok", "hash",
+		"https://api.schwabapi.com", "live",
+		"", nil,
+	)
+
+	if p.instanceID != "" {
+		t.Errorf("expected empty instanceID, got %q", p.instanceID)
+	}
+	if p.credentialUpdater != nil {
+		t.Error("expected credentialUpdater to be nil")
+	}
+	// Verify no panic when constructing with nil updater
 }
 
 // =============================================================================
@@ -138,6 +171,7 @@ func TestTestCredentials_PaperAccount(t *testing.T) {
 		"test-account-hash",
 		srv.URL,
 		"paper", // paper account
+		"", nil,
 	)
 
 	result, err := p.TestCredentials(context.Background())
@@ -282,6 +316,32 @@ func TestTestCredentials_MultipleAccountsMatchesCorrectOne(t *testing.T) {
 	success, _ := result["success"].(bool)
 	if !success {
 		t.Fatalf("expected success=true when hash is among multiple accounts, got result: %v", result)
+	}
+}
+
+func TestTestCredentials_AuthExpired(t *testing.T) {
+	// No server needed — authExpired short-circuits before any HTTP call
+	p := newTestProvider("http://unused")
+	p.authExpired = true
+
+	result, err := p.TestCredentials(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	success, _ := result["success"].(bool)
+	if success {
+		t.Fatal("expected success=false when authExpired is true")
+	}
+
+	authExpired, _ := result["auth_expired"].(bool)
+	if !authExpired {
+		t.Fatal("expected auth_expired=true in response")
+	}
+
+	message, _ := result["message"].(string)
+	if !strings.Contains(message, "Refresh token expired") {
+		t.Errorf("expected 'Refresh token expired' in message, got: %s", message)
 	}
 }
 

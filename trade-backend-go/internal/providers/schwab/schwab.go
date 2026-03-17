@@ -15,6 +15,11 @@ import (
 	"github.com/gorilla/websocket"
 )
 
+// CredentialUpdater is a callback function that the provider uses to persist
+// credential changes back to the credential store. Injected at construction time.
+// Pass nil in tests or when persistence is not needed.
+type CredentialUpdater func(instanceID string, updates map[string]interface{}) error
+
 // Compile-time interface check: SchwabProvider must implement base.Provider.
 var _ base.Provider = (*SchwabProvider)(nil)
 
@@ -31,6 +36,13 @@ type SchwabProvider struct {
 	accountHash  string // Schwab account hash (not raw account number)
 	baseURL      string // API base URL (production or sandbox)
 	accountType  string // "live" or "paper"
+
+	// --- Instance identity and credential persistence ---
+	instanceID        string            // Provider instance ID (e.g., "schwab_live_MyAccount")
+	credentialUpdater CredentialUpdater // Callback to persist credential changes (may be nil)
+
+	// --- Auth health status for re-authentication signaling ---
+	authExpired bool // Set to true when refresh token is confirmed expired
 
 	// --- OAuth Token State (protected by tokenMu) ---
 	tokenMu     sync.Mutex
@@ -61,7 +73,10 @@ type SchwabProvider struct {
 
 // NewSchwabProvider creates a new Schwab provider instance.
 // Follows the same constructor pattern as TastyTrade/Tradier providers.
-func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash, baseURL, accountType string) *SchwabProvider {
+func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash, baseURL, accountType string,
+	instanceID string,
+	credentialUpdater CredentialUpdater,
+) *SchwabProvider {
 	// Apply defaults
 	if baseURL == "" {
 		baseURL = "https://api.schwabapi.com"
@@ -71,16 +86,18 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 	}
 
 	provider := &SchwabProvider{
-		BaseProviderImpl: base.NewBaseProvider("Schwab"),
-		appKey:           appKey,
-		appSecret:        appSecret,
-		callbackURL:      callbackURL,
-		refreshToken:     refreshToken,
-		accountHash:      accountHash,
-		baseURL:          baseURL,
-		accountType:      accountType,
-		logger:           slog.Default().With("provider", "schwab"),
-		rateLimiter:      newRateLimiter(120, 2.0),
+		BaseProviderImpl:  base.NewBaseProvider("Schwab"),
+		appKey:            appKey,
+		appSecret:         appSecret,
+		callbackURL:       callbackURL,
+		refreshToken:      refreshToken,
+		accountHash:       accountHash,
+		baseURL:           baseURL,
+		accountType:       accountType,
+		instanceID:        instanceID,
+		credentialUpdater: credentialUpdater,
+		logger:            slog.Default().With("provider", "schwab"),
+		rateLimiter:       newRateLimiter(120, 2.0),
 	}
 
 	return provider
@@ -121,6 +138,15 @@ func (s *SchwabProvider) PreviewOrder(ctx context.Context, orderData map[string]
 // TestCredentials validates credentials by refreshing the token and verifying
 // the account hash against the Schwab accountNumbers endpoint.
 func (s *SchwabProvider) TestCredentials(ctx context.Context) (map[string]interface{}, error) {
+	// Step 0: If auth is already known to be expired, short-circuit
+	if s.authExpired {
+		return map[string]interface{}{
+			"success":      false,
+			"message":      "Refresh token expired. Please reconnect to Schwab.",
+			"auth_expired": true,
+		}, nil
+	}
+
 	// Step 1: Attempt token refresh
 	if err := s.ensureValidToken(); err != nil {
 		return map[string]interface{}{

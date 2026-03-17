@@ -23,6 +23,7 @@ func newTestProvider(baseURL string) *SchwabProvider {
 		"test-account-hash",
 		baseURL,
 		"live",
+		"", nil,
 	)
 }
 
@@ -226,6 +227,9 @@ func TestRefreshAccessToken_ExpiredRefreshToken(t *testing.T) {
 	if !errors.Is(err, ErrRefreshTokenExpired) {
 		t.Fatalf("expected ErrRefreshTokenExpired, got: %v", err)
 	}
+	if !p.authExpired {
+		t.Fatal("expected authExpired to be true after 401 response")
+	}
 }
 
 func TestRefreshAccessToken_MalformedJSON(t *testing.T) {
@@ -320,10 +324,125 @@ func TestRefreshAccessToken_TokenRotation(t *testing.T) {
 	if p.accessToken != "rotated-access-token" {
 		t.Fatalf("expected access token 'rotated-access-token', got: %s", p.accessToken)
 	}
-	// The refresh token on the provider should still be the original
-	// (we log a warning but don't overwrite it from within the provider)
-	if p.refreshToken != "test-refresh-token" {
-		t.Fatalf("expected original refresh token to be preserved, got: %s", p.refreshToken)
+	// The refresh token should now be updated in-memory (new behavior)
+	if p.refreshToken != "brand-new-refresh-token" {
+		t.Fatalf("expected refresh token to be updated in-memory, got: %s", p.refreshToken)
+	}
+}
+
+func TestRefreshAccessToken_RotatesAndPersists(t *testing.T) {
+	// Verify that when the server returns a new refresh_token AND a credentialUpdater
+	// is configured, the updater is called with the correct arguments.
+	var updaterCalled bool
+	var updaterInstanceID string
+	var updaterUpdates map[string]interface{}
+
+	updater := CredentialUpdater(func(instanceID string, updates map[string]interface{}) error {
+		updaterCalled = true
+		updaterInstanceID = instanceID
+		updaterUpdates = updates
+		return nil
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		resp := schwabTokenResponse{
+			AccessToken:  "new-access",
+			TokenType:    "Bearer",
+			ExpiresIn:    1800,
+			RefreshToken: "rotated-refresh-token",
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := NewSchwabProvider(
+		"test-app-key", "test-app-secret", "https://localhost/callback",
+		"original-refresh-token", "test-hash", srv.URL, "live",
+		"schwab_live_1", updater,
+	)
+
+	p.tokenMu.Lock()
+	err := p.refreshAccessToken()
+	p.tokenMu.Unlock()
+
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !updaterCalled {
+		t.Fatal("expected credentialUpdater to be called")
+	}
+	if updaterInstanceID != "schwab_live_1" {
+		t.Errorf("expected instanceID 'schwab_live_1', got %q", updaterInstanceID)
+	}
+	if updaterUpdates["refresh_token"] != "rotated-refresh-token" {
+		t.Errorf("expected refresh_token 'rotated-refresh-token', got %v", updaterUpdates["refresh_token"])
+	}
+	// In-memory should also be updated
+	if p.refreshToken != "rotated-refresh-token" {
+		t.Errorf("expected in-memory refreshToken updated, got %q", p.refreshToken)
+	}
+}
+
+func TestRefreshAccessToken_RotatesPersistFailure(t *testing.T) {
+	// Verify that when the credentialUpdater returns an error, the in-memory
+	// refresh token is still updated and no panic occurs.
+	updater := CredentialUpdater(func(instanceID string, updates map[string]interface{}) error {
+		return fmt.Errorf("disk full")
+	})
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		resp := schwabTokenResponse{
+			AccessToken:  "new-access",
+			TokenType:    "Bearer",
+			ExpiresIn:    1800,
+			RefreshToken: "rotated-token-not-persisted",
+		}
+		json.NewEncoder(w).Encode(resp)
+	}))
+	defer srv.Close()
+
+	p := NewSchwabProvider(
+		"key", "secret", "https://cb", "original-token", "hash", srv.URL, "live",
+		"schwab_live_1", updater,
+	)
+
+	p.tokenMu.Lock()
+	err := p.refreshAccessToken()
+	p.tokenMu.Unlock()
+
+	if err != nil {
+		t.Fatalf("expected no error (persist failure is logged, not returned), got: %v", err)
+	}
+	// In-memory should still be updated even if persistence failed
+	if p.refreshToken != "rotated-token-not-persisted" {
+		t.Errorf("expected in-memory refreshToken updated despite persist failure, got %q", p.refreshToken)
+	}
+}
+
+func TestRefreshAccessToken_SetsAuthExpiredOn401(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error": "invalid_grant"}`)
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	if p.authExpired {
+		t.Fatal("expected authExpired=false initially")
+	}
+
+	p.tokenMu.Lock()
+	err := p.refreshAccessToken()
+	p.tokenMu.Unlock()
+
+	if !errors.Is(err, ErrRefreshTokenExpired) {
+		t.Fatalf("expected ErrRefreshTokenExpired, got: %v", err)
+	}
+	if !p.authExpired {
+		t.Fatal("expected authExpired=true after 401 response")
 	}
 }
 
