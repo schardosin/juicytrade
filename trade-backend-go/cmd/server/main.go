@@ -19,6 +19,7 @@ import (
 	"trade-backend-go/internal/config"
 	"trade-backend-go/internal/models"
 	"trade-backend-go/internal/providers"
+	"trade-backend-go/internal/providers/schwab"
 	"trade-backend-go/internal/services/ivx"
 	"trade-backend-go/internal/services/watchlist"
 	"trade-backend-go/internal/streaming"
@@ -59,6 +60,31 @@ func main() {
 	// Initialize provider manager (same as Python provider_manager)
 	providers.InitializeProviderManager()
 	providerManager := providers.GlobalProviderManager
+
+	// Create Schwab OAuth handler with dependency closures
+	schwabOAuthHandler := schwab.NewSchwabOAuthHandler(schwab.OAuthHandlerDeps{
+		AddInstance: func(instanceID, providerType, accountType, displayName string, credentials map[string]interface{}) bool {
+			cs := providers.NewCredentialStore()
+			return cs.AddInstance(instanceID, providerType, accountType, displayName, credentials)
+		},
+		UpdateCredFields: func(instanceID string, updates map[string]interface{}) error {
+			cs := providers.NewCredentialStore()
+			return cs.UpdateCredentialFields(instanceID, updates)
+		},
+		GenerateInstID: func(providerType, accountType, displayName string) string {
+			cs := providers.NewCredentialStore()
+			return cs.GenerateInstanceID(providerType, accountType, displayName)
+		},
+		ReinitInstance: func(instanceID string) error {
+			return providerManager.ReinitializeInstance(instanceID)
+		},
+		GetInstance: func(instanceID string) map[string]interface{} {
+			cs := providers.NewCredentialStore()
+			return cs.GetInstance(instanceID)
+		},
+	})
+	// Start OAuth state cleanup goroutine
+	go schwabOAuthHandler.StartCleanup(context.Background())
 
 	// Initialize IVx services
 	ivxCache := ivx.NewCache()
@@ -352,6 +378,11 @@ func main() {
 		})
 	})
 
+	// Schwab OAuth routes (no auth required — must be before auth middleware)
+	api.POST("/providers/schwab/authorize", schwabOAuthHandler.HandleAuthorize)
+	api.GET("/providers/schwab/oauth/status/:state", schwabOAuthHandler.HandleOAuthStatus)
+	api.POST("/providers/schwab/select-account", schwabOAuthHandler.HandleSelectAccount)
+
 	// Apply authentication middleware to API group (all routes below require auth)
 	api.Use(auth.AuthenticationMiddleware(authConfig))
 
@@ -361,6 +392,9 @@ func main() {
 
 	// WebSocket endpoint
 	router.GET("/ws", wsHandler.HandleWebSocket)
+
+	// Schwab OAuth callback — root level to match registered callback URL
+	router.GET("/callback", schwabOAuthHandler.HandleCallback)
 
 	// Symbol-specific endpoints - MUST be first to avoid conflicts
 	api.GET("/symbol/:symbol/range/52week", func(c *gin.Context) {
