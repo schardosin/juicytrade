@@ -70,7 +70,7 @@ func (pm *ProviderManager) initializeActiveProviders() {
 		credentials = ApplyDefaults(providerType, accountType, credentials)
 
 		// Create provider instance
-		provider := pm.createProviderInstance(providerType, accountType, credentials)
+		provider := pm.createProviderInstance(providerType, accountType, credentials, instanceID)
 
 		if provider != nil {
 			pm.mutex.Lock()
@@ -87,7 +87,7 @@ func (pm *ProviderManager) initializeActiveProviders() {
 
 // createProviderInstance creates a provider instance based on type and credentials.
 // Exact conversion of Python _create_provider_instance method.
-func (pm *ProviderManager) createProviderInstance(providerType, accountType string, credentials map[string]interface{}) base.Provider {
+func (pm *ProviderManager) createProviderInstance(providerType, accountType string, credentials map[string]interface{}, instanceID string) base.Provider {
 	switch providerType {
 	case "alpaca":
 		apiKey, _ := credentials["api_key"].(string)
@@ -125,8 +125,27 @@ func (pm *ProviderManager) createProviderInstance(providerType, accountType stri
 		refreshToken, _ := credentials["refresh_token"].(string)
 		accountHash, _ := credentials["account_hash"].(string)
 		baseURL, _ := credentials["base_url"].(string)
+		if baseURL == "" {
+			baseURL = "https://api.schwabapi.com"
+		}
+		if callbackURL == "" {
+			callbackURL = "https://127.0.0.1/callback"
+		}
 
-		return schwab.NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash, baseURL, accountType, "", nil)
+		// Create credential updater callback for this instance
+		var credUpdater schwab.CredentialUpdater
+		if instanceID != "" {
+			credUpdater = schwab.CredentialUpdater(func(id string, updates map[string]interface{}) error {
+				cs := NewCredentialStore()
+				return cs.UpdateCredentialFields(id, updates)
+			})
+		}
+
+		return schwab.NewSchwabProvider(
+			appKey, appSecret, callbackURL, refreshToken,
+			accountHash, baseURL, accountType,
+			instanceID, credUpdater,
+		)
 
 	// TODO: Add other providers (public)
 	// case "public":
@@ -170,7 +189,7 @@ func (pm *ProviderManager) TestProviderCredentials(ctx context.Context, provider
 	testCredentials := ApplyDefaults(providerType, accountType, credentials)
 
 	// Create temporary provider instance
-	provider := pm.createProviderInstance(providerType, accountType, testCredentials)
+	provider := pm.createProviderInstance(providerType, accountType, testCredentials, "")
 
 	if provider == nil {
 		return map[string]interface{}{
@@ -527,6 +546,38 @@ func (pm *ProviderManager) GetAvailableProviders() map[string]map[string]interfa
 // Exact conversion of Python initialize_active_providers method.
 func (pm *ProviderManager) InitializeActiveProviders() {
 	pm.initializeActiveProviders()
+}
+
+// ReinitializeInstance destroys the current provider instance and creates a new one
+// from updated credentials in the store. Used after OAuth re-authentication.
+func (pm *ProviderManager) ReinitializeInstance(instanceID string) error {
+	// 1. Get updated instance data from credential store
+	credStore := NewCredentialStore()
+	instanceData := credStore.GetInstance(instanceID)
+	if instanceData == nil {
+		return fmt.Errorf("instance %s not found in credential store", instanceID)
+	}
+
+	// 2. Extract provider info
+	providerType, _ := instanceData["provider_type"].(string)
+	accountType, _ := instanceData["account_type"].(string)
+	credentials, _ := instanceData["credentials"].(map[string]interface{})
+	credentials = ApplyDefaults(providerType, accountType, credentials)
+
+	// 3. Create new provider from updated credentials
+	provider := pm.createProviderInstance(providerType, accountType, credentials, instanceID)
+	if provider == nil {
+		return fmt.Errorf("failed to create provider instance %s", instanceID)
+	}
+
+	// 4. Swap old provider for new one
+	pm.mutex.Lock()
+	delete(pm.providers, instanceID)
+	pm.providers[instanceID] = provider
+	pm.mutex.Unlock()
+
+	slog.Info(fmt.Sprintf("🔄 Reinitialized provider instance: %s", instanceID))
+	return nil
 }
 
 // GetProviderTypes gets all available provider types.
