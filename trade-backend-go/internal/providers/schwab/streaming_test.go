@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -1210,5 +1211,455 @@ func TestStreamReadLoop_DataDispatch(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("timed out waiting for data dispatch through read loop")
+	}
+}
+
+// =============================================================================
+// Reconnection tests
+// =============================================================================
+
+// withFastBackoffs temporarily sets reconnectBackoffs to very short durations
+// for testing, and restores the originals when the test completes.
+func withFastBackoffs(t *testing.T) {
+	t.Helper()
+	original := reconnectBackoffs
+	reconnectBackoffs = []time.Duration{
+		50 * time.Millisecond,
+		100 * time.Millisecond,
+		150 * time.Millisecond,
+		200 * time.Millisecond,
+		250 * time.Millisecond,
+	}
+	t.Cleanup(func() { reconnectBackoffs = original })
+}
+
+// mockMultiConnStreamServer creates a mock server that tracks the number of
+// WebSocket connections and invokes wsHandler for each one with a connection
+// counter. This allows testing reconnection behavior.
+func mockMultiConnStreamServer(t *testing.T, wsHandler func(conn *websocket.Conn, connNum int)) (*httptest.Server, func() *SchwabProvider) {
+	t.Helper()
+
+	var wsURL string
+	var connCount int64
+
+	upgrader := websocket.Upgrader{
+		CheckOrigin: func(r *http.Request) bool { return true },
+	}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+
+		case strings.HasSuffix(r.URL.Path, "/userPreference"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprintf(w, `{
+				"streamerInfo": [{
+					"streamerSocketUrl": %q,
+					"schwabClientCustomerId": "test-customer-id",
+					"schwabClientCorrelId": "test-correl-id",
+					"schwabClientChannel": "IO",
+					"schwabClientFunctionId": "Tradeticket"
+				}]
+			}`, wsURL)
+
+		case r.URL.Path == "/ws":
+			conn, err := upgrader.Upgrade(w, r, nil)
+			if err != nil {
+				t.Logf("WebSocket upgrade failed: %v", err)
+				return
+			}
+			defer conn.Close()
+			num := int(atomic.AddInt64(&connCount, 1))
+			wsHandler(conn, num)
+
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+
+	wsURL = "ws" + strings.TrimPrefix(srv.URL, "http") + "/ws"
+
+	makeProvider := func() *SchwabProvider {
+		return newTestProvider(srv.URL)
+	}
+
+	return srv, makeProvider
+}
+
+// sendLoginSuccess is a test helper that reads the LOGIN request and sends a
+// success response.
+func sendLoginSuccess(conn *websocket.Conn) {
+	conn.ReadMessage() // consume LOGIN request
+	loginResp := schwabStreamResponse{
+		Response: []schwabStreamResponseItem{
+			{Service: "ADMIN", Command: "LOGIN", Content: map[string]interface{}{"code": 0.0}},
+		},
+	}
+	respData, _ := json.Marshal(loginResp)
+	conn.WriteMessage(websocket.TextMessage, respData)
+}
+
+func TestReconnect_TriggeredAfterReadError(t *testing.T) {
+	withFastBackoffs(t)
+
+	var connCount int64
+
+	srv, makeProvider := mockMultiConnStreamServer(t, func(conn *websocket.Conn, connNum int) {
+		atomic.StoreInt64(&connCount, int64(connNum))
+		sendLoginSuccess(conn)
+
+		if connNum == 1 {
+			// First connection: send one heartbeat then close abruptly
+			time.Sleep(50 * time.Millisecond)
+			conn.Close()
+			return
+		}
+
+		// Second connection (reconnect): keep alive
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer srv.Close()
+
+	p := makeProvider()
+	ctx := context.Background()
+
+	ok, err := p.ConnectStreaming(ctx)
+	if err != nil || !ok {
+		t.Fatalf("initial connect failed: %v", err)
+	}
+
+	// Wait for the first connection to be closed and reconnection to happen.
+	// With fast backoffs, reconnection should complete within ~200ms.
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for reconnection")
+		default:
+		}
+
+		if atomic.LoadInt64(&connCount) >= 2 && p.IsConnected {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	if !p.IsConnected {
+		t.Error("expected IsConnected to be true after reconnect")
+	}
+
+	p.DisconnectStreaming(ctx)
+}
+
+func TestReconnect_ResubscribesExistingSymbols(t *testing.T) {
+	withFastBackoffs(t)
+
+	var mu sync.Mutex
+	var subsAfterReconnect []schwabStreamRequestItem
+
+	srv, makeProvider := mockMultiConnStreamServer(t, func(conn *websocket.Conn, connNum int) {
+		sendLoginSuccess(conn)
+
+		if connNum == 1 {
+			// First connection: read any messages for a moment, then close
+			go func() {
+				for {
+					if _, _, err := conn.ReadMessage(); err != nil {
+						return
+					}
+				}
+			}()
+			time.Sleep(200 * time.Millisecond)
+			conn.Close()
+			return
+		}
+
+		// Second connection (reconnect): capture SUBS messages
+		for {
+			_, msg, err := conn.ReadMessage()
+			if err != nil {
+				return
+			}
+			var req schwabStreamRequest
+			if err := json.Unmarshal(msg, &req); err == nil {
+				for _, item := range req.Requests {
+					if item.Command == "SUBS" {
+						mu.Lock()
+						subsAfterReconnect = append(subsAfterReconnect, item)
+						mu.Unlock()
+					}
+				}
+			}
+		}
+	})
+	defer srv.Close()
+
+	p := makeProvider()
+	ctx := context.Background()
+
+	ok, err := p.ConnectStreaming(ctx)
+	if err != nil || !ok {
+		t.Fatalf("initial connect failed: %v", err)
+	}
+
+	// Subscribe to some symbols on the first connection
+	p.SubscribedSymbols["AAPL"] = true
+	p.SubscribedSymbols["MSFT"] = true
+	p.SubscribedSymbols["SPY250321P00500000"] = true
+
+	// Wait for reconnection to complete and subscriptions to be restored
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for re-subscription after reconnect")
+		default:
+		}
+
+		mu.Lock()
+		count := len(subsAfterReconnect)
+		mu.Unlock()
+
+		// We expect at least 2 SUBS messages (equities + options)
+		if count >= 2 && p.IsConnected {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+
+	// Verify both equity and option SUBS messages were sent
+	var hasEquities, hasOptions bool
+	for _, item := range subsAfterReconnect {
+		switch item.Service {
+		case "LEVELONE_EQUITIES":
+			hasEquities = true
+			keys := item.Parameters["keys"].(string)
+			if !strings.Contains(keys, "AAPL") || !strings.Contains(keys, "MSFT") {
+				t.Errorf("expected AAPL and MSFT in equity keys, got: %s", keys)
+			}
+		case "LEVELONE_OPTIONS":
+			hasOptions = true
+		}
+	}
+
+	if !hasEquities {
+		t.Error("expected equity re-subscription after reconnect")
+	}
+	if !hasOptions {
+		t.Error("expected option re-subscription after reconnect")
+	}
+
+	p.DisconnectStreaming(ctx)
+}
+
+func TestReconnect_MaxRetryExhaustion(t *testing.T) {
+	withFastBackoffs(t)
+
+	// Server that always rejects LOGIN — every connection attempt will fail
+	var connAttempts int64
+
+	srv, makeProvider := mockMultiConnStreamServer(t, func(conn *websocket.Conn, connNum int) {
+		atomic.AddInt64(&connAttempts, 1)
+		conn.ReadMessage() // consume LOGIN
+		loginResp := schwabStreamResponse{
+			Response: []schwabStreamResponseItem{
+				{Service: "ADMIN", Command: "LOGIN", Content: map[string]interface{}{
+					"code": 3.0, "msg": "Login denied",
+				}},
+			},
+		}
+		respData, _ := json.Marshal(loginResp)
+		conn.WriteMessage(websocket.TextMessage, respData)
+	})
+	defer srv.Close()
+
+	p := makeProvider()
+
+	// Directly call reconnectLoop instead of going through the full connect
+	// flow. This tests the retry logic in isolation.
+	stopChan := make(chan struct{})
+	symbols := []string{"AAPL"}
+
+	p.reconnectLoop(stopChan, symbols)
+
+	// Should have attempted reconnectMaxRetries times
+	attempts := atomic.LoadInt64(&connAttempts)
+	if attempts != int64(reconnectMaxRetries) {
+		t.Errorf("expected %d reconnection attempts, got %d", reconnectMaxRetries, attempts)
+	}
+
+	// Should still be disconnected
+	if p.IsConnected {
+		t.Error("expected IsConnected to be false after exhausting retries")
+	}
+}
+
+func TestReconnect_NoReconnectOnGracefulDisconnect(t *testing.T) {
+	withFastBackoffs(t)
+
+	var connCount int64
+
+	srv, makeProvider := mockMultiConnStreamServer(t, func(conn *websocket.Conn, connNum int) {
+		atomic.AddInt64(&connCount, 1)
+		sendLoginSuccess(conn)
+
+		// Keep alive until connection is closed
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer srv.Close()
+
+	p := makeProvider()
+	ctx := context.Background()
+
+	ok, err := p.ConnectStreaming(ctx)
+	if err != nil || !ok {
+		t.Fatalf("initial connect failed: %v", err)
+	}
+
+	if atomic.LoadInt64(&connCount) != 1 {
+		t.Fatalf("expected 1 connection, got %d", atomic.LoadInt64(&connCount))
+	}
+
+	// Gracefully disconnect — this closes streamStopChan which should prevent
+	// any reconnection attempts
+	p.DisconnectStreaming(ctx)
+
+	// Wait a bit to ensure no reconnection happens
+	time.Sleep(500 * time.Millisecond)
+
+	if atomic.LoadInt64(&connCount) != 1 {
+		t.Errorf("expected no reconnection after graceful disconnect, but got %d connections", atomic.LoadInt64(&connCount))
+	}
+}
+
+func TestHandleStreamDisconnect_StopChanClosed(t *testing.T) {
+	// Verify handleStreamDisconnect is a no-op when streamStopChan is already
+	// closed (i.e., user initiated disconnect).
+	p := newTestProvider("http://unused")
+	p.streamStopChan = make(chan struct{})
+	close(p.streamStopChan) // simulate user disconnect
+	p.IsConnected = true
+
+	// This should return immediately without launching a reconnection goroutine
+	p.handleStreamDisconnect()
+
+	// IsConnected should NOT be changed by handleStreamDisconnect when
+	// streamStopChan is closed — it returns early.
+	if !p.IsConnected {
+		t.Error("expected IsConnected to remain true when stopChan is closed")
+	}
+}
+
+// =============================================================================
+// EnsureHealthyConnection tests
+// =============================================================================
+
+func TestEnsureHealthyConnection_AlreadyHealthy(t *testing.T) {
+	p := newTestProvider("http://unused")
+	p.IsConnected = true
+	p.streamConn = &websocket.Conn{} // non-nil placeholder
+	now := time.Now()
+	p.LastDataTime = &now
+
+	err := p.EnsureHealthyConnection(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error for healthy connection, got: %v", err)
+	}
+}
+
+func TestEnsureHealthyConnection_NotConnected_Connects(t *testing.T) {
+	srv, makeProvider := mockStreamServer(t, func(conn *websocket.Conn) {
+		sendLoginSuccess(conn)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer srv.Close()
+
+	p := makeProvider()
+	ctx := context.Background()
+
+	// Not connected initially
+	if p.IsConnected {
+		t.Fatal("expected not connected initially")
+	}
+
+	err := p.EnsureHealthyConnection(ctx)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !p.IsConnected {
+		t.Error("expected IsConnected after EnsureHealthyConnection")
+	}
+
+	p.DisconnectStreaming(ctx)
+}
+
+func TestEnsureHealthyConnection_StaleConnection(t *testing.T) {
+	srv, makeProvider := mockStreamServer(t, func(conn *websocket.Conn) {
+		sendLoginSuccess(conn)
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	})
+	defer srv.Close()
+
+	p := makeProvider()
+	ctx := context.Background()
+
+	// Connect first
+	p.ConnectStreaming(ctx)
+	if !p.IsConnected {
+		t.Fatal("expected connected")
+	}
+
+	// Simulate stale data (>120 seconds ago)
+	staleTime := time.Now().Add(-130 * time.Second)
+	p.LastDataTime = &staleTime
+
+	// EnsureHealthyConnection should disconnect and reconnect
+	err := p.EnsureHealthyConnection(ctx)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if !p.IsConnected {
+		t.Error("expected IsConnected after stale connection recovery")
+	}
+
+	p.DisconnectStreaming(ctx)
+}
+
+func TestEnsureHealthyConnection_TypeAssertion(t *testing.T) {
+	// Verify the provider satisfies the duck-typed interface used by the
+	// streaming manager.
+	p := newTestProvider("http://unused")
+
+	type healthChecker interface {
+		EnsureHealthyConnection(context.Context) error
+	}
+
+	var _ healthChecker = p // compile-time check
+
+	// Also verify with the exact type assertion pattern used in manager.go
+	var provider interface{} = p
+	if _, ok := provider.(interface{ EnsureHealthyConnection(context.Context) error }); !ok {
+		t.Error("SchwabProvider does not satisfy EnsureHealthyConnection duck-type interface")
 	}
 }

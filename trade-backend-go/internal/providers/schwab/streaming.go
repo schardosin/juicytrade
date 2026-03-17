@@ -463,7 +463,7 @@ func (s *SchwabProvider) streamReadLoop() {
 			}
 
 			s.logger.Error("stream read error", "error", err)
-			// Reconnection will be handled by step 4.3
+			s.handleStreamDisconnect()
 			return
 		}
 
@@ -677,6 +677,174 @@ func mapOptionFields(decoded, data map[string]interface{}) {
 	if sym, ok := decoded["SYMBOL"]; ok {
 		data["symbol"] = sym
 	}
+}
+
+// =============================================================================
+// Reconnection Logic
+// =============================================================================
+
+// reconnectMaxRetries is the maximum number of reconnection attempts before
+// giving up.
+const reconnectMaxRetries = 5
+
+// reconnectBackoffs defines the exponential backoff durations for reconnection
+// attempts. The series is: 5s, 10s, 20s, 40s, 60s (capped).
+var reconnectBackoffs = []time.Duration{
+	5 * time.Second,
+	10 * time.Second,
+	20 * time.Second,
+	40 * time.Second,
+	60 * time.Second,
+}
+
+// handleStreamDisconnect is called when the read loop encounters a read error.
+// It marks the provider as disconnected, cleans up the old connection, and
+// launches an asynchronous reconnection attempt.
+//
+// This method does NOT acquire streamMu — it is called from the read loop
+// goroutine which has already exited its read cycle.
+func (s *SchwabProvider) handleStreamDisconnect() {
+	s.streamMu.Lock()
+
+	// Check if this is a user-initiated disconnect (streamStopChan closed)
+	select {
+	case <-s.streamStopChan:
+		// User called DisconnectStreaming — do NOT reconnect
+		s.streamMu.Unlock()
+		return
+	default:
+	}
+
+	s.logger.Warn("stream disconnected unexpectedly, will attempt reconnection")
+
+	// Mark as disconnected and close the old connection
+	s.IsConnected = false
+	if s.streamConn != nil {
+		s.streamConn.Close()
+		s.streamConn = nil
+	}
+
+	// Snapshot the currently subscribed symbols so we can re-subscribe
+	// after reconnecting. Use a copy to avoid races.
+	symbolSnapshot := make([]string, 0, len(s.SubscribedSymbols))
+	for sym := range s.SubscribedSymbols {
+		symbolSnapshot = append(symbolSnapshot, sym)
+	}
+
+	// Capture the stop channel reference for the reconnection goroutine.
+	stopChan := s.streamStopChan
+
+	s.streamMu.Unlock()
+
+	// Launch reconnection in a new goroutine so the read loop can exit
+	go s.reconnectLoop(stopChan, symbolSnapshot)
+}
+
+// reconnectLoop attempts to re-establish the streaming connection with
+// exponential backoff. On success it re-subscribes all previously subscribed
+// symbols. It gives up after reconnectMaxRetries consecutive failures.
+func (s *SchwabProvider) reconnectLoop(stopChan chan struct{}, symbols []string) {
+	for attempt := 0; attempt < reconnectMaxRetries; attempt++ {
+		// Check if we should stop (user called DisconnectStreaming)
+		select {
+		case <-stopChan:
+			s.logger.Info("reconnection cancelled — disconnect was requested")
+			return
+		default:
+		}
+
+		// Wait with backoff before attempting (except on first attempt)
+		if attempt > 0 {
+			backoff := reconnectBackoffs[attempt-1]
+			s.logger.Info("waiting before reconnect attempt",
+				"attempt", attempt+1, "backoff", backoff)
+			select {
+			case <-stopChan:
+				s.logger.Info("reconnection cancelled during backoff")
+				return
+			case <-time.After(backoff):
+			}
+		} else {
+			// First attempt gets the first backoff delay too
+			backoff := reconnectBackoffs[0]
+			s.logger.Info("waiting before first reconnect attempt",
+				"backoff", backoff)
+			select {
+			case <-stopChan:
+				s.logger.Info("reconnection cancelled during initial backoff")
+				return
+			case <-time.After(backoff):
+			}
+		}
+
+		s.logger.Info("attempting streaming reconnection",
+			"attempt", attempt+1, "max_retries", reconnectMaxRetries)
+
+		// Use a background context so the reconnection is not bound to any
+		// particular caller's context.
+		ctx := context.Background()
+
+		// ConnectStreaming acquires streamMu internally
+		ok, err := s.ConnectStreaming(ctx)
+		if err != nil || !ok {
+			s.logger.Warn("reconnection attempt failed",
+				"attempt", attempt+1, "error", err)
+			continue
+		}
+
+		s.logger.Info("streaming reconnected successfully", "attempt", attempt+1)
+
+		// Re-subscribe to previously subscribed symbols
+		if len(symbols) > 0 {
+			if _, err := s.SubscribeToSymbols(ctx, symbols, nil); err != nil {
+				s.logger.Error("failed to re-subscribe after reconnect",
+					"error", err, "symbols_count", len(symbols))
+				// The connection itself is fine; subscription failure is not
+				// fatal. The caller or health manager can retry.
+			} else {
+				s.logger.Info("re-subscribed after reconnect",
+					"symbols_count", len(symbols))
+			}
+		}
+
+		return // Success — exit the reconnection loop
+	}
+
+	// Exhausted all retries
+	s.logger.Error("streaming reconnection failed after max retries",
+		"max_retries", reconnectMaxRetries)
+}
+
+// EnsureHealthyConnection verifies the streaming connection is healthy.
+// If the connection has gone stale or is disconnected, it attempts to
+// reconnect. This method is duck-typed by the streaming manager — it will
+// be detected via type assertion:
+//
+//	if hc, ok := provider.(interface{ EnsureHealthyConnection(context.Context) error }); ok { ... }
+func (s *SchwabProvider) EnsureHealthyConnection(ctx context.Context) error {
+	s.streamMu.RLock()
+	connected := s.IsConnected
+	conn := s.streamConn
+	lastData := s.LastDataTime
+	s.streamMu.RUnlock()
+
+	if connected && conn != nil {
+		// Connection exists — check if data is stale (>120s without data)
+		if lastData != nil && time.Since(*lastData) > 120*time.Second {
+			s.logger.Warn("streaming connection stale, reconnecting",
+				"last_data_age", time.Since(*lastData))
+			// Disconnect and reconnect
+			s.DisconnectStreaming(ctx)
+			_, err := s.ConnectStreaming(ctx)
+			return err
+		}
+		return nil // Connection is healthy
+	}
+
+	// Not connected — attempt to connect
+	s.logger.Info("streaming not connected, attempting connection")
+	_, err := s.ConnectStreaming(ctx)
+	return err
 }
 
 // =============================================================================
