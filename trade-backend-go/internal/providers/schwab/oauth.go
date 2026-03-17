@@ -516,3 +516,120 @@ func (h *SchwabOAuthHandler) HandleAuthorize(c *gin.Context) {
 		"state":    stateToken,
 	})
 }
+
+// HandleCallback receives the OAuth redirect from Schwab after the user
+// authorizes (or cancels). It exchanges the authorization code for tokens,
+// fetches account numbers, and updates the flow state.
+//
+// GET /api/schwab/oauth/callback?code=...&state=...  (or ?error=...&state=...)
+func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
+	code := c.Query("code")
+	stateToken := c.Query("state")
+	errorParam := c.Query("error")
+
+	// --- User cancelled in Schwab UI ---
+	if errorParam != "" {
+		if stateToken != "" {
+			h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+				s.Status = "failed"
+				s.Error = "Authorization cancelled by user"
+			})
+		}
+		c.Data(http.StatusOK, "text/html; charset=utf-8", renderCallbackPage("cancelled", ""))
+		return
+	}
+
+	// --- Validate state token ---
+	if stateToken == "" {
+		c.Data(http.StatusOK, "text/html; charset=utf-8",
+			renderCallbackPage("error", "Invalid or expired authorization request"))
+		return
+	}
+
+	state := h.oauthStore.GetState(stateToken)
+	if state == nil {
+		c.Data(http.StatusOK, "text/html; charset=utf-8",
+			renderCallbackPage("error", "Invalid or expired authorization request"))
+		return
+	}
+
+	// --- Atomically transition to "exchanging" to prevent duplicate processing ---
+	alreadyProcessed := false
+	h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+		if s.Status != "pending" {
+			alreadyProcessed = true
+			return
+		}
+		s.Status = "exchanging"
+	})
+	if alreadyProcessed {
+		c.Data(http.StatusOK, "text/html; charset=utf-8",
+			renderCallbackPage("error", "This authorization has already been processed"))
+		return
+	}
+
+	// --- Validate authorization code ---
+	if code == "" {
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.Status = "failed"
+			s.Error = "Missing authorization code"
+		})
+		c.Data(http.StatusOK, "text/html; charset=utf-8",
+			renderCallbackPage("error", "Missing authorization code"))
+		return
+	}
+
+	// Read immutable fields from state (set at creation, never changed)
+	baseURL := state.BaseURL
+	appKey := state.AppKey
+	appSecret := state.AppSecret
+	callbackURL := state.CallbackURL
+
+	// --- Exchange code for tokens ---
+	tokens, err := exchangeCodeForTokens(baseURL, appKey, appSecret, callbackURL, code)
+	if err != nil {
+		slog.Error("OAuth token exchange failed", "error", err)
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.Status = "failed"
+			s.Error = err.Error()
+		})
+		c.Data(http.StatusOK, "text/html; charset=utf-8",
+			renderCallbackPage("error", "Token exchange failed: "+err.Error()))
+		return
+	}
+
+	// --- Fetch account numbers ---
+	accounts, err := fetchAccountNumbers(baseURL, tokens.AccessToken)
+	if err != nil {
+		slog.Error("OAuth account fetch failed", "error", err)
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.Status = "failed"
+			s.Error = err.Error()
+		})
+		c.Data(http.StatusOK, "text/html; charset=utf-8",
+			renderCallbackPage("error", "Account fetch failed: "+err.Error()))
+		return
+	}
+
+	// --- Validate at least one account ---
+	if len(accounts) == 0 {
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.Status = "failed"
+			s.Error = "No accounts found"
+		})
+		c.Data(http.StatusOK, "text/html; charset=utf-8",
+			renderCallbackPage("error", "No accounts found"))
+		return
+	}
+
+	// --- Success: update state with tokens and accounts ---
+	h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+		s.Status = "completed"
+		s.AccessToken = tokens.AccessToken
+		s.RefreshToken = tokens.RefreshToken
+		s.TokenExpiry = time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
+		s.Accounts = accounts
+	})
+
+	c.Data(http.StatusOK, "text/html; charset=utf-8", renderCallbackPage("success", ""))
+}

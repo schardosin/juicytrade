@@ -775,3 +775,290 @@ func TestHandleAuthorize_AuthURLFormat(t *testing.T) {
 		t.Error("expected state parameter to be present")
 	}
 }
+
+// =============================================================================
+// HandleCallback test helpers
+// =============================================================================
+
+// setupMockSchwabServer creates a single httptest server that handles both
+// the token exchange and account numbers endpoints.
+func setupMockSchwabServer(t *testing.T, tokenResp string, tokenStatus int, accountsResp string, accountsStatus int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(tokenStatus)
+			fmt.Fprint(w, tokenResp)
+		case strings.HasSuffix(r.URL.Path, "/accounts/accountNumbers"):
+			w.WriteHeader(accountsStatus)
+			fmt.Fprint(w, accountsResp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+// createAuthorizedState creates a handler with a pending state whose BaseURL
+// points at the given mock server. Returns the handler and state token.
+func createAuthorizedState(t *testing.T, handler *SchwabOAuthHandler, baseURL string) string {
+	t.Helper()
+	token, err := handler.oauthStore.CreateState("test-key", "test-secret", "https://127.0.0.1/callback", baseURL)
+	if err != nil {
+		t.Fatalf("failed to create state: %v", err)
+	}
+	return token
+}
+
+// getCallback sends a GET to HandleCallback with the given query string.
+func getCallback(t *testing.T, handler *SchwabOAuthHandler, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/schwab/oauth/callback?"+query, nil)
+	handler.HandleCallback(c)
+	return w
+}
+
+// =============================================================================
+// HandleCallback tests
+// =============================================================================
+
+func TestHandleCallback_Success_SingleAccount(t *testing.T) {
+	tokenResp := `{"access_token":"at-123","refresh_token":"rt-456","expires_in":1800,"token_type":"Bearer"}`
+	accountsResp := `[{"accountNumber":"123456789","hashValue":"HASH1"}]`
+	srv := setupMockSchwabServer(t, tokenResp, 200, accountsResp, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=auth-code-xyz&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "successful") {
+		t.Errorf("expected success HTML, got: %s", body[:200])
+	}
+
+	// Verify state was updated
+	state := handler.oauthStore.GetState(stateToken)
+	if state == nil {
+		t.Fatal("expected state to still exist")
+	}
+	if state.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", state.Status)
+	}
+	if state.AccessToken != "at-123" {
+		t.Errorf("expected AccessToken 'at-123', got %q", state.AccessToken)
+	}
+	if state.RefreshToken != "rt-456" {
+		t.Errorf("expected RefreshToken 'rt-456', got %q", state.RefreshToken)
+	}
+	if len(state.Accounts) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(state.Accounts))
+	}
+	if state.Accounts[0].HashValue != "HASH1" {
+		t.Errorf("expected hash 'HASH1', got %q", state.Accounts[0].HashValue)
+	}
+}
+
+func TestHandleCallback_Success_MultipleAccounts(t *testing.T) {
+	tokenResp := `{"access_token":"at","refresh_token":"rt","expires_in":1800}`
+	accountsResp := `[
+		{"accountNumber":"111111111","hashValue":"H1"},
+		{"accountNumber":"222222222","hashValue":"H2"},
+		{"accountNumber":"333333333","hashValue":"H3"}
+	]`
+	srv := setupMockSchwabServer(t, tokenResp, 200, accountsResp, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=code123&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state == nil {
+		t.Fatal("expected state to exist")
+	}
+	if len(state.Accounts) != 3 {
+		t.Fatalf("expected 3 accounts, got %d", len(state.Accounts))
+	}
+	// Verify all hashes stored
+	hashes := map[string]bool{}
+	for _, a := range state.Accounts {
+		hashes[a.HashValue] = true
+	}
+	for _, h := range []string{"H1", "H2", "H3"} {
+		if !hashes[h] {
+			t.Errorf("expected hash %q in accounts", h)
+		}
+	}
+}
+
+func TestHandleCallback_UserCancelled(t *testing.T) {
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, "https://unused")
+
+	w := getCallback(t, handler, "error=access_denied&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Cancelled") {
+		t.Errorf("expected cancelled HTML, got: %s", body[:200])
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state == nil {
+		t.Fatal("expected state to exist")
+	}
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+	if !strings.Contains(state.Error, "cancelled by user") {
+		t.Errorf("expected 'cancelled by user' in error, got %q", state.Error)
+	}
+}
+
+func TestHandleCallback_InvalidState(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := getCallback(t, handler, "code=some-code&state=nonexistent-token-xyz")
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Invalid or expired") {
+		t.Errorf("expected 'Invalid or expired' error, got: %s", body[:200])
+	}
+}
+
+func TestHandleCallback_DuplicateCallback(t *testing.T) {
+	tokenResp := `{"access_token":"at","refresh_token":"rt","expires_in":1800}`
+	accountsResp := `[{"accountNumber":"123456789","hashValue":"H1"}]`
+	srv := setupMockSchwabServer(t, tokenResp, 200, accountsResp, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	// First callback — should succeed
+	w1 := getCallback(t, handler, "code=code1&state="+url.QueryEscape(stateToken))
+	if !strings.Contains(w1.Body.String(), "successful") {
+		t.Fatal("first callback should succeed")
+	}
+
+	// Second callback with same state — should be rejected
+	w2 := getCallback(t, handler, "code=code2&state="+url.QueryEscape(stateToken))
+	body := w2.Body.String()
+	if !strings.Contains(body, "already been processed") {
+		t.Errorf("expected 'already been processed', got: %s", body[:200])
+	}
+}
+
+func TestHandleCallback_TokenExchangeFails(t *testing.T) {
+	srv := setupMockSchwabServer(t, `{"error":"invalid_client"}`, 401, `[]`, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=bad-code&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, "Token exchange failed") {
+		t.Errorf("expected token exchange error in HTML, got: %s", body[:200])
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state == nil {
+		t.Fatal("expected state to exist")
+	}
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+}
+
+func TestHandleCallback_AccountFetchFails(t *testing.T) {
+	tokenResp := `{"access_token":"at","refresh_token":"rt","expires_in":1800}`
+	srv := setupMockSchwabServer(t, tokenResp, 200, `internal error`, 500)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=good-code&state="+url.QueryEscape(stateToken))
+
+	body := w.Body.String()
+	if !strings.Contains(body, "Account fetch failed") {
+		t.Errorf("expected account fetch error in HTML, got: %s", body[:200])
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+}
+
+func TestHandleCallback_NoAccounts(t *testing.T) {
+	tokenResp := `{"access_token":"at","refresh_token":"rt","expires_in":1800}`
+	srv := setupMockSchwabServer(t, tokenResp, 200, `[]`, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=code&state="+url.QueryEscape(stateToken))
+
+	body := w.Body.String()
+	if !strings.Contains(body, "No accounts found") {
+		t.Errorf("expected 'No accounts found' error, got: %s", body[:200])
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+}
+
+func TestHandleCallback_MissingCode(t *testing.T) {
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, "https://unused")
+
+	// No code and no error param — just state
+	w := getCallback(t, handler, "state="+url.QueryEscape(stateToken))
+
+	body := w.Body.String()
+	if !strings.Contains(body, "Missing authorization code") {
+		t.Errorf("expected 'Missing authorization code' error, got: %s", body[:200])
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+}
+
+func TestHandleCallback_MissingState(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	// Code present but no state
+	w := getCallback(t, handler, "code=some-auth-code")
+
+	body := w.Body.String()
+	if !strings.Contains(body, "Invalid or expired") {
+		t.Errorf("expected 'Invalid or expired' error, got: %s", body[:200])
+	}
+}
