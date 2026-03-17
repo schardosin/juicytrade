@@ -4,8 +4,13 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 )
@@ -181,4 +186,233 @@ func generateStateToken() (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// =============================================================================
+// Token Exchange
+// =============================================================================
+
+// tokenExchangeResult holds the parsed result of an authorization code exchange.
+type tokenExchangeResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int
+}
+
+// exchangeCodeForTokens exchanges an OAuth authorization code for access and
+// refresh tokens using Schwab's token endpoint.
+func exchangeCodeForTokens(baseURL, appKey, appSecret, callbackURL, code string) (*tokenExchangeResult, error) {
+	tokenURL := baseURL + "/v1/oauth/token"
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("redirect_uri", callbackURL)
+
+	req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(appKey, appSecret)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read token response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusBadRequest {
+		return nil, fmt.Errorf("invalid authorization code or redirect URI (400): %s", truncateBody(body, 200))
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("invalid client credentials (401): %s", truncateBody(body, 200))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, truncateBody(body, 200))
+	}
+
+	var tokenResp schwabTokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	if tokenResp.AccessToken == "" {
+		return nil, fmt.Errorf("token response missing access_token")
+	}
+
+	return &tokenExchangeResult{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ExpiresIn:    tokenResp.ExpiresIn,
+	}, nil
+}
+
+// =============================================================================
+// Account Number Fetch
+// =============================================================================
+
+// schwabAccountNumberEntry matches the JSON structure returned by the
+// Schwab /accounts/accountNumbers endpoint.
+type schwabAccountNumberEntry struct {
+	AccountNumber string `json:"accountNumber"`
+	HashValue     string `json:"hashValue"`
+}
+
+// fetchAccountNumbers retrieves the list of brokerage accounts associated with
+// the given access token. Account numbers are masked for display safety.
+func fetchAccountNumbers(baseURL, accessToken string) ([]SchwabAccountInfo, error) {
+	accountsURL := baseURL + "/trader/v1/accounts/accountNumbers"
+
+	req, err := http.NewRequest(http.MethodGet, accountsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create accounts request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("accounts request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read accounts response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("accounts request failed with status %d: %s", resp.StatusCode, truncateBody(body, 200))
+	}
+
+	var entries []schwabAccountNumberEntry
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return nil, fmt.Errorf("failed to parse accounts response: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return []SchwabAccountInfo{}, nil
+	}
+
+	accounts := make([]SchwabAccountInfo, len(entries))
+	for i, entry := range entries {
+		accounts[i] = SchwabAccountInfo{
+			AccountNumber: maskAccountNumber(entry.AccountNumber),
+			HashValue:     entry.HashValue,
+		}
+	}
+
+	return accounts, nil
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+// maskAccountNumber returns a masked version of an account number,
+// showing only the last 4 digits (e.g., "*****6789").
+func maskAccountNumber(number string) string {
+	if number == "" {
+		return ""
+	}
+	if len(number) <= 4 {
+		return number
+	}
+	masked := strings.Repeat("*", len(number)-4) + number[len(number)-4:]
+	return masked
+}
+
+// =============================================================================
+// Callback HTML
+// =============================================================================
+
+// renderCallbackPage returns a minimal self-contained HTML page displayed
+// in the browser after the Schwab OAuth redirect. No external dependencies.
+func renderCallbackPage(status, errorMessage string) []byte {
+	var icon, heading, message, accentColor string
+
+	switch status {
+	case "success":
+		icon = "&#10004;" // checkmark
+		heading = "Authorization Successful"
+		message = "Authorization successful! You may close this tab."
+		accentColor = "#00c853"
+	case "error":
+		icon = "&#10008;" // X mark
+		heading = "Authorization Failed"
+		message = errorMessage
+		accentColor = "#ff1744"
+	case "cancelled":
+		icon = "&#9888;" // warning triangle
+		heading = "Authorization Cancelled"
+		message = "The authorization was cancelled."
+		accentColor = "#ffc107"
+	default:
+		icon = "&#9888;"
+		heading = "Unknown Status"
+		message = status
+		accentColor = "#ffc107"
+	}
+
+	html := fmt.Sprintf(`<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JuicyTrade - Schwab Authorization</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #1a1a2e;
+    color: #ffffff;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+  }
+  .card {
+    text-align: center;
+    background: #16213e;
+    border-radius: 12px;
+    padding: 48px 40px;
+    max-width: 480px;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.3);
+  }
+  .icon {
+    font-size: 64px;
+    color: %s;
+    margin-bottom: 16px;
+  }
+  h1 {
+    font-size: 22px;
+    margin-bottom: 12px;
+    font-weight: 600;
+  }
+  p {
+    font-size: 15px;
+    color: #b0b0b0;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+<div class="card">
+  <div class="icon">%s</div>
+  <h1>%s</h1>
+  <p>%s</p>
+</div>
+</body>
+</html>`, accentColor, icon, heading, message)
+
+	return []byte(html)
 }

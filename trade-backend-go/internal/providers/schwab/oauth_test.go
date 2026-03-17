@@ -2,6 +2,12 @@ package schwab
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -288,5 +294,274 @@ func TestOAuthStore_ConcurrentAccess(t *testing.T) {
 		// Success — no races, no deadlocks
 	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for concurrent operations — possible deadlock")
+	}
+}
+
+// =============================================================================
+// exchangeCodeForTokens tests
+// =============================================================================
+
+func TestExchangeCodeForTokens_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "test-access-token",
+			"refresh_token": "test-refresh-token",
+			"expires_in":    1800,
+			"token_type":    "Bearer",
+		})
+	}))
+	defer srv.Close()
+
+	result, err := exchangeCodeForTokens(srv.URL, "key", "secret", "https://cb", "auth-code-123")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result.AccessToken != "test-access-token" {
+		t.Errorf("expected AccessToken 'test-access-token', got %q", result.AccessToken)
+	}
+	if result.RefreshToken != "test-refresh-token" {
+		t.Errorf("expected RefreshToken 'test-refresh-token', got %q", result.RefreshToken)
+	}
+	if result.ExpiresIn != 1800 {
+		t.Errorf("expected ExpiresIn 1800, got %d", result.ExpiresIn)
+	}
+}
+
+func TestExchangeCodeForTokens_InvalidCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"invalid_grant"}`)
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForTokens(srv.URL, "key", "secret", "https://cb", "bad-code")
+	if err == nil {
+		t.Fatal("expected error for 400 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid authorization code") {
+		t.Errorf("expected 'invalid authorization code' error, got: %v", err)
+	}
+}
+
+func TestExchangeCodeForTokens_InvalidCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"invalid_client"}`)
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForTokens(srv.URL, "bad-key", "bad-secret", "https://cb", "code")
+	if err == nil {
+		t.Fatal("expected error for 401 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid client credentials") {
+		t.Errorf("expected 'invalid client credentials' error, got: %v", err)
+	}
+}
+
+func TestExchangeCodeForTokens_BasicAuthHeader(t *testing.T) {
+	var receivedAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "tok",
+			"expires_in":   1800,
+		})
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForTokens(srv.URL, "my-app-key", "my-app-secret", "https://cb", "code")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.HasPrefix(receivedAuth, "Basic ") {
+		t.Fatalf("expected Basic auth header, got %q", receivedAuth)
+	}
+}
+
+func TestExchangeCodeForTokens_FormBody(t *testing.T) {
+	var receivedBody string
+	var receivedContentType string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedContentType = r.Header.Get("Content-Type")
+		bodyBytes, _ := io.ReadAll(r.Body)
+		receivedBody = string(bodyBytes)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "tok",
+			"expires_in":   1800,
+		})
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForTokens(srv.URL, "key", "secret", "https://my-cb.com/callback", "my-auth-code")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if receivedContentType != "application/x-www-form-urlencoded" {
+		t.Errorf("expected Content-Type 'application/x-www-form-urlencoded', got %q", receivedContentType)
+	}
+	if !strings.Contains(receivedBody, "grant_type=authorization_code") {
+		t.Errorf("expected grant_type=authorization_code in body, got: %s", receivedBody)
+	}
+	if !strings.Contains(receivedBody, "code=my-auth-code") {
+		t.Errorf("expected code=my-auth-code in body, got: %s", receivedBody)
+	}
+	if !strings.Contains(receivedBody, "redirect_uri=") {
+		t.Errorf("expected redirect_uri in body, got: %s", receivedBody)
+	}
+}
+
+// =============================================================================
+// fetchAccountNumbers tests
+// =============================================================================
+
+func TestFetchAccountNumbers_SingleAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]string{
+			{"accountNumber": "123456789", "hashValue": "ABC123HASH"},
+		})
+	}))
+	defer srv.Close()
+
+	accounts, err := fetchAccountNumbers(srv.URL, "test-token")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(accounts))
+	}
+	// Account number should be masked
+	if accounts[0].AccountNumber != "*****6789" {
+		t.Errorf("expected masked account '*****6789', got %q", accounts[0].AccountNumber)
+	}
+	if accounts[0].HashValue != "ABC123HASH" {
+		t.Errorf("expected hash 'ABC123HASH', got %q", accounts[0].HashValue)
+	}
+}
+
+func TestFetchAccountNumbers_MultipleAccounts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]string{
+			{"accountNumber": "111111111", "hashValue": "HASH1"},
+			{"accountNumber": "222222222", "hashValue": "HASH2"},
+			{"accountNumber": "333333333", "hashValue": "HASH3"},
+		})
+	}))
+	defer srv.Close()
+
+	accounts, err := fetchAccountNumbers(srv.URL, "test-token")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(accounts) != 3 {
+		t.Fatalf("expected 3 accounts, got %d", len(accounts))
+	}
+	// Verify all are masked
+	for i, acct := range accounts {
+		if !strings.HasPrefix(acct.AccountNumber, "*") {
+			t.Errorf("account %d not masked: %q", i, acct.AccountNumber)
+		}
+	}
+}
+
+func TestFetchAccountNumbers_EmptyAccounts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+
+	accounts, err := fetchAccountNumbers(srv.URL, "test-token")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if accounts == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(accounts) != 0 {
+		t.Errorf("expected 0 accounts, got %d", len(accounts))
+	}
+}
+
+// =============================================================================
+// maskAccountNumber tests
+// =============================================================================
+
+func TestMaskAccountNumber(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"1", "1"},
+		{"12", "12"},
+		{"1234", "1234"},
+		{"12345", "*2345"},
+		{"123456789", "*****6789"},
+		{"9876543210", "******3210"},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("input=%q", tt.input), func(t *testing.T) {
+			got := maskAccountNumber(tt.input)
+			if got != tt.expected {
+				t.Errorf("maskAccountNumber(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// renderCallbackPage tests
+// =============================================================================
+
+func TestRenderCallbackPage_Success(t *testing.T) {
+	html := string(renderCallbackPage("success", ""))
+
+	if !strings.Contains(html, "JuicyTrade - Schwab Authorization") {
+		t.Error("expected page title in HTML")
+	}
+	if !strings.Contains(html, "successful") {
+		t.Error("expected 'successful' in HTML for success status")
+	}
+	if !strings.Contains(html, "close this tab") {
+		t.Error("expected 'close this tab' in HTML for success status")
+	}
+	if !strings.Contains(html, "#00c853") {
+		t.Error("expected green accent color for success")
+	}
+}
+
+func TestRenderCallbackPage_Error(t *testing.T) {
+	html := string(renderCallbackPage("error", "Something went wrong with OAuth"))
+
+	if !strings.Contains(html, "Something went wrong with OAuth") {
+		t.Error("expected error message in HTML")
+	}
+	if !strings.Contains(html, "Failed") {
+		t.Error("expected 'Failed' heading in HTML for error status")
+	}
+	if !strings.Contains(html, "#ff1744") {
+		t.Error("expected red accent color for error")
+	}
+}
+
+func TestRenderCallbackPage_Cancelled(t *testing.T) {
+	html := string(renderCallbackPage("cancelled", ""))
+
+	if !strings.Contains(html, "cancelled") || !strings.Contains(html, "Cancelled") {
+		t.Error("expected 'cancelled' in HTML for cancelled status")
+	}
+	if !strings.Contains(html, "#ffc107") {
+		t.Error("expected yellow accent color for cancelled")
 	}
 }
