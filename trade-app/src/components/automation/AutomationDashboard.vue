@@ -488,7 +488,10 @@ export default {
 
     const getStatusClass = (config) => {
       if (!config.enabled) return 'disabled'
-      if (isConfigRunning(config.id)) return 'running'
+      if (isConfigRunning(config.id)) {
+        const status = getAutomationStatus(config.id)
+        return status?.all_indicators_pass === true ? 'running-ready' : 'running-not-ready'
+      }
       return 'idle'
     }
 
@@ -499,7 +502,7 @@ export default {
         switch (status.state) {
           case 'waiting':
           case 'evaluating':
-            return 'status-waiting'
+            return status.all_indicators_pass === true ? 'status-running' : 'status-waiting'
           case 'trading':
           case 'monitoring':
             return 'status-running'
@@ -968,8 +971,12 @@ export default {
   box-shadow: var(--shadow-md);
 }
 
-.config-card.running {
+.config-card.running-ready {
   border-left: 4px solid var(--color-success);
+}
+
+.config-card.running-not-ready {
+  border-left: 4px solid var(--color-warning);
 }
 
 .config-card.idle {
