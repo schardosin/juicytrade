@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // =============================================================================
@@ -415,4 +417,102 @@ func renderCallbackPage(status, errorMessage string) []byte {
 </html>`, accentColor, icon, heading, message)
 
 	return []byte(html)
+}
+
+// =============================================================================
+// OAuth Handler
+// =============================================================================
+
+// OAuthHandlerDeps holds closure functions that let the handler interact with
+// the providers package (CredentialStore, ProviderManager) without creating
+// a circular import.
+type OAuthHandlerDeps struct {
+	AddInstance      func(instanceID, providerType, accountType, displayName string, credentials map[string]interface{}) bool
+	UpdateCredFields func(instanceID string, updates map[string]interface{}) error
+	GenerateInstID   func(providerType, accountType, displayName string) string
+	ReinitInstance   func(instanceID string) error
+	GetInstance      func(instanceID string) map[string]interface{}
+}
+
+// SchwabOAuthHandler manages the full OAuth authorization flow via HTTP endpoints.
+type SchwabOAuthHandler struct {
+	oauthStore *SchwabOAuthStore
+	deps       OAuthHandlerDeps
+}
+
+// NewSchwabOAuthHandler creates a new handler with its own internal OAuthStore.
+// Call StartCleanup(ctx) separately to launch the TTL cleanup goroutine.
+func NewSchwabOAuthHandler(deps OAuthHandlerDeps) *SchwabOAuthHandler {
+	return &SchwabOAuthHandler{
+		oauthStore: NewSchwabOAuthStore(),
+		deps:       deps,
+	}
+}
+
+// StartCleanup launches the background goroutine that removes expired OAuth states.
+func (h *SchwabOAuthHandler) StartCleanup(ctx context.Context) {
+	h.oauthStore.StartCleanup(ctx)
+}
+
+// authorizeRequest is the expected JSON body for HandleAuthorize.
+type authorizeRequest struct {
+	AppKey      string `json:"app_key" binding:"required"`
+	AppSecret   string `json:"app_secret" binding:"required"`
+	CallbackURL string `json:"callback_url" binding:"required"`
+	BaseURL     string `json:"base_url"`
+	InstanceID  string `json:"instance_id"`
+}
+
+// HandleAuthorize initiates a Schwab OAuth flow. It creates a state token,
+// builds the Schwab authorization URL, and returns it to the caller.
+//
+// POST /api/schwab/oauth/authorize
+//
+//	Request:  { "app_key": "...", "app_secret": "...", "callback_url": "...", "base_url": "...", "instance_id": "..." }
+//	Response: { "auth_url": "...", "state": "..." }
+func (h *SchwabOAuthHandler) HandleAuthorize(c *gin.Context) {
+	var req authorizeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	// Validate callback_url starts with https://
+	if !strings.HasPrefix(req.CallbackURL, "https://") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "callback_url must start with https://"})
+		return
+	}
+
+	// Default base_url
+	if req.BaseURL == "" {
+		req.BaseURL = "https://api.schwabapi.com"
+	}
+
+	// Create state
+	stateToken, err := h.oauthStore.CreateState(req.AppKey, req.AppSecret, req.CallbackURL, req.BaseURL)
+	if err != nil {
+		slog.Error("failed to create OAuth state", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create authorization state"})
+		return
+	}
+
+	// If re-auth, store the existing instance ID
+	if req.InstanceID != "" {
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.ExistingInstanceID = req.InstanceID
+		})
+	}
+
+	// Build Schwab authorization URL
+	authURL := fmt.Sprintf("%s/v1/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&state=%s",
+		req.BaseURL,
+		url.QueryEscape(req.AppKey),
+		url.QueryEscape(req.CallbackURL),
+		url.QueryEscape(stateToken),
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"auth_url": authURL,
+		"state":    stateToken,
+	})
 }

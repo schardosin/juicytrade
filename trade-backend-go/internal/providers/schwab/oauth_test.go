@@ -1,16 +1,20 @@
 package schwab
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gin-gonic/gin"
 )
 
 // =============================================================================
@@ -563,5 +567,211 @@ func TestRenderCallbackPage_Cancelled(t *testing.T) {
 	}
 	if !strings.Contains(html, "#ffc107") {
 		t.Error("expected yellow accent color for cancelled")
+	}
+}
+
+// =============================================================================
+// HandleAuthorize test helpers
+// =============================================================================
+
+func init() {
+	gin.SetMode(gin.TestMode)
+}
+
+// newTestOAuthHandler creates a SchwabOAuthHandler with no-op deps for testing.
+func newTestOAuthHandler() *SchwabOAuthHandler {
+	return NewSchwabOAuthHandler(OAuthHandlerDeps{
+		AddInstance:      func(id, pt, at, dn string, c map[string]interface{}) bool { return true },
+		UpdateCredFields: func(id string, u map[string]interface{}) error { return nil },
+		GenerateInstID:   func(pt, at, dn string) string { return pt + "_" + at + "_" + dn },
+		ReinitInstance:   func(id string) error { return nil },
+		GetInstance:      func(id string) map[string]interface{} { return nil },
+	})
+}
+
+// postAuthorize sends a POST request to HandleAuthorize and returns the recorder.
+func postAuthorize(t *testing.T, handler *SchwabOAuthHandler, body interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("failed to marshal body: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/schwab/oauth/authorize", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.HandleAuthorize(c)
+	return w
+}
+
+// =============================================================================
+// HandleAuthorize tests
+// =============================================================================
+
+func TestHandleAuthorize_Success(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "my-key",
+		"app_secret":   "my-secret",
+		"callback_url": "https://127.0.0.1/callback",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	authURL := resp["auth_url"]
+	stateToken := resp["state"]
+
+	if authURL == "" {
+		t.Fatal("expected auth_url in response")
+	}
+	if stateToken == "" {
+		t.Fatal("expected state in response")
+	}
+	if len(stateToken) != 43 {
+		t.Errorf("expected state token length 43, got %d", len(stateToken))
+	}
+
+	// Verify auth_url contains required params
+	if !strings.Contains(authURL, "client_id=") {
+		t.Error("auth_url missing client_id parameter")
+	}
+	if !strings.Contains(authURL, "state=") {
+		t.Error("auth_url missing state parameter")
+	}
+	if !strings.Contains(authURL, "response_type=code") {
+		t.Error("auth_url missing response_type=code")
+	}
+}
+
+func TestHandleAuthorize_MissingAppKey(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_secret":   "secret",
+		"callback_url": "https://127.0.0.1/callback",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleAuthorize_MissingAppSecret(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "key",
+		"callback_url": "https://127.0.0.1/callback",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleAuthorize_DefaultBaseURL(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "key",
+		"app_secret":   "secret",
+		"callback_url": "https://127.0.0.1/callback",
+		// no base_url — should default
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	if !strings.Contains(resp["auth_url"], "api.schwabapi.com") {
+		t.Errorf("expected default base URL in auth_url, got: %s", resp["auth_url"])
+	}
+}
+
+func TestHandleAuthorize_WithInstanceID(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "key",
+		"app_secret":   "secret",
+		"callback_url": "https://127.0.0.1/callback",
+		"instance_id":  "schwab_live_MyAccount",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	// Verify the state stores the ExistingInstanceID
+	state := handler.oauthStore.GetState(resp["state"])
+	if state == nil {
+		t.Fatal("expected state to exist")
+	}
+	if state.ExistingInstanceID != "schwab_live_MyAccount" {
+		t.Errorf("expected ExistingInstanceID 'schwab_live_MyAccount', got %q", state.ExistingInstanceID)
+	}
+}
+
+func TestHandleAuthorize_AuthURLFormat(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "key with spaces",
+		"app_secret":   "secret",
+		"callback_url": "https://127.0.0.1/callback?foo=bar",
+		"base_url":     "https://custom.schwab.com",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	authURL := resp["auth_url"]
+
+	// Parse the URL and verify structure
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("auth_url is not a valid URL: %v", err)
+	}
+
+	if parsed.Host != "custom.schwab.com" {
+		t.Errorf("expected host 'custom.schwab.com', got %q", parsed.Host)
+	}
+	if parsed.Path != "/v1/oauth/authorize" {
+		t.Errorf("expected path '/v1/oauth/authorize', got %q", parsed.Path)
+	}
+
+	q := parsed.Query()
+	if q.Get("client_id") != "key with spaces" {
+		t.Errorf("expected client_id 'key with spaces', got %q", q.Get("client_id"))
+	}
+	if q.Get("redirect_uri") != "https://127.0.0.1/callback?foo=bar" {
+		t.Errorf("expected redirect_uri to be properly decoded, got %q", q.Get("redirect_uri"))
+	}
+	if q.Get("response_type") != "code" {
+		t.Errorf("expected response_type 'code', got %q", q.Get("response_type"))
+	}
+	if q.Get("state") == "" {
+		t.Error("expected state parameter to be present")
 	}
 }
