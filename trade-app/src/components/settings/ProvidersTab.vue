@@ -84,6 +84,21 @@
               {{ instance.active ? 'Active' : 'Inactive' }}
             </span>
           </div>
+
+          <!-- Auth Expired Warning (Schwab providers) -->
+          <div v-if="instance.provider_type === 'schwab' && instance.auth_expired" class="auth-expired-badge">
+            <i class="pi pi-exclamation-triangle"></i>
+            <span>Auth Expired</span>
+            <Button
+              label="Reconnect"
+              icon="pi pi-refresh"
+              severity="warning"
+              size="small"
+              text
+              @click.stop="startReconnect(instanceId, instance)"
+              :loading="reconnectingInstances.has(instanceId)"
+            />
+          </div>
           
           <!-- Actions column - aligned -->
           <div class="instance-actions">
@@ -557,6 +572,7 @@ export default {
     const instancesLoading = ref(false);
     const instancesError = ref(null);
     const togglingInstances = ref(new Set());
+    const reconnectingInstances = ref(new Set());
 
     // Service routing data
     const reactiveAvailableProviders = getAvailableProviders();
@@ -997,12 +1013,18 @@ export default {
         oauthError.value = null;
         oauthStatus.value = null;
 
-        const result = await api.initiateSchwabOAuth({
+        const requestData = {
           app_key: newProvider.value.credentials.app_key,
           app_secret: newProvider.value.credentials.app_secret,
           callback_url: newProvider.value.credentials.callback_url,
           base_url: newProvider.value.credentials.base_url || '',
-        });
+        };
+        // For re-authentication, include the existing instance ID
+        if (editingInstance.value) {
+          requestData.instance_id = editingInstance.value;
+        }
+
+        const result = await api.initiateSchwabOAuth(requestData);
 
         oauthState.value = result.state;
         oauthStatus.value = 'pending';
@@ -1079,6 +1101,37 @@ export default {
         showError(error.response?.data?.error || 'Failed to finalize provider setup', 'OAuth Error');
       } finally {
         savingProvider.value = false;
+      }
+    };
+
+    const startReconnect = async (instanceId, instance) => {
+      reconnectingInstances.value.add(instanceId);
+
+      try {
+        // Pre-fill dialog with existing instance data
+        const creds = instance.visible_credentials || {};
+
+        editingInstance.value = instanceId;
+        newProvider.value = {
+          provider_type: instance.provider_type,
+          account_type: instance.account_type,
+          display_name: instance.display_name,
+          credentials: {
+            app_key: creds.app_key || '',
+            app_secret: '', // User must re-enter sensitive field
+            callback_url: creds.callback_url || 'https://127.0.0.1/callback',
+            base_url: creds.base_url || 'https://api.schwabapi.com',
+          },
+        };
+
+        dialogStep.value = 3;
+        showAddProviderDialog.value = true;
+
+        showSuccess('Please re-enter your App Secret and click "Connect to Schwab" to reconnect.');
+      } catch (err) {
+        showError('Failed to start reconnection', 'Reconnect Error');
+      } finally {
+        reconnectingInstances.value.delete(instanceId);
       }
     };
 
@@ -1468,6 +1521,8 @@ export default {
       startOAuth,
       finalizeOAuth,
       cancelOAuth,
+      reconnectingInstances,
+      startReconnect,
     };
   },
 };
@@ -2358,5 +2413,20 @@ export default {
   display: flex;
   flex-direction: column;
   gap: var(--spacing-sm);
+}
+
+/* Auth Expired Badge */
+.auth-expired-badge {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+}
+
+.auth-expired-badge i {
+  color: var(--color-warning);
+  font-size: var(--font-size-md);
 }
 </style>
