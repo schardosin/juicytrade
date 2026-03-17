@@ -355,8 +355,8 @@
               />
             </div>
 
-            <!-- Test Connection -->
-            <div class="test-connection">
+            <!-- Test Connection (non-OAuth providers) -->
+            <div v-if="!isOAuthProvider" class="test-connection">
               <Button
                 label="Test Connection"
                 icon="pi pi-wifi"
@@ -369,6 +369,69 @@
               <div v-if="connectionTestResult" class="test-result" :class="connectionTestResult.success ? 'success' : 'error'">
                 <i :class="connectionTestResult.success ? 'pi pi-check' : 'pi pi-times'"></i>
                 <span>{{ connectionTestResult.message }}</span>
+              </div>
+            </div>
+
+            <!-- OAuth Connect (Schwab) -->
+            <div v-if="isOAuthProvider" class="oauth-connect">
+              <!-- Step 1: Connect button -->
+              <div v-if="!oauthStatus || oauthStatus === 'idle'" class="oauth-start">
+                <Button
+                  label="Connect to Schwab"
+                  icon="pi pi-external-link"
+                  @click="startOAuth"
+                  class="p-button-warning"
+                  :loading="oauthLoading"
+                  :disabled="!canStartOAuth"
+                  type="button"
+                />
+                <p class="oauth-hint">Opens Schwab login in a new window. Authorize access, then return here.</p>
+              </div>
+
+              <!-- Step 2: Polling / waiting -->
+              <div v-if="oauthStatus === 'pending' || oauthStatus === 'exchanging'" class="oauth-polling">
+                <div class="oauth-spinner">
+                  <i class="pi pi-spin pi-spinner"></i>
+                  <span>Waiting for Schwab authorization...</span>
+                </div>
+                <Button
+                  label="Cancel"
+                  icon="pi pi-times"
+                  @click="cancelOAuth"
+                  class="p-button-text p-button-sm"
+                  type="button"
+                />
+              </div>
+
+              <!-- Step 3: Account selection -->
+              <div v-if="oauthStatus === 'completed' && oauthAccounts.length > 0" class="oauth-accounts">
+                <h5>Select Account</h5>
+                <div
+                  v-for="account in oauthAccounts"
+                  :key="account.hash_value"
+                  class="oauth-account-card"
+                  :class="{ selected: selectedAccountHash === account.hash_value }"
+                  @click="selectedAccountHash = account.hash_value"
+                >
+                  <i class="pi pi-wallet"></i>
+                  <span>{{ account.account_number }}</span>
+                  <i v-if="selectedAccountHash === account.hash_value" class="pi pi-check oauth-check"></i>
+                </div>
+              </div>
+
+              <!-- Error state -->
+              <div v-if="oauthStatus === 'failed'" class="oauth-error">
+                <div class="test-result error">
+                  <i class="pi pi-times"></i>
+                  <span>{{ oauthError || 'Authorization failed' }}</span>
+                </div>
+                <Button
+                  label="Try Again"
+                  icon="pi pi-refresh"
+                  @click="cancelOAuth"
+                  class="p-button-text p-button-sm"
+                  type="button"
+                />
               </div>
             </div>
           </div>
@@ -392,12 +455,20 @@
             :disabled="!canProceedToNextStep"
           />
           <Button
-            v-if="dialogStep === 3"
+            v-if="dialogStep === 3 && !isOAuthProvider"
             :label="editingInstance ? 'Update' : 'Create'"
             icon="pi pi-check"
             @click="saveProvider"
             :loading="savingProvider"
             :disabled="!canSaveProvider"
+          />
+          <Button
+            v-if="dialogStep === 3 && isOAuthProvider && !editingInstance"
+            label="Create Provider"
+            icon="pi pi-check"
+            @click="finalizeOAuth"
+            :loading="savingProvider"
+            :disabled="!canFinalizeOAuth"
           />
           <Button
             label="Cancel"
@@ -524,6 +595,15 @@ export default {
       credentials: {}
     });
 
+    // OAuth flow state
+    const oauthState = ref(null);       // state token from backend
+    const oauthStatus = ref(null);      // idle | pending | exchanging | completed | failed
+    const oauthAccounts = ref([]);      // accounts returned after OAuth
+    const oauthError = ref(null);       // error message
+    const oauthLoading = ref(false);    // loading spinner for initiate
+    const selectedAccountHash = ref(''); // user-selected account hash
+    let oauthPollTimer = null;          // polling interval handle
+
     // Service categories configuration - computed to handle conditional Greeks (API)
     const serviceCategories = computed(() => {
       const baseServices = [
@@ -636,7 +716,7 @@ export default {
 
     const getProviderIcon = (providerType) => {
       // Return null for providers with SVG logos, use fallback icons for others
-      const svgProviders = ['alpaca', 'tradier', 'public', 'tastytrade'];
+      const svgProviders = ['alpaca', 'tradier', 'public', 'tastytrade', 'schwab'];
       if (svgProviders.includes(providerType)) {
         return null; // Will use SVG logo instead
       }
@@ -831,6 +911,20 @@ export default {
       return canTestConnection.value && newProvider.value.display_name;
     });
 
+    const isOAuthProvider = computed(() => {
+      const pt = providerTypes.value[newProvider.value.provider_type];
+      return pt?.auth_method === 'oauth';
+    });
+
+    const canStartOAuth = computed(() => {
+      const fields = getCredentialFields();
+      return fields.every(field => !field.required || newProvider.value.credentials[field.name]);
+    });
+
+    const canFinalizeOAuth = computed(() => {
+      return oauthStatus.value === 'completed' && selectedAccountHash.value && newProvider.value.display_name;
+    });
+
     const testConnection = async () => {
       try {
         testingConnection.value = true;
@@ -896,7 +990,110 @@ export default {
       }
     };
 
+    // OAuth flow methods
+    const startOAuth = async () => {
+      try {
+        oauthLoading.value = true;
+        oauthError.value = null;
+        oauthStatus.value = null;
+
+        const result = await api.initiateSchwabOAuth({
+          app_key: newProvider.value.credentials.app_key,
+          app_secret: newProvider.value.credentials.app_secret,
+          callback_url: newProvider.value.credentials.callback_url,
+          base_url: newProvider.value.credentials.base_url || '',
+        });
+
+        oauthState.value = result.state;
+        oauthStatus.value = 'pending';
+
+        // Open Schwab auth URL in new window
+        window.open(result.auth_url, '_blank', 'noopener');
+
+        // Start polling
+        pollOAuthStatus();
+      } catch (error) {
+        console.error('Error initiating Schwab OAuth:', error);
+        oauthStatus.value = 'failed';
+        oauthError.value = error.response?.data?.error || 'Failed to start authorization';
+      } finally {
+        oauthLoading.value = false;
+      }
+    };
+
+    const pollOAuthStatus = () => {
+      if (oauthPollTimer) clearInterval(oauthPollTimer);
+
+      oauthPollTimer = setInterval(async () => {
+        if (!oauthState.value) {
+          clearInterval(oauthPollTimer);
+          return;
+        }
+
+        try {
+          const result = await api.getSchwabOAuthStatus(oauthState.value);
+          oauthStatus.value = result.status;
+
+          if (result.status === 'completed') {
+            clearInterval(oauthPollTimer);
+            oauthAccounts.value = result.accounts || [];
+            if (oauthAccounts.value.length === 1) {
+              selectedAccountHash.value = oauthAccounts.value[0].hash_value;
+            }
+          } else if (result.status === 'failed') {
+            clearInterval(oauthPollTimer);
+            oauthError.value = result.error || 'Authorization failed';
+          }
+        } catch (error) {
+          // 404 means expired — stop polling
+          if (error.response?.status === 404) {
+            clearInterval(oauthPollTimer);
+            oauthStatus.value = 'failed';
+            oauthError.value = 'Authorization expired. Please try again.';
+          }
+        }
+      }, 2000);
+    };
+
+    const finalizeOAuth = async () => {
+      try {
+        savingProvider.value = true;
+
+        const result = await api.selectSchwabAccount({
+          state: oauthState.value,
+          account_hash: selectedAccountHash.value,
+          provider_name: newProvider.value.display_name,
+          account_type: newProvider.value.account_type || 'live',
+        });
+
+        if (result.success) {
+          showSuccess('Schwab provider created successfully');
+          await loadProviderInstances();
+          await refreshProviderData();
+          closeDialog();
+        } else {
+          showError(result.error || 'Failed to create provider', 'OAuth Error');
+        }
+      } catch (error) {
+        console.error('Error finalizing OAuth:', error);
+        showError(error.response?.data?.error || 'Failed to finalize provider setup', 'OAuth Error');
+      } finally {
+        savingProvider.value = false;
+      }
+    };
+
+    const cancelOAuth = () => {
+      if (oauthPollTimer) clearInterval(oauthPollTimer);
+      oauthState.value = null;
+      oauthStatus.value = null;
+      oauthAccounts.value = [];
+      oauthError.value = null;
+      oauthLoading.value = false;
+      selectedAccountHash.value = '';
+    };
+
     const closeDialog = () => {
+      cancelOAuth();
       showAddProviderDialog.value = false;
       dialogStep.value = 1;
       editingInstance.value = null;
@@ -1091,7 +1288,7 @@ export default {
 
     // Smart credential handling methods
     const isSensitiveField = (fieldName) => {
-      const sensitiveFields = ['password', 'api_key', 'api_secret'];
+      const sensitiveFields = ['password', 'api_key', 'api_secret', 'app_key', 'app_secret'];
       return sensitiveFields.includes(fieldName);
     };
 
@@ -1257,6 +1454,20 @@ export default {
       checkForUnsavedChanges,
       resetChanges,
       saveRoutingChanges,
+
+      // OAuth flow
+      isOAuthProvider,
+      canStartOAuth,
+      canFinalizeOAuth,
+      oauthState,
+      oauthStatus,
+      oauthAccounts,
+      oauthError,
+      oauthLoading,
+      selectedAccountHash,
+      startOAuth,
+      finalizeOAuth,
+      cancelOAuth,
     };
   },
 };
@@ -2071,5 +2282,81 @@ export default {
 .routing-content::-webkit-scrollbar-thumb:hover,
 .sub-tab-content::-webkit-scrollbar-thumb:hover {
   background: var(--border-tertiary);
+}
+
+/* OAuth Connect */
+.oauth-connect {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border-secondary);
+}
+
+.oauth-hint {
+  margin: 0;
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  font-style: italic;
+}
+
+.oauth-polling {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.oauth-spinner {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  color: var(--color-warning);
+  font-size: var(--font-size-sm);
+}
+
+.oauth-spinner i {
+  font-size: var(--font-size-lg);
+}
+
+.oauth-accounts h5 {
+  margin: 0 0 var(--spacing-sm) 0;
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+}
+
+.oauth-account-card {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--bg-tertiary);
+  border: 2px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  cursor: pointer;
+  transition: var(--transition-normal);
+  margin-bottom: var(--spacing-xs);
+  font-size: var(--font-size-sm);
+  color: var(--text-primary);
+}
+
+.oauth-account-card:hover {
+  border-color: var(--border-tertiary);
+}
+
+.oauth-account-card.selected {
+  border-color: var(--color-brand);
+  background-color: rgba(255, 107, 53, 0.05);
+}
+
+.oauth-check {
+  margin-left: auto;
+  color: var(--color-brand);
+}
+
+.oauth-error {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
 }
 </style>

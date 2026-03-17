@@ -696,6 +696,23 @@ export const api = {
     }
   },
 
+  // === Schwab OAuth Flow APIs ===
+
+  async initiateSchwabOAuth(data) {
+    const response = await axios.post(`${API_BASE_URL}/providers/schwab/authorize`, data);
+    return response.data;
+  },
+
+  async getSchwabOAuthStatus(stateToken) {
+    const response = await axios.get(`${API_BASE_URL}/providers/schwab/oauth/status/${stateToken}`);
+    return response.data;
+  },
+
+  async selectSchwabAccount(data) {
+    const response = await axios.post(`${API_BASE_URL}/providers/schwab/select-account`, data);
+    return response.data;
+  },
+
   // === Watchlist Management APIs ===
 
   // Get all watchlists
