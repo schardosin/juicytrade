@@ -633,3 +633,150 @@ func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
 
 	c.Data(http.StatusOK, "text/html; charset=utf-8", renderCallbackPage("success", ""))
 }
+
+// HandleOAuthStatus returns the current status of an OAuth flow.
+// The frontend polls this after redirecting the user to Schwab.
+//
+// GET /api/schwab/oauth/status/:state
+func (h *SchwabOAuthHandler) HandleOAuthStatus(c *gin.Context) {
+	stateToken := c.Param("state")
+
+	state := h.oauthStore.GetState(stateToken)
+	if state == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "OAuth flow not found or expired"})
+		return
+	}
+
+	resp := gin.H{"status": state.Status}
+
+	switch state.Status {
+	case "completed":
+		resp["accounts"] = state.Accounts
+	case "failed":
+		resp["error"] = state.Error
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// selectAccountRequest is the expected JSON body for HandleSelectAccount.
+type selectAccountRequest struct {
+	State        string `json:"state" binding:"required"`
+	AccountHash  string `json:"account_hash" binding:"required"`
+	ProviderName string `json:"provider_name"`
+	AccountType  string `json:"account_type"`
+}
+
+// HandleSelectAccount finalizes the OAuth flow by creating or updating a
+// provider instance with the selected account.
+//
+// POST /api/schwab/oauth/select-account
+func (h *SchwabOAuthHandler) HandleSelectAccount(c *gin.Context) {
+	var req selectAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	// --- Lookup and validate state ---
+	state := h.oauthStore.GetState(req.State)
+	if state == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "OAuth flow not found or expired"})
+		return
+	}
+	if state.Status != "completed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("OAuth flow not ready (status: %s)", state.Status)})
+		return
+	}
+
+	// --- Validate account hash is in the returned accounts ---
+	validHash := false
+	for _, acct := range state.Accounts {
+		if acct.HashValue == req.AccountHash {
+			validHash = true
+			break
+		}
+	}
+	if !validHash {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid account selection"})
+		return
+	}
+
+	// --- Build credentials map ---
+	credentials := map[string]interface{}{
+		"app_key":       state.AppKey,
+		"app_secret":    state.AppSecret,
+		"callback_url":  state.CallbackURL,
+		"base_url":      state.BaseURL,
+		"refresh_token": state.RefreshToken,
+		"account_hash":  req.AccountHash,
+	}
+
+	// --- Re-auth path ---
+	if state.ExistingInstanceID != "" {
+		existingID := state.ExistingInstanceID
+
+		// Verify instance exists
+		if inst := h.deps.GetInstance(existingID); inst == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Instance %s not found", existingID)})
+			return
+		}
+
+		// Update credential fields
+		if err := h.deps.UpdateCredFields(existingID, map[string]interface{}{
+			"refresh_token": state.RefreshToken,
+			"account_hash":  req.AccountHash,
+		}); err != nil {
+			slog.Error("failed to update credentials for re-auth", "instance_id", existingID, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update credentials: " + err.Error()})
+			return
+		}
+
+		// Reinitialize provider
+		if err := h.deps.ReinitInstance(existingID); err != nil {
+			slog.Error("failed to reinitialize provider after re-auth", "instance_id", existingID, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reinitialize provider: " + err.Error()})
+			return
+		}
+
+		h.oauthStore.DeleteState(req.State)
+
+		c.JSON(http.StatusOK, gin.H{
+			"success":     true,
+			"instance_id": existingID,
+			"message":     "Provider re-authenticated successfully",
+		})
+		return
+	}
+
+	// --- New provider path ---
+	if req.ProviderName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider_name is required for new provider instances"})
+		return
+	}
+
+	accountType := req.AccountType
+	if accountType == "" {
+		accountType = "live"
+	}
+
+	instanceID := h.deps.GenerateInstID("schwab", accountType, req.ProviderName)
+
+	if ok := h.deps.AddInstance(instanceID, "schwab", accountType, req.ProviderName, credentials); !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create provider instance"})
+		return
+	}
+
+	if err := h.deps.ReinitInstance(instanceID); err != nil {
+		slog.Warn("provider created but reinitialization failed — will be available after restart",
+			"instance_id", instanceID, "error", err)
+	}
+
+	h.oauthStore.DeleteState(req.State)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"instance_id": instanceID,
+		"message":     "Schwab provider created successfully",
+	})
+}

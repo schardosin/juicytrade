@@ -1062,3 +1062,427 @@ func TestHandleCallback_MissingState(t *testing.T) {
 		t.Errorf("expected 'Invalid or expired' error, got: %s", body[:200])
 	}
 }
+
+// =============================================================================
+// HandleOAuthStatus / HandleSelectAccount test helpers
+// =============================================================================
+
+// mockDeps provides configurable OAuthHandlerDeps and records calls for assertions.
+type mockDeps struct {
+	addInstanceCalled      bool
+	addInstanceID          string
+	addInstanceCredentials map[string]interface{}
+	addInstanceResult      bool
+
+	updateCredFieldsCalled bool
+	updateCredFieldsID     string
+	updateCredFieldsData   map[string]interface{}
+	updateCredFieldsErr    error
+
+	generateInstIDResult string
+
+	reinitCalled    bool
+	reinitID        string
+	reinitErr       error
+	reinitCallCount int
+
+	getInstanceResult map[string]interface{}
+}
+
+func (m *mockDeps) toDeps() OAuthHandlerDeps {
+	return OAuthHandlerDeps{
+		AddInstance: func(id, pt, at, dn string, creds map[string]interface{}) bool {
+			m.addInstanceCalled = true
+			m.addInstanceID = id
+			m.addInstanceCredentials = creds
+			return m.addInstanceResult
+		},
+		UpdateCredFields: func(id string, updates map[string]interface{}) error {
+			m.updateCredFieldsCalled = true
+			m.updateCredFieldsID = id
+			m.updateCredFieldsData = updates
+			return m.updateCredFieldsErr
+		},
+		GenerateInstID: func(pt, at, dn string) string {
+			return m.generateInstIDResult
+		},
+		ReinitInstance: func(id string) error {
+			m.reinitCalled = true
+			m.reinitID = id
+			m.reinitCallCount++
+			return m.reinitErr
+		},
+		GetInstance: func(id string) map[string]interface{} {
+			return m.getInstanceResult
+		},
+	}
+}
+
+// setupCompletedState creates a handler and a state in "completed" status
+// with mock tokens and accounts. Returns the handler, state token, and mock deps.
+func setupCompletedState(t *testing.T, md *mockDeps) (*SchwabOAuthHandler, string) {
+	t.Helper()
+	handler := NewSchwabOAuthHandler(md.toDeps())
+	token, err := handler.oauthStore.CreateState("test-key", "test-secret", "https://127.0.0.1/callback", "https://api.schwabapi.com")
+	if err != nil {
+		t.Fatalf("failed to create state: %v", err)
+	}
+	handler.oauthStore.UpdateState(token, func(s *OAuthFlowState) {
+		s.Status = "completed"
+		s.AccessToken = "at-mock"
+		s.RefreshToken = "rt-mock"
+		s.TokenExpiry = time.Now().Add(30 * time.Minute)
+		s.Accounts = []SchwabAccountInfo{
+			{AccountNumber: "*****6789", HashValue: "HASH_A"},
+			{AccountNumber: "*****4321", HashValue: "HASH_B"},
+		}
+	})
+	return handler, token
+}
+
+// getStatus sends a GET request to HandleOAuthStatus with the given state param.
+func getStatus(t *testing.T, handler *SchwabOAuthHandler, stateToken string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/schwab/oauth/status/"+stateToken, nil)
+	c.Params = gin.Params{{Key: "state", Value: stateToken}}
+	handler.HandleOAuthStatus(c)
+	return w
+}
+
+// postSelectAccount sends a POST to HandleSelectAccount with the given body.
+func postSelectAccount(t *testing.T, handler *SchwabOAuthHandler, body interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("failed to marshal body: %v", err)
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/schwab/oauth/select-account", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	handler.HandleSelectAccount(c)
+	return w
+}
+
+// =============================================================================
+// HandleOAuthStatus tests
+// =============================================================================
+
+func TestHandleOAuthStatus_Pending(t *testing.T) {
+	handler := newTestOAuthHandler()
+	token, _ := handler.oauthStore.CreateState("k", "s", "https://cb", "https://api")
+
+	w := getStatus(t, handler, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "pending" {
+		t.Errorf("expected status 'pending', got %v", resp["status"])
+	}
+}
+
+func TestHandleOAuthStatus_Completed(t *testing.T) {
+	md := &mockDeps{addInstanceResult: true}
+	handler, token := setupCompletedState(t, md)
+
+	w := getStatus(t, handler, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "completed" {
+		t.Errorf("expected status 'completed', got %v", resp["status"])
+	}
+	accounts, ok := resp["accounts"].([]interface{})
+	if !ok {
+		t.Fatal("expected accounts array in response")
+	}
+	if len(accounts) != 2 {
+		t.Errorf("expected 2 accounts, got %d", len(accounts))
+	}
+}
+
+func TestHandleOAuthStatus_Failed(t *testing.T) {
+	handler := newTestOAuthHandler()
+	token, _ := handler.oauthStore.CreateState("k", "s", "https://cb", "https://api")
+	handler.oauthStore.UpdateState(token, func(s *OAuthFlowState) {
+		s.Status = "failed"
+		s.Error = "something went wrong"
+	})
+
+	w := getStatus(t, handler, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "failed" {
+		t.Errorf("expected status 'failed', got %v", resp["status"])
+	}
+	if resp["error"] != "something went wrong" {
+		t.Errorf("expected error 'something went wrong', got %v", resp["error"])
+	}
+}
+
+func TestHandleOAuthStatus_NotFound(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := getStatus(t, handler, "nonexistent-token-abc")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleOAuthStatus_Expired(t *testing.T) {
+	handler := newTestOAuthHandler()
+	token, _ := handler.oauthStore.CreateState("k", "s", "https://cb", "https://api")
+
+	// Backdate
+	state := handler.oauthStore.GetState(token)
+	state.mu.Lock()
+	state.CreatedAt = time.Now().Add(-15 * time.Minute)
+	state.mu.Unlock()
+
+	w := getStatus(t, handler, token)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for expired state, got %d", w.Code)
+	}
+}
+
+// =============================================================================
+// HandleSelectAccount tests
+// =============================================================================
+
+func TestHandleSelectAccount_NewProvider(t *testing.T) {
+	md := &mockDeps{
+		addInstanceResult:    true,
+		generateInstIDResult: "schwab_live_MyBroker",
+	}
+	handler, token := setupCompletedState(t, md)
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":         token,
+		"account_hash":  "HASH_A",
+		"provider_name": "MyBroker",
+		"account_type":  "live",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["success"] != true {
+		t.Errorf("expected success=true, got %v", resp["success"])
+	}
+	if resp["instance_id"] != "schwab_live_MyBroker" {
+		t.Errorf("expected instance_id 'schwab_live_MyBroker', got %v", resp["instance_id"])
+	}
+
+	// Verify deps called
+	if !md.addInstanceCalled {
+		t.Error("expected AddInstance to be called")
+	}
+	if md.addInstanceID != "schwab_live_MyBroker" {
+		t.Errorf("expected AddInstance ID 'schwab_live_MyBroker', got %q", md.addInstanceID)
+	}
+	// Verify credentials include refresh_token and account_hash
+	if md.addInstanceCredentials["refresh_token"] != "rt-mock" {
+		t.Errorf("expected refresh_token 'rt-mock', got %v", md.addInstanceCredentials["refresh_token"])
+	}
+	if md.addInstanceCredentials["account_hash"] != "HASH_A" {
+		t.Errorf("expected account_hash 'HASH_A', got %v", md.addInstanceCredentials["account_hash"])
+	}
+}
+
+func TestHandleSelectAccount_ReAuth(t *testing.T) {
+	md := &mockDeps{
+		getInstanceResult: map[string]interface{}{"provider_type": "schwab"},
+	}
+	handler, token := setupCompletedState(t, md)
+
+	// Set existing instance ID on state
+	handler.oauthStore.UpdateState(token, func(s *OAuthFlowState) {
+		s.ExistingInstanceID = "schwab_live_Existing"
+	})
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        token,
+		"account_hash": "HASH_B",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["success"] != true {
+		t.Errorf("expected success=true")
+	}
+	if resp["instance_id"] != "schwab_live_Existing" {
+		t.Errorf("expected instance_id 'schwab_live_Existing', got %v", resp["instance_id"])
+	}
+	if !strings.Contains(resp["message"].(string), "re-authenticated") {
+		t.Errorf("expected 're-authenticated' in message, got %v", resp["message"])
+	}
+
+	// Verify deps called
+	if !md.updateCredFieldsCalled {
+		t.Error("expected UpdateCredFields to be called")
+	}
+	if md.updateCredFieldsID != "schwab_live_Existing" {
+		t.Errorf("expected UpdateCredFields ID 'schwab_live_Existing', got %q", md.updateCredFieldsID)
+	}
+	if md.updateCredFieldsData["refresh_token"] != "rt-mock" {
+		t.Errorf("expected refresh_token in updates")
+	}
+	if md.updateCredFieldsData["account_hash"] != "HASH_B" {
+		t.Errorf("expected account_hash 'HASH_B' in updates")
+	}
+	if !md.reinitCalled {
+		t.Error("expected ReinitInstance to be called")
+	}
+}
+
+func TestHandleSelectAccount_InvalidState(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        "nonexistent-token",
+		"account_hash": "HASH",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleSelectAccount_WrongStatus(t *testing.T) {
+	handler := newTestOAuthHandler()
+	token, _ := handler.oauthStore.CreateState("k", "s", "https://cb", "https://api")
+	// State is "pending" — not "completed"
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        token,
+		"account_hash": "HASH",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "not ready") {
+		t.Errorf("expected 'not ready' in error, got: %s", w.Body.String())
+	}
+}
+
+func TestHandleSelectAccount_InvalidAccountHash(t *testing.T) {
+	md := &mockDeps{addInstanceResult: true}
+	handler, token := setupCompletedState(t, md)
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":         token,
+		"account_hash":  "HASH_NONEXISTENT",
+		"provider_name": "Test",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Invalid account selection") {
+		t.Errorf("expected 'Invalid account selection', got: %s", w.Body.String())
+	}
+}
+
+func TestHandleSelectAccount_MissingProviderName(t *testing.T) {
+	md := &mockDeps{addInstanceResult: true}
+	handler, token := setupCompletedState(t, md)
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        token,
+		"account_hash": "HASH_A",
+		// no provider_name
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "provider_name is required") {
+		t.Errorf("expected 'provider_name is required', got: %s", w.Body.String())
+	}
+}
+
+func TestHandleSelectAccount_DefaultAccountType(t *testing.T) {
+	md := &mockDeps{
+		addInstanceResult:    true,
+		generateInstIDResult: "schwab_live_Test",
+	}
+	handler, token := setupCompletedState(t, md)
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":         token,
+		"account_hash":  "HASH_A",
+		"provider_name": "Test",
+		// no account_type — should default to "live"
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify AddInstance was called (meaning "live" was used as default since no error)
+	if !md.addInstanceCalled {
+		t.Error("expected AddInstance to be called")
+	}
+}
+
+func TestHandleSelectAccount_StateDeletedAfterSuccess(t *testing.T) {
+	md := &mockDeps{
+		addInstanceResult:    true,
+		generateInstIDResult: "schwab_live_Test",
+	}
+	handler, token := setupCompletedState(t, md)
+
+	postSelectAccount(t, handler, map[string]string{
+		"state":         token,
+		"account_hash":  "HASH_A",
+		"provider_name": "Test",
+	})
+
+	// Verify state was deleted
+	if handler.oauthStore.GetState(token) != nil {
+		t.Error("expected state to be deleted after successful finalization")
+	}
+}
+
+func TestHandleSelectAccount_ReAuthInstanceNotFound(t *testing.T) {
+	md := &mockDeps{
+		getInstanceResult: nil, // Instance not found
+	}
+	handler, token := setupCompletedState(t, md)
+
+	handler.oauthStore.UpdateState(token, func(s *OAuthFlowState) {
+		s.ExistingInstanceID = "schwab_live_Gone"
+	})
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        token,
+		"account_hash": "HASH_A",
+	})
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %s", w.Body.String())
+	}
+}
