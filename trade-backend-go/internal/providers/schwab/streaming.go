@@ -509,6 +509,9 @@ func (s *SchwabProvider) processStreamData(data schwabStreamDataItem) {
 		fieldMap = equityFieldMap
 	case "LEVELONE_OPTIONS":
 		fieldMap = optionFieldMap
+	case "ACCT_ACTIVITY":
+		s.processAccountActivity(data)
+		return
 	default:
 		s.logger.Debug("unhandled stream data service", "service", service, "items", len(data.Content))
 		return

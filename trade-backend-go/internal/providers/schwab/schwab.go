@@ -111,33 +111,8 @@ func (s *SchwabProvider) PreviewOrder(ctx context.Context, orderData map[string]
 // Implemented in streaming.go.
 
 // =============================================================================
-// Account Event Streaming Methods
+// Account Event Streaming Methods (implemented in account_stream.go)
 // =============================================================================
-
-// StartAccountStream starts the account events stream for real-time order updates.
-// Schwab uses the same WebSocket for account activity and market data.
-func (s *SchwabProvider) StartAccountStream(ctx context.Context) error {
-	return fmt.Errorf("schwab: StartAccountStream not yet implemented")
-}
-
-// StopAccountStream stops the account events stream.
-func (s *SchwabProvider) StopAccountStream() {
-	s.logger.Info("schwab: StopAccountStream not yet implemented")
-}
-
-// SetOrderEventCallback sets the callback for receiving order events.
-func (s *SchwabProvider) SetOrderEventCallback(callback func(*models.OrderEvent)) {
-	s.acctStreamMu.Lock()
-	defer s.acctStreamMu.Unlock()
-	s.orderEventCallback = callback
-}
-
-// IsAccountStreamConnected checks if account stream is connected.
-func (s *SchwabProvider) IsAccountStreamConnected() bool {
-	s.acctStreamMu.RLock()
-	defer s.acctStreamMu.RUnlock()
-	return s.acctStreamActive && s.IsConnected
-}
 
 // =============================================================================
 // Utility Methods
