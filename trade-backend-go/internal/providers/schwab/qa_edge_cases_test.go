@@ -242,12 +242,105 @@ func TestStreamReadLoop_MalformedJSON(t *testing.T) {
 // HIGH PRIORITY: PreviewOrder
 // =============================================================================
 
-// TestPreviewOrder_SingleLegEquity verifies that PreviewOrder validates the
-// order data client-side and returns a stub response with preview_not_available,
-// since the Schwab API does not have a previewOrder endpoint.
+// TestPreviewOrder_SingleLegEquity verifies that PreviewOrder calls the real
+// Schwab previewOrder API endpoint and correctly parses commission, fees,
+// order cost, and buying power from the response.
 func TestPreviewOrder_SingleLegEquity(t *testing.T) {
-	// No mock server needed — PreviewOrder no longer makes any HTTP calls
-	p := newTestProvider("http://unused")
+	const previewResponse = `{
+		"orderId": 0,
+		"orderStrategy": {
+			"accountNumber": "12345678",
+			"orderBalance": {
+				"orderValue": 15000.00,
+				"projectedAvailableFund": 85000.00,
+				"projectedBuyingPower": 85000.00,
+				"projectedCommission": 0.00
+			},
+			"orderStrategyType": "SINGLE",
+			"session": "NORMAL",
+			"duration": "DAY",
+			"orderType": "LIMIT",
+			"price": 150.00,
+			"quantity": 100,
+			"orderLegs": [
+				{
+					"askPrice": 150.50,
+					"bidPrice": 149.80,
+					"lastPrice": 150.25,
+					"markPrice": 150.15,
+					"projectedCommission": 0.00,
+					"quantity": 100,
+					"finalSymbol": "AAPL",
+					"legId": 1,
+					"assetType": "EQUITY",
+					"instruction": "BUY"
+				}
+			]
+		},
+		"orderValidationResult": {
+			"alerts": [],
+			"accepts": [{"validationRuleName": "OrderAccepted", "message": "Order is valid"}],
+			"rejects": [],
+			"reviews": [],
+			"warns": []
+		},
+		"commissionAndFee": {
+			"commission": {
+				"commissionLegs": [
+					{
+						"commissionValues": [
+							{"value": 0.00, "type": "COMMISSION"}
+						]
+					}
+				]
+			},
+			"fee": {
+				"feeLegs": [
+					{
+						"feeValues": [
+							{"value": 0.03, "type": "TAF_FEE"},
+							{"value": 0.01, "type": "REG_FEE"}
+						]
+					}
+				]
+			},
+			"trueCommission": {
+				"commissionLegs": [
+					{
+						"commissionValues": [
+							{"value": 0.00, "type": "COMMISSION"}
+						]
+					}
+				]
+			}
+		}
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/previewOrder") && r.Method == http.MethodPost:
+			// Verify it's a POST with a JSON body
+			bodyBytes, _ := io.ReadAll(r.Body)
+			var orderReq map[string]interface{}
+			if err := json.Unmarshal(bodyBytes, &orderReq); err != nil {
+				t.Errorf("failed to parse request body: %v", err)
+			}
+			// Verify order fields are present
+			if orderReq["orderType"] != "LIMIT" {
+				t.Errorf("expected orderType LIMIT, got %v", orderReq["orderType"])
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, previewResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
 
 	result, err := p.PreviewOrder(context.Background(), map[string]interface{}{
 		"symbol":        "AAPL",
@@ -265,14 +358,39 @@ func TestPreviewOrder_SingleLegEquity(t *testing.T) {
 		t.Fatal("expected non-nil result")
 	}
 
-	// Verify the result status
+	// Verify status is ok
 	if status, ok := result["status"].(string); !ok || status != "ok" {
 		t.Errorf("expected status 'ok', got %v", result["status"])
 	}
 
-	// Verify preview_not_available is true (Schwab has no preview endpoint)
-	if pna, ok := result["preview_not_available"].(bool); !ok || !pna {
-		t.Errorf("expected preview_not_available true, got %v", result["preview_not_available"])
+	// Verify NO preview_not_available field (this is a real API response)
+	if _, exists := result["preview_not_available"]; exists {
+		t.Error("expected no preview_not_available field for real API response")
+	}
+
+	// Verify commission is 0.00
+	if commission, ok := result["commission"].(float64); !ok || commission != 0.00 {
+		t.Errorf("expected commission 0.00, got %v", result["commission"])
+	}
+
+	// Verify fees = 0.03 + 0.01 = 0.04
+	if fees, ok := result["fees"].(float64); !ok || fmt.Sprintf("%.2f", fees) != "0.04" {
+		t.Errorf("expected fees 0.04, got %v", result["fees"])
+	}
+
+	// Verify order cost
+	if orderCost, ok := result["order_cost"].(float64); !ok || orderCost != 15000.00 {
+		t.Errorf("expected order_cost 15000.00, got %v", result["order_cost"])
+	}
+
+	// Verify estimated total = orderCost + commission + fees = 15000.00 + 0.00 + 0.04
+	if total, ok := result["estimated_total"].(float64); !ok || fmt.Sprintf("%.2f", total) != "15000.04" {
+		t.Errorf("expected estimated_total 15000.04, got %v", result["estimated_total"])
+	}
+
+	// Verify buying power effect
+	if bp, ok := result["buying_power_effect"].(float64); !ok || bp != 85000.00 {
+		t.Errorf("expected buying_power_effect 85000.00, got %v", result["buying_power_effect"])
 	}
 
 	// Verify all standardized fields are present
@@ -286,21 +404,89 @@ func TestPreviewOrder_SingleLegEquity(t *testing.T) {
 			t.Errorf("missing required field %q in preview result", field)
 		}
 	}
-
-	// All cost fields must be zero (stub response)
-	for _, field := range []string{"commission", "cost", "fees", "order_cost", "estimated_total"} {
-		if val, ok := result[field].(float64); ok && val != 0 {
-			t.Errorf("expected %s to be 0 for stub preview, got %v", field, val)
-		}
-	}
 }
 
-// TestPreviewOrder_MultiLegOption verifies that PreviewOrder correctly validates
-// a multi-leg option order (vertical spread) and returns a stub response with
-// preview_not_available, since the Schwab API has no preview endpoint.
+// TestPreviewOrder_MultiLegOption verifies that PreviewOrder correctly handles
+// a multi-leg option order (vertical spread) via the real Schwab preview API.
 func TestPreviewOrder_MultiLegOption(t *testing.T) {
-	// No mock server needed — PreviewOrder no longer makes any HTTP calls
-	p := newTestProvider("http://unused")
+	const previewResponse = `{
+		"orderId": 0,
+		"orderStrategy": {
+			"accountNumber": "12345678",
+			"orderBalance": {
+				"orderValue": 250.00,
+				"projectedAvailableFund": 99750.00,
+				"projectedBuyingPower": 99750.00,
+				"projectedCommission": 1.30
+			},
+			"orderStrategyType": "SINGLE",
+			"session": "NORMAL",
+			"duration": "DAY",
+			"orderType": "NET_DEBIT",
+			"price": 2.50,
+			"orderLegs": [
+				{
+					"projectedCommission": 0.65,
+					"quantity": 1,
+					"finalSymbol": "AAPL  251219C00200000",
+					"legId": 1,
+					"assetType": "OPTION",
+					"instruction": "BUY_TO_OPEN"
+				},
+				{
+					"projectedCommission": 0.65,
+					"quantity": 1,
+					"finalSymbol": "AAPL  251219C00210000",
+					"legId": 2,
+					"assetType": "OPTION",
+					"instruction": "SELL_TO_OPEN"
+				}
+			]
+		},
+		"orderValidationResult": {
+			"alerts": [],
+			"accepts": [{"validationRuleName": "OrderAccepted", "message": "Order is valid"}],
+			"rejects": [],
+			"reviews": [],
+			"warns": []
+		},
+		"commissionAndFee": {
+			"commission": {
+				"commissionLegs": [
+					{"commissionValues": [{"value": 0.65, "type": "COMMISSION"}]},
+					{"commissionValues": [{"value": 0.65, "type": "COMMISSION"}]}
+				]
+			},
+			"fee": {
+				"feeLegs": [
+					{"feeValues": [{"value": 0.04, "type": "ORF_FEE"}]},
+					{"feeValues": [{"value": 0.04, "type": "ORF_FEE"}]}
+				]
+			},
+			"trueCommission": {
+				"commissionLegs": [
+					{"commissionValues": [{"value": 0.65, "type": "COMMISSION"}]},
+					{"commissionValues": [{"value": 0.65, "type": "COMMISSION"}]}
+				]
+			}
+		}
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/previewOrder") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, previewResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
 
 	result, err := p.PreviewOrder(context.Background(), map[string]interface{}{
 		"type":          "net_debit",
@@ -333,16 +519,126 @@ func TestPreviewOrder_MultiLegOption(t *testing.T) {
 		t.Errorf("expected status 'ok', got %v", result["status"])
 	}
 
-	// Verify preview_not_available is true
-	if pna, ok := result["preview_not_available"].(bool); !ok || !pna {
-		t.Errorf("expected preview_not_available true, got %v", result["preview_not_available"])
+	// Verify NO preview_not_available field
+	if _, exists := result["preview_not_available"]; exists {
+		t.Error("expected no preview_not_available field for real API response")
 	}
 
-	// All cost fields must be zero (stub response)
-	for _, field := range []string{"commission", "cost", "fees", "order_cost", "estimated_total"} {
-		if val, ok := result[field].(float64); ok && val != 0 {
-			t.Errorf("expected %s to be 0 for stub preview, got %v", field, val)
+	// Verify commission = 0.65 + 0.65 = 1.30
+	if commission, ok := result["commission"].(float64); !ok || fmt.Sprintf("%.2f", commission) != "1.30" {
+		t.Errorf("expected commission 1.30, got %v", result["commission"])
+	}
+
+	// Verify fees = 0.04 + 0.04 = 0.08
+	if fees, ok := result["fees"].(float64); !ok || fmt.Sprintf("%.2f", fees) != "0.08" {
+		t.Errorf("expected fees 0.08, got %v", result["fees"])
+	}
+
+	// Verify order cost
+	if orderCost, ok := result["order_cost"].(float64); !ok || orderCost != 250.00 {
+		t.Errorf("expected order_cost 250.00, got %v", result["order_cost"])
+	}
+
+	// Verify estimated total = 250.00 + 1.30 + 0.08 = 251.38
+	if total, ok := result["estimated_total"].(float64); !ok || fmt.Sprintf("%.2f", total) != "251.38" {
+		t.Errorf("expected estimated_total 251.38, got %v", result["estimated_total"])
+	}
+
+	// Verify buying power effect
+	if bp, ok := result["buying_power_effect"].(float64); !ok || bp != 99750.00 {
+		t.Errorf("expected buying_power_effect 99750.00, got %v", result["buying_power_effect"])
+	}
+}
+
+// TestPreviewOrder_ValidationRejects verifies that PreviewOrder correctly handles
+// a response where orderValidationResult.rejects contains error messages.
+func TestPreviewOrder_ValidationRejects(t *testing.T) {
+	const rejectResponse = `{
+		"orderId": 0,
+		"orderStrategy": {
+			"orderBalance": {
+				"orderValue": 0,
+				"projectedBuyingPower": 0
+			}
+		},
+		"orderValidationResult": {
+			"alerts": [],
+			"accepts": [],
+			"rejects": [
+				{
+					"validationRuleName": "InsufficientFunds",
+					"message": "Insufficient buying power to place this order",
+					"activityMessage": "Order rejected due to insufficient funds",
+					"originalSeverity": "REJECT"
+				},
+				{
+					"validationRuleName": "MarketClosed",
+					"message": "Market is currently closed for this security",
+					"activityMessage": "Cannot place order outside market hours",
+					"originalSeverity": "REJECT"
+				}
+			],
+			"reviews": [],
+			"warns": []
+		},
+		"commissionAndFee": {
+			"commission": {"commissionLegs": []},
+			"fee": {"feeLegs": []}
 		}
+	}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/previewOrder") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, rejectResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	result, err := p.PreviewOrder(context.Background(), map[string]interface{}{
+		"symbol":        "AAPL",
+		"side":          "buy",
+		"qty":           10000.0,
+		"type":          "market",
+		"time_in_force": "day",
+	})
+
+	// Must NOT return a Go error — structured error result instead
+	if err != nil {
+		t.Fatalf("expected no Go error, got: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Status must be "error"
+	if status, ok := result["status"].(string); !ok || status != "error" {
+		t.Errorf("expected status 'error', got %v", result["status"])
+	}
+
+	// validation_errors must contain both reject messages
+	validationErrors, ok := result["validation_errors"].([]string)
+	if !ok {
+		t.Fatalf("expected validation_errors to be []string, got %T", result["validation_errors"])
+	}
+
+	if len(validationErrors) != 2 {
+		t.Fatalf("expected 2 validation errors, got %d: %v", len(validationErrors), validationErrors)
+	}
+
+	if !strings.Contains(validationErrors[0], "Insufficient buying power") {
+		t.Errorf("expected first error to mention 'Insufficient buying power', got: %s", validationErrors[0])
+	}
+	if !strings.Contains(validationErrors[1], "Market is currently closed") {
+		t.Errorf("expected second error to mention 'Market is currently closed', got: %s", validationErrors[1])
 	}
 }
 

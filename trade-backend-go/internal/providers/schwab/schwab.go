@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -112,36 +113,175 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 // Order Management Methods (PlaceOrder, PlaceMultiLegOrder in orders.go; CancelOrder in orders.go)
 // =============================================================================
 
-// PreviewOrder validates a trading order client-side and returns a stub response.
+// PreviewOrder previews a trading order by calling the Schwab previewOrder API.
 //
-// The Schwab API does NOT provide an order preview endpoint — this was a
-// TD Ameritrade feature that was removed in the migration to Schwab's API.
-// Instead, we validate the order data by building the request (catching
-// structural errors) and return a stub with preview_not_available: true,
-// following the same pattern as the Alpaca provider.
+// Endpoint: POST /trader/v1/accounts/{accountHash}/previewOrder
+// The request body is the same format as placeOrder. The response includes
+// commission/fee breakdowns, order cost, buying power effect, and validation results.
 func (s *SchwabProvider) PreviewOrder(ctx context.Context, orderData map[string]interface{}) (map[string]interface{}, error) {
-	// Validate the order data by building the request — try multi-leg first
-	// if "legs" are present, otherwise build a single-leg request.
+	// 1. Build the order request — try multi-leg if "legs" are present
+	var req *schwabOrderRequest
 	var buildErr error
 
 	if legs, ok := orderData["legs"]; ok {
 		if legsArr, ok := legs.([]interface{}); ok && len(legsArr) > 0 {
-			_, buildErr = buildSchwabMultiLegOrderRequest(orderData)
+			req, buildErr = buildSchwabMultiLegOrderRequest(orderData)
 		} else {
-			_, buildErr = buildSchwabOrderRequest(orderData)
+			req, buildErr = buildSchwabOrderRequest(orderData)
 		}
 	} else {
-		_, buildErr = buildSchwabOrderRequest(orderData)
+		req, buildErr = buildSchwabOrderRequest(orderData)
 	}
 
 	if buildErr != nil {
 		return errorPreviewResult(fmt.Sprintf("Failed to build order: %s", buildErr.Error())), nil
 	}
 
-	// Schwab does not support order preview — return a stub response
-	result := okPreviewResult(0, 0, 0, 0)
-	result["preview_not_available"] = true
+	// 2. Marshal to JSON
+	jsonBody, err := json.Marshal(req)
+	if err != nil {
+		return errorPreviewResult(fmt.Sprintf("Failed to marshal order: %s", err.Error())), nil
+	}
+
+	// 3. Call the Schwab preview endpoint
+	reqURL := s.buildTraderURL("/accounts/" + s.accountHash + "/previewOrder")
+	body, _, err := s.doAuthenticatedRequest(ctx, http.MethodPost, reqURL, jsonBody)
+
+	// 4. Handle transport/auth errors — return structured error, not a Go error
+	if err != nil {
+		return errorPreviewResult(err.Error()), nil
+	}
+
+	// 5. Parse the successful response
+	return parsePreviewResponse(body)
+}
+
+// parsePreviewResponse parses the Schwab previewOrder API response into the
+// standardized preview result map.
+//
+// Response schema (from Schwab official docs):
+//
+//	{
+//	  "orderStrategy": {
+//	    "orderBalance": {
+//	      "orderValue": 15000.00,
+//	      "projectedBuyingPower": 5000.00,
+//	      "projectedCommission": 0.65
+//	    }
+//	  },
+//	  "orderValidationResult": {
+//	    "rejects": [{"message": "..."}],
+//	    "warns": [{"message": "..."}],
+//	    "alerts": [{"message": "..."}]
+//	  },
+//	  "commissionAndFee": {
+//	    "commission": {"commissionLegs": [{"commissionValues": [{"value": 0.65}]}]},
+//	    "fee": {"feeLegs": [{"feeValues": [{"value": 0.02}]}]}
+//	  }
+//	}
+func parsePreviewResponse(body []byte) (map[string]interface{}, error) {
+	if len(body) == 0 {
+		return okPreviewResult(0, 0, 0, 0), nil
+	}
+
+	var raw map[string]interface{}
+	if err := json.Unmarshal(body, &raw); err != nil {
+		return errorPreviewResult(fmt.Sprintf("Failed to parse preview response: %s", err.Error())), nil
+	}
+
+	// Check for validation rejects first — if present, the order is invalid
+	if validationResult, ok := raw["orderValidationResult"].(map[string]interface{}); ok {
+		if rejects, ok := validationResult["rejects"].([]interface{}); ok && len(rejects) > 0 {
+			var messages []string
+			for _, r := range rejects {
+				if rMap, ok := r.(map[string]interface{}); ok {
+					if msg, ok := rMap["message"].(string); ok && msg != "" {
+						messages = append(messages, msg)
+					}
+				}
+			}
+			if len(messages) > 0 {
+				result := errorPreviewResult(strings.Join(messages, "; "))
+				result["validation_errors"] = messages
+				return result, nil
+			}
+		}
+	}
+
+	// Extract commission from commissionAndFee.commission.commissionLegs[].commissionValues[].value
+	commission := sumNestedFeeValues(raw, "commission", "commissionLegs", "commissionValues")
+
+	// Extract fees from commissionAndFee.fee.feeLegs[].feeValues[].value
+	fees := sumNestedFeeValues(raw, "fee", "feeLegs", "feeValues")
+
+	// Extract order cost and buying power from orderStrategy.orderBalance
+	orderCost := 0.0
+	buyingPowerEffect := 0.0
+	if orderStrategy, ok := raw["orderStrategy"].(map[string]interface{}); ok {
+		if orderBalance, ok := orderStrategy["orderBalance"].(map[string]interface{}); ok {
+			if v, ok := orderBalance["orderValue"].(float64); ok {
+				orderCost = v
+			}
+			if v, ok := orderBalance["projectedBuyingPower"].(float64); ok {
+				buyingPowerEffect = v
+			}
+		}
+		// Also try orderValue at the orderStrategy level as fallback
+		if orderCost == 0 {
+			if v, ok := orderStrategy["orderValue"].(float64); ok {
+				orderCost = v
+			}
+		}
+	}
+
+	estimatedTotal := orderCost + commission + fees
+
+	result := okPreviewResult(commission, fees, orderCost, estimatedTotal)
+	result["buying_power_effect"] = buyingPowerEffect
 	return result, nil
+}
+
+// sumNestedFeeValues extracts and sums fee/commission values from the deeply nested
+// Schwab commissionAndFee structure.
+//
+// Path: commissionAndFee.{feeType}.{legsKey}[].{valuesKey}[].value
+// Example: commissionAndFee.commission.commissionLegs[].commissionValues[].value
+func sumNestedFeeValues(raw map[string]interface{}, feeType, legsKey, valuesKey string) float64 {
+	total := 0.0
+
+	commAndFee, ok := raw["commissionAndFee"].(map[string]interface{})
+	if !ok {
+		return total
+	}
+	feeObj, ok := commAndFee[feeType].(map[string]interface{})
+	if !ok {
+		return total
+	}
+	legs, ok := feeObj[legsKey].([]interface{})
+	if !ok {
+		return total
+	}
+	for _, leg := range legs {
+		legMap, ok := leg.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		vals, ok := legMap[valuesKey].([]interface{})
+		if !ok {
+			continue
+		}
+		for _, val := range vals {
+			valMap, ok := val.(map[string]interface{})
+			if !ok {
+				continue
+			}
+			if v, ok := valMap["value"].(float64); ok {
+				total += v
+			}
+		}
+	}
+
+	return total
 }
 
 // errorPreviewResult returns a standardized error preview result map.
