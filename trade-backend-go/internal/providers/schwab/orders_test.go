@@ -162,10 +162,10 @@ func TestGetOrders_OpenFilter(t *testing.T) {
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, validTokenBody)
 		case strings.HasSuffix(r.URL.Path, "/orders"):
-			// Verify status filter
+			// Verify NO status filter is sent — we fetch all and filter client-side
 			status := r.URL.Query().Get("status")
-			if status != "WORKING" {
-				t.Errorf("expected status=WORKING for open filter, got %s", status)
+			if status != "" {
+				t.Errorf("expected no status filter for open request, got %q", status)
 			}
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, `[]`)
@@ -1188,14 +1188,222 @@ func TestMapActionToInstruction_SideValues(t *testing.T) {
 // Bug Fix Tests: Working Orders Filter + Credit/Debit Display
 // =============================================================================
 
-// TestMapOrderStatusFilter_PendingReturnsWorking verifies that the "pending"
-// status filter maps to Schwab's "WORKING" status — not "QUEUED". The UI's
-// "Working" tab sends apiStatus="pending", and Schwab active orders have
-// status "WORKING".
-func TestMapOrderStatusFilter_PendingReturnsWorking(t *testing.T) {
+// TestMapOrderStatusFilter_PendingReturnsEmpty verifies that the "pending"
+// status filter returns "" (no server-side filter) so we can fetch all orders
+// and filter client-side for both "open" and "pending" normalized statuses.
+func TestMapOrderStatusFilter_PendingReturnsEmpty(t *testing.T) {
 	got := mapOrderStatusFilter("pending")
-	if got != "WORKING" {
-		t.Errorf("mapOrderStatusFilter(\"pending\") = %q, want \"WORKING\"", got)
+	if got != "" {
+		t.Errorf("mapOrderStatusFilter(\"pending\") = %q, want \"\"", got)
+	}
+}
+
+// TestMapOrderStatusFilter_OpenAndWorkingReturnEmpty verifies that "open" and
+// "working" also return "" (no server-side filter).
+func TestMapOrderStatusFilter_OpenAndWorkingReturnEmpty(t *testing.T) {
+	for _, input := range []string{"open", "working"} {
+		got := mapOrderStatusFilter(input)
+		if got != "" {
+			t.Errorf("mapOrderStatusFilter(%q) = %q, want \"\"", input, got)
+		}
+	}
+}
+
+// TestIsActiveOrderStatus verifies the helper correctly identifies active statuses.
+func TestIsActiveOrderStatus(t *testing.T) {
+	tests := []struct {
+		status   string
+		expected bool
+	}{
+		{"open", true},
+		{"pending", true},
+		{"Open", true},
+		{"Pending", true},
+		{"OPEN", true},
+		{"PENDING", true},
+		{"filled", false},
+		{"canceled", false},
+		{"rejected", false},
+		{"expired", false},
+		{"replaced", false},
+		{"unknown", false},
+		{"", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.status, func(t *testing.T) {
+			got := isActiveOrderStatus(tt.status)
+			if got != tt.expected {
+				t.Errorf("isActiveOrderStatus(%q) = %v, want %v", tt.status, got, tt.expected)
+			}
+		})
+	}
+}
+
+// schwabMixedStatusOrdersResponse contains orders in various Schwab statuses
+// for testing client-side filtering. The expected normalized statuses are:
+//   - WORKING       → "open"
+//   - PENDING_ACTIVATION → "pending"
+//   - FILLED        → "filled"
+//   - CANCELED      → "canceled"
+const schwabMixedStatusOrdersResponse = `[
+	{
+		"orderId": 300001,
+		"session": "NORMAL",
+		"duration": "DAY",
+		"orderType": "LIMIT",
+		"price": 150.00,
+		"status": "WORKING",
+		"quantity": 100,
+		"filledQuantity": 0,
+		"enteredTime": "2024-05-16T10:30:00+0000",
+		"orderLegCollection": [{
+			"instruction": "BUY",
+			"quantity": 100,
+			"instrument": {"symbol": "AAPL", "assetType": "EQUITY"}
+		}]
+	},
+	{
+		"orderId": 300002,
+		"session": "NORMAL",
+		"duration": "DAY",
+		"orderType": "LIMIT",
+		"price": 50.00,
+		"status": "PENDING_ACTIVATION",
+		"quantity": 50,
+		"filledQuantity": 0,
+		"enteredTime": "2024-05-16T11:00:00+0000",
+		"orderLegCollection": [{
+			"instruction": "BUY",
+			"quantity": 50,
+			"instrument": {"symbol": "MSFT", "assetType": "EQUITY"}
+		}]
+	},
+	{
+		"orderId": 300003,
+		"session": "NORMAL",
+		"duration": "GOOD_TILL_CANCEL",
+		"orderType": "MARKET",
+		"status": "FILLED",
+		"quantity": 25,
+		"filledQuantity": 25,
+		"enteredTime": "2024-05-15T09:30:00+0000",
+		"closeTime": "2024-05-15T09:30:05+0000",
+		"orderLegCollection": [{
+			"instruction": "SELL",
+			"quantity": 25,
+			"instrument": {"symbol": "GOOG", "assetType": "EQUITY"}
+		}]
+	},
+	{
+		"orderId": 300004,
+		"session": "NORMAL",
+		"duration": "DAY",
+		"orderType": "LIMIT",
+		"price": 200.00,
+		"status": "CANCELED",
+		"quantity": 10,
+		"filledQuantity": 0,
+		"enteredTime": "2024-05-14T10:00:00+0000",
+		"orderLegCollection": [{
+			"instruction": "BUY",
+			"quantity": 10,
+			"instrument": {"symbol": "AMZN", "assetType": "EQUITY"}
+		}]
+	}
+]`
+
+// TestGetOrders_PendingFilter_ClientSideFiltering verifies that when the UI
+// requests status="pending", we fetch all orders from Schwab (no status param)
+// and return only those whose normalized status is "open" or "pending".
+func TestGetOrders_PendingFilter_ClientSideFiltering(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/orders"):
+			// No status filter should be sent
+			status := r.URL.Query().Get("status")
+			if status != "" {
+				t.Errorf("expected no status filter for pending request, got %q", status)
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, schwabMixedStatusOrdersResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	orders, err := p.GetOrders(context.Background(), "pending")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Should only return WORKING (→ "open") and PENDING_ACTIVATION (→ "pending")
+	if len(orders) != 2 {
+		t.Fatalf("expected 2 orders, got %d", len(orders))
+	}
+
+	// Verify the returned orders are the active ones
+	ids := map[string]bool{}
+	for _, o := range orders {
+		ids[o.ID] = true
+		if !isActiveOrderStatus(o.Status) {
+			t.Errorf("unexpected non-active order status %q for order %s", o.Status, o.ID)
+		}
+	}
+	if !ids["300001"] {
+		t.Error("expected WORKING order 300001 to be included")
+	}
+	if !ids["300002"] {
+		t.Error("expected PENDING_ACTIVATION order 300002 to be included")
+	}
+}
+
+// TestGetOrders_OpenFilter_IncludesBothStatuses verifies that status="open"
+// also returns both "open" and "pending" normalized orders via client-side
+// filtering.
+func TestGetOrders_OpenFilter_IncludesBothStatuses(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/orders"):
+			// No status filter should be sent
+			status := r.URL.Query().Get("status")
+			if status != "" {
+				t.Errorf("expected no status filter for open request, got %q", status)
+			}
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, schwabMixedStatusOrdersResponse)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	orders, err := p.GetOrders(context.Background(), "open")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Should only return WORKING (→ "open") and PENDING_ACTIVATION (→ "pending")
+	if len(orders) != 2 {
+		t.Fatalf("expected 2 orders, got %d", len(orders))
+	}
+
+	// Verify no terminal orders snuck through
+	for _, o := range orders {
+		if !isActiveOrderStatus(o.Status) {
+			t.Errorf("unexpected non-active order status %q for order %s", o.Status, o.ID)
+		}
 	}
 }
 

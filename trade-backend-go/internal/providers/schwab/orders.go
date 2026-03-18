@@ -54,6 +54,16 @@ func (s *SchwabProvider) GetOrders(ctx context.Context, status string) ([]*model
 		return []*models.Order{}, nil
 	}
 
+	// Determine whether we need client-side active-order filtering.
+	// When the UI asks for "open", "working", or "pending", we fetched all
+	// orders (no server-side status filter) and must now keep only orders
+	// whose normalized status is "open" or "pending".
+	needsActiveFilter := false
+	switch strings.ToLower(status) {
+	case "open", "working", "pending":
+		needsActiveFilter = true
+	}
+
 	var orders []*models.Order
 	for _, raw := range ordersRaw {
 		data, ok := raw.(map[string]interface{})
@@ -61,9 +71,13 @@ func (s *SchwabProvider) GetOrders(ctx context.Context, status string) ([]*model
 			continue
 		}
 		order := transformSchwabOrder(data)
-		if order != nil {
-			orders = append(orders, order)
+		if order == nil {
+			continue
 		}
+		if needsActiveFilter && !isActiveOrderStatus(order.Status) {
+			continue
+		}
+		orders = append(orders, order)
 	}
 
 	s.logger.Debug("GetOrders completed", "status", status, "count", len(orders))
@@ -71,10 +85,15 @@ func (s *SchwabProvider) GetOrders(ctx context.Context, status string) ([]*model
 }
 
 // mapOrderStatusFilter maps a JuicyTrade status filter to a Schwab status parameter.
+// For "open", "working", and "pending" we return "" (no server-side filter) because
+// Schwab's API only accepts a single status value, but active orders may be in
+// multiple Schwab statuses (WORKING, PENDING_ACTIVATION, QUEUED, ACCEPTED, etc.)
+// that normalize to different JuicyTrade statuses. Client-side filtering in
+// GetOrders handles these cases.
 func mapOrderStatusFilter(status string) string {
 	switch strings.ToLower(status) {
-	case "open", "working":
-		return "WORKING"
+	case "open", "working", "pending":
+		return "" // Fetch all, filter client-side
 	case "filled":
 		return "FILLED"
 	case "canceled", "cancelled":
@@ -83,12 +102,22 @@ func mapOrderStatusFilter(status string) string {
 		return "REJECTED"
 	case "expired":
 		return "EXPIRED"
-	case "pending":
-		return "WORKING"
 	case "all", "":
 		return "" // No filter — get all
 	default:
 		return strings.ToUpper(status)
+	}
+}
+
+// isActiveOrderStatus returns true if the normalized status represents an
+// active (non-terminal) order — i.e. "open" or "pending". This is used for
+// client-side filtering when the UI requests working/open/pending orders.
+func isActiveOrderStatus(status string) bool {
+	switch strings.ToLower(status) {
+	case "open", "pending":
+		return true
+	default:
+		return false
 	}
 }
 
