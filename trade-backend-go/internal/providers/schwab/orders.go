@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -335,8 +336,8 @@ type schwabOrderRequest struct {
 	Session            string           `json:"session"`
 	Duration           string           `json:"duration"`
 	OrderType          string           `json:"orderType"`
-	Price              float64          `json:"price,omitempty"`
-	StopPrice          float64          `json:"stopPrice,omitempty"`
+	Price              string           `json:"price,omitempty"`
+	StopPrice          string           `json:"stopPrice,omitempty"`
 	OrderStrategyType  string           `json:"orderStrategyType"`
 	OrderLegCollection []schwabOrderLeg `json:"orderLegCollection"`
 }
@@ -437,11 +438,15 @@ func (s *SchwabProvider) submitOrder(ctx context.Context, req *schwabOrderReques
 		SubmittedAt: time.Now().Format(time.RFC3339),
 	}
 
-	if req.Price > 0 {
-		order.LimitPrice = &req.Price
+	if req.Price != "" {
+		if p, err := strconv.ParseFloat(req.Price, 64); err == nil {
+			order.LimitPrice = &p
+		}
 	}
-	if req.StopPrice > 0 {
-		order.StopPrice = &req.StopPrice
+	if req.StopPrice != "" {
+		if p, err := strconv.ParseFloat(req.StopPrice, 64); err == nil {
+			order.StopPrice = &p
+		}
 	}
 
 	s.logger.Info("order placed", "orderID", orderID, "symbol", primarySymbol, "side", primarySide)
@@ -506,14 +511,14 @@ func buildSchwabOrderRequest(orderData map[string]interface{}) (*schwabOrderRequ
 
 	// Set price for limit orders
 	if price, ok := orderData["price"].(float64); ok && price > 0 {
-		req.Price = price
+		req.Price = fmt.Sprintf("%.2f", price)
 	} else if price, ok := orderData["limit_price"].(float64); ok && price > 0 {
-		req.Price = price
+		req.Price = fmt.Sprintf("%.2f", price)
 	}
 
 	// Set stop price for stop orders
 	if stopPrice, ok := orderData["stop_price"].(float64); ok && stopPrice > 0 {
-		req.StopPrice = stopPrice
+		req.StopPrice = fmt.Sprintf("%.2f", stopPrice)
 	}
 
 	return req, nil
@@ -539,7 +544,7 @@ func buildSchwabMultiLegOrderRequest(orderData map[string]interface{}) (*schwabO
 
 	// Set price
 	if price, ok := orderData["price"].(float64); ok && price > 0 {
-		req.Price = price
+		req.Price = fmt.Sprintf("%.2f", price)
 	}
 
 	// Build legs from orderData["legs"]

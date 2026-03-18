@@ -327,8 +327,8 @@ func TestPreviewOrder_SingleLegEquity(t *testing.T) {
 	if receivedBody["session"] != "NORMAL" {
 		t.Errorf("expected session NORMAL, got %v", receivedBody["session"])
 	}
-	if receivedBody["price"] != 150.0 {
-		t.Errorf("expected price 150.0, got %v", receivedBody["price"])
+	if receivedBody["price"] != "150.00" {
+		t.Errorf("expected price \"150.00\", got %v", receivedBody["price"])
 	}
 }
 
@@ -576,8 +576,8 @@ func TestPlaceOrder_StopOrder(t *testing.T) {
 	if receivedBody["orderType"] != "STOP" {
 		t.Errorf("expected orderType STOP, got %v", receivedBody["orderType"])
 	}
-	if receivedBody["stopPrice"] != 140.0 {
-		t.Errorf("expected stopPrice 140.0, got %v", receivedBody["stopPrice"])
+	if receivedBody["stopPrice"] != "140.00" {
+		t.Errorf("expected stopPrice \"140.00\", got %v", receivedBody["stopPrice"])
 	}
 
 	// Verify returned order
@@ -632,11 +632,11 @@ func TestPlaceOrder_StopLimitOrder(t *testing.T) {
 	if receivedBody["orderType"] != "STOP_LIMIT" {
 		t.Errorf("expected orderType STOP_LIMIT, got %v", receivedBody["orderType"])
 	}
-	if receivedBody["price"] != 380.0 {
-		t.Errorf("expected price 380.0, got %v", receivedBody["price"])
+	if receivedBody["price"] != "380.00" {
+		t.Errorf("expected price \"380.00\", got %v", receivedBody["price"])
 	}
-	if receivedBody["stopPrice"] != 375.0 {
-		t.Errorf("expected stopPrice 375.0, got %v", receivedBody["stopPrice"])
+	if receivedBody["stopPrice"] != "375.00" {
+		t.Errorf("expected stopPrice \"375.00\", got %v", receivedBody["stopPrice"])
 	}
 	if receivedBody["duration"] != "GOOD_TILL_CANCEL" {
 		t.Errorf("expected duration GOOD_TILL_CANCEL, got %v", receivedBody["duration"])

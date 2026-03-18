@@ -637,8 +637,8 @@ func TestPlaceOrder_LimitOrder(t *testing.T) {
 	if receivedBody["orderType"] != "LIMIT" {
 		t.Errorf("expected orderType LIMIT, got %v", receivedBody["orderType"])
 	}
-	if receivedBody["price"] != 150.00 {
-		t.Errorf("expected price 150.00, got %v", receivedBody["price"])
+	if receivedBody["price"] != "150.00" {
+		t.Errorf("expected price \"150.00\", got %v", receivedBody["price"])
 	}
 	if receivedBody["duration"] != "GOOD_TILL_CANCEL" {
 		t.Errorf("expected duration GOOD_TILL_CANCEL, got %v", receivedBody["duration"])
@@ -853,8 +853,8 @@ func TestBuildSchwabOrderRequest(t *testing.T) {
 	if req.Duration != "GOOD_TILL_CANCEL" {
 		t.Errorf("expected GOOD_TILL_CANCEL, got %s", req.Duration)
 	}
-	if req.Price != 150.0 {
-		t.Errorf("expected price 150.0, got %f", req.Price)
+	if req.Price != "150.00" {
+		t.Errorf("expected price \"150.00\", got %s", req.Price)
 	}
 	if len(req.OrderLegCollection) != 1 {
 		t.Fatalf("expected 1 leg, got %d", len(req.OrderLegCollection))
