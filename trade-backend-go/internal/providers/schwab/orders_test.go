@@ -1183,3 +1183,128 @@ func TestMapActionToInstruction_SideValues(t *testing.T) {
 		})
 	}
 }
+
+// =============================================================================
+// Bug Fix Tests: Working Orders Filter + Credit/Debit Display
+// =============================================================================
+
+// TestMapOrderStatusFilter_PendingReturnsWorking verifies that the "pending"
+// status filter maps to Schwab's "WORKING" status — not "QUEUED". The UI's
+// "Working" tab sends apiStatus="pending", and Schwab active orders have
+// status "WORKING".
+func TestMapOrderStatusFilter_PendingReturnsWorking(t *testing.T) {
+	got := mapOrderStatusFilter("pending")
+	if got != "WORKING" {
+		t.Errorf("mapOrderStatusFilter(\"pending\") = %q, want \"WORKING\"", got)
+	}
+}
+
+// TestTransformSchwabOrder_NetCreditNegatesPrice verifies that a NET_CREDIT
+// order has its limit_price negated (so the UI correctly shows "CR") and that
+// the order_type is normalized to "limit".
+func TestTransformSchwabOrder_NetCreditNegatesPrice(t *testing.T) {
+	data := map[string]interface{}{
+		"orderId":        200001.0,
+		"status":         "WORKING",
+		"orderType":      "NET_CREDIT",
+		"duration":       "DAY",
+		"price":          0.41,
+		"quantity":       1.0,
+		"filledQuantity": 0.0,
+		"enteredTime":    "2026-03-18T10:30:00+0000",
+		"orderLegCollection": []interface{}{
+			map[string]interface{}{
+				"instruction": "SELL_TO_OPEN",
+				"quantity":    1.0,
+				"instrument": map[string]interface{}{
+					"symbol":    "SPY   260326P00659000",
+					"assetType": "OPTION",
+				},
+			},
+			map[string]interface{}{
+				"instruction": "BUY_TO_OPEN",
+				"quantity":    1.0,
+				"instrument": map[string]interface{}{
+					"symbol":    "SPY   260326P00658000",
+					"assetType": "OPTION",
+				},
+			},
+		},
+	}
+
+	order := transformSchwabOrder(data)
+	if order == nil {
+		t.Fatal("expected non-nil order")
+	}
+
+	// order_type must be normalized to "limit" (not "net_credit")
+	if order.OrderType != "limit" {
+		t.Errorf("expected order_type \"limit\", got %q", order.OrderType)
+	}
+
+	// limit_price must be negative for credit orders
+	if order.LimitPrice == nil {
+		t.Fatal("expected non-nil LimitPrice")
+	}
+	if *order.LimitPrice >= 0 {
+		t.Errorf("expected negative LimitPrice for NET_CREDIT, got %f", *order.LimitPrice)
+	}
+	if fmt.Sprintf("%.2f", *order.LimitPrice) != "-0.41" {
+		t.Errorf("expected LimitPrice -0.41, got %.2f", *order.LimitPrice)
+	}
+}
+
+// TestTransformSchwabOrder_NetDebitPositivePrice verifies that a NET_DEBIT
+// order keeps its limit_price positive and that order_type is normalized to
+// "limit".
+func TestTransformSchwabOrder_NetDebitPositivePrice(t *testing.T) {
+	data := map[string]interface{}{
+		"orderId":        200002.0,
+		"status":         "WORKING",
+		"orderType":      "NET_DEBIT",
+		"duration":       "DAY",
+		"price":          2.50,
+		"quantity":       1.0,
+		"filledQuantity": 0.0,
+		"enteredTime":    "2026-03-18T11:00:00+0000",
+		"orderLegCollection": []interface{}{
+			map[string]interface{}{
+				"instruction": "BUY_TO_OPEN",
+				"quantity":    1.0,
+				"instrument": map[string]interface{}{
+					"symbol":    "SPY   260326C00680000",
+					"assetType": "OPTION",
+				},
+			},
+			map[string]interface{}{
+				"instruction": "SELL_TO_OPEN",
+				"quantity":    1.0,
+				"instrument": map[string]interface{}{
+					"symbol":    "SPY   260326C00685000",
+					"assetType": "OPTION",
+				},
+			},
+		},
+	}
+
+	order := transformSchwabOrder(data)
+	if order == nil {
+		t.Fatal("expected non-nil order")
+	}
+
+	// order_type must be normalized to "limit" (not "net_debit")
+	if order.OrderType != "limit" {
+		t.Errorf("expected order_type \"limit\", got %q", order.OrderType)
+	}
+
+	// limit_price must remain positive for debit orders
+	if order.LimitPrice == nil {
+		t.Fatal("expected non-nil LimitPrice")
+	}
+	if *order.LimitPrice <= 0 {
+		t.Errorf("expected positive LimitPrice for NET_DEBIT, got %f", *order.LimitPrice)
+	}
+	if fmt.Sprintf("%.2f", *order.LimitPrice) != "2.50" {
+		t.Errorf("expected LimitPrice 2.50, got %.2f", *order.LimitPrice)
+	}
+}

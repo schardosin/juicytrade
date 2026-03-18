@@ -84,7 +84,7 @@ func mapOrderStatusFilter(status string) string {
 	case "expired":
 		return "EXPIRED"
 	case "pending":
-		return "QUEUED"
+		return "WORKING"
 	case "all", "":
 		return "" // No filter — get all
 	default:
@@ -161,6 +161,21 @@ func transformSchwabOrder(data map[string]interface{}) *models.Order {
 	// Extract price fields
 	limitPrice := extractFloat64Ptr(data, "price")
 	stopPrice := extractFloat64Ptr(data, "stopPrice")
+
+	// For NET_CREDIT orders, negate the limit price so the UI correctly
+	// displays "CR" (negative price = credit). This matches the Tradier
+	// provider convention where credit orders have a negative limit_price.
+	if strings.ToUpper(rawOrderType) == "NET_CREDIT" && limitPrice != nil {
+		negPrice := -math.Abs(*limitPrice)
+		limitPrice = &negPrice
+	}
+
+	// Normalize spread order types to "limit" — the credit/debit distinction
+	// is already encoded in the sign of limitPrice (negative = credit,
+	// positive = debit), matching other providers' convention.
+	if orderType == "net_credit" || orderType == "net_debit" {
+		orderType = "limit"
+	}
 
 	// Extract quantities
 	qty, _ := extractFloat64(data, "quantity")
