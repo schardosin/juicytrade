@@ -647,6 +647,22 @@ func TestGetExpirationDates_Success(t *testing.T) {
 	if dates[1]["dte"] != 215 {
 		t.Errorf("expected dte 215 for second date, got %v", dates[1]["dte"])
 	}
+
+	// Verify symbol field (must be present for frontend options chain expansion)
+	if dates[0]["symbol"] != "AAPL" {
+		t.Errorf("expected symbol AAPL for first date, got %v", dates[0]["symbol"])
+	}
+	if dates[1]["symbol"] != "AAPL" {
+		t.Errorf("expected symbol AAPL for second date, got %v", dates[1]["symbol"])
+	}
+
+	// Verify type field (standard=true + expirationType="S" → "monthly")
+	if dates[0]["type"] != "monthly" {
+		t.Errorf("expected type monthly for first date, got %v", dates[0]["type"])
+	}
+	if dates[1]["type"] != "monthly" {
+		t.Errorf("expected type monthly for second date, got %v", dates[1]["type"])
+	}
 }
 
 func TestGetExpirationDates_EmptyChain(t *testing.T) {
@@ -751,6 +767,84 @@ func TestGetExpirationDates_ManyExpirations(t *testing.T) {
 		got, _ := dates[i]["dte"].(int)
 		if got != expected {
 			t.Errorf("dates[%d] dte: expected %d, got %d", i, expected, got)
+		}
+	}
+
+	// Verify symbol field is present on all entries
+	for i, d := range dates {
+		if d["symbol"] != "SPY" {
+			t.Errorf("dates[%d]: expected symbol SPY, got %v", i, d["symbol"])
+		}
+	}
+
+	// Verify type field: W→weekly, S+standard=true→monthly (sorted order)
+	expectedTypes := []string{"weekly", "weekly", "monthly", "monthly", "monthly"}
+	for i, expected := range expectedTypes {
+		got, _ := dates[i]["type"].(string)
+		if got != expected {
+			t.Errorf("dates[%d] type: expected %s, got %s", i, expected, got)
+		}
+	}
+}
+
+func TestGetExpirationDates_TypeMapping(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/expirationchain"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{
+				"expirationList": [
+					{"expirationDate": "2025-01-17", "daysToExpiration": 10, "expirationType": "S", "standard": true},
+					{"expirationDate": "2025-01-24", "daysToExpiration": 17, "expirationType": "W", "standard": false},
+					{"expirationDate": "2025-01-31", "daysToExpiration": 24, "expirationType": "W", "standard": true},
+					{"expirationDate": "2025-03-31", "daysToExpiration": 83, "expirationType": "Q", "standard": false},
+					{"expirationDate": "2025-02-07", "daysToExpiration": 31, "expirationType": "S", "standard": false},
+					{"expirationDate": "2025-04-17", "daysToExpiration": 100, "expirationType": "R", "standard": false}
+				]
+			}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	dates, err := p.GetExpirationDates(context.Background(), "TEST")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(dates) != 6 {
+		t.Fatalf("expected 6 expiration dates, got %d", len(dates))
+	}
+
+	// After sorting by date, expected order and types:
+	// 2025-01-17: S + standard=true  → "monthly"
+	// 2025-01-24: W + standard=false → "weekly"
+	// 2025-01-31: W + standard=true  → "weekly" (W takes precedence over standard)
+	// 2025-02-07: S + standard=false → "weekly" (S but not standard)
+	// 2025-03-31: Q + standard=false → "quarterly"
+	// 2025-04-17: R + standard=false → "monthly" (unknown type defaults to monthly)
+	expectedTypes := []string{"monthly", "weekly", "weekly", "weekly", "quarterly", "monthly"}
+	expectedDates := []string{"2025-01-17", "2025-01-24", "2025-01-31", "2025-02-07", "2025-03-31", "2025-04-17"}
+
+	for i := range dates {
+		gotDate, _ := dates[i]["date"].(string)
+		gotType, _ := dates[i]["type"].(string)
+		gotSymbol, _ := dates[i]["symbol"].(string)
+
+		if gotDate != expectedDates[i] {
+			t.Errorf("dates[%d] date: expected %s, got %s", i, expectedDates[i], gotDate)
+		}
+		if gotType != expectedTypes[i] {
+			t.Errorf("dates[%d] type: expected %s, got %s (date=%s)", i, expectedTypes[i], gotType, gotDate)
+		}
+		if gotSymbol != "TEST" {
+			t.Errorf("dates[%d] symbol: expected TEST, got %s", i, gotSymbol)
 		}
 	}
 }

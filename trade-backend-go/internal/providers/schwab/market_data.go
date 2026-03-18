@@ -311,8 +311,10 @@ func (s *SchwabProvider) GetExpirationDates(ctx context.Context, symbol string) 
 			continue
 		}
 		entry := map[string]interface{}{
-			"date": exp.ExpirationDate,
-			"dte":  exp.DaysToExpiration,
+			"date":   exp.ExpirationDate,
+			"dte":    exp.DaysToExpiration,
+			"symbol": symbol,
+			"type":   schwabExpirationType(exp.ExpirationType, exp.Standard),
 		}
 		result = append(result, entry)
 	}
@@ -326,6 +328,24 @@ func (s *SchwabProvider) GetExpirationDates(ctx context.Context, symbol string) 
 
 	s.logger.Debug("GetExpirationDates completed", "symbol", symbol, "count", len(result))
 	return result, nil
+}
+
+// schwabExpirationType maps Schwab's expirationType code and standard flag to
+// the universal type string used by the frontend (matching TastyTrade/Tradier).
+func schwabExpirationType(expType string, standard bool) string {
+	switch {
+	case expType == "W":
+		return "weekly"
+	case expType == "Q":
+		return "quarterly"
+	case standard:
+		return "monthly"
+	case expType == "S":
+		// "S" (standard) but standard=false means it's a non-standard (weekly) expiration
+		return "weekly"
+	default:
+		return "monthly"
+	}
 }
 
 // =============================================================================
