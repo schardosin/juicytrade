@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -280,52 +281,48 @@ func extractIntPtr(data map[string]interface{}, key string) *int {
 // =============================================================================
 
 // GetExpirationDates gets available option expiration dates for a symbol.
-// Uses GET /marketdata/v1/chains?symbol={sym} and extracts unique dates from
-// the callExpDateMap keys (format "2025-01-17:180" → date:DTE).
+// Uses the lightweight GET /marketdata/v1/expirationchain?symbol={sym} endpoint
+// which returns only expiration metadata. The previous /chains endpoint fetched
+// the entire options chain (all strikes × expirations × Greeks), causing HTTP 502
+// "Body buffer overflow" on large symbols like SPY.
 func (s *SchwabProvider) GetExpirationDates(ctx context.Context, symbol string) ([]map[string]interface{}, error) {
-	reqURL := s.buildMarketDataURL("/chains?symbol=" + url.QueryEscape(symbol))
+	reqURL := s.buildMarketDataURL("/expirationchain?symbol=" + url.QueryEscape(symbol))
 
 	body, _, err := s.doAuthenticatedRequest(ctx, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("schwab: GetExpirationDates failed for %s: %w", symbol, err)
 	}
 
-	var response map[string]interface{}
+	var response struct {
+		ExpirationList []struct {
+			ExpirationDate   string `json:"expirationDate"`
+			DaysToExpiration int    `json:"daysToExpiration"`
+			ExpirationType   string `json:"expirationType"`
+			Standard         bool   `json:"standard"`
+		} `json:"expirationList"`
+	}
 	if err := json.Unmarshal(body, &response); err != nil {
-		return nil, fmt.Errorf("schwab: failed to parse chains response: %w", err)
+		return nil, fmt.Errorf("schwab: failed to parse expirationchain response: %w", err)
 	}
 
-	// Extract unique dates from callExpDateMap keys (preferred) or putExpDateMap
-	dateMap := extractMap(response, "callExpDateMap")
-	if dateMap == nil {
-		dateMap = extractMap(response, "putExpDateMap")
-	}
-	if dateMap == nil {
-		return []map[string]interface{}{}, nil
-	}
-
-	seen := make(map[string]bool)
 	var result []map[string]interface{}
-
-	for key := range dateMap {
-		// Key format: "2025-01-17:180" (date:DTE)
-		parts := strings.SplitN(key, ":", 2)
-		date := parts[0]
-		if seen[date] {
+	for _, exp := range response.ExpirationList {
+		if exp.ExpirationDate == "" {
 			continue
 		}
-		seen[date] = true
-
 		entry := map[string]interface{}{
-			"date": date,
-		}
-		if len(parts) == 2 {
-			if dte, err := strconv.Atoi(parts[1]); err == nil {
-				entry["dte"] = dte
-			}
+			"date": exp.ExpirationDate,
+			"dte":  exp.DaysToExpiration,
 		}
 		result = append(result, entry)
 	}
+
+	// Sort by date ascending (consistent with other providers)
+	sort.Slice(result, func(i, j int) bool {
+		dateI, _ := result[i]["date"].(string)
+		dateJ, _ := result[j]["date"].(string)
+		return dateI < dateJ
+	})
 
 	s.logger.Debug("GetExpirationDates completed", "symbol", symbol, "count", len(result))
 	return result, nil

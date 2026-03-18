@@ -594,9 +594,27 @@ func TestGetExpirationDates_Success(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, validTokenBody)
-		case strings.HasSuffix(r.URL.Path, "/v1/chains"):
+		case strings.HasSuffix(r.URL.Path, "/v1/expirationchain"):
+			if r.URL.Query().Get("symbol") != "AAPL" {
+				t.Errorf("expected symbol=AAPL, got %s", r.URL.Query().Get("symbol"))
+			}
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, schwabChainResponse)
+			fmt.Fprint(w, `{
+				"expirationList": [
+					{
+						"expirationDate": "2025-01-17",
+						"daysToExpiration": 180,
+						"expirationType": "S",
+						"standard": true
+					},
+					{
+						"expirationDate": "2025-02-21",
+						"daysToExpiration": 215,
+						"expirationType": "S",
+						"standard": true
+					}
+				]
+			}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -614,21 +632,20 @@ func TestGetExpirationDates_Success(t *testing.T) {
 		t.Fatalf("expected 2 expiration dates, got %d: %v", len(dates), dates)
 	}
 
-	// Verify both dates are present (order may vary)
-	dateSet := make(map[string]bool)
-	for _, d := range dates {
-		dateStr, _ := d["date"].(string)
-		dateSet[dateStr] = true
-		// Verify DTE is present
-		if _, ok := d["dte"]; !ok {
-			t.Errorf("expected dte field for date %s", dateStr)
-		}
+	// Results should be sorted by date
+	if dates[0]["date"] != "2025-01-17" {
+		t.Errorf("expected first date 2025-01-17, got %s", dates[0]["date"])
 	}
-	if !dateSet["2025-01-17"] {
-		t.Error("expected 2025-01-17 in dates")
+	if dates[1]["date"] != "2025-02-21" {
+		t.Errorf("expected second date 2025-02-21, got %s", dates[1]["date"])
 	}
-	if !dateSet["2025-02-21"] {
-		t.Error("expected 2025-02-21 in dates")
+
+	// Verify DTE fields
+	if dates[0]["dte"] != 180 {
+		t.Errorf("expected dte 180 for first date, got %v", dates[0]["dte"])
+	}
+	if dates[1]["dte"] != 215 {
+		t.Errorf("expected dte 215 for second date, got %v", dates[1]["dte"])
 	}
 }
 
@@ -638,9 +655,9 @@ func TestGetExpirationDates_EmptyChain(t *testing.T) {
 		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
 			w.WriteHeader(http.StatusOK)
 			fmt.Fprint(w, validTokenBody)
-		case strings.HasSuffix(r.URL.Path, "/v1/chains"):
+		case strings.HasSuffix(r.URL.Path, "/v1/expirationchain"):
 			w.WriteHeader(http.StatusOK)
-			fmt.Fprint(w, `{"symbol":"AAPL","status":"SUCCESS"}`)
+			fmt.Fprint(w, `{"expirationList": []}`)
 		default:
 			w.WriteHeader(http.StatusNotFound)
 		}
@@ -655,6 +672,86 @@ func TestGetExpirationDates_EmptyChain(t *testing.T) {
 	}
 	if len(dates) != 0 {
 		t.Fatalf("expected 0 dates for empty chain, got %d", len(dates))
+	}
+}
+
+func TestGetExpirationDates_MissingExpirationList(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/expirationchain"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	dates, err := p.GetExpirationDates(context.Background(), "AAPL")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(dates) != 0 {
+		t.Fatalf("expected 0 dates for missing expirationList, got %d", len(dates))
+	}
+}
+
+func TestGetExpirationDates_ManyExpirations(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/expirationchain"):
+			w.WriteHeader(http.StatusOK)
+			// Return dates deliberately out of order
+			fmt.Fprint(w, `{
+				"expirationList": [
+					{"expirationDate": "2025-06-20", "daysToExpiration": 90, "expirationType": "S", "standard": true},
+					{"expirationDate": "2025-01-10", "daysToExpiration": 5, "expirationType": "W", "standard": true},
+					{"expirationDate": "2025-12-19", "daysToExpiration": 270, "expirationType": "S", "standard": true},
+					{"expirationDate": "2025-03-21", "daysToExpiration": 45, "expirationType": "S", "standard": true},
+					{"expirationDate": "2025-01-17", "daysToExpiration": 12, "expirationType": "W", "standard": true}
+				]
+			}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	dates, err := p.GetExpirationDates(context.Background(), "SPY")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if len(dates) != 5 {
+		t.Fatalf("expected 5 expiration dates, got %d", len(dates))
+	}
+
+	// Verify dates are sorted ascending
+	expectedOrder := []string{"2025-01-10", "2025-01-17", "2025-03-21", "2025-06-20", "2025-12-19"}
+	for i, expected := range expectedOrder {
+		got, _ := dates[i]["date"].(string)
+		if got != expected {
+			t.Errorf("dates[%d]: expected %s, got %s", i, expected, got)
+		}
+	}
+
+	// Verify DTE values are preserved correctly after sorting
+	expectedDTEs := []int{5, 12, 45, 90, 270}
+	for i, expected := range expectedDTEs {
+		got, _ := dates[i]["dte"].(int)
+		if got != expected {
+			t.Errorf("dates[%d] dte: expected %d, got %d", i, expected, got)
+		}
 	}
 }
 
