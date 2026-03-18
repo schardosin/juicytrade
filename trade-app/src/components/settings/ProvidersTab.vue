@@ -400,7 +400,7 @@
                   :disabled="!canStartOAuth"
                   type="button"
                 />
-                <p class="oauth-hint">Opens Schwab login in a new window. Authorize access, then return here.</p>
+                <p class="oauth-hint">Opens Schwab login in a popup. Authorize access — this page updates automatically.</p>
               </div>
 
               <!-- Step 2: Polling / waiting -->
@@ -619,6 +619,7 @@ export default {
     const oauthLoading = ref(false);    // loading spinner for initiate
     const selectedAccountHash = ref(''); // user-selected account hash
     let oauthPollTimer = null;          // polling interval handle
+    let oauthMessageHandler = null;     // postMessage listener from OAuth popup
 
     // Service categories configuration - computed to handle conditional Greeks (API)
     const serviceCategories = computed(() => {
@@ -1029,8 +1030,26 @@ export default {
         oauthState.value = result.state;
         oauthStatus.value = 'pending';
 
-        // Open Schwab auth URL in new window
-        window.open(result.auth_url, '_blank', 'noopener');
+        // Open Schwab auth URL in popup window
+        window.open(result.auth_url, 'schwab-oauth', 'width=600,height=700,popup=yes');
+
+        // Listen for completion message from OAuth popup
+        const handleOAuthMessage = (event) => {
+          if (event.origin !== window.location.origin) return;
+          if (event.data?.type !== 'schwab-oauth-callback') return;
+
+          window.removeEventListener('message', handleOAuthMessage);
+          oauthMessageHandler = null;
+
+          // Force an immediate poll instead of waiting for the next 2-second cycle
+          if (oauthPollTimer) {
+            clearInterval(oauthPollTimer);
+            oauthPollTimer = null;
+          }
+          pollOAuthStatus();
+        };
+        oauthMessageHandler = handleOAuthMessage;
+        window.addEventListener('message', handleOAuthMessage);
 
         // Start polling
         pollOAuthStatus();
@@ -1137,6 +1156,10 @@ export default {
 
     const cancelOAuth = () => {
       if (oauthPollTimer) clearInterval(oauthPollTimer);
+      if (oauthMessageHandler) {
+        window.removeEventListener('message', oauthMessageHandler);
+        oauthMessageHandler = null;
+      }
       oauthState.value = null;
       oauthStatus.value = null;
       oauthAccounts.value = [];

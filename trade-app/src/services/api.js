@@ -713,6 +713,22 @@ export const api = {
     return response.data;
   },
 
+  async relaySchwabOAuthCallback(code, state) {
+    const params = new URLSearchParams();
+    if (code) params.append('code', code);
+    if (state) params.append('state', state);
+    const response = await axios.get(`${API_BASE_URL}/providers/schwab/oauth/callback?${params.toString()}`);
+    return response.data;
+  },
+
+  async relaySchwabOAuthCallbackError(error, state) {
+    const params = new URLSearchParams();
+    params.append('error', error);
+    if (state) params.append('state', state);
+    const response = await axios.get(`${API_BASE_URL}/providers/schwab/oauth/callback?${params.toString()}`);
+    return response.data;
+  },
+
   // === Watchlist Management APIs ===
 
   // Get all watchlists

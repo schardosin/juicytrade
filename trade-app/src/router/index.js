@@ -22,6 +22,16 @@ const routes = [
     },
   },
   {
+    path: "/callback",
+    name: "OAuthCallback",
+    component: () => import("../views/OAuthCallback.vue"),
+    meta: {
+      title: "Authorization - JuicyTrade",
+      requiresAuth: false,
+      requiresSetup: false,
+    },
+  },
+  {
     path: "/setup",
     name: "Setup",
     component: SetupView,
