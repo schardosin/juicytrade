@@ -135,20 +135,27 @@ func (s *SchwabProvider) executeHTTPRequest(ctx context.Context, method, url str
 //   - {"error": "invalid_grant", "error_description": "Token expired"} (OAuth errors)
 //   - {"errors": [{"id": "...", "status": 400, "title": "Bad Request", "detail": "..."}]} (API errors)
 //   - {"message": "Not Found"} (simple message errors)
+//   - {"timestamp": "...", "status": 400, "error": "Bad Request", "path": "..."} (OMS errors)
 //   - Plain text error messages
 func parseErrorResponse(body []byte, statusCode int) error {
 	if len(body) == 0 {
 		return fmt.Errorf("schwab: HTTP %d (empty response)", statusCode)
 	}
 
+	// Trim whitespace and BOM to handle pretty-printed responses
+	trimmed := bytes.TrimSpace(body)
+	// Remove UTF-8 BOM if present
+	trimmed = bytes.TrimPrefix(trimmed, []byte("\xef\xbb\xbf"))
+
 	// Try to parse as JSON
 	var raw map[string]interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
+	if err := json.Unmarshal(trimmed, &raw); err != nil {
 		// Not JSON — return truncated plain text
 		return fmt.Errorf("schwab: HTTP %d: %s", statusCode, truncateBody(body, 200))
 	}
 
-	// Format 1: OAuth error — {"error": "...", "error_description": "..."}
+	// Format 1: OAuth/OMS error — {"error": "...", "error_description": "..."}
+	// Also handles: {"timestamp": "...", "status": 400, "error": "Bad Request", "path": "..."}
 	if errField, ok := raw["error"].(string); ok {
 		desc, _ := raw["error_description"].(string)
 		if desc != "" {
@@ -176,7 +183,18 @@ func parseErrorResponse(body []byte, statusCode int) error {
 		return fmt.Errorf("schwab: %s", msg)
 	}
 
-	// Fallback: return truncated body
+	// Format 4: Try "title" at root level (some Schwab error variants)
+	if title, ok := raw["title"].(string); ok && title != "" {
+		return fmt.Errorf("schwab: %s", title)
+	}
+
+	// Fallback: return a compact, user-friendly message instead of raw JSON.
+	// Compact the JSON to remove pretty-printing whitespace.
+	var compacted bytes.Buffer
+	if err := json.Compact(&compacted, trimmed); err == nil {
+		return fmt.Errorf("schwab: HTTP %d: %s", statusCode, truncateBody(compacted.Bytes(), 200))
+	}
+
 	return fmt.Errorf("schwab: HTTP %d: %s", statusCode, truncateBody(body, 200))
 }
 

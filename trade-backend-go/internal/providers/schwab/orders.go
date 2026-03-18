@@ -333,13 +333,14 @@ func mapSchwabInstruction(instruction string) string {
 
 // schwabOrderRequest represents the JSON body for placing an order via the Schwab API.
 type schwabOrderRequest struct {
-	Session            string           `json:"session"`
-	Duration           string           `json:"duration"`
-	OrderType          string           `json:"orderType"`
-	Price              string           `json:"price,omitempty"`
-	StopPrice          string           `json:"stopPrice,omitempty"`
-	OrderStrategyType  string           `json:"orderStrategyType"`
-	OrderLegCollection []schwabOrderLeg `json:"orderLegCollection"`
+	Session                  string           `json:"session"`
+	Duration                 string           `json:"duration"`
+	OrderType                string           `json:"orderType"`
+	ComplexOrderStrategyType string           `json:"complexOrderStrategyType,omitempty"`
+	Price                    string           `json:"price,omitempty"`
+	StopPrice                string           `json:"stopPrice,omitempty"`
+	OrderStrategyType        string           `json:"orderStrategyType"`
+	OrderLegCollection       []schwabOrderLeg `json:"orderLegCollection"`
 }
 
 // schwabOrderLeg represents a single leg in a Schwab order.
@@ -509,6 +510,11 @@ func buildSchwabOrderRequest(orderData map[string]interface{}) (*schwabOrderRequ
 		},
 	}
 
+	// Schwab requires complexOrderStrategyType for option orders
+	if isOption {
+		req.ComplexOrderStrategyType = "NONE"
+	}
+
 	// Set price for limit orders
 	if price, ok := orderData["price"].(float64); ok && price > 0 {
 		req.Price = fmt.Sprintf("%.2f", price)
@@ -536,10 +542,11 @@ func buildSchwabMultiLegOrderRequest(orderData map[string]interface{}) (*schwabO
 	}
 
 	req := &schwabOrderRequest{
-		Session:           "NORMAL",
-		Duration:          mapDurationToSchwab(duration),
-		OrderType:         mapOrderTypeToSchwab(orderType),
-		OrderStrategyType: "SINGLE",
+		Session:                  "NORMAL",
+		Duration:                 mapDurationToSchwab(duration),
+		OrderType:                mapOrderTypeToSchwab(orderType),
+		ComplexOrderStrategyType: "CUSTOM",
+		OrderStrategyType:        "SINGLE",
 	}
 
 	// Set price

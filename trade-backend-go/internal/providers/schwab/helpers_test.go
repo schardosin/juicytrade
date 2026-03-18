@@ -153,6 +153,68 @@ func TestParseErrorResponse_LongBody(t *testing.T) {
 	}
 }
 
+func TestParseErrorResponse_PrettyPrintedOMS(t *testing.T) {
+	// This is the exact format Schwab's OMS returns — pretty-printed with newlines and spaces
+	body := []byte("{\n  \"timestamp\" : \"2026-03-18T00:29:16.158-04:00\",\n  \"status\" : 400,\n  \"error\" : \"Bad Request\",\n  \"path\" : \"/oms-rest/v1/orders\"\n}")
+	err := parseErrorResponse(body, 400)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	// Should extract "Bad Request" cleanly, not return raw JSON
+	if !strings.Contains(err.Error(), "schwab: Bad Request") {
+		t.Fatalf("expected clean 'schwab: Bad Request' error, got: %v", err)
+	}
+	// Must NOT contain raw JSON characters
+	if strings.Contains(err.Error(), "timestamp") {
+		t.Fatalf("error message should not contain raw JSON fields, got: %v", err)
+	}
+	if strings.Contains(err.Error(), "{") {
+		t.Fatalf("error message should not contain raw JSON braces, got: %v", err)
+	}
+}
+
+func TestParseErrorResponse_PrettyPrintedWithBOM(t *testing.T) {
+	// Test with UTF-8 BOM prefix + pretty-printed JSON
+	body := []byte("\xef\xbb\xbf{\n  \"error\" : \"Bad Request\"\n}")
+	err := parseErrorResponse(body, 400)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schwab: Bad Request") {
+		t.Fatalf("expected clean error with BOM prefix, got: %v", err)
+	}
+}
+
+func TestParseErrorResponse_TitleFallback(t *testing.T) {
+	// Test the title fallback format
+	body := []byte(`{"title": "Validation Error", "status": 422}`)
+	err := parseErrorResponse(body, 422)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if !strings.Contains(err.Error(), "schwab: Validation Error") {
+		t.Fatalf("expected title-based error, got: %v", err)
+	}
+}
+
+func TestParseErrorResponse_UnknownJSONFallbackIsCompact(t *testing.T) {
+	// When JSON has no known error fields, the fallback should be compact (no newlines)
+	body := []byte("{\n  \"unknown_field\" : \"some value\",\n  \"code\" : 12345\n}")
+	err := parseErrorResponse(body, 400)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	errStr := err.Error()
+	// The fallback should NOT contain newlines from pretty-printing
+	if strings.Contains(errStr, "\n") {
+		t.Fatalf("fallback error should be compact (no newlines), got: %v", errStr)
+	}
+	// Should contain the compacted JSON
+	if !strings.Contains(errStr, "schwab: HTTP 400:") {
+		t.Fatalf("expected HTTP status prefix, got: %v", errStr)
+	}
+}
+
 // =============================================================================
 // doAuthenticatedRequest tests
 // =============================================================================

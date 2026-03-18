@@ -530,6 +530,11 @@ func TestPlaceOrder_EquityBuy(t *testing.T) {
 	if leg["instruction"] != "BUY" {
 		t.Errorf("expected instruction BUY, got %v", leg["instruction"])
 	}
+
+	// Verify complexOrderStrategyType is NOT present for equity orders (omitempty)
+	if _, exists := receivedBody["complexOrderStrategyType"]; exists {
+		t.Errorf("expected complexOrderStrategyType to be absent for equity order, got %v", receivedBody["complexOrderStrategyType"])
+	}
 }
 
 func TestPlaceOrder_OptionSell(t *testing.T) {
@@ -590,6 +595,11 @@ func TestPlaceOrder_OptionSell(t *testing.T) {
 	}
 	if inst["assetType"] != "OPTION" {
 		t.Errorf("expected assetType OPTION, got %v", inst["assetType"])
+	}
+
+	// Verify complexOrderStrategyType is set to NONE for single-leg option orders
+	if receivedBody["complexOrderStrategyType"] != "NONE" {
+		t.Errorf("expected complexOrderStrategyType NONE for option order, got %v", receivedBody["complexOrderStrategyType"])
 	}
 }
 
@@ -716,6 +726,11 @@ func TestPlaceMultiLegOrder_VerticalSpread(t *testing.T) {
 	// Verify order type
 	if receivedBody["orderType"] != "NET_DEBIT" {
 		t.Errorf("expected orderType NET_DEBIT, got %v", receivedBody["orderType"])
+	}
+
+	// Verify complexOrderStrategyType is set to CUSTOM for multi-leg orders
+	if receivedBody["complexOrderStrategyType"] != "CUSTOM" {
+		t.Errorf("expected complexOrderStrategyType CUSTOM for multi-leg order, got %v", receivedBody["complexOrderStrategyType"])
 	}
 }
 
@@ -867,5 +882,81 @@ func TestBuildSchwabOrderRequest(t *testing.T) {
 	}
 	if req.OrderLegCollection[0].Instrument.AssetType != "EQUITY" {
 		t.Errorf("expected EQUITY, got %s", req.OrderLegCollection[0].Instrument.AssetType)
+	}
+
+	// Equity orders should NOT have complexOrderStrategyType set
+	if req.ComplexOrderStrategyType != "" {
+		t.Errorf("expected empty ComplexOrderStrategyType for equity order, got %q", req.ComplexOrderStrategyType)
+	}
+}
+
+func TestBuildSchwabOrderRequest_OptionOrder(t *testing.T) {
+	req, err := buildSchwabOrderRequest(map[string]interface{}{
+		"symbol":      "AAPL250117C00150000",
+		"side":        "buy",
+		"type":        "limit",
+		"qty":         5.0,
+		"price":       4.50,
+		"asset_class": "us_option",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Option orders must have complexOrderStrategyType set to NONE
+	if req.ComplexOrderStrategyType != "NONE" {
+		t.Errorf("expected ComplexOrderStrategyType NONE for option order, got %q", req.ComplexOrderStrategyType)
+	}
+	if req.OrderLegCollection[0].Instrument.AssetType != "OPTION" {
+		t.Errorf("expected OPTION, got %s", req.OrderLegCollection[0].Instrument.AssetType)
+	}
+	if req.Price != "4.50" {
+		t.Errorf("expected price \"4.50\", got %s", req.Price)
+	}
+
+	// Verify the JSON serialization includes the field
+	jsonBytes, _ := json.Marshal(req)
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, `"complexOrderStrategyType":"NONE"`) {
+		t.Errorf("expected JSON to contain complexOrderStrategyType:NONE, got: %s", jsonStr)
+	}
+}
+
+func TestBuildSchwabMultiLegOrderRequest_ComplexOrderStrategyType(t *testing.T) {
+	req, err := buildSchwabMultiLegOrderRequest(map[string]interface{}{
+		"type":          "net_debit",
+		"price":         2.50,
+		"time_in_force": "day",
+		"legs": []interface{}{
+			map[string]interface{}{
+				"symbol":      "AAPL250117C00150000",
+				"side":        "buy",
+				"qty":         10.0,
+				"action":      "BUY_TO_OPEN",
+				"asset_class": "us_option",
+			},
+			map[string]interface{}{
+				"symbol":      "AAPL250117C00160000",
+				"side":        "sell",
+				"qty":         10.0,
+				"action":      "SELL_TO_OPEN",
+				"asset_class": "us_option",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	// Multi-leg orders must have complexOrderStrategyType set to CUSTOM
+	if req.ComplexOrderStrategyType != "CUSTOM" {
+		t.Errorf("expected ComplexOrderStrategyType CUSTOM for multi-leg order, got %q", req.ComplexOrderStrategyType)
+	}
+
+	// Verify the JSON serialization includes the field
+	jsonBytes, _ := json.Marshal(req)
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, `"complexOrderStrategyType":"CUSTOM"`) {
+		t.Errorf("expected JSON to contain complexOrderStrategyType:CUSTOM, got: %s", jsonStr)
 	}
 }
