@@ -3,6 +3,7 @@ package schwab
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -211,7 +212,7 @@ func TestDoAuthenticatedRequest_PostContentType(t *testing.T) {
 
 	p := newTestProviderWithToken(srv.URL)
 
-	body, status, err := p.doAuthenticatedRequest(context.Background(), http.MethodPost, srv.URL+"/trader/v1/orders", strings.NewReader(`{"order":"data"}`))
+	body, status, err := p.doAuthenticatedRequest(context.Background(), http.MethodPost, srv.URL+"/trader/v1/orders", []byte(`{"order":"data"}`))
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -387,6 +388,74 @@ func TestDoAuthenticatedRequest_AuthFailure(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "authentication failed") {
 		t.Fatalf("expected authentication failed error, got: %v", err)
+	}
+}
+
+func TestDoAuthenticatedRequest_RetryPreservesBody(t *testing.T) {
+	var callCount int32
+	var firstBody, secondBody []byte
+
+	// Token endpoint for refresh
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"access_token": "refreshed-token", "expires_in": 1800, "token_type": "Bearer"}`)
+	}))
+	defer tokenSrv.Close()
+
+	// API endpoint: returns 401 on first call, 200 on second.
+	// Records the request body for both calls.
+	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		bodyBytes, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("failed to read request body: %v", err)
+		}
+		defer r.Body.Close()
+
+		count := atomic.AddInt32(&callCount, 1)
+		if count == 1 {
+			firstBody = bodyBytes
+			w.WriteHeader(http.StatusUnauthorized)
+			fmt.Fprint(w, `{"error": "unauthorized"}`)
+			return
+		}
+		secondBody = bodyBytes
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `{"result": "success"}`)
+	}))
+	defer apiSrv.Close()
+
+	p := newTestProviderWithToken(tokenSrv.URL)
+
+	requestBody := []byte(`{"orderType":"LIMIT","session":"NORMAL","price":150.50,"duration":"DAY","orderStrategyType":"SINGLE","orderLegCollection":[{"instruction":"BUY","quantity":100,"instrument":{"symbol":"AAPL","assetType":"EQUITY"}}]}`)
+
+	respBody, status, err := p.doAuthenticatedRequest(context.Background(), http.MethodPost, apiSrv.URL+"/trader/v1/accounts/HASH/previewOrder", requestBody)
+	if err != nil {
+		t.Fatalf("expected no error after retry, got: %v", err)
+	}
+	if status != http.StatusOK {
+		t.Fatalf("expected status 200 after retry, got: %d", status)
+	}
+	if !strings.Contains(string(respBody), "success") {
+		t.Fatalf("expected success body, got: %s", string(respBody))
+	}
+
+	// Verify both requests were made
+	if atomic.LoadInt32(&callCount) != 2 {
+		t.Fatalf("expected 2 API calls (original + retry), got: %d", atomic.LoadInt32(&callCount))
+	}
+
+	// Verify both requests had the same non-empty body
+	if len(firstBody) == 0 {
+		t.Fatal("first request body was empty")
+	}
+	if len(secondBody) == 0 {
+		t.Fatal("second request body was empty — body was not preserved on 401 retry")
+	}
+	if string(firstBody) != string(secondBody) {
+		t.Fatalf("request bodies differ:\n  first:  %s\n  second: %s", string(firstBody), string(secondBody))
+	}
+	if string(firstBody) != string(requestBody) {
+		t.Fatalf("request body doesn't match original:\n  expected: %s\n  got:      %s", string(requestBody), string(firstBody))
 	}
 }
 

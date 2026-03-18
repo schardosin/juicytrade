@@ -1,6 +1,7 @@
 package schwab
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -24,7 +25,10 @@ func (s *SchwabProvider) buildTraderURL(path string) string {
 //
 // All API calls (except token refresh) go through this helper.
 // On 401, it force-refreshes the token and retries once.
-func (s *SchwabProvider) doAuthenticatedRequest(ctx context.Context, method, url string, body io.Reader) ([]byte, int, error) {
+//
+// The body parameter is a []byte (not io.Reader) so that the same payload
+// can be re-sent on a 401 retry without being consumed.
+func (s *SchwabProvider) doAuthenticatedRequest(ctx context.Context, method, url string, body []byte) ([]byte, int, error) {
 	// 1. Wait for rate limiter (nil-safe for early development steps)
 	if s.rateLimiter != nil {
 		s.rateLimiter.wait()
@@ -36,7 +40,11 @@ func (s *SchwabProvider) doAuthenticatedRequest(ctx context.Context, method, url
 	}
 
 	// 3. Execute the request
-	respBody, statusCode, err := s.executeHTTPRequest(ctx, method, url, body)
+	var bodyReader io.Reader
+	if body != nil {
+		bodyReader = bytes.NewReader(body)
+	}
+	respBody, statusCode, err := s.executeHTTPRequest(ctx, method, url, bodyReader)
 	if err != nil {
 		return nil, 0, err
 	}
@@ -57,9 +65,12 @@ func (s *SchwabProvider) doAuthenticatedRequest(ctx context.Context, method, url
 			return nil, http.StatusUnauthorized, fmt.Errorf("schwab: re-authentication failed after 401: %w", err)
 		}
 
-		// Retry the request (body may have been consumed; callers sending a body
-		// will need to handle this, but for GET requests body is nil)
-		respBody, statusCode, err = s.executeHTTPRequest(ctx, method, url, nil)
+		// Retry the request with the same body ([]byte can be re-read)
+		var retryReader io.Reader
+		if body != nil {
+			retryReader = bytes.NewReader(body)
+		}
+		respBody, statusCode, err = s.executeHTTPRequest(ctx, method, url, retryReader)
 		if err != nil {
 			return nil, 0, err
 		}

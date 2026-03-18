@@ -1,7 +1,6 @@
 package schwab
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -390,7 +389,7 @@ func (s *SchwabProvider) submitOrder(ctx context.Context, req *schwabOrderReques
 
 	reqURL := s.buildTraderURL("/accounts/" + s.accountHash + "/orders")
 
-	body, statusCode, err := s.doAuthenticatedRequest(ctx, http.MethodPost, reqURL, bytes.NewReader(jsonBody))
+	body, statusCode, err := s.doAuthenticatedRequest(ctx, http.MethodPost, reqURL, jsonBody)
 	if err != nil {
 		return nil, fmt.Errorf("schwab: PlaceOrder failed: %w", err)
 	}
