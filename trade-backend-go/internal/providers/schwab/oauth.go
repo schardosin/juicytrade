@@ -334,92 +334,6 @@ func maskAccountNumber(number string) string {
 }
 
 // =============================================================================
-// Callback HTML
-// =============================================================================
-
-// renderCallbackPage returns a minimal self-contained HTML page displayed
-// in the browser after the Schwab OAuth redirect. No external dependencies.
-func renderCallbackPage(status, errorMessage string) []byte {
-	var icon, heading, message, accentColor string
-
-	switch status {
-	case "success":
-		icon = "&#10004;" // checkmark
-		heading = "Authorization Successful"
-		message = "Authorization successful! You may close this tab."
-		accentColor = "#00c853"
-	case "error":
-		icon = "&#10008;" // X mark
-		heading = "Authorization Failed"
-		message = errorMessage
-		accentColor = "#ff1744"
-	case "cancelled":
-		icon = "&#9888;" // warning triangle
-		heading = "Authorization Cancelled"
-		message = "The authorization was cancelled."
-		accentColor = "#ffc107"
-	default:
-		icon = "&#9888;"
-		heading = "Unknown Status"
-		message = status
-		accentColor = "#ffc107"
-	}
-
-	html := fmt.Sprintf(`<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>JuicyTrade - Schwab Authorization</title>
-<style>
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-    background: #1a1a2e;
-    color: #ffffff;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 100vh;
-  }
-  .card {
-    text-align: center;
-    background: #16213e;
-    border-radius: 12px;
-    padding: 48px 40px;
-    max-width: 480px;
-    box-shadow: 0 4px 24px rgba(0,0,0,0.3);
-  }
-  .icon {
-    font-size: 64px;
-    color: %s;
-    margin-bottom: 16px;
-  }
-  h1 {
-    font-size: 22px;
-    margin-bottom: 12px;
-    font-weight: 600;
-  }
-  p {
-    font-size: 15px;
-    color: #b0b0b0;
-    line-height: 1.5;
-  }
-</style>
-</head>
-<body>
-<div class="card">
-  <div class="icon">%s</div>
-  <h1>%s</h1>
-  <p>%s</p>
-</div>
-</body>
-</html>`, accentColor, icon, heading, message)
-
-	return []byte(html)
-}
-
-// =============================================================================
 // OAuth Handler
 // =============================================================================
 
@@ -517,11 +431,13 @@ func (h *SchwabOAuthHandler) HandleAuthorize(c *gin.Context) {
 	})
 }
 
-// HandleCallback receives the OAuth redirect from Schwab after the user
-// authorizes (or cancels). It exchanges the authorization code for tokens,
-// fetches account numbers, and updates the flow state.
+// HandleCallback receives the OAuth authorization code relayed by the frontend
+// callback page. It exchanges the code for tokens, fetches account numbers,
+// and updates the flow state. The frontend polls HandleOAuthStatus to detect
+// completion.
 //
-// GET /api/schwab/oauth/callback?code=...&state=...  (or ?error=...&state=...)
+// GET /api/providers/schwab/oauth/callback?code=...&state=...  (or ?error=...&state=...)
+// Response: { "status": "success" } or { "status": "error", "error": "..." }
 func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
 	code := c.Query("code")
 	stateToken := c.Query("state")
@@ -535,21 +451,19 @@ func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
 				s.Error = "Authorization cancelled by user"
 			})
 		}
-		c.Data(http.StatusOK, "text/html; charset=utf-8", renderCallbackPage("cancelled", ""))
+		c.JSON(http.StatusOK, gin.H{"status": "cancelled", "message": "Authorization cancelled by user"})
 		return
 	}
 
 	// --- Validate state token ---
 	if stateToken == "" {
-		c.Data(http.StatusOK, "text/html; charset=utf-8",
-			renderCallbackPage("error", "Invalid or expired authorization request"))
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "Invalid or expired authorization request"})
 		return
 	}
 
 	state := h.oauthStore.GetState(stateToken)
 	if state == nil {
-		c.Data(http.StatusOK, "text/html; charset=utf-8",
-			renderCallbackPage("error", "Invalid or expired authorization request"))
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "Invalid or expired authorization request"})
 		return
 	}
 
@@ -563,8 +477,7 @@ func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
 		s.Status = "exchanging"
 	})
 	if alreadyProcessed {
-		c.Data(http.StatusOK, "text/html; charset=utf-8",
-			renderCallbackPage("error", "This authorization has already been processed"))
+		c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "This authorization has already been processed"})
 		return
 	}
 
@@ -574,8 +487,7 @@ func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
 			s.Status = "failed"
 			s.Error = "Missing authorization code"
 		})
-		c.Data(http.StatusOK, "text/html; charset=utf-8",
-			renderCallbackPage("error", "Missing authorization code"))
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "Missing authorization code"})
 		return
 	}
 
@@ -593,8 +505,7 @@ func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
 			s.Status = "failed"
 			s.Error = err.Error()
 		})
-		c.Data(http.StatusOK, "text/html; charset=utf-8",
-			renderCallbackPage("error", "Token exchange failed: "+err.Error()))
+		c.JSON(http.StatusBadGateway, gin.H{"status": "error", "error": "Token exchange failed: " + err.Error()})
 		return
 	}
 
@@ -606,8 +517,7 @@ func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
 			s.Status = "failed"
 			s.Error = err.Error()
 		})
-		c.Data(http.StatusOK, "text/html; charset=utf-8",
-			renderCallbackPage("error", "Account fetch failed: "+err.Error()))
+		c.JSON(http.StatusBadGateway, gin.H{"status": "error", "error": "Account fetch failed: " + err.Error()})
 		return
 	}
 
@@ -617,8 +527,7 @@ func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
 			s.Status = "failed"
 			s.Error = "No accounts found"
 		})
-		c.Data(http.StatusOK, "text/html; charset=utf-8",
-			renderCallbackPage("error", "No accounts found"))
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "No accounts found"})
 		return
 	}
 
@@ -631,7 +540,7 @@ func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
 		s.Accounts = accounts
 	})
 
-	c.Data(http.StatusOK, "text/html; charset=utf-8", renderCallbackPage("success", ""))
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
 }
 
 // HandleOAuthStatus returns the current status of an OAuth flow.

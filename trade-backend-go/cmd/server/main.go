@@ -382,6 +382,7 @@ func main() {
 	api.POST("/providers/schwab/authorize", schwabOAuthHandler.HandleAuthorize)
 	api.GET("/providers/schwab/oauth/status/:state", schwabOAuthHandler.HandleOAuthStatus)
 	api.POST("/providers/schwab/select-account", schwabOAuthHandler.HandleSelectAccount)
+	api.GET("/providers/schwab/oauth/callback", schwabOAuthHandler.HandleCallback)
 
 	// Apply authentication middleware to API group (all routes below require auth)
 	api.Use(auth.AuthenticationMiddleware(authConfig))
@@ -392,9 +393,6 @@ func main() {
 
 	// WebSocket endpoint
 	router.GET("/ws", wsHandler.HandleWebSocket)
-
-	// Schwab OAuth callback — root level to match registered callback URL
-	router.GET("/callback", schwabOAuthHandler.HandleCallback)
 
 	// Symbol-specific endpoints - MUST be first to avoid conflicts
 	api.GET("/symbol/:symbol/range/52week", func(c *gin.Context) {

@@ -525,52 +525,6 @@ func TestMaskAccountNumber(t *testing.T) {
 }
 
 // =============================================================================
-// renderCallbackPage tests
-// =============================================================================
-
-func TestRenderCallbackPage_Success(t *testing.T) {
-	html := string(renderCallbackPage("success", ""))
-
-	if !strings.Contains(html, "JuicyTrade - Schwab Authorization") {
-		t.Error("expected page title in HTML")
-	}
-	if !strings.Contains(html, "successful") {
-		t.Error("expected 'successful' in HTML for success status")
-	}
-	if !strings.Contains(html, "close this tab") {
-		t.Error("expected 'close this tab' in HTML for success status")
-	}
-	if !strings.Contains(html, "#00c853") {
-		t.Error("expected green accent color for success")
-	}
-}
-
-func TestRenderCallbackPage_Error(t *testing.T) {
-	html := string(renderCallbackPage("error", "Something went wrong with OAuth"))
-
-	if !strings.Contains(html, "Something went wrong with OAuth") {
-		t.Error("expected error message in HTML")
-	}
-	if !strings.Contains(html, "Failed") {
-		t.Error("expected 'Failed' heading in HTML for error status")
-	}
-	if !strings.Contains(html, "#ff1744") {
-		t.Error("expected red accent color for error")
-	}
-}
-
-func TestRenderCallbackPage_Cancelled(t *testing.T) {
-	html := string(renderCallbackPage("cancelled", ""))
-
-	if !strings.Contains(html, "cancelled") || !strings.Contains(html, "Cancelled") {
-		t.Error("expected 'cancelled' in HTML for cancelled status")
-	}
-	if !strings.Contains(html, "#ffc107") {
-		t.Error("expected yellow accent color for cancelled")
-	}
-}
-
-// =============================================================================
 // HandleAuthorize test helpers
 // =============================================================================
 
@@ -814,7 +768,7 @@ func getCallback(t *testing.T, handler *SchwabOAuthHandler, query string) *httpt
 	t.Helper()
 	w := httptest.NewRecorder()
 	c, _ := gin.CreateTestContext(w)
-	c.Request = httptest.NewRequest(http.MethodGet, "/api/schwab/oauth/callback?"+query, nil)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/providers/schwab/oauth/callback?"+query, nil)
 	handler.HandleCallback(c)
 	return w
 }
@@ -837,9 +791,13 @@ func TestHandleCallback_Success_SingleAccount(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	body := w.Body.String()
-	if !strings.Contains(body, "successful") {
-		t.Errorf("expected success HTML, got: %s", body[:200])
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "success" {
+		t.Errorf("expected status 'success', got %v", resp["status"])
 	}
 
 	// Verify state was updated
@@ -883,6 +841,14 @@ func TestHandleCallback_Success_MultipleAccounts(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "success" {
+		t.Errorf("expected status 'success', got %v", resp["status"])
+	}
+
 	state := handler.oauthStore.GetState(stateToken)
 	if state == nil {
 		t.Fatal("expected state to exist")
@@ -911,9 +877,13 @@ func TestHandleCallback_UserCancelled(t *testing.T) {
 	if w.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
-	body := w.Body.String()
-	if !strings.Contains(body, "Cancelled") {
-		t.Errorf("expected cancelled HTML, got: %s", body[:200])
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "cancelled" {
+		t.Errorf("expected status 'cancelled', got %v", resp["status"])
 	}
 
 	state := handler.oauthStore.GetState(stateToken)
@@ -933,12 +903,20 @@ func TestHandleCallback_InvalidState(t *testing.T) {
 
 	w := getCallback(t, handler, "code=some-code&state=nonexistent-token-xyz")
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
-	body := w.Body.String()
-	if !strings.Contains(body, "Invalid or expired") {
-		t.Errorf("expected 'Invalid or expired' error, got: %s", body[:200])
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "error" {
+		t.Errorf("expected status 'error', got %v", resp["status"])
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Invalid or expired") {
+		t.Errorf("expected 'Invalid or expired' in error, got %q", errMsg)
 	}
 }
 
@@ -953,15 +931,26 @@ func TestHandleCallback_DuplicateCallback(t *testing.T) {
 
 	// First callback — should succeed
 	w1 := getCallback(t, handler, "code=code1&state="+url.QueryEscape(stateToken))
-	if !strings.Contains(w1.Body.String(), "successful") {
+	var resp1 map[string]interface{}
+	if err := json.Unmarshal(w1.Body.Bytes(), &resp1); err != nil {
+		t.Fatalf("failed to parse first callback JSON: %v", err)
+	}
+	if resp1["status"] != "success" {
 		t.Fatal("first callback should succeed")
 	}
 
 	// Second callback with same state — should be rejected
 	w2 := getCallback(t, handler, "code=code2&state="+url.QueryEscape(stateToken))
-	body := w2.Body.String()
-	if !strings.Contains(body, "already been processed") {
-		t.Errorf("expected 'already been processed', got: %s", body[:200])
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", w2.Code)
+	}
+	var resp2 map[string]interface{}
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("failed to parse second callback JSON: %v", err)
+	}
+	errMsg, _ := resp2["error"].(string)
+	if !strings.Contains(errMsg, "already been processed") {
+		t.Errorf("expected 'already been processed' in error, got %q", errMsg)
 	}
 }
 
@@ -974,12 +963,20 @@ func TestHandleCallback_TokenExchangeFails(t *testing.T) {
 
 	w := getCallback(t, handler, "code=bad-code&state="+url.QueryEscape(stateToken))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
 	}
-	body := w.Body.String()
-	if !strings.Contains(body, "Token exchange failed") {
-		t.Errorf("expected token exchange error in HTML, got: %s", body[:200])
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "error" {
+		t.Errorf("expected status 'error', got %v", resp["status"])
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Token exchange failed") {
+		t.Errorf("expected 'Token exchange failed' in error, got %q", errMsg)
 	}
 
 	state := handler.oauthStore.GetState(stateToken)
@@ -1001,9 +998,20 @@ func TestHandleCallback_AccountFetchFails(t *testing.T) {
 
 	w := getCallback(t, handler, "code=good-code&state="+url.QueryEscape(stateToken))
 
-	body := w.Body.String()
-	if !strings.Contains(body, "Account fetch failed") {
-		t.Errorf("expected account fetch error in HTML, got: %s", body[:200])
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "error" {
+		t.Errorf("expected status 'error', got %v", resp["status"])
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Account fetch failed") {
+		t.Errorf("expected 'Account fetch failed' in error, got %q", errMsg)
 	}
 
 	state := handler.oauthStore.GetState(stateToken)
@@ -1022,9 +1030,17 @@ func TestHandleCallback_NoAccounts(t *testing.T) {
 
 	w := getCallback(t, handler, "code=code&state="+url.QueryEscape(stateToken))
 
-	body := w.Body.String()
-	if !strings.Contains(body, "No accounts found") {
-		t.Errorf("expected 'No accounts found' error, got: %s", body[:200])
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "No accounts found") {
+		t.Errorf("expected 'No accounts found' in error, got %q", errMsg)
 	}
 
 	state := handler.oauthStore.GetState(stateToken)
@@ -1040,9 +1056,17 @@ func TestHandleCallback_MissingCode(t *testing.T) {
 	// No code and no error param — just state
 	w := getCallback(t, handler, "state="+url.QueryEscape(stateToken))
 
-	body := w.Body.String()
-	if !strings.Contains(body, "Missing authorization code") {
-		t.Errorf("expected 'Missing authorization code' error, got: %s", body[:200])
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Missing authorization code") {
+		t.Errorf("expected 'Missing authorization code' in error, got %q", errMsg)
 	}
 
 	state := handler.oauthStore.GetState(stateToken)
@@ -1057,9 +1081,17 @@ func TestHandleCallback_MissingState(t *testing.T) {
 	// Code present but no state
 	w := getCallback(t, handler, "code=some-auth-code")
 
-	body := w.Body.String()
-	if !strings.Contains(body, "Invalid or expired") {
-		t.Errorf("expected 'Invalid or expired' error, got: %s", body[:200])
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Invalid or expired") {
+		t.Errorf("expected 'Invalid or expired' in error, got %q", errMsg)
 	}
 }
 

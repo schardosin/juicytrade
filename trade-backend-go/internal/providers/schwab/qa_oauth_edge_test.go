@@ -332,44 +332,6 @@ func TestFetchAccountNumbers_MalformedJSON(t *testing.T) {
 	}
 }
 
-// TestRenderCallbackPage_ErrorMessageEscaping tests whether error messages
-// containing HTML/script tags are handled safely in the callback page.
-// Since renderCallbackPage uses fmt.Sprintf (not html/template), injected
-// HTML will be rendered literally. This test documents the XSS surface area.
-func TestRenderCallbackPage_ErrorMessageEscaping(t *testing.T) {
-	xssPayload := `<script>alert(1)</script>`
-	html := string(renderCallbackPage("error", xssPayload))
-
-	// Verify the page is still valid (contains expected structure).
-	if !strings.Contains(html, "Authorization Failed") {
-		t.Error("expected 'Authorization Failed' heading in error HTML")
-	}
-
-	// Check if the XSS payload appears unescaped in the output.
-	// Since renderCallbackPage uses fmt.Sprintf (not html/template.Execute),
-	// the payload WILL appear literally in the HTML.
-	if strings.Contains(html, xssPayload) {
-		// The payload is present unescaped. Document this as a known issue.
-		// In the current architecture this is low risk because:
-		// 1. The error message comes from the backend's own error strings, not
-		//    directly from user input.
-		// 2. The page is served as a one-time callback redirect target.
-		// However, if Schwab API error responses ever include attacker-controlled
-		// content, this could become exploitable.
-		t.Logf("POTENTIAL XSS: renderCallbackPage does NOT HTML-escape error messages. "+
-			"Payload %q appears literally in output. "+
-			"Consider using html/template or html.EscapeString() for error messages.", xssPayload)
-	} else {
-		// If the payload is escaped, that's the ideal outcome.
-		t.Logf("OK: XSS payload was escaped or sanitized in output")
-	}
-
-	// Regardless of escaping, verify the page still has the error styling.
-	if !strings.Contains(html, "#ff1744") {
-		t.Error("expected red accent color for error status")
-	}
-}
-
 // TestFetchAccountNumbers_BearerTokenSent verifies that fetchAccountNumbers
 // sends the correct Authorization header with "Bearer {token}".
 func TestFetchAccountNumbers_BearerTokenSent(t *testing.T) {
@@ -490,7 +452,7 @@ func TestHandleAuthorize_StateStoredCorrectly(t *testing.T) {
 
 // TestHandleCallback_ErrorTakesPrecedenceOverCode verifies that when both
 // ?code= and ?error= are present in the callback URL, the error parameter
-// takes precedence and the callback renders "cancelled" HTML instead of
+// takes precedence and the callback returns "cancelled" JSON instead of
 // attempting a token exchange.
 func TestHandleCallback_ErrorTakesPrecedenceOverCode(t *testing.T) {
 	handler := newTestOAuthHandler()
@@ -503,12 +465,15 @@ func TestHandleCallback_ErrorTakesPrecedenceOverCode(t *testing.T) {
 		t.Fatalf("expected 200, got %d", w.Code)
 	}
 
-	body := w.Body.String()
-	if !strings.Contains(body, "Cancelled") {
-		t.Errorf("expected cancelled HTML when error param is present, got: %s", body[:min(200, len(body))])
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
 	}
-	if strings.Contains(body, "successful") {
-		t.Error("should NOT show success HTML when error param is present alongside code")
+	if resp["status"] != "cancelled" {
+		t.Errorf("expected status 'cancelled' when error param is present, got %v", resp["status"])
+	}
+	if resp["status"] == "success" {
+		t.Error("should NOT return success status when error param is present alongside code")
 	}
 
 	// Verify state was marked as failed, not completed.
@@ -522,8 +487,8 @@ func TestHandleCallback_ErrorTakesPrecedenceOverCode(t *testing.T) {
 }
 
 // TestHandleCallback_ExpiredState verifies that when the state token has
-// expired (older than 10 minutes), the callback renders "Invalid or expired"
-// error HTML. This validates NFR-2 (timeout enforcement).
+// expired (older than 10 minutes), the callback returns "Invalid or expired"
+// error JSON. This validates NFR-2 (timeout enforcement).
 func TestHandleCallback_ExpiredState(t *testing.T) {
 	handler := newTestOAuthHandler()
 	stateToken := createAuthorizedState(t, handler, "https://unused")
@@ -540,21 +505,24 @@ func TestHandleCallback_ExpiredState(t *testing.T) {
 	// Call the callback with the expired state.
 	w := getCallback(t, handler, "code=valid-code&state="+url.QueryEscape(stateToken))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 
-	body := w.Body.String()
-	if !strings.Contains(body, "Invalid or expired") {
-		t.Errorf("expected 'Invalid or expired' in HTML for expired state, got: %s", body[:min(200, len(body))])
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Invalid or expired") {
+		t.Errorf("expected 'Invalid or expired' in JSON error for expired state, got %q", errMsg)
 	}
 }
 
-// TestHandleCallback_HTMLContentType verifies that HandleCallback always
-// returns Content-Type "text/html; charset=utf-8", since it renders HTML
-// pages (not JSON) for the browser redirect target.
-func TestHandleCallback_HTMLContentType(t *testing.T) {
-	// Test three different callback scenarios to verify Content-Type is always HTML.
+// TestHandleCallback_JSONContentType verifies that HandleCallback always
+// returns Content-Type "application/json" for all response scenarios.
+func TestHandleCallback_JSONContentType(t *testing.T) {
+	// Test three different callback scenarios to verify Content-Type is always JSON.
 	handler := newTestOAuthHandler()
 
 	// Scenario 1: Success flow (needs a mock server for token exchange)
@@ -566,23 +534,32 @@ func TestHandleCallback_HTMLContentType(t *testing.T) {
 	successToken := createAuthorizedState(t, handler, srv.URL)
 	w1 := getCallback(t, handler, "code=good-code&state="+url.QueryEscape(successToken))
 	ct1 := w1.Header().Get("Content-Type")
-	if ct1 != "text/html; charset=utf-8" {
-		t.Errorf("[success] expected Content-Type 'text/html; charset=utf-8', got %q", ct1)
+	if !strings.HasPrefix(ct1, "application/json") {
+		t.Errorf("[success] expected Content-Type starting with 'application/json', got %q", ct1)
+	}
+	if w1.Code != http.StatusOK {
+		t.Errorf("[success] expected 200, got %d", w1.Code)
 	}
 
 	// Scenario 2: Error/cancelled flow
 	cancelToken := createAuthorizedState(t, handler, "https://unused")
 	w2 := getCallback(t, handler, "error=access_denied&state="+url.QueryEscape(cancelToken))
 	ct2 := w2.Header().Get("Content-Type")
-	if ct2 != "text/html; charset=utf-8" {
-		t.Errorf("[cancelled] expected Content-Type 'text/html; charset=utf-8', got %q", ct2)
+	if !strings.HasPrefix(ct2, "application/json") {
+		t.Errorf("[cancelled] expected Content-Type starting with 'application/json', got %q", ct2)
+	}
+	if w2.Code != http.StatusOK {
+		t.Errorf("[cancelled] expected 200, got %d", w2.Code)
 	}
 
 	// Scenario 3: Invalid/missing state
 	w3 := getCallback(t, handler, "code=some-code&state=nonexistent-token-xyz")
 	ct3 := w3.Header().Get("Content-Type")
-	if ct3 != "text/html; charset=utf-8" {
-		t.Errorf("[invalid state] expected Content-Type 'text/html; charset=utf-8', got %q", ct3)
+	if !strings.HasPrefix(ct3, "application/json") {
+		t.Errorf("[invalid state] expected Content-Type starting with 'application/json', got %q", ct3)
+	}
+	if w3.Code != http.StatusBadRequest {
+		t.Errorf("[invalid state] expected 400, got %d", w3.Code)
 	}
 }
 
@@ -786,18 +763,22 @@ func TestCSRF_ForgedStateRejected(t *testing.T) {
 
 	w := getCallback(t, handler, "code=stolen-code&state="+url.QueryEscape(forgedToken))
 
-	if w.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", w.Code)
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
 	}
 
-	body := w.Body.String()
-	if !strings.Contains(body, "Invalid or expired") {
-		t.Errorf("expected 'Invalid or expired' error for forged state, got: %s", body[:min(200, len(body))])
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Invalid or expired") {
+		t.Errorf("expected 'Invalid or expired' error for forged state, got %q", errMsg)
 	}
 
-	// Success or account data should never appear.
-	if strings.Contains(body, "successful") {
-		t.Error("CSRF: forged state token resulted in success HTML — security violation")
+	// Success status should never appear.
+	if resp["status"] == "success" {
+		t.Error("CSRF: forged state token resulted in success — security violation")
 	}
 }
 
@@ -825,12 +806,17 @@ func TestConcurrentCallbacks_OnlyOneSucceeds(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			w := getCallback(t, handler, "code=auth-code&state="+url.QueryEscape(stateToken))
-			body := w.Body.String()
 
-			if strings.Contains(body, "successful") {
+			var resp map[string]interface{}
+			if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+				return // skip unparseable responses
+			}
+
+			if resp["status"] == "success" {
 				successCount.Add(1)
 			}
-			if strings.Contains(body, "already been processed") {
+			errMsg, _ := resp["error"].(string)
+			if strings.Contains(errMsg, "already been processed") {
 				processedCount.Add(1)
 			}
 		}()
