@@ -170,9 +170,9 @@ func (s *SchwabProvider) PreviewOrder(ctx context.Context, orderData map[string]
 //	    }
 //	  },
 //	  "orderValidationResult": {
-//	    "rejects": [{"message": "..."}],
-//	    "warns": [{"message": "..."}],
-//	    "alerts": [{"message": "..."}]
+//	    "rejects": [{"activityMessage": "...", "originalSeverity": "REJECT"}],
+//	    "warns": [{"activityMessage": "...", "originalSeverity": "WARN"}],
+//	    "alerts": [{"activityMessage": "...", "originalSeverity": "ALERT"}]
 //	  },
 //	  "commissionAndFee": {
 //	    "commission": {"commissionLegs": [{"commissionValues": [{"value": 0.65}]}]},
@@ -195,7 +195,10 @@ func parsePreviewResponse(body []byte) (map[string]interface{}, error) {
 			var messages []string
 			for _, r := range rejects {
 				if rMap, ok := r.(map[string]interface{}); ok {
-					if msg, ok := rMap["message"].(string); ok && msg != "" {
+					// Try "activityMessage" first (actual Schwab API), fall back to "message"
+					if msg, ok := rMap["activityMessage"].(string); ok && msg != "" {
+						messages = append(messages, msg)
+					} else if msg, ok := rMap["message"].(string); ok && msg != "" {
 						messages = append(messages, msg)
 					}
 				}

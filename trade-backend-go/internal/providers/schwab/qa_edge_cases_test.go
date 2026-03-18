@@ -634,11 +634,11 @@ func TestPreviewOrder_ValidationRejects(t *testing.T) {
 		t.Fatalf("expected 2 validation errors, got %d: %v", len(validationErrors), validationErrors)
 	}
 
-	if !strings.Contains(validationErrors[0], "Insufficient buying power") {
-		t.Errorf("expected first error to mention 'Insufficient buying power', got: %s", validationErrors[0])
+	if !strings.Contains(validationErrors[0], "Order rejected due to insufficient funds") {
+		t.Errorf("expected first error to mention 'Order rejected due to insufficient funds', got: %s", validationErrors[0])
 	}
-	if !strings.Contains(validationErrors[1], "Market is currently closed") {
-		t.Errorf("expected second error to mention 'Market is currently closed', got: %s", validationErrors[1])
+	if !strings.Contains(validationErrors[1], "Cannot place order outside market hours") {
+		t.Errorf("expected second error to mention 'Cannot place order outside market hours', got: %s", validationErrors[1])
 	}
 }
 
