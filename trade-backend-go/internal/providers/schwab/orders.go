@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -515,11 +516,12 @@ func buildSchwabOrderRequest(orderData map[string]interface{}) (*schwabOrderRequ
 		req.ComplexOrderStrategyType = "NONE"
 	}
 
-	// Set price for limit orders
-	if price, ok := orderData["price"].(float64); ok && price > 0 {
-		req.Price = fmt.Sprintf("%.2f", price)
-	} else if price, ok := orderData["limit_price"].(float64); ok && price > 0 {
-		req.Price = fmt.Sprintf("%.2f", price)
+	// Set price for limit orders — read price first, fall back to limit_price.
+	// Use absolute value so negative credit prices still get set.
+	if price, ok := orderData["price"].(float64); ok && price != 0 {
+		req.Price = fmt.Sprintf("%.2f", math.Abs(price))
+	} else if price, ok := orderData["limit_price"].(float64); ok && price != 0 {
+		req.Price = fmt.Sprintf("%.2f", math.Abs(price))
 	}
 
 	// Set stop price for stop orders
@@ -549,9 +551,28 @@ func buildSchwabMultiLegOrderRequest(orderData map[string]interface{}) (*schwabO
 		OrderStrategyType:        "SINGLE",
 	}
 
-	// Set price
-	if price, ok := orderData["price"].(float64); ok && price > 0 {
-		req.Price = fmt.Sprintf("%.2f", price)
+	// Set price — read limit_price first (sent by frontend), fall back to price.
+	// For multi-leg spread orders, Schwab requires:
+	//   - NET_CREDIT with positive price when the spread receives premium (negative limit_price)
+	//   - NET_DEBIT with positive price when the spread costs premium (positive limit_price)
+	var limitPrice float64
+	var hasPrice bool
+	if p, ok := orderData["limit_price"].(float64); ok {
+		limitPrice = p
+		hasPrice = true
+	} else if p, ok := orderData["price"].(float64); ok {
+		limitPrice = p
+		hasPrice = true
+	}
+
+	if hasPrice && limitPrice != 0 {
+		if limitPrice < 0 {
+			req.OrderType = "NET_CREDIT"
+			req.Price = fmt.Sprintf("%.2f", math.Abs(limitPrice))
+		} else {
+			req.OrderType = "NET_DEBIT"
+			req.Price = fmt.Sprintf("%.2f", limitPrice)
+		}
 	}
 
 	// Build legs from orderData["legs"]
@@ -627,8 +648,11 @@ func mapSideToInstruction(side string, isOption bool) string {
 }
 
 // mapActionToInstruction maps an action string to a Schwab instruction,
-// with optional side fallback.
+// with optional side fallback. The side parameter may contain specific
+// instruction values like "sell_to_open" or "buy_to_open" (sent by the
+// frontend), so we check both action and side for specific instructions.
 func mapActionToInstruction(action, side string, isOption bool) string {
+	// Check action first
 	switch strings.ToUpper(action) {
 	case "BUY_TO_OPEN":
 		return "BUY_TO_OPEN"
@@ -638,9 +662,22 @@ func mapActionToInstruction(action, side string, isOption bool) string {
 		return "SELL_TO_OPEN"
 	case "SELL_TO_CLOSE":
 		return "SELL_TO_CLOSE"
-	default:
-		return mapSideToInstruction(side, isOption)
 	}
+
+	// Check side for specific instruction values (frontend sends side as e.g. "sell_to_open")
+	switch strings.ToUpper(side) {
+	case "BUY_TO_OPEN":
+		return "BUY_TO_OPEN"
+	case "BUY_TO_CLOSE":
+		return "BUY_TO_CLOSE"
+	case "SELL_TO_OPEN":
+		return "SELL_TO_OPEN"
+	case "SELL_TO_CLOSE":
+		return "SELL_TO_CLOSE"
+	}
+
+	// Fall back to simple buy/sell mapping
+	return mapSideToInstruction(side, isOption)
 }
 
 // mapDurationToSchwab maps a JuicyTrade time-in-force to a Schwab duration.

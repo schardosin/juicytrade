@@ -960,3 +960,226 @@ func TestBuildSchwabMultiLegOrderRequest_ComplexOrderStrategyType(t *testing.T) 
 		t.Errorf("expected JSON to contain complexOrderStrategyType:CUSTOM, got: %s", jsonStr)
 	}
 }
+
+// =============================================================================
+// Credit/Debit Spread and limit_price Tests
+// =============================================================================
+
+// TestBuildSchwabMultiLegOrderRequest_CreditSpread tests that a multi-leg credit
+// spread (negative limit_price) correctly produces NET_CREDIT order type with a
+// positive price. This is the exact scenario the customer reported failing.
+func TestBuildSchwabMultiLegOrderRequest_CreditSpread(t *testing.T) {
+	// Exact payload from the customer's bug report
+	req, err := buildSchwabMultiLegOrderRequest(map[string]interface{}{
+		"order_type":    "limit",
+		"limit_price":   -0.41,
+		"time_in_force": "day",
+		"legs": []interface{}{
+			map[string]interface{}{
+				"symbol": "SPY260326P00659000",
+				"side":   "sell_to_open",
+				"qty":    1.0,
+			},
+			map[string]interface{}{
+				"symbol": "SPY260326P00658000",
+				"side":   "buy_to_open",
+				"qty":    1.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if req.OrderType != "NET_CREDIT" {
+		t.Errorf("expected OrderType NET_CREDIT for credit spread, got %q", req.OrderType)
+	}
+	if req.Price != "0.41" {
+		t.Errorf("expected Price \"0.41\" (absolute value), got %q", req.Price)
+	}
+	if req.ComplexOrderStrategyType != "CUSTOM" {
+		t.Errorf("expected ComplexOrderStrategyType CUSTOM, got %q", req.ComplexOrderStrategyType)
+	}
+
+	// Verify JSON serialization
+	jsonBytes, _ := json.Marshal(req)
+	jsonStr := string(jsonBytes)
+	if !strings.Contains(jsonStr, `"orderType":"NET_CREDIT"`) {
+		t.Errorf("expected JSON orderType:NET_CREDIT, got: %s", jsonStr)
+	}
+	if !strings.Contains(jsonStr, `"price":"0.41"`) {
+		t.Errorf("expected JSON price:\"0.41\", got: %s", jsonStr)
+	}
+}
+
+// TestBuildSchwabMultiLegOrderRequest_DebitSpread tests that a multi-leg debit
+// spread (positive limit_price) correctly produces NET_DEBIT order type.
+func TestBuildSchwabMultiLegOrderRequest_DebitSpread(t *testing.T) {
+	req, err := buildSchwabMultiLegOrderRequest(map[string]interface{}{
+		"order_type":    "limit",
+		"limit_price":   1.25,
+		"time_in_force": "day",
+		"legs": []interface{}{
+			map[string]interface{}{
+				"symbol": "SPY260326C00680000",
+				"side":   "buy_to_open",
+				"qty":    1.0,
+			},
+			map[string]interface{}{
+				"symbol": "SPY260326C00685000",
+				"side":   "sell_to_open",
+				"qty":    1.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if req.OrderType != "NET_DEBIT" {
+		t.Errorf("expected OrderType NET_DEBIT for debit spread, got %q", req.OrderType)
+	}
+	if req.Price != "1.25" {
+		t.Errorf("expected Price \"1.25\", got %q", req.Price)
+	}
+}
+
+// TestBuildSchwabMultiLegOrderRequest_LimitPriceFallbackToPrice tests that
+// the builder reads "price" when "limit_price" is absent.
+func TestBuildSchwabMultiLegOrderRequest_LimitPriceFallbackToPrice(t *testing.T) {
+	req, err := buildSchwabMultiLegOrderRequest(map[string]interface{}{
+		"order_type":    "limit",
+		"price":         -0.55,
+		"time_in_force": "day",
+		"legs": []interface{}{
+			map[string]interface{}{
+				"symbol": "SPY260326P00659000",
+				"side":   "sell_to_open",
+				"qty":    1.0,
+			},
+			map[string]interface{}{
+				"symbol": "SPY260326P00658000",
+				"side":   "buy_to_open",
+				"qty":    1.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if req.OrderType != "NET_CREDIT" {
+		t.Errorf("expected OrderType NET_CREDIT when price is negative, got %q", req.OrderType)
+	}
+	if req.Price != "0.55" {
+		t.Errorf("expected Price \"0.55\" (abs), got %q", req.Price)
+	}
+}
+
+// TestBuildSchwabMultiLegOrderRequest_MarketOrder tests that a market order
+// with no price keeps MARKET type and no price field.
+func TestBuildSchwabMultiLegOrderRequest_MarketOrder(t *testing.T) {
+	req, err := buildSchwabMultiLegOrderRequest(map[string]interface{}{
+		"order_type":    "market",
+		"time_in_force": "day",
+		"legs": []interface{}{
+			map[string]interface{}{
+				"symbol": "SPY260326P00659000",
+				"side":   "sell_to_open",
+				"qty":    1.0,
+			},
+			map[string]interface{}{
+				"symbol": "SPY260326P00658000",
+				"side":   "buy_to_open",
+				"qty":    1.0,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if req.OrderType != "MARKET" {
+		t.Errorf("expected OrderType MARKET, got %q", req.OrderType)
+	}
+	if req.Price != "" {
+		t.Errorf("expected empty Price for market order, got %q", req.Price)
+	}
+}
+
+// TestBuildSchwabOrderRequest_LimitPriceNegative tests that single-leg orders
+// correctly handle a negative limit_price (use absolute value).
+func TestBuildSchwabOrderRequest_LimitPriceNegative(t *testing.T) {
+	req, err := buildSchwabOrderRequest(map[string]interface{}{
+		"symbol":        "SPY",
+		"side":          "sell",
+		"qty":           1.0,
+		"order_type":    "limit",
+		"limit_price":   -5.50,
+		"time_in_force": "day",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if req.Price != "5.50" {
+		t.Errorf("expected Price \"5.50\" (absolute value of -5.50), got %q", req.Price)
+	}
+	if req.OrderType != "LIMIT" {
+		t.Errorf("expected OrderType LIMIT for single-leg, got %q", req.OrderType)
+	}
+}
+
+// TestBuildSchwabOrderRequest_LimitPricePositive tests the normal positive price case.
+func TestBuildSchwabOrderRequest_LimitPricePositive(t *testing.T) {
+	req, err := buildSchwabOrderRequest(map[string]interface{}{
+		"symbol":        "AAPL",
+		"side":          "buy",
+		"qty":           10.0,
+		"order_type":    "limit",
+		"limit_price":   150.00,
+		"time_in_force": "day",
+	})
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+
+	if req.Price != "150.00" {
+		t.Errorf("expected Price \"150.00\", got %q", req.Price)
+	}
+}
+
+// TestMapActionToInstruction_SideValues tests that mapActionToInstruction correctly
+// handles side values like "sell_to_open" when action is empty (as sent by the frontend).
+func TestMapActionToInstruction_SideValues(t *testing.T) {
+	tests := []struct {
+		action   string
+		side     string
+		isOption bool
+		expected string
+	}{
+		// Action takes priority
+		{"BUY_TO_OPEN", "sell_to_open", true, "BUY_TO_OPEN"},
+		{"SELL_TO_CLOSE", "buy_to_open", true, "SELL_TO_CLOSE"},
+		// Empty action, side contains specific instruction (frontend pattern)
+		{"", "sell_to_open", true, "SELL_TO_OPEN"},
+		{"", "buy_to_open", true, "BUY_TO_OPEN"},
+		{"", "sell_to_close", true, "SELL_TO_CLOSE"},
+		{"", "buy_to_close", true, "BUY_TO_CLOSE"},
+		// Simple buy/sell fallback
+		{"", "buy", true, "BUY_TO_OPEN"},
+		{"", "sell", true, "SELL_TO_CLOSE"},
+		{"", "buy", false, "BUY"},
+		{"", "sell", false, "SELL"},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("action=%q_side=%q_option=%v", tt.action, tt.side, tt.isOption), func(t *testing.T) {
+			result := mapActionToInstruction(tt.action, tt.side, tt.isOption)
+			if result != tt.expected {
+				t.Errorf("mapActionToInstruction(%q, %q, %v) = %q, want %q",
+					tt.action, tt.side, tt.isOption, result, tt.expected)
+			}
+		})
+	}
+}
