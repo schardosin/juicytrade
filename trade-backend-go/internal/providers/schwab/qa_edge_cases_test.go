@@ -239,30 +239,294 @@ func TestStreamReadLoop_MalformedJSON(t *testing.T) {
 }
 
 // =============================================================================
-// HIGH PRIORITY: PreviewOrder Not Supported
+// HIGH PRIORITY: PreviewOrder
 // =============================================================================
 
-// TestPreviewOrder_ReturnsNotSupported verifies the exact error message
-// for order preview, which is not supported by Schwab's API.
-func TestPreviewOrder_ReturnsNotSupported(t *testing.T) {
+// TestPreviewOrder_SingleLegEquity verifies that PreviewOrder builds the
+// correct request and returns a standardized success result for a single-leg
+// equity order.
+func TestPreviewOrder_SingleLegEquity(t *testing.T) {
+	var receivedBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/previewOrder") && r.Method == http.MethodPost:
+			bodyBytes, _ := io.ReadAll(r.Body)
+			json.Unmarshal(bodyBytes, &receivedBody)
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{
+				"orderId": 0,
+				"orderType": "LIMIT",
+				"session": "NORMAL",
+				"price": 150.00,
+				"duration": "DAY",
+				"orderStrategyType": "SINGLE",
+				"orderLegCollection": [
+					{
+						"instruction": "BUY",
+						"quantity": 100,
+						"instrument": {"symbol": "AAPL", "assetType": "EQUITY"}
+					}
+				],
+				"commission": {"total": 0.0},
+				"fees": {"total": 0.05}
+			}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	result, err := p.PreviewOrder(context.Background(), map[string]interface{}{
+		"symbol":        "AAPL",
+		"side":          "buy",
+		"qty":           100.0,
+		"type":          "limit",
+		"price":         150.0,
+		"time_in_force": "day",
+	})
+
+	if err != nil {
+		t.Fatalf("expected no Go error, got: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	// Verify the result status
+	if status, ok := result["status"].(string); !ok || status != "ok" {
+		t.Errorf("expected status 'ok', got %v", result["status"])
+	}
+
+	// Verify all standardized fields are present
+	requiredFields := []string{
+		"status", "commission", "cost", "fees", "order_cost",
+		"margin_change", "buying_power_effect", "day_trades",
+		"estimated_total", "validation_errors",
+	}
+	for _, field := range requiredFields {
+		if _, ok := result[field]; !ok {
+			t.Errorf("missing required field %q in preview result", field)
+		}
+	}
+
+	// Verify fees were parsed
+	if fees, ok := result["fees"].(float64); !ok || fees != 0.05 {
+		t.Errorf("expected fees 0.05, got %v", result["fees"])
+	}
+
+	// Verify the request body sent to the mock server
+	if receivedBody["orderType"] != "LIMIT" {
+		t.Errorf("expected orderType LIMIT, got %v", receivedBody["orderType"])
+	}
+	if receivedBody["session"] != "NORMAL" {
+		t.Errorf("expected session NORMAL, got %v", receivedBody["session"])
+	}
+	if receivedBody["price"] != 150.0 {
+		t.Errorf("expected price 150.0, got %v", receivedBody["price"])
+	}
+}
+
+// TestPreviewOrder_MultiLegOption verifies that PreviewOrder correctly builds
+// and previews a multi-leg option order (vertical spread).
+func TestPreviewOrder_MultiLegOption(t *testing.T) {
+	var receivedBody map[string]interface{}
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/previewOrder") && r.Method == http.MethodPost:
+			bodyBytes, _ := io.ReadAll(r.Body)
+			json.Unmarshal(bodyBytes, &receivedBody)
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, `{
+				"orderId": 0,
+				"orderType": "NET_DEBIT",
+				"session": "NORMAL",
+				"price": 2.50,
+				"duration": "DAY",
+				"orderStrategyType": "SINGLE",
+				"orderLegCollection": [
+					{
+						"instruction": "BUY_TO_OPEN",
+						"quantity": 1,
+						"instrument": {"symbol": "AAPL  251219C00200000", "assetType": "OPTION"}
+					},
+					{
+						"instruction": "SELL_TO_OPEN",
+						"quantity": 1,
+						"instrument": {"symbol": "AAPL  251219C00210000", "assetType": "OPTION"}
+					}
+				],
+				"commission": {"total": 1.30},
+				"fees": {"total": 0.10}
+			}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	result, err := p.PreviewOrder(context.Background(), map[string]interface{}{
+		"type":          "net_debit",
+		"price":         2.50,
+		"time_in_force": "day",
+		"legs": []interface{}{
+			map[string]interface{}{
+				"symbol":      "AAPL251219C00200000",
+				"side":        "buy_to_open",
+				"qty":         1.0,
+				"asset_class": "option",
+			},
+			map[string]interface{}{
+				"symbol":      "AAPL251219C00210000",
+				"side":        "sell_to_open",
+				"qty":         1.0,
+				"asset_class": "option",
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("expected no Go error, got: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+
+	if status, ok := result["status"].(string); !ok || status != "ok" {
+		t.Errorf("expected status 'ok', got %v", result["status"])
+	}
+
+	// Verify commission and fees were parsed
+	if commission, ok := result["commission"].(float64); !ok || commission != 1.30 {
+		t.Errorf("expected commission 1.30, got %v", result["commission"])
+	}
+	if fees, ok := result["fees"].(float64); !ok || fees != 0.10 {
+		t.Errorf("expected fees 0.10, got %v", result["fees"])
+	}
+
+	// Verify estimated total includes price + commission + fees
+	if total, ok := result["estimated_total"].(float64); !ok || total != 2.50+1.30+0.10 {
+		t.Errorf("expected estimated_total %.2f, got %v", 2.50+1.30+0.10, result["estimated_total"])
+	}
+
+	// Verify the request had 2 legs
+	if legs, ok := receivedBody["orderLegCollection"].([]interface{}); !ok || len(legs) != 2 {
+		t.Errorf("expected 2 legs in request, got %v", receivedBody["orderLegCollection"])
+	}
+}
+
+// TestPreviewOrder_APIError_ReturnsValidationErrors verifies that when the
+// Schwab API returns an error response, PreviewOrder returns a structured
+// error result (not a Go error) with validation_errors.
+func TestPreviewOrder_APIError_ReturnsValidationErrors(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/previewOrder") && r.Method == http.MethodPost:
+			w.WriteHeader(http.StatusBadRequest)
+			fmt.Fprint(w, `{"errors": [{"message": "Insufficient funds for this order", "detail": "Account balance too low"}]}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	result, err := p.PreviewOrder(context.Background(), map[string]interface{}{
+		"symbol":        "AAPL",
+		"side":          "buy",
+		"qty":           100.0,
+		"type":          "limit",
+		"price":         150.0,
+		"time_in_force": "day",
+	})
+
+	// Must NOT return a Go error — errors are in the result map
+	if err != nil {
+		t.Fatalf("expected no Go error for API failure, got: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result for API error")
+	}
+
+	// Status must be "error"
+	if status, ok := result["status"].(string); !ok || status != "error" {
+		t.Errorf("expected status 'error', got %v", result["status"])
+	}
+
+	// validation_errors must contain the API error message
+	if validationErrors, ok := result["validation_errors"].([]string); ok {
+		if len(validationErrors) == 0 {
+			t.Error("expected non-empty validation_errors")
+		}
+		found := false
+		for _, msg := range validationErrors {
+			if strings.Contains(msg, "Insufficient funds") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected validation_errors to contain 'Insufficient funds', got %v", validationErrors)
+		}
+	} else {
+		t.Errorf("expected validation_errors to be []string, got %T", result["validation_errors"])
+	}
+
+	// All cost fields must be zero
+	for _, field := range []string{"commission", "cost", "fees", "order_cost", "estimated_total"} {
+		if val, ok := result[field].(float64); ok && val != 0 {
+			t.Errorf("expected %s to be 0 for error result, got %v", field, val)
+		}
+	}
+}
+
+// TestPreviewOrder_InvalidOrderData_ReturnsStructuredError verifies that
+// invalid order data (missing required fields) returns a structured error
+// result, not a Go error.
+func TestPreviewOrder_InvalidOrderData_ReturnsStructuredError(t *testing.T) {
+	// No mock server needed — the build step fails before any HTTP call
 	p := newTestProvider("http://unused")
 
 	result, err := p.PreviewOrder(context.Background(), map[string]interface{}{
-		"symbol": "AAPL",
+		"symbol": "",
 		"side":   "buy",
-		"qty":    100.0,
 	})
 
-	if result != nil {
-		t.Errorf("expected nil result, got %v", result)
+	// Must NOT return a Go error
+	if err != nil {
+		t.Fatalf("expected no Go error for invalid order data, got: %v", err)
 	}
-	if err == nil {
-		t.Fatal("expected error for PreviewOrder, got nil")
+	if result == nil {
+		t.Fatal("expected non-nil result for invalid input")
 	}
 
-	expected := "schwab: order preview not supported by Schwab API"
-	if err.Error() != expected {
-		t.Errorf("expected exact error message %q, got %q", expected, err.Error())
+	// Status must be "error"
+	if status, ok := result["status"].(string); !ok || status != "error" {
+		t.Errorf("expected status 'error', got %v", result["status"])
+	}
+
+	// validation_errors must explain the issue
+	if validationErrors, ok := result["validation_errors"].([]string); ok {
+		if len(validationErrors) == 0 {
+			t.Error("expected non-empty validation_errors for invalid input")
+		}
+	} else {
+		t.Errorf("expected validation_errors to be []string, got %T", result["validation_errors"])
 	}
 }
 
