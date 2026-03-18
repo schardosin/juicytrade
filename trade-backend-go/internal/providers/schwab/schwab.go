@@ -112,114 +112,36 @@ func NewSchwabProvider(appKey, appSecret, callbackURL, refreshToken, accountHash
 // Order Management Methods (PlaceOrder, PlaceMultiLegOrder in orders.go; CancelOrder in orders.go)
 // =============================================================================
 
-// PreviewOrder previews a trading order to get cost estimates and validation.
-// Calls POST /trader/v1/accounts/{accountHash}/previewOrder with the same
-// JSON body format used by PlaceOrder.
+// PreviewOrder validates a trading order client-side and returns a stub response.
 //
-// Returns a standardized preview result map (matching Tradier/TastyTrade
-// patterns). Never returns a Go error for API-level failures — errors are
-// returned as status: "error" with validation_errors in the result map.
+// The Schwab API does NOT provide an order preview endpoint — this was a
+// TD Ameritrade feature that was removed in the migration to Schwab's API.
+// Instead, we validate the order data by building the request (catching
+// structural errors) and return a stub with preview_not_available: true,
+// following the same pattern as the Alpaca provider.
 func (s *SchwabProvider) PreviewOrder(ctx context.Context, orderData map[string]interface{}) (map[string]interface{}, error) {
-	// 1. Build the order request — try multi-leg first if "legs" are present,
-	//    otherwise build a single-leg request.
-	var req *schwabOrderRequest
+	// Validate the order data by building the request — try multi-leg first
+	// if "legs" are present, otherwise build a single-leg request.
 	var buildErr error
 
 	if legs, ok := orderData["legs"]; ok {
 		if legsArr, ok := legs.([]interface{}); ok && len(legsArr) > 0 {
-			req, buildErr = buildSchwabMultiLegOrderRequest(orderData)
+			_, buildErr = buildSchwabMultiLegOrderRequest(orderData)
 		} else {
-			req, buildErr = buildSchwabOrderRequest(orderData)
+			_, buildErr = buildSchwabOrderRequest(orderData)
 		}
 	} else {
-		req, buildErr = buildSchwabOrderRequest(orderData)
+		_, buildErr = buildSchwabOrderRequest(orderData)
 	}
 
 	if buildErr != nil {
 		return errorPreviewResult(fmt.Sprintf("Failed to build order: %s", buildErr.Error())), nil
 	}
 
-	// 2. Marshal to JSON
-	jsonBody, err := json.Marshal(req)
-	if err != nil {
-		return errorPreviewResult(fmt.Sprintf("Failed to marshal order: %s", err.Error())), nil
-	}
-
-	// 3. Call the preview endpoint
-	reqURL := s.buildTraderURL("/accounts/" + s.accountHash + "/previewOrder")
-	body, _, err := s.doAuthenticatedRequest(ctx, http.MethodPost, reqURL, jsonBody)
-
-	// 4. Handle transport/auth errors — doAuthenticatedRequest returns an error
-	//    for HTTP 4xx/5xx status codes with a parsed error message.
-	if err != nil {
-		return errorPreviewResult(err.Error()), nil
-	}
-
-	// 5. Parse the successful response (HTTP 200)
-	return parsePreviewResponse(body)
-}
-
-// parsePreviewResponse transforms a successful Schwab preview API response
-// into the standardized preview result map.
-//
-// The Schwab previewOrder response returns the same structure as a placed order
-// but with additional commission and fee fields. The relevant fields are:
-//   - orderActivityCollection[].executionLegs[].price (fill price estimates)
-//   - commission.commissionLegs[].commissionValues (per-leg commissions)
-//   - orderLegCollection (echoed back from request)
-//
-// Fields not present in the response default to 0.
-func parsePreviewResponse(body []byte) (map[string]interface{}, error) {
-	if len(body) == 0 {
-		return okPreviewResult(0, 0, 0, 0), nil
-	}
-
-	var raw map[string]interface{}
-	if err := json.Unmarshal(body, &raw); err != nil {
-		return errorPreviewResult(fmt.Sprintf("Failed to parse preview response: %s", err.Error())), nil
-	}
-
-	// Extract commission total
-	commission := 0.0
-	if commObj, ok := raw["commission"].(map[string]interface{}); ok {
-		if total, ok := commObj["total"].(float64); ok {
-			commission = total
-		} else if legs, ok := commObj["commissionLegs"].([]interface{}); ok {
-			for _, leg := range legs {
-				if legMap, ok := leg.(map[string]interface{}); ok {
-					if vals, ok := legMap["commissionValues"].([]interface{}); ok {
-						for _, val := range vals {
-							if valMap, ok := val.(map[string]interface{}); ok {
-								if v, ok := valMap["value"].(float64); ok {
-									commission += v
-								}
-							}
-						}
-					}
-				}
-			}
-		}
-	}
-
-	// Extract fees
-	fees := 0.0
-	if feesObj, ok := raw["fees"].(map[string]interface{}); ok {
-		if total, ok := feesObj["total"].(float64); ok {
-			fees = total
-		}
-	}
-
-	// Extract order cost from the request echo (price field)
-	orderCost := 0.0
-	if price, ok := raw["price"].(float64); ok {
-		orderCost = price
-	} else if orderValue, ok := raw["orderValue"].(float64); ok {
-		orderCost = orderValue
-	}
-
-	estimatedTotal := orderCost + commission + fees
-
-	return okPreviewResult(commission, fees, orderCost, estimatedTotal), nil
+	// Schwab does not support order preview — return a stub response
+	result := okPreviewResult(0, 0, 0, 0)
+	result["preview_not_available"] = true
+	return result, nil
 }
 
 // errorPreviewResult returns a standardized error preview result map.
