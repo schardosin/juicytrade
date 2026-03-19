@@ -11,6 +11,7 @@ type CredentialField struct {
 	Required    bool   `json:"required"`
 	Placeholder string `json:"placeholder,omitempty"`
 	Default     string `json:"default,omitempty"`
+	HelpText    string `json:"help_text,omitempty"`
 }
 
 // ProviderCapabilities represents provider capabilities.
@@ -28,6 +29,7 @@ type ProviderType struct {
 	SupportsAccountTypes []string                     `json:"supports_account_types"`
 	Capabilities         ProviderCapabilities         `json:"capabilities"`
 	CredentialFields     map[string][]CredentialField `json:"credential_fields"`
+	AuthMethod           string                       `json:"auth_method,omitempty"` // "oauth" or "" (default = simple)
 }
 
 // Provider type definitions with credential field specifications.
@@ -125,6 +127,30 @@ var ProviderTypes = map[string]ProviderType{
 			},
 		},
 	},
+	"schwab": {
+		Name:                 "Schwab",
+		Description:          "Charles Schwab Trader API (formerly TD Ameritrade)",
+		SupportsAccountTypes: []string{"live", "paper"},
+		AuthMethod:           "oauth",
+		Capabilities: ProviderCapabilities{
+			Rest:      []string{"expiration_dates", "stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks"},
+			Streaming: []string{"streaming_quotes", "streaming_greeks", "trade_account"},
+		},
+		CredentialFields: map[string][]CredentialField{
+			"live": {
+				{Name: "app_key", Label: "App Key", Type: "text", Required: true, Placeholder: "Your Schwab Developer App Key (client_id)", HelpText: "From Schwab Developer Portal (developer.schwab.com)"},
+				{Name: "app_secret", Label: "App Secret", Type: "password", Required: true, Placeholder: "Your Schwab Developer App Secret (client_secret)", HelpText: "From Schwab Developer Portal"},
+				{Name: "callback_url", Label: "Callback URL", Type: "text", Required: true, Placeholder: "OAuth redirect URI", Default: "https://127.0.0.1/callback", HelpText: "OAuth redirect URI registered with Schwab"},
+				{Name: "base_url", Label: "Base URL", Type: "text", Required: false, Default: "https://api.schwabapi.com", HelpText: "Schwab API base URL (advanced)"},
+			},
+			"paper": {
+				{Name: "app_key", Label: "App Key", Type: "text", Required: true, Placeholder: "Your Schwab Developer App Key (client_id)", HelpText: "From Schwab Developer Portal (developer.schwab.com)"},
+				{Name: "app_secret", Label: "App Secret", Type: "password", Required: true, Placeholder: "Your Schwab Developer App Secret (client_secret)", HelpText: "From Schwab Developer Portal"},
+				{Name: "callback_url", Label: "Callback URL", Type: "text", Required: true, Placeholder: "OAuth redirect URI", Default: "https://127.0.0.1/callback", HelpText: "OAuth redirect URI registered with Schwab"},
+				{Name: "base_url", Label: "Base URL", Type: "text", Required: false, Default: "https://api.schwabapi.com", HelpText: "Schwab API base URL (advanced)"},
+			},
+		},
+	},
 }
 
 // Legacy provider capabilities for backward compatibility.
@@ -185,6 +211,22 @@ var LegacyProviderCapabilities = map[string]map[string]interface{}{
 		},
 		"paper":        true,
 		"display_name": "TastyTrade",
+	},
+	"schwab": {
+		"capabilities": map[string]interface{}{
+			"rest":      []string{"stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks", "expiration_dates"},
+			"streaming": []string{"streaming_quotes", "streaming_greeks", "trade_account"},
+		},
+		"paper":        false,
+		"display_name": "Schwab",
+	},
+	"schwab_paper": {
+		"capabilities": map[string]interface{}{
+			"rest":      []string{"stock_quotes", "options_chain", "trade_account", "next_market_date", "symbol_lookup", "historical_data", "market_calendar", "greeks", "expiration_dates"},
+			"streaming": []string{"streaming_quotes", "streaming_greeks", "trade_account"},
+		},
+		"paper":        true,
+		"display_name": "Schwab",
 	},
 }
 

@@ -1,0 +1,1520 @@
+package schwab
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+// =============================================================================
+// CreateState tests
+// =============================================================================
+
+func TestOAuthStore_CreateState_GeneratesUniqueTokens(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	token1, err := store.CreateState("key", "secret", "https://cb", "https://api")
+	if err != nil {
+		t.Fatalf("CreateState returned error: %v", err)
+	}
+
+	token2, err := store.CreateState("key", "secret", "https://cb", "https://api")
+	if err != nil {
+		t.Fatalf("CreateState returned error: %v", err)
+	}
+
+	if token1 == token2 {
+		t.Errorf("expected unique tokens, both are %q", token1)
+	}
+}
+
+func TestOAuthStore_CreateState_StoresCorrectData(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	token, err := store.CreateState("my-key", "my-secret", "https://cb.example.com", "https://api.schwab.com")
+	if err != nil {
+		t.Fatalf("CreateState returned error: %v", err)
+	}
+
+	state := store.GetState(token)
+	if state == nil {
+		t.Fatal("expected state to be found")
+	}
+
+	if state.AppKey != "my-key" {
+		t.Errorf("expected AppKey 'my-key', got %q", state.AppKey)
+	}
+	if state.AppSecret != "my-secret" {
+		t.Errorf("expected AppSecret 'my-secret', got %q", state.AppSecret)
+	}
+	if state.CallbackURL != "https://cb.example.com" {
+		t.Errorf("expected CallbackURL 'https://cb.example.com', got %q", state.CallbackURL)
+	}
+	if state.BaseURL != "https://api.schwab.com" {
+		t.Errorf("expected BaseURL 'https://api.schwab.com', got %q", state.BaseURL)
+	}
+	if state.Status != "pending" {
+		t.Errorf("expected Status 'pending', got %q", state.Status)
+	}
+	if state.CreatedAt.IsZero() {
+		t.Error("expected CreatedAt to be set")
+	}
+}
+
+// =============================================================================
+// GetState tests
+// =============================================================================
+
+func TestOAuthStore_GetState_NotFound(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	state := store.GetState("nonexistent-token-abc123")
+	if state != nil {
+		t.Errorf("expected nil for unknown token, got %+v", state)
+	}
+}
+
+func TestOAuthStore_GetState_Expired(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	token, err := store.CreateState("key", "secret", "https://cb", "https://api")
+	if err != nil {
+		t.Fatalf("CreateState returned error: %v", err)
+	}
+
+	// Manually set CreatedAt to 11 minutes ago to simulate expiry
+	state := store.GetState(token)
+	if state == nil {
+		t.Fatal("expected state to exist before expiry manipulation")
+	}
+	state.mu.Lock()
+	state.CreatedAt = time.Now().Add(-11 * time.Minute)
+	state.mu.Unlock()
+
+	// Now GetState should return nil (expired)
+	expired := store.GetState(token)
+	if expired != nil {
+		t.Error("expected nil for expired state")
+	}
+}
+
+// =============================================================================
+// UpdateState tests
+// =============================================================================
+
+func TestOAuthStore_UpdateState_TransitionsStatus(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	token, _ := store.CreateState("key", "secret", "https://cb", "https://api")
+
+	ok := store.UpdateState(token, func(s *OAuthFlowState) {
+		s.Status = "exchanging"
+	})
+	if !ok {
+		t.Fatal("expected UpdateState to return true")
+	}
+
+	state := store.GetState(token)
+	if state.Status != "exchanging" {
+		t.Errorf("expected Status 'exchanging', got %q", state.Status)
+	}
+}
+
+func TestOAuthStore_UpdateState_NotFound(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	ok := store.UpdateState("nonexistent", func(s *OAuthFlowState) {
+		s.Status = "should-not-happen"
+	})
+	if ok {
+		t.Error("expected UpdateState to return false for unknown token")
+	}
+}
+
+// =============================================================================
+// DeleteState tests
+// =============================================================================
+
+func TestOAuthStore_DeleteState(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	token, _ := store.CreateState("key", "secret", "https://cb", "https://api")
+
+	// Verify it exists
+	if store.GetState(token) == nil {
+		t.Fatal("expected state to exist before delete")
+	}
+
+	store.DeleteState(token)
+
+	// Verify it's gone
+	if store.GetState(token) != nil {
+		t.Error("expected state to be nil after delete")
+	}
+}
+
+// =============================================================================
+// Cleanup tests
+// =============================================================================
+
+func TestOAuthStore_StartCleanup_RemovesExpired(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	// Create a state and backdate it beyond TTL
+	token, _ := store.CreateState("key", "secret", "https://cb", "https://api")
+	state := store.GetState(token)
+	state.mu.Lock()
+	state.CreatedAt = time.Now().Add(-15 * time.Minute)
+	state.mu.Unlock()
+
+	// Create a fresh state that should survive cleanup
+	freshToken, _ := store.CreateState("key2", "secret2", "https://cb2", "https://api2")
+
+	// Run cleanup directly (no need to wait for the goroutine ticker)
+	store.removeExpired()
+
+	// Expired state should be gone (check raw map since GetState also checks expiry)
+	if _, loaded := store.states.Load(token); loaded {
+		t.Error("expected expired state to be removed by cleanup")
+	}
+
+	// Fresh state should still be there
+	if store.GetState(freshToken) == nil {
+		t.Error("expected fresh state to survive cleanup")
+	}
+}
+
+func TestOAuthStore_StartCleanup_ContextCancel(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	store.StartCleanup(ctx)
+
+	// Cancel immediately — the goroutine should exit without error or panic
+	cancel()
+
+	// Give the goroutine a moment to exit
+	time.Sleep(50 * time.Millisecond)
+}
+
+// =============================================================================
+// Token generation tests
+// =============================================================================
+
+func TestOAuthStore_StateToken_Length(t *testing.T) {
+	// 32 bytes → base64url (no padding) = ceil(32*4/3) = 43 characters
+	token, err := generateStateToken()
+	if err != nil {
+		t.Fatalf("generateStateToken returned error: %v", err)
+	}
+
+	if len(token) != 43 {
+		t.Errorf("expected token length 43, got %d (token=%q)", len(token), token)
+	}
+}
+
+// =============================================================================
+// Concurrency tests
+// =============================================================================
+
+func TestOAuthStore_ConcurrentAccess(t *testing.T) {
+	store := NewSchwabOAuthStore()
+
+	const goroutines = 50
+	const opsPerGoroutine = 20
+
+	var wg sync.WaitGroup
+	wg.Add(goroutines)
+
+	// Collect tokens from create goroutines for use by read/update goroutines
+	tokens := make(chan string, goroutines*opsPerGoroutine)
+
+	// Half the goroutines create states
+	for i := 0; i < goroutines/2; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				token, err := store.CreateState("key", "secret", "https://cb", "https://api")
+				if err != nil {
+					t.Errorf("CreateState error: %v", err)
+					return
+				}
+				tokens <- token
+			}
+		}()
+	}
+
+	// Other half read, update, and delete states
+	for i := 0; i < goroutines/2; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < opsPerGoroutine; j++ {
+				select {
+				case token := <-tokens:
+					// Read
+					store.GetState(token)
+
+					// Update
+					store.UpdateState(token, func(s *OAuthFlowState) {
+						s.Status = "exchanging"
+					})
+
+					// Read again
+					store.GetState(token)
+
+					// Delete half the time
+					if j%2 == 0 {
+						store.DeleteState(token)
+					}
+				default:
+					// No tokens available yet, create and immediately read
+					tk, _ := store.CreateState("k", "s", "c", "b")
+					store.GetState(tk)
+				}
+			}
+		}()
+	}
+
+	// Wait with timeout to detect deadlocks
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		// Success — no races, no deadlocks
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for concurrent operations — possible deadlock")
+	}
+}
+
+// =============================================================================
+// exchangeCodeForTokens tests
+// =============================================================================
+
+func TestExchangeCodeForTokens_Success(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token":  "test-access-token",
+			"refresh_token": "test-refresh-token",
+			"expires_in":    1800,
+			"token_type":    "Bearer",
+		})
+	}))
+	defer srv.Close()
+
+	result, err := exchangeCodeForTokens(srv.URL, "key", "secret", "https://cb", "auth-code-123")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if result.AccessToken != "test-access-token" {
+		t.Errorf("expected AccessToken 'test-access-token', got %q", result.AccessToken)
+	}
+	if result.RefreshToken != "test-refresh-token" {
+		t.Errorf("expected RefreshToken 'test-refresh-token', got %q", result.RefreshToken)
+	}
+	if result.ExpiresIn != 1800 {
+		t.Errorf("expected ExpiresIn 1800, got %d", result.ExpiresIn)
+	}
+}
+
+func TestExchangeCodeForTokens_InvalidCode(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadRequest)
+		fmt.Fprint(w, `{"error":"invalid_grant"}`)
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForTokens(srv.URL, "key", "secret", "https://cb", "bad-code")
+	if err == nil {
+		t.Fatal("expected error for 400 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid authorization code") {
+		t.Errorf("expected 'invalid authorization code' error, got: %v", err)
+	}
+}
+
+func TestExchangeCodeForTokens_InvalidCredentials(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		fmt.Fprint(w, `{"error":"invalid_client"}`)
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForTokens(srv.URL, "bad-key", "bad-secret", "https://cb", "code")
+	if err == nil {
+		t.Fatal("expected error for 401 response, got nil")
+	}
+	if !strings.Contains(err.Error(), "invalid client credentials") {
+		t.Errorf("expected 'invalid client credentials' error, got: %v", err)
+	}
+}
+
+func TestExchangeCodeForTokens_BasicAuthHeader(t *testing.T) {
+	var receivedAuth string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedAuth = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "tok",
+			"expires_in":   1800,
+		})
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForTokens(srv.URL, "my-app-key", "my-app-secret", "https://cb", "code")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.HasPrefix(receivedAuth, "Basic ") {
+		t.Fatalf("expected Basic auth header, got %q", receivedAuth)
+	}
+}
+
+func TestExchangeCodeForTokens_FormBody(t *testing.T) {
+	var receivedBody string
+	var receivedContentType string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		receivedContentType = r.Header.Get("Content-Type")
+		bodyBytes, _ := io.ReadAll(r.Body)
+		receivedBody = string(bodyBytes)
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "tok",
+			"expires_in":   1800,
+		})
+	}))
+	defer srv.Close()
+
+	_, err := exchangeCodeForTokens(srv.URL, "key", "secret", "https://my-cb.com/callback", "my-auth-code")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if receivedContentType != "application/x-www-form-urlencoded" {
+		t.Errorf("expected Content-Type 'application/x-www-form-urlencoded', got %q", receivedContentType)
+	}
+	if !strings.Contains(receivedBody, "grant_type=authorization_code") {
+		t.Errorf("expected grant_type=authorization_code in body, got: %s", receivedBody)
+	}
+	if !strings.Contains(receivedBody, "code=my-auth-code") {
+		t.Errorf("expected code=my-auth-code in body, got: %s", receivedBody)
+	}
+	if !strings.Contains(receivedBody, "redirect_uri=") {
+		t.Errorf("expected redirect_uri in body, got: %s", receivedBody)
+	}
+}
+
+// =============================================================================
+// fetchAccountNumbers tests
+// =============================================================================
+
+func TestFetchAccountNumbers_SingleAccount(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]string{
+			{"accountNumber": "123456789", "hashValue": "ABC123HASH"},
+		})
+	}))
+	defer srv.Close()
+
+	accounts, err := fetchAccountNumbers(srv.URL, "test-token")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(accounts) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(accounts))
+	}
+	// Account number should be masked
+	if accounts[0].AccountNumber != "*****6789" {
+		t.Errorf("expected masked account '*****6789', got %q", accounts[0].AccountNumber)
+	}
+	if accounts[0].HashValue != "ABC123HASH" {
+		t.Errorf("expected hash 'ABC123HASH', got %q", accounts[0].HashValue)
+	}
+}
+
+func TestFetchAccountNumbers_MultipleAccounts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]map[string]string{
+			{"accountNumber": "111111111", "hashValue": "HASH1"},
+			{"accountNumber": "222222222", "hashValue": "HASH2"},
+			{"accountNumber": "333333333", "hashValue": "HASH3"},
+		})
+	}))
+	defer srv.Close()
+
+	accounts, err := fetchAccountNumbers(srv.URL, "test-token")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(accounts) != 3 {
+		t.Fatalf("expected 3 accounts, got %d", len(accounts))
+	}
+	// Verify all are masked
+	for i, acct := range accounts {
+		if !strings.HasPrefix(acct.AccountNumber, "*") {
+			t.Errorf("account %d not masked: %q", i, acct.AccountNumber)
+		}
+	}
+}
+
+func TestFetchAccountNumbers_EmptyAccounts(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprint(w, `[]`)
+	}))
+	defer srv.Close()
+
+	accounts, err := fetchAccountNumbers(srv.URL, "test-token")
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if accounts == nil {
+		t.Fatal("expected non-nil empty slice, got nil")
+	}
+	if len(accounts) != 0 {
+		t.Errorf("expected 0 accounts, got %d", len(accounts))
+	}
+}
+
+// =============================================================================
+// maskAccountNumber tests
+// =============================================================================
+
+func TestMaskAccountNumber(t *testing.T) {
+	tests := []struct {
+		input    string
+		expected string
+	}{
+		{"", ""},
+		{"1", "1"},
+		{"12", "12"},
+		{"1234", "1234"},
+		{"12345", "*2345"},
+		{"123456789", "*****6789"},
+		{"9876543210", "******3210"},
+	}
+
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("input=%q", tt.input), func(t *testing.T) {
+			got := maskAccountNumber(tt.input)
+			if got != tt.expected {
+				t.Errorf("maskAccountNumber(%q) = %q, want %q", tt.input, got, tt.expected)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// HandleAuthorize test helpers
+// =============================================================================
+
+func init() {
+	gin.SetMode(gin.TestMode)
+}
+
+// newTestOAuthHandler creates a SchwabOAuthHandler with no-op deps for testing.
+func newTestOAuthHandler() *SchwabOAuthHandler {
+	return NewSchwabOAuthHandler(OAuthHandlerDeps{
+		AddInstance:      func(id, pt, at, dn string, c map[string]interface{}) bool { return true },
+		UpdateCredFields: func(id string, u map[string]interface{}) error { return nil },
+		GenerateInstID:   func(pt, at, dn string) string { return pt + "_" + at + "_" + dn },
+		ReinitInstance:   func(id string) error { return nil },
+		GetInstance:      func(id string) map[string]interface{} { return nil },
+	})
+}
+
+// postAuthorize sends a POST request to HandleAuthorize and returns the recorder.
+func postAuthorize(t *testing.T, handler *SchwabOAuthHandler, body interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("failed to marshal body: %v", err)
+	}
+
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/schwab/oauth/authorize", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+
+	handler.HandleAuthorize(c)
+	return w
+}
+
+// =============================================================================
+// HandleAuthorize tests
+// =============================================================================
+
+func TestHandleAuthorize_Success(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "my-key",
+		"app_secret":   "my-secret",
+		"callback_url": "https://127.0.0.1/callback",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse response: %v", err)
+	}
+
+	authURL := resp["auth_url"]
+	stateToken := resp["state"]
+
+	if authURL == "" {
+		t.Fatal("expected auth_url in response")
+	}
+	if stateToken == "" {
+		t.Fatal("expected state in response")
+	}
+	if len(stateToken) != 43 {
+		t.Errorf("expected state token length 43, got %d", len(stateToken))
+	}
+
+	// Verify auth_url contains required params
+	if !strings.Contains(authURL, "client_id=") {
+		t.Error("auth_url missing client_id parameter")
+	}
+	if !strings.Contains(authURL, "state=") {
+		t.Error("auth_url missing state parameter")
+	}
+	if !strings.Contains(authURL, "response_type=code") {
+		t.Error("auth_url missing response_type=code")
+	}
+}
+
+func TestHandleAuthorize_MissingAppKey(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_secret":   "secret",
+		"callback_url": "https://127.0.0.1/callback",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleAuthorize_MissingAppSecret(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "key",
+		"callback_url": "https://127.0.0.1/callback",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleAuthorize_DefaultBaseURL(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "key",
+		"app_secret":   "secret",
+		"callback_url": "https://127.0.0.1/callback",
+		// no base_url — should default
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	if !strings.Contains(resp["auth_url"], "api.schwabapi.com") {
+		t.Errorf("expected default base URL in auth_url, got: %s", resp["auth_url"])
+	}
+}
+
+func TestHandleAuthorize_WithInstanceID(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "key",
+		"app_secret":   "secret",
+		"callback_url": "https://127.0.0.1/callback",
+		"instance_id":  "schwab_live_MyAccount",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	// Verify the state stores the ExistingInstanceID
+	state := handler.oauthStore.GetState(resp["state"])
+	if state == nil {
+		t.Fatal("expected state to exist")
+	}
+	if state.ExistingInstanceID != "schwab_live_MyAccount" {
+		t.Errorf("expected ExistingInstanceID 'schwab_live_MyAccount', got %q", state.ExistingInstanceID)
+	}
+}
+
+func TestHandleAuthorize_AuthURLFormat(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postAuthorize(t, handler, map[string]string{
+		"app_key":      "key with spaces",
+		"app_secret":   "secret",
+		"callback_url": "https://127.0.0.1/callback?foo=bar",
+		"base_url":     "https://custom.schwab.com",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]string
+	json.Unmarshal(w.Body.Bytes(), &resp)
+
+	authURL := resp["auth_url"]
+
+	// Parse the URL and verify structure
+	parsed, err := url.Parse(authURL)
+	if err != nil {
+		t.Fatalf("auth_url is not a valid URL: %v", err)
+	}
+
+	if parsed.Host != "custom.schwab.com" {
+		t.Errorf("expected host 'custom.schwab.com', got %q", parsed.Host)
+	}
+	if parsed.Path != "/v1/oauth/authorize" {
+		t.Errorf("expected path '/v1/oauth/authorize', got %q", parsed.Path)
+	}
+
+	q := parsed.Query()
+	if q.Get("client_id") != "key with spaces" {
+		t.Errorf("expected client_id 'key with spaces', got %q", q.Get("client_id"))
+	}
+	if q.Get("redirect_uri") != "https://127.0.0.1/callback?foo=bar" {
+		t.Errorf("expected redirect_uri to be properly decoded, got %q", q.Get("redirect_uri"))
+	}
+	if q.Get("response_type") != "code" {
+		t.Errorf("expected response_type 'code', got %q", q.Get("response_type"))
+	}
+	if q.Get("state") == "" {
+		t.Error("expected state parameter to be present")
+	}
+}
+
+// =============================================================================
+// HandleCallback test helpers
+// =============================================================================
+
+// setupMockSchwabServer creates a single httptest server that handles both
+// the token exchange and account numbers endpoints.
+func setupMockSchwabServer(t *testing.T, tokenResp string, tokenStatus int, accountsResp string, accountsStatus int) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(tokenStatus)
+			fmt.Fprint(w, tokenResp)
+		case strings.HasSuffix(r.URL.Path, "/accounts/accountNumbers"):
+			w.WriteHeader(accountsStatus)
+			fmt.Fprint(w, accountsResp)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+}
+
+// createAuthorizedState creates a handler with a pending state whose BaseURL
+// points at the given mock server. Returns the handler and state token.
+func createAuthorizedState(t *testing.T, handler *SchwabOAuthHandler, baseURL string) string {
+	t.Helper()
+	token, err := handler.oauthStore.CreateState("test-key", "test-secret", "https://127.0.0.1/callback", baseURL)
+	if err != nil {
+		t.Fatalf("failed to create state: %v", err)
+	}
+	return token
+}
+
+// getCallback sends a GET to HandleCallback with the given query string.
+func getCallback(t *testing.T, handler *SchwabOAuthHandler, query string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/providers/schwab/oauth/callback?"+query, nil)
+	handler.HandleCallback(c)
+	return w
+}
+
+// =============================================================================
+// HandleCallback tests
+// =============================================================================
+
+func TestHandleCallback_Success_SingleAccount(t *testing.T) {
+	tokenResp := `{"access_token":"at-123","refresh_token":"rt-456","expires_in":1800,"token_type":"Bearer"}`
+	accountsResp := `[{"accountNumber":"123456789","hashValue":"HASH1"}]`
+	srv := setupMockSchwabServer(t, tokenResp, 200, accountsResp, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=auth-code-xyz&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "success" {
+		t.Errorf("expected status 'success', got %v", resp["status"])
+	}
+
+	// Verify state was updated
+	state := handler.oauthStore.GetState(stateToken)
+	if state == nil {
+		t.Fatal("expected state to still exist")
+	}
+	if state.Status != "completed" {
+		t.Errorf("expected status 'completed', got %q", state.Status)
+	}
+	if state.AccessToken != "at-123" {
+		t.Errorf("expected AccessToken 'at-123', got %q", state.AccessToken)
+	}
+	if state.RefreshToken != "rt-456" {
+		t.Errorf("expected RefreshToken 'rt-456', got %q", state.RefreshToken)
+	}
+	if len(state.Accounts) != 1 {
+		t.Fatalf("expected 1 account, got %d", len(state.Accounts))
+	}
+	if state.Accounts[0].HashValue != "HASH1" {
+		t.Errorf("expected hash 'HASH1', got %q", state.Accounts[0].HashValue)
+	}
+}
+
+func TestHandleCallback_Success_MultipleAccounts(t *testing.T) {
+	tokenResp := `{"access_token":"at","refresh_token":"rt","expires_in":1800}`
+	accountsResp := `[
+		{"accountNumber":"111111111","hashValue":"H1"},
+		{"accountNumber":"222222222","hashValue":"H2"},
+		{"accountNumber":"333333333","hashValue":"H3"}
+	]`
+	srv := setupMockSchwabServer(t, tokenResp, 200, accountsResp, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=code123&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "success" {
+		t.Errorf("expected status 'success', got %v", resp["status"])
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state == nil {
+		t.Fatal("expected state to exist")
+	}
+	if len(state.Accounts) != 3 {
+		t.Fatalf("expected 3 accounts, got %d", len(state.Accounts))
+	}
+	// Verify all hashes stored
+	hashes := map[string]bool{}
+	for _, a := range state.Accounts {
+		hashes[a.HashValue] = true
+	}
+	for _, h := range []string{"H1", "H2", "H3"} {
+		if !hashes[h] {
+			t.Errorf("expected hash %q in accounts", h)
+		}
+	}
+}
+
+func TestHandleCallback_UserCancelled(t *testing.T) {
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, "https://unused")
+
+	w := getCallback(t, handler, "error=access_denied&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "cancelled" {
+		t.Errorf("expected status 'cancelled', got %v", resp["status"])
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state == nil {
+		t.Fatal("expected state to exist")
+	}
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+	if !strings.Contains(state.Error, "cancelled by user") {
+		t.Errorf("expected 'cancelled by user' in error, got %q", state.Error)
+	}
+}
+
+func TestHandleCallback_InvalidState(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := getCallback(t, handler, "code=some-code&state=nonexistent-token-xyz")
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "error" {
+		t.Errorf("expected status 'error', got %v", resp["status"])
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Invalid or expired") {
+		t.Errorf("expected 'Invalid or expired' in error, got %q", errMsg)
+	}
+}
+
+func TestHandleCallback_DuplicateCallback(t *testing.T) {
+	tokenResp := `{"access_token":"at","refresh_token":"rt","expires_in":1800}`
+	accountsResp := `[{"accountNumber":"123456789","hashValue":"H1"}]`
+	srv := setupMockSchwabServer(t, tokenResp, 200, accountsResp, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	// First callback — should succeed
+	w1 := getCallback(t, handler, "code=code1&state="+url.QueryEscape(stateToken))
+	var resp1 map[string]interface{}
+	if err := json.Unmarshal(w1.Body.Bytes(), &resp1); err != nil {
+		t.Fatalf("failed to parse first callback JSON: %v", err)
+	}
+	if resp1["status"] != "success" {
+		t.Fatal("first callback should succeed")
+	}
+
+	// Second callback with same state — should be rejected
+	w2 := getCallback(t, handler, "code=code2&state="+url.QueryEscape(stateToken))
+	if w2.Code != http.StatusConflict {
+		t.Fatalf("expected 409, got %d", w2.Code)
+	}
+	var resp2 map[string]interface{}
+	if err := json.Unmarshal(w2.Body.Bytes(), &resp2); err != nil {
+		t.Fatalf("failed to parse second callback JSON: %v", err)
+	}
+	errMsg, _ := resp2["error"].(string)
+	if !strings.Contains(errMsg, "already been processed") {
+		t.Errorf("expected 'already been processed' in error, got %q", errMsg)
+	}
+}
+
+func TestHandleCallback_TokenExchangeFails(t *testing.T) {
+	srv := setupMockSchwabServer(t, `{"error":"invalid_client"}`, 401, `[]`, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=bad-code&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "error" {
+		t.Errorf("expected status 'error', got %v", resp["status"])
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Token exchange failed") {
+		t.Errorf("expected 'Token exchange failed' in error, got %q", errMsg)
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state == nil {
+		t.Fatal("expected state to exist")
+	}
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+}
+
+func TestHandleCallback_AccountFetchFails(t *testing.T) {
+	tokenResp := `{"access_token":"at","refresh_token":"rt","expires_in":1800}`
+	srv := setupMockSchwabServer(t, tokenResp, 200, `internal error`, 500)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=good-code&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	if resp["status"] != "error" {
+		t.Errorf("expected status 'error', got %v", resp["status"])
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Account fetch failed") {
+		t.Errorf("expected 'Account fetch failed' in error, got %q", errMsg)
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+}
+
+func TestHandleCallback_NoAccounts(t *testing.T) {
+	tokenResp := `{"access_token":"at","refresh_token":"rt","expires_in":1800}`
+	srv := setupMockSchwabServer(t, tokenResp, 200, `[]`, 200)
+	defer srv.Close()
+
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, srv.URL)
+
+	w := getCallback(t, handler, "code=code&state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "No accounts found") {
+		t.Errorf("expected 'No accounts found' in error, got %q", errMsg)
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+}
+
+func TestHandleCallback_MissingCode(t *testing.T) {
+	handler := newTestOAuthHandler()
+	stateToken := createAuthorizedState(t, handler, "https://unused")
+
+	// No code and no error param — just state
+	w := getCallback(t, handler, "state="+url.QueryEscape(stateToken))
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Missing authorization code") {
+		t.Errorf("expected 'Missing authorization code' in error, got %q", errMsg)
+	}
+
+	state := handler.oauthStore.GetState(stateToken)
+	if state.Status != "failed" {
+		t.Errorf("expected status 'failed', got %q", state.Status)
+	}
+}
+
+func TestHandleCallback_MissingState(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	// Code present but no state
+	w := getCallback(t, handler, "code=some-auth-code")
+
+	if w.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to parse JSON response: %v", err)
+	}
+	errMsg, _ := resp["error"].(string)
+	if !strings.Contains(errMsg, "Invalid or expired") {
+		t.Errorf("expected 'Invalid or expired' in error, got %q", errMsg)
+	}
+}
+
+// =============================================================================
+// HandleOAuthStatus / HandleSelectAccount test helpers
+// =============================================================================
+
+// mockDeps provides configurable OAuthHandlerDeps and records calls for assertions.
+type mockDeps struct {
+	addInstanceCalled      bool
+	addInstanceID          string
+	addInstanceCredentials map[string]interface{}
+	addInstanceResult      bool
+
+	updateCredFieldsCalled bool
+	updateCredFieldsID     string
+	updateCredFieldsData   map[string]interface{}
+	updateCredFieldsErr    error
+
+	generateInstIDResult string
+
+	reinitCalled    bool
+	reinitID        string
+	reinitErr       error
+	reinitCallCount int
+
+	getInstanceResult map[string]interface{}
+}
+
+func (m *mockDeps) toDeps() OAuthHandlerDeps {
+	return OAuthHandlerDeps{
+		AddInstance: func(id, pt, at, dn string, creds map[string]interface{}) bool {
+			m.addInstanceCalled = true
+			m.addInstanceID = id
+			m.addInstanceCredentials = creds
+			return m.addInstanceResult
+		},
+		UpdateCredFields: func(id string, updates map[string]interface{}) error {
+			m.updateCredFieldsCalled = true
+			m.updateCredFieldsID = id
+			m.updateCredFieldsData = updates
+			return m.updateCredFieldsErr
+		},
+		GenerateInstID: func(pt, at, dn string) string {
+			return m.generateInstIDResult
+		},
+		ReinitInstance: func(id string) error {
+			m.reinitCalled = true
+			m.reinitID = id
+			m.reinitCallCount++
+			return m.reinitErr
+		},
+		GetInstance: func(id string) map[string]interface{} {
+			return m.getInstanceResult
+		},
+	}
+}
+
+// setupCompletedState creates a handler and a state in "completed" status
+// with mock tokens and accounts. Returns the handler, state token, and mock deps.
+func setupCompletedState(t *testing.T, md *mockDeps) (*SchwabOAuthHandler, string) {
+	t.Helper()
+	handler := NewSchwabOAuthHandler(md.toDeps())
+	token, err := handler.oauthStore.CreateState("test-key", "test-secret", "https://127.0.0.1/callback", "https://api.schwabapi.com")
+	if err != nil {
+		t.Fatalf("failed to create state: %v", err)
+	}
+	handler.oauthStore.UpdateState(token, func(s *OAuthFlowState) {
+		s.Status = "completed"
+		s.AccessToken = "at-mock"
+		s.RefreshToken = "rt-mock"
+		s.TokenExpiry = time.Now().Add(30 * time.Minute)
+		s.Accounts = []SchwabAccountInfo{
+			{AccountNumber: "*****6789", HashValue: "HASH_A"},
+			{AccountNumber: "*****4321", HashValue: "HASH_B"},
+		}
+	})
+	return handler, token
+}
+
+// getStatus sends a GET request to HandleOAuthStatus with the given state param.
+func getStatus(t *testing.T, handler *SchwabOAuthHandler, stateToken string) *httptest.ResponseRecorder {
+	t.Helper()
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodGet, "/api/schwab/oauth/status/"+stateToken, nil)
+	c.Params = gin.Params{{Key: "state", Value: stateToken}}
+	handler.HandleOAuthStatus(c)
+	return w
+}
+
+// postSelectAccount sends a POST to HandleSelectAccount with the given body.
+func postSelectAccount(t *testing.T, handler *SchwabOAuthHandler, body interface{}) *httptest.ResponseRecorder {
+	t.Helper()
+	bodyBytes, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("failed to marshal body: %v", err)
+	}
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	c.Request = httptest.NewRequest(http.MethodPost, "/api/schwab/oauth/select-account", bytes.NewReader(bodyBytes))
+	c.Request.Header.Set("Content-Type", "application/json")
+	handler.HandleSelectAccount(c)
+	return w
+}
+
+// =============================================================================
+// HandleOAuthStatus tests
+// =============================================================================
+
+func TestHandleOAuthStatus_Pending(t *testing.T) {
+	handler := newTestOAuthHandler()
+	token, _ := handler.oauthStore.CreateState("k", "s", "https://cb", "https://api")
+
+	w := getStatus(t, handler, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "pending" {
+		t.Errorf("expected status 'pending', got %v", resp["status"])
+	}
+}
+
+func TestHandleOAuthStatus_Completed(t *testing.T) {
+	md := &mockDeps{addInstanceResult: true}
+	handler, token := setupCompletedState(t, md)
+
+	w := getStatus(t, handler, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "completed" {
+		t.Errorf("expected status 'completed', got %v", resp["status"])
+	}
+	accounts, ok := resp["accounts"].([]interface{})
+	if !ok {
+		t.Fatal("expected accounts array in response")
+	}
+	if len(accounts) != 2 {
+		t.Errorf("expected 2 accounts, got %d", len(accounts))
+	}
+}
+
+func TestHandleOAuthStatus_Failed(t *testing.T) {
+	handler := newTestOAuthHandler()
+	token, _ := handler.oauthStore.CreateState("k", "s", "https://cb", "https://api")
+	handler.oauthStore.UpdateState(token, func(s *OAuthFlowState) {
+		s.Status = "failed"
+		s.Error = "something went wrong"
+	})
+
+	w := getStatus(t, handler, token)
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", w.Code)
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["status"] != "failed" {
+		t.Errorf("expected status 'failed', got %v", resp["status"])
+	}
+	if resp["error"] != "something went wrong" {
+		t.Errorf("expected error 'something went wrong', got %v", resp["error"])
+	}
+}
+
+func TestHandleOAuthStatus_NotFound(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := getStatus(t, handler, "nonexistent-token-abc")
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleOAuthStatus_Expired(t *testing.T) {
+	handler := newTestOAuthHandler()
+	token, _ := handler.oauthStore.CreateState("k", "s", "https://cb", "https://api")
+
+	// Backdate
+	state := handler.oauthStore.GetState(token)
+	state.mu.Lock()
+	state.CreatedAt = time.Now().Add(-15 * time.Minute)
+	state.mu.Unlock()
+
+	w := getStatus(t, handler, token)
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404 for expired state, got %d", w.Code)
+	}
+}
+
+// =============================================================================
+// HandleSelectAccount tests
+// =============================================================================
+
+func TestHandleSelectAccount_NewProvider(t *testing.T) {
+	md := &mockDeps{
+		addInstanceResult:    true,
+		generateInstIDResult: "schwab_live_MyBroker",
+	}
+	handler, token := setupCompletedState(t, md)
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":         token,
+		"account_hash":  "HASH_A",
+		"provider_name": "MyBroker",
+		"account_type":  "live",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["success"] != true {
+		t.Errorf("expected success=true, got %v", resp["success"])
+	}
+	if resp["instance_id"] != "schwab_live_MyBroker" {
+		t.Errorf("expected instance_id 'schwab_live_MyBroker', got %v", resp["instance_id"])
+	}
+
+	// Verify deps called
+	if !md.addInstanceCalled {
+		t.Error("expected AddInstance to be called")
+	}
+	if md.addInstanceID != "schwab_live_MyBroker" {
+		t.Errorf("expected AddInstance ID 'schwab_live_MyBroker', got %q", md.addInstanceID)
+	}
+	// Verify credentials include refresh_token and account_hash
+	if md.addInstanceCredentials["refresh_token"] != "rt-mock" {
+		t.Errorf("expected refresh_token 'rt-mock', got %v", md.addInstanceCredentials["refresh_token"])
+	}
+	if md.addInstanceCredentials["account_hash"] != "HASH_A" {
+		t.Errorf("expected account_hash 'HASH_A', got %v", md.addInstanceCredentials["account_hash"])
+	}
+}
+
+func TestHandleSelectAccount_ReAuth(t *testing.T) {
+	md := &mockDeps{
+		getInstanceResult: map[string]interface{}{"provider_type": "schwab"},
+	}
+	handler, token := setupCompletedState(t, md)
+
+	// Set existing instance ID on state
+	handler.oauthStore.UpdateState(token, func(s *OAuthFlowState) {
+		s.ExistingInstanceID = "schwab_live_Existing"
+	})
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        token,
+		"account_hash": "HASH_B",
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var resp map[string]interface{}
+	json.Unmarshal(w.Body.Bytes(), &resp)
+	if resp["success"] != true {
+		t.Errorf("expected success=true")
+	}
+	if resp["instance_id"] != "schwab_live_Existing" {
+		t.Errorf("expected instance_id 'schwab_live_Existing', got %v", resp["instance_id"])
+	}
+	if !strings.Contains(resp["message"].(string), "re-authenticated") {
+		t.Errorf("expected 're-authenticated' in message, got %v", resp["message"])
+	}
+
+	// Verify deps called
+	if !md.updateCredFieldsCalled {
+		t.Error("expected UpdateCredFields to be called")
+	}
+	if md.updateCredFieldsID != "schwab_live_Existing" {
+		t.Errorf("expected UpdateCredFields ID 'schwab_live_Existing', got %q", md.updateCredFieldsID)
+	}
+	if md.updateCredFieldsData["refresh_token"] != "rt-mock" {
+		t.Errorf("expected refresh_token in updates")
+	}
+	if md.updateCredFieldsData["account_hash"] != "HASH_B" {
+		t.Errorf("expected account_hash 'HASH_B' in updates")
+	}
+	if !md.reinitCalled {
+		t.Error("expected ReinitInstance to be called")
+	}
+}
+
+func TestHandleSelectAccount_InvalidState(t *testing.T) {
+	handler := newTestOAuthHandler()
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        "nonexistent-token",
+		"account_hash": "HASH",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+}
+
+func TestHandleSelectAccount_WrongStatus(t *testing.T) {
+	handler := newTestOAuthHandler()
+	token, _ := handler.oauthStore.CreateState("k", "s", "https://cb", "https://api")
+	// State is "pending" — not "completed"
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        token,
+		"account_hash": "HASH",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "not ready") {
+		t.Errorf("expected 'not ready' in error, got: %s", w.Body.String())
+	}
+}
+
+func TestHandleSelectAccount_InvalidAccountHash(t *testing.T) {
+	md := &mockDeps{addInstanceResult: true}
+	handler, token := setupCompletedState(t, md)
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":         token,
+		"account_hash":  "HASH_NONEXISTENT",
+		"provider_name": "Test",
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "Invalid account selection") {
+		t.Errorf("expected 'Invalid account selection', got: %s", w.Body.String())
+	}
+}
+
+func TestHandleSelectAccount_MissingProviderName(t *testing.T) {
+	md := &mockDeps{addInstanceResult: true}
+	handler, token := setupCompletedState(t, md)
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        token,
+		"account_hash": "HASH_A",
+		// no provider_name
+	})
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected 400, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "provider_name is required") {
+		t.Errorf("expected 'provider_name is required', got: %s", w.Body.String())
+	}
+}
+
+func TestHandleSelectAccount_DefaultAccountType(t *testing.T) {
+	md := &mockDeps{
+		addInstanceResult:    true,
+		generateInstIDResult: "schwab_live_Test",
+	}
+	handler, token := setupCompletedState(t, md)
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":         token,
+		"account_hash":  "HASH_A",
+		"provider_name": "Test",
+		// no account_type — should default to "live"
+	})
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify AddInstance was called (meaning "live" was used as default since no error)
+	if !md.addInstanceCalled {
+		t.Error("expected AddInstance to be called")
+	}
+}
+
+func TestHandleSelectAccount_StateDeletedAfterSuccess(t *testing.T) {
+	md := &mockDeps{
+		addInstanceResult:    true,
+		generateInstIDResult: "schwab_live_Test",
+	}
+	handler, token := setupCompletedState(t, md)
+
+	postSelectAccount(t, handler, map[string]string{
+		"state":         token,
+		"account_hash":  "HASH_A",
+		"provider_name": "Test",
+	})
+
+	// Verify state was deleted
+	if handler.oauthStore.GetState(token) != nil {
+		t.Error("expected state to be deleted after successful finalization")
+	}
+}
+
+func TestHandleSelectAccount_ReAuthInstanceNotFound(t *testing.T) {
+	md := &mockDeps{
+		getInstanceResult: nil, // Instance not found
+	}
+	handler, token := setupCompletedState(t, md)
+
+	handler.oauthStore.UpdateState(token, func(s *OAuthFlowState) {
+		s.ExistingInstanceID = "schwab_live_Gone"
+	})
+
+	w := postSelectAccount(t, handler, map[string]string{
+		"state":        token,
+		"account_hash": "HASH_A",
+	})
+
+	if w.Code != http.StatusNotFound {
+		t.Errorf("expected 404, got %d: %s", w.Code, w.Body.String())
+	}
+	if !strings.Contains(w.Body.String(), "not found") {
+		t.Errorf("expected 'not found' in error, got: %s", w.Body.String())
+	}
+}

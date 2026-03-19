@@ -14,6 +14,7 @@ import (
 // Exact conversion of Python ProviderCredentialStore class.
 type CredentialStore struct {
 	credentialsFile string
+	customPath      bool // when true, credentialsFile is an absolute path (skip PathManager)
 	data            map[string]map[string]interface{}
 }
 
@@ -27,30 +28,42 @@ func NewCredentialStore() *CredentialStore {
 	return cs
 }
 
+// NewCredentialStoreWithFile creates a credential store that reads/writes
+// to the given absolute file path instead of using GlobalPathManager.
+// Intended for testing.
+func NewCredentialStoreWithFile(absPath string) *CredentialStore {
+	cs := &CredentialStore{
+		credentialsFile: absPath,
+		customPath:      true,
+	}
+	cs.data = cs.loadCredentials()
+	return cs
+}
+
 // loadCredentials loads credentials from JSON file.
 // Exact conversion of Python _load_credentials method.
 func (cs *CredentialStore) loadCredentials() map[string]map[string]interface{} {
 	credentialsPath := cs.getCredentialsPath()
-	
+
 	if _, err := os.Stat(credentialsPath); os.IsNotExist(err) {
 		slog.Info(fmt.Sprintf("📝 Creating new credentials file: %s", credentialsPath))
 		return make(map[string]map[string]interface{})
 	}
-	
+
 	file, err := os.Open(credentialsPath)
 	if err != nil {
 		slog.Error(fmt.Sprintf("❌ Error opening %s: %v", credentialsPath, err))
 		return make(map[string]map[string]interface{})
 	}
 	defer file.Close()
-	
+
 	var data map[string]map[string]interface{}
 	decoder := json.NewDecoder(file)
 	if err := decoder.Decode(&data); err != nil {
 		slog.Error(fmt.Sprintf("❌ Error loading %s: %v", credentialsPath, err))
 		return make(map[string]map[string]interface{})
 	}
-	
+
 	slog.Debug(fmt.Sprintf("Loaded provider credentials from %s", credentialsPath))
 	return data
 }
@@ -59,34 +72,38 @@ func (cs *CredentialStore) loadCredentials() map[string]map[string]interface{} {
 // Exact conversion of Python _save_credentials method.
 func (cs *CredentialStore) saveCredentials() error {
 	credentialsPath := cs.getCredentialsPath()
-	
+
 	// Ensure directory exists
 	dir := filepath.Dir(credentialsPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory %s: %w", dir, err)
 	}
-	
+
 	file, err := os.Create(credentialsPath)
 	if err != nil {
 		slog.Error(fmt.Sprintf("❌ Error creating %s: %v", credentialsPath, err))
 		return err
 	}
 	defer file.Close()
-	
+
 	encoder := json.NewEncoder(file)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(cs.data); err != nil {
 		slog.Error(fmt.Sprintf("❌ Error saving %s: %v", credentialsPath, err))
 		return err
 	}
-	
+
 	slog.Info(fmt.Sprintf("💾 Saved provider credentials to %s", credentialsPath))
 	return nil
 }
 
 // getCredentialsPath gets the full path to the credentials file.
-// Uses PathManager to match Python path_manager logic exactly
+// Uses PathManager to match Python path_manager logic exactly,
+// unless customPath is set (used in tests).
 func (cs *CredentialStore) getCredentialsPath() string {
+	if cs.customPath {
+		return cs.credentialsFile
+	}
 	return utils.GlobalPathManager.GetConfigFilePath(cs.credentialsFile)
 }
 
@@ -143,12 +160,12 @@ func (cs *CredentialStore) AddInstance(instanceID, providerType, accountType, di
 		"created_at":    time.Now().Unix(),
 		"updated_at":    time.Now().Unix(),
 	}
-	
+
 	if err := cs.saveCredentials(); err != nil {
 		slog.Error(fmt.Sprintf("❌ Error adding provider instance %s: %v", instanceID, err))
 		return false
 	}
-	
+
 	slog.Info(fmt.Sprintf("➕ Added provider instance: %s", instanceID))
 	return true
 }
@@ -160,19 +177,52 @@ func (cs *CredentialStore) UpdateInstance(instanceID string, updates map[string]
 		slog.Warn(fmt.Sprintf("⚠️ Provider instance not found: %s", instanceID))
 		return false
 	}
-	
+
 	updates["updated_at"] = time.Now().Unix()
 	for k, v := range updates {
 		cs.data[instanceID][k] = v
 	}
-	
+
 	if err := cs.saveCredentials(); err != nil {
 		slog.Error(fmt.Sprintf("❌ Error updating provider instance %s: %v", instanceID, err))
 		return false
 	}
-	
+
 	slog.Info(fmt.Sprintf("✏️ Updated provider instance: %s", instanceID))
 	return true
+}
+
+// UpdateCredentialFields updates specific fields within an instance's credentials sub-map.
+// Performs a shallow merge — only the specified fields are updated, others are preserved.
+//
+// Example: UpdateCredentialFields("schwab_live_1", map[string]interface{}{"refresh_token": "new_token"})
+// This updates only refresh_token within the credentials map, leaving app_key, app_secret, etc. untouched.
+func (cs *CredentialStore) UpdateCredentialFields(instanceID string, fieldUpdates map[string]interface{}) error {
+	instanceData, exists := cs.data[instanceID]
+	if !exists {
+		return fmt.Errorf("provider instance not found: %s", instanceID)
+	}
+
+	// Extract existing credentials sub-map or create one
+	creds, _ := instanceData["credentials"].(map[string]interface{})
+	if creds == nil {
+		creds = make(map[string]interface{})
+	}
+
+	// Merge each field update into the credentials sub-map
+	for k, v := range fieldUpdates {
+		creds[k] = v
+	}
+
+	instanceData["credentials"] = creds
+	instanceData["updated_at"] = time.Now().Unix()
+
+	if err := cs.saveCredentials(); err != nil {
+		return fmt.Errorf("failed to persist credential update for %s: %w", instanceID, err)
+	}
+
+	slog.Info(fmt.Sprintf("🔑 Updated credential fields for instance: %s", instanceID))
+	return nil
 }
 
 // DeleteInstance deletes a provider instance.
@@ -180,16 +230,16 @@ func (cs *CredentialStore) UpdateInstance(instanceID string, updates map[string]
 func (cs *CredentialStore) DeleteInstance(instanceID string) bool {
 	if _, exists := cs.data[instanceID]; exists {
 		delete(cs.data, instanceID)
-		
+
 		if err := cs.saveCredentials(); err != nil {
 			slog.Error(fmt.Sprintf("❌ Error deleting provider instance %s: %v", instanceID, err))
 			return false
 		}
-		
+
 		slog.Info(fmt.Sprintf("🗑️ Deleted provider instance: %s", instanceID))
 		return true
 	}
-	
+
 	slog.Warn(fmt.Sprintf("⚠️ Provider instance not found for deletion: %s", instanceID))
 	return false
 }
@@ -200,19 +250,19 @@ func (cs *CredentialStore) ToggleInstance(instanceID string) *bool {
 	if instanceData, exists := cs.data[instanceID]; exists {
 		currentActive, _ := instanceData["active"].(bool)
 		newActive := !currentActive
-		
+
 		instanceData["active"] = newActive
 		instanceData["updated_at"] = time.Now().Unix()
-		
+
 		if err := cs.saveCredentials(); err != nil {
 			slog.Error(fmt.Sprintf("❌ Error toggling provider instance %s: %v", instanceID, err))
 			return nil
 		}
-		
+
 		slog.Info(fmt.Sprintf("🔄 Toggled provider instance %s: %t → %t", instanceID, currentActive, newActive))
 		return &newActive
 	}
-	
+
 	slog.Warn(fmt.Sprintf("⚠️ Provider instance not found: %s", instanceID))
 	return nil
 }
@@ -246,11 +296,11 @@ func (cs *CredentialStore) GenerateInstanceID(providerType, accountType, display
 	if baseName == "" {
 		baseName = fmt.Sprintf("%s_%s", providerType, accountType)
 	}
-	
+
 	// Clean up the base name
 	baseName = cleanString(baseName)
 	baseID := fmt.Sprintf("%s_%s_%s", providerType, accountType, baseName)
-	
+
 	// Ensure uniqueness
 	counter := 1
 	instanceID := baseID
@@ -258,7 +308,7 @@ func (cs *CredentialStore) GenerateInstanceID(providerType, accountType, display
 		instanceID = fmt.Sprintf("%s_%d", baseID, counter)
 		counter++
 	}
-	
+
 	return instanceID
 }
 

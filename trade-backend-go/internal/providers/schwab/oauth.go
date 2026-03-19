@@ -1,0 +1,691 @@
+package schwab
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+// =============================================================================
+// OAuth Flow State
+// =============================================================================
+
+// OAuthFlowState holds all state for one OAuth authorization flow.
+// Sensitive fields are excluded from JSON serialization.
+type OAuthFlowState struct {
+	// Configuration (set at creation)
+	AppKey      string `json:"-"`
+	AppSecret   string `json:"-"`
+	CallbackURL string `json:"-"`
+	BaseURL     string `json:"-"`
+
+	// Flow metadata
+	CreatedAt time.Time `json:"created_at"`
+	Status    string    `json:"status"` // pending → exchanging → completed → finalized | failed
+
+	// Tokens (set after callback)
+	RefreshToken string    `json:"-"`
+	AccessToken  string    `json:"-"`
+	TokenExpiry  time.Time `json:"-"`
+
+	// Accounts (set after account fetch)
+	Accounts []SchwabAccountInfo `json:"accounts,omitempty"`
+
+	// Error (set on failure)
+	Error string `json:"error,omitempty"`
+
+	// Re-auth context
+	ExistingInstanceID string `json:"-"`
+
+	// Protects state transitions
+	mu sync.Mutex `json:"-"` //nolint:structcheck
+}
+
+// SchwabAccountInfo represents one Schwab brokerage account returned during OAuth.
+type SchwabAccountInfo struct {
+	AccountNumber string `json:"account_number"`
+	HashValue     string `json:"hash_value"`
+}
+
+// =============================================================================
+// OAuth State Store
+// =============================================================================
+
+const (
+	oauthStateTTL      = 10 * time.Minute
+	oauthCleanupPeriod = 60 * time.Second
+)
+
+// SchwabOAuthStore is a thread-safe in-memory store for OAuth flow states.
+// Uses sync.Map for lock-free concurrent reads.
+type SchwabOAuthStore struct {
+	states sync.Map // map[string]*OAuthFlowState
+}
+
+// NewSchwabOAuthStore creates a new OAuth state store.
+func NewSchwabOAuthStore() *SchwabOAuthStore {
+	return &SchwabOAuthStore{}
+}
+
+// CreateState generates a cryptographically random state token and stores
+// a new pending OAuth flow state. Returns the token or an error.
+func (s *SchwabOAuthStore) CreateState(appKey, appSecret, callbackURL, baseURL string) (string, error) {
+	token, err := generateStateToken()
+	if err != nil {
+		return "", fmt.Errorf("failed to generate state token: %w", err)
+	}
+
+	state := &OAuthFlowState{
+		AppKey:      appKey,
+		AppSecret:   appSecret,
+		CallbackURL: callbackURL,
+		BaseURL:     baseURL,
+		CreatedAt:   time.Now(),
+		Status:      "pending",
+	}
+
+	s.states.Store(token, state)
+	return token, nil
+}
+
+// GetState returns the OAuth flow state for the given token, or nil if
+// the token is not found or the state has expired (>10 minutes old).
+func (s *SchwabOAuthStore) GetState(stateToken string) *OAuthFlowState {
+	val, ok := s.states.Load(stateToken)
+	if !ok {
+		return nil
+	}
+
+	state := val.(*OAuthFlowState)
+
+	// Check expiry
+	if time.Since(state.CreatedAt) > oauthStateTTL {
+		s.states.Delete(stateToken)
+		return nil
+	}
+
+	return state
+}
+
+// UpdateState applies the given function to the state identified by stateToken.
+// The state's mutex is held during the call to updateFn.
+// Returns false if the state is not found or has expired.
+func (s *SchwabOAuthStore) UpdateState(stateToken string, updateFn func(*OAuthFlowState)) bool {
+	state := s.GetState(stateToken)
+	if state == nil {
+		return false
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+
+	updateFn(state)
+	return true
+}
+
+// DeleteState removes the state entry for the given token.
+func (s *SchwabOAuthStore) DeleteState(stateToken string) {
+	s.states.Delete(stateToken)
+}
+
+// StartCleanup launches a background goroutine that removes expired state
+// entries every 60 seconds. The goroutine exits when ctx is cancelled.
+func (s *SchwabOAuthStore) StartCleanup(ctx context.Context) {
+	go func() {
+		ticker := time.NewTicker(oauthCleanupPeriod)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.removeExpired()
+			}
+		}
+	}()
+}
+
+// removeExpired deletes all state entries older than oauthStateTTL.
+func (s *SchwabOAuthStore) removeExpired() {
+	now := time.Now()
+	removed := 0
+
+	s.states.Range(func(key, value interface{}) bool {
+		state := value.(*OAuthFlowState)
+		if now.Sub(state.CreatedAt) > oauthStateTTL {
+			s.states.Delete(key)
+			removed++
+		}
+		return true
+	})
+
+	if removed > 0 {
+		slog.Debug("cleaned up expired OAuth states", "removed", removed)
+	}
+}
+
+// =============================================================================
+// Token Generation
+// =============================================================================
+
+// generateStateToken generates a 32-byte cryptographically random token
+// encoded as base64url (no padding). The result is 43 characters long.
+func generateStateToken() (string, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// =============================================================================
+// Token Exchange
+// =============================================================================
+
+// tokenExchangeResult holds the parsed result of an authorization code exchange.
+type tokenExchangeResult struct {
+	AccessToken  string
+	RefreshToken string
+	ExpiresIn    int
+}
+
+// exchangeCodeForTokens exchanges an OAuth authorization code for access and
+// refresh tokens using Schwab's token endpoint.
+func exchangeCodeForTokens(baseURL, appKey, appSecret, callbackURL, code string) (*tokenExchangeResult, error) {
+	tokenURL := baseURL + "/v1/oauth/token"
+
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("redirect_uri", callbackURL)
+
+	req, err := http.NewRequest(http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create token request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth(appKey, appSecret)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("token exchange request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read token response: %w", err)
+	}
+
+	if resp.StatusCode == http.StatusBadRequest {
+		return nil, fmt.Errorf("invalid authorization code or redirect URI (400): %s", truncateBody(body, 200))
+	}
+	if resp.StatusCode == http.StatusUnauthorized {
+		return nil, fmt.Errorf("invalid client credentials (401): %s", truncateBody(body, 200))
+	}
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("token exchange failed with status %d: %s", resp.StatusCode, truncateBody(body, 200))
+	}
+
+	var tokenResp schwabTokenResponse
+	if err := json.Unmarshal(body, &tokenResp); err != nil {
+		return nil, fmt.Errorf("failed to parse token response: %w", err)
+	}
+
+	if tokenResp.AccessToken == "" {
+		return nil, fmt.Errorf("token response missing access_token")
+	}
+
+	return &tokenExchangeResult{
+		AccessToken:  tokenResp.AccessToken,
+		RefreshToken: tokenResp.RefreshToken,
+		ExpiresIn:    tokenResp.ExpiresIn,
+	}, nil
+}
+
+// =============================================================================
+// Account Number Fetch
+// =============================================================================
+
+// schwabAccountNumberEntry matches the JSON structure returned by the
+// Schwab /accounts/accountNumbers endpoint.
+type schwabAccountNumberEntry struct {
+	AccountNumber string `json:"accountNumber"`
+	HashValue     string `json:"hashValue"`
+}
+
+// fetchAccountNumbers retrieves the list of brokerage accounts associated with
+// the given access token. Account numbers are masked for display safety.
+func fetchAccountNumbers(baseURL, accessToken string) ([]SchwabAccountInfo, error) {
+	accountsURL := baseURL + "/trader/v1/accounts/accountNumbers"
+
+	req, err := http.NewRequest(http.MethodGet, accountsURL, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create accounts request: %w", err)
+	}
+
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("accounts request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read accounts response: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("accounts request failed with status %d: %s", resp.StatusCode, truncateBody(body, 200))
+	}
+
+	var entries []schwabAccountNumberEntry
+	if err := json.Unmarshal(body, &entries); err != nil {
+		return nil, fmt.Errorf("failed to parse accounts response: %w", err)
+	}
+
+	if len(entries) == 0 {
+		return []SchwabAccountInfo{}, nil
+	}
+
+	accounts := make([]SchwabAccountInfo, len(entries))
+	for i, entry := range entries {
+		accounts[i] = SchwabAccountInfo{
+			AccountNumber: maskAccountNumber(entry.AccountNumber),
+			HashValue:     entry.HashValue,
+		}
+	}
+
+	return accounts, nil
+}
+
+// =============================================================================
+// Helpers
+// =============================================================================
+
+// maskAccountNumber returns a masked version of an account number,
+// showing only the last 4 digits (e.g., "*****6789").
+func maskAccountNumber(number string) string {
+	if number == "" {
+		return ""
+	}
+	if len(number) <= 4 {
+		return number
+	}
+	masked := strings.Repeat("*", len(number)-4) + number[len(number)-4:]
+	return masked
+}
+
+// =============================================================================
+// OAuth Handler
+// =============================================================================
+
+// OAuthHandlerDeps holds closure functions that let the handler interact with
+// the providers package (CredentialStore, ProviderManager) without creating
+// a circular import.
+type OAuthHandlerDeps struct {
+	AddInstance      func(instanceID, providerType, accountType, displayName string, credentials map[string]interface{}) bool
+	UpdateCredFields func(instanceID string, updates map[string]interface{}) error
+	GenerateInstID   func(providerType, accountType, displayName string) string
+	ReinitInstance   func(instanceID string) error
+	GetInstance      func(instanceID string) map[string]interface{}
+}
+
+// SchwabOAuthHandler manages the full OAuth authorization flow via HTTP endpoints.
+type SchwabOAuthHandler struct {
+	oauthStore *SchwabOAuthStore
+	deps       OAuthHandlerDeps
+}
+
+// NewSchwabOAuthHandler creates a new handler with its own internal OAuthStore.
+// Call StartCleanup(ctx) separately to launch the TTL cleanup goroutine.
+func NewSchwabOAuthHandler(deps OAuthHandlerDeps) *SchwabOAuthHandler {
+	return &SchwabOAuthHandler{
+		oauthStore: NewSchwabOAuthStore(),
+		deps:       deps,
+	}
+}
+
+// StartCleanup launches the background goroutine that removes expired OAuth states.
+func (h *SchwabOAuthHandler) StartCleanup(ctx context.Context) {
+	h.oauthStore.StartCleanup(ctx)
+}
+
+// authorizeRequest is the expected JSON body for HandleAuthorize.
+type authorizeRequest struct {
+	AppKey      string `json:"app_key" binding:"required"`
+	AppSecret   string `json:"app_secret" binding:"required"`
+	CallbackURL string `json:"callback_url" binding:"required"`
+	BaseURL     string `json:"base_url"`
+	InstanceID  string `json:"instance_id"`
+}
+
+// HandleAuthorize initiates a Schwab OAuth flow. It creates a state token,
+// builds the Schwab authorization URL, and returns it to the caller.
+//
+// POST /api/schwab/oauth/authorize
+//
+//	Request:  { "app_key": "...", "app_secret": "...", "callback_url": "...", "base_url": "...", "instance_id": "..." }
+//	Response: { "auth_url": "...", "state": "..." }
+func (h *SchwabOAuthHandler) HandleAuthorize(c *gin.Context) {
+	var req authorizeRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	// Validate callback_url starts with https://
+	if !strings.HasPrefix(req.CallbackURL, "https://") {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "callback_url must start with https://"})
+		return
+	}
+
+	// Default base_url
+	if req.BaseURL == "" {
+		req.BaseURL = "https://api.schwabapi.com"
+	}
+
+	// Create state
+	stateToken, err := h.oauthStore.CreateState(req.AppKey, req.AppSecret, req.CallbackURL, req.BaseURL)
+	if err != nil {
+		slog.Error("failed to create OAuth state", "error", err)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create authorization state"})
+		return
+	}
+
+	// If re-auth, store the existing instance ID
+	if req.InstanceID != "" {
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.ExistingInstanceID = req.InstanceID
+		})
+	}
+
+	// Build Schwab authorization URL
+	authURL := fmt.Sprintf("%s/v1/oauth/authorize?client_id=%s&redirect_uri=%s&response_type=code&state=%s",
+		req.BaseURL,
+		url.QueryEscape(req.AppKey),
+		url.QueryEscape(req.CallbackURL),
+		url.QueryEscape(stateToken),
+	)
+
+	c.JSON(http.StatusOK, gin.H{
+		"auth_url": authURL,
+		"state":    stateToken,
+	})
+}
+
+// HandleCallback receives the OAuth authorization code relayed by the frontend
+// callback page. It exchanges the code for tokens, fetches account numbers,
+// and updates the flow state. The frontend polls HandleOAuthStatus to detect
+// completion.
+//
+// GET /api/providers/schwab/oauth/callback?code=...&state=...  (or ?error=...&state=...)
+// Response: { "status": "success" } or { "status": "error", "error": "..." }
+func (h *SchwabOAuthHandler) HandleCallback(c *gin.Context) {
+	code := c.Query("code")
+	stateToken := c.Query("state")
+	errorParam := c.Query("error")
+
+	// --- User cancelled in Schwab UI ---
+	if errorParam != "" {
+		if stateToken != "" {
+			h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+				s.Status = "failed"
+				s.Error = "Authorization cancelled by user"
+			})
+		}
+		c.JSON(http.StatusOK, gin.H{"status": "cancelled", "message": "Authorization cancelled by user"})
+		return
+	}
+
+	// --- Validate state token ---
+	if stateToken == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "Invalid or expired authorization request"})
+		return
+	}
+
+	state := h.oauthStore.GetState(stateToken)
+	if state == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "Invalid or expired authorization request"})
+		return
+	}
+
+	// --- Atomically transition to "exchanging" to prevent duplicate processing ---
+	alreadyProcessed := false
+	h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+		if s.Status != "pending" {
+			alreadyProcessed = true
+			return
+		}
+		s.Status = "exchanging"
+	})
+	if alreadyProcessed {
+		c.JSON(http.StatusConflict, gin.H{"status": "error", "error": "This authorization has already been processed"})
+		return
+	}
+
+	// --- Validate authorization code ---
+	if code == "" {
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.Status = "failed"
+			s.Error = "Missing authorization code"
+		})
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "Missing authorization code"})
+		return
+	}
+
+	// Read immutable fields from state (set at creation, never changed)
+	baseURL := state.BaseURL
+	appKey := state.AppKey
+	appSecret := state.AppSecret
+	callbackURL := state.CallbackURL
+
+	// --- Exchange code for tokens ---
+	tokens, err := exchangeCodeForTokens(baseURL, appKey, appSecret, callbackURL, code)
+	if err != nil {
+		slog.Error("OAuth token exchange failed", "error", err)
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.Status = "failed"
+			s.Error = err.Error()
+		})
+		c.JSON(http.StatusBadGateway, gin.H{"status": "error", "error": "Token exchange failed: " + err.Error()})
+		return
+	}
+
+	// --- Fetch account numbers ---
+	accounts, err := fetchAccountNumbers(baseURL, tokens.AccessToken)
+	if err != nil {
+		slog.Error("OAuth account fetch failed", "error", err)
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.Status = "failed"
+			s.Error = err.Error()
+		})
+		c.JSON(http.StatusBadGateway, gin.H{"status": "error", "error": "Account fetch failed: " + err.Error()})
+		return
+	}
+
+	// --- Validate at least one account ---
+	if len(accounts) == 0 {
+		h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+			s.Status = "failed"
+			s.Error = "No accounts found"
+		})
+		c.JSON(http.StatusBadRequest, gin.H{"status": "error", "error": "No accounts found"})
+		return
+	}
+
+	// --- Success: update state with tokens and accounts ---
+	h.oauthStore.UpdateState(stateToken, func(s *OAuthFlowState) {
+		s.Status = "completed"
+		s.AccessToken = tokens.AccessToken
+		s.RefreshToken = tokens.RefreshToken
+		s.TokenExpiry = time.Now().Add(time.Duration(tokens.ExpiresIn) * time.Second)
+		s.Accounts = accounts
+	})
+
+	c.JSON(http.StatusOK, gin.H{"status": "success"})
+}
+
+// HandleOAuthStatus returns the current status of an OAuth flow.
+// The frontend polls this after redirecting the user to Schwab.
+//
+// GET /api/schwab/oauth/status/:state
+func (h *SchwabOAuthHandler) HandleOAuthStatus(c *gin.Context) {
+	stateToken := c.Param("state")
+
+	state := h.oauthStore.GetState(stateToken)
+	if state == nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "OAuth flow not found or expired"})
+		return
+	}
+
+	resp := gin.H{"status": state.Status}
+
+	switch state.Status {
+	case "completed":
+		resp["accounts"] = state.Accounts
+	case "failed":
+		resp["error"] = state.Error
+	}
+
+	c.JSON(http.StatusOK, resp)
+}
+
+// selectAccountRequest is the expected JSON body for HandleSelectAccount.
+type selectAccountRequest struct {
+	State        string `json:"state" binding:"required"`
+	AccountHash  string `json:"account_hash" binding:"required"`
+	ProviderName string `json:"provider_name"`
+	AccountType  string `json:"account_type"`
+}
+
+// HandleSelectAccount finalizes the OAuth flow by creating or updating a
+// provider instance with the selected account.
+//
+// POST /api/schwab/oauth/select-account
+func (h *SchwabOAuthHandler) HandleSelectAccount(c *gin.Context) {
+	var req selectAccountRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request: " + err.Error()})
+		return
+	}
+
+	// --- Lookup and validate state ---
+	state := h.oauthStore.GetState(req.State)
+	if state == nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "OAuth flow not found or expired"})
+		return
+	}
+	if state.Status != "completed" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": fmt.Sprintf("OAuth flow not ready (status: %s)", state.Status)})
+		return
+	}
+
+	// --- Validate account hash is in the returned accounts ---
+	validHash := false
+	for _, acct := range state.Accounts {
+		if acct.HashValue == req.AccountHash {
+			validHash = true
+			break
+		}
+	}
+	if !validHash {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid account selection"})
+		return
+	}
+
+	// --- Build credentials map ---
+	credentials := map[string]interface{}{
+		"app_key":       state.AppKey,
+		"app_secret":    state.AppSecret,
+		"callback_url":  state.CallbackURL,
+		"base_url":      state.BaseURL,
+		"refresh_token": state.RefreshToken,
+		"account_hash":  req.AccountHash,
+	}
+
+	// --- Re-auth path ---
+	if state.ExistingInstanceID != "" {
+		existingID := state.ExistingInstanceID
+
+		// Verify instance exists
+		if inst := h.deps.GetInstance(existingID); inst == nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("Instance %s not found", existingID)})
+			return
+		}
+
+		// Update credential fields
+		if err := h.deps.UpdateCredFields(existingID, map[string]interface{}{
+			"refresh_token": state.RefreshToken,
+			"account_hash":  req.AccountHash,
+		}); err != nil {
+			slog.Error("failed to update credentials for re-auth", "instance_id", existingID, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to update credentials: " + err.Error()})
+			return
+		}
+
+		// Reinitialize provider
+		if err := h.deps.ReinitInstance(existingID); err != nil {
+			slog.Error("failed to reinitialize provider after re-auth", "instance_id", existingID, "error", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reinitialize provider: " + err.Error()})
+			return
+		}
+
+		h.oauthStore.DeleteState(req.State)
+
+		c.JSON(http.StatusOK, gin.H{
+			"success":     true,
+			"instance_id": existingID,
+			"message":     "Provider re-authenticated successfully",
+		})
+		return
+	}
+
+	// --- New provider path ---
+	if req.ProviderName == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "provider_name is required for new provider instances"})
+		return
+	}
+
+	accountType := req.AccountType
+	if accountType == "" {
+		accountType = "live"
+	}
+
+	instanceID := h.deps.GenerateInstID("schwab", accountType, req.ProviderName)
+
+	if ok := h.deps.AddInstance(instanceID, "schwab", accountType, req.ProviderName, credentials); !ok {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to create provider instance"})
+		return
+	}
+
+	if err := h.deps.ReinitInstance(instanceID); err != nil {
+		slog.Warn("provider created but reinitialization failed — will be available after restart",
+			"instance_id", instanceID, "error", err)
+	}
+
+	h.oauthStore.DeleteState(req.State)
+
+	c.JSON(http.StatusOK, gin.H{
+		"success":     true,
+		"instance_id": instanceID,
+		"message":     "Schwab provider created successfully",
+	})
+}
