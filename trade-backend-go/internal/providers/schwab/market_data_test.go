@@ -1172,7 +1172,7 @@ func TestGetHistoricalBars_Daily(t *testing.T) {
 
 	p := newTestProvider(srv.URL)
 
-	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "1D", nil, nil, 0)
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "D", nil, nil, 0)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1198,13 +1198,13 @@ func TestGetHistoricalBars_Daily(t *testing.T) {
 	if bar["volume"] != 10000000.0 {
 		t.Errorf("expected volume 10000000, got %v", bar["volume"])
 	}
-	// Verify timestamp is ISO 8601
-	ts, ok := bar["timestamp"].(string)
+	// Verify time is date-only format for daily bars
+	ts, ok := bar["time"].(string)
 	if !ok || ts == "" {
-		t.Error("expected timestamp string")
+		t.Error("expected time string")
 	}
-	if _, err := time.Parse(time.RFC3339, ts); err != nil {
-		t.Errorf("timestamp is not valid RFC3339: %s", ts)
+	if _, err := time.Parse("2006-01-02", ts); err != nil {
+		t.Errorf("time is not valid YYYY-MM-DD: %s", ts)
 	}
 }
 
@@ -1234,12 +1234,20 @@ func TestGetHistoricalBars_Minute(t *testing.T) {
 
 	p := newTestProvider(srv.URL)
 
-	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "5min", nil, nil, 0)
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "5m", nil, nil, 0)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
 	if len(bars) != 3 {
 		t.Fatalf("expected 3 bars, got %d", len(bars))
+	}
+	// Verify intraday bars use Eastern time format "YYYY-MM-DD HH:MM"
+	ts, ok := bars[0]["time"].(string)
+	if !ok || ts == "" {
+		t.Error("expected time string for intraday bar")
+	}
+	if _, err := time.Parse("2006-01-02 15:04", ts); err != nil {
+		t.Errorf("time is not valid YYYY-MM-DD HH:MM: %s", ts)
 	}
 }
 
@@ -1271,7 +1279,7 @@ func TestGetHistoricalBars_WithDateRange(t *testing.T) {
 
 	start := "2024-05-01"
 	end := "2024-05-15"
-	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "1D", &start, &end, 0)
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "D", &start, &end, 0)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1298,7 +1306,7 @@ func TestGetHistoricalBars_WithLimit(t *testing.T) {
 	p := newTestProvider(srv.URL)
 
 	// Request with limit=2 — should return last 2 of 3 candles
-	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "1D", nil, nil, 2)
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "D", nil, nil, 2)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1331,7 +1339,7 @@ func TestGetHistoricalBars_EmptyCandles(t *testing.T) {
 
 	p := newTestProvider(srv.URL)
 
-	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "1D", nil, nil, 0)
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "D", nil, nil, 0)
 	if err != nil {
 		t.Fatalf("expected no error, got: %v", err)
 	}
@@ -1382,16 +1390,31 @@ func TestMapTimeframe(t *testing.T) {
 		frequency     string
 		periodType    string
 	}{
+		// Frontend values (case-sensitive)
+		{"1m", "minute", "1", "day"},
+		{"5m", "minute", "5", "day"},
+		{"15m", "minute", "15", "day"},
+		{"30m", "minute", "30", "day"},
+		{"1h", "minute", "30", "day"},
+		{"4h", "minute", "30", "day"},
+		{"D", "daily", "1", "year"},
+		{"W", "weekly", "1", "year"},
+		{"M", "monthly", "1", "year"},
+		// Old/backwards-compatible values
 		{"1min", "minute", "1", "day"},
 		{"5min", "minute", "5", "day"},
 		{"15min", "minute", "15", "day"},
 		{"30min", "minute", "30", "day"},
 		{"1hour", "minute", "30", "day"},
 		{"1H", "minute", "30", "day"},
+		{"60min", "minute", "30", "day"},
+		{"1d", "daily", "1", "year"},
 		{"1D", "daily", "1", "year"},
 		{"daily", "daily", "1", "year"},
+		{"1w", "weekly", "1", "year"},
 		{"1W", "weekly", "1", "year"},
 		{"weekly", "weekly", "1", "year"},
+		{"monthly", "monthly", "1", "year"},
 		{"unknown", "daily", "1", "year"}, // default
 	}
 
@@ -1638,5 +1661,101 @@ func TestMapSchwabAssetType(t *testing.T) {
 				t.Errorf("mapSchwabAssetType(%q) = %q, want %q", tt.input, got, tt.expected)
 			}
 		})
+	}
+}
+
+// =============================================================================
+// isIntradayTimeframe tests
+// =============================================================================
+
+func TestIsIntradayTimeframe(t *testing.T) {
+	intradayValues := []string{"1m", "5m", "15m", "30m", "1h", "4h", "1min", "5min", "15min", "30min", "1hour", "60min"}
+	for _, tf := range intradayValues {
+		t.Run(tf+"_intraday", func(t *testing.T) {
+			if !isIntradayTimeframe(tf) {
+				t.Errorf("expected %q to be intraday", tf)
+			}
+		})
+	}
+
+	nonIntradayValues := []string{"D", "W", "M", "1d", "1w", "daily", "weekly", "monthly", "unknown"}
+	for _, tf := range nonIntradayValues {
+		t.Run(tf+"_not_intraday", func(t *testing.T) {
+			if isIntradayTimeframe(tf) {
+				t.Errorf("expected %q to NOT be intraday", tf)
+			}
+		})
+	}
+}
+
+// =============================================================================
+// Historical bars time format tests
+// =============================================================================
+
+func TestGetHistoricalBars_IntradayTimeFormat(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, "/v1/oauth/token"):
+			w.WriteHeader(http.StatusOK)
+			fmt.Fprint(w, validTokenBody)
+		case strings.HasSuffix(r.URL.Path, "/v1/pricehistory"):
+			w.WriteHeader(http.StatusOK)
+			// Use a known epoch: 1715788800000 = 2024-05-15T16:00:00Z = 2024-05-15 12:00 ET
+			fmt.Fprint(w, `{
+				"candles": [
+					{"open": 150.0, "high": 151.0, "low": 149.0, "close": 150.5, "volume": 1000, "datetime": 1715788800000}
+				],
+				"symbol": "AAPL",
+				"empty": false
+			}`)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer srv.Close()
+
+	p := newTestProvider(srv.URL)
+
+	// Test intraday timeframe — should produce "YYYY-MM-DD HH:MM" in Eastern
+	bars, err := p.GetHistoricalBars(context.Background(), "AAPL", "5m", nil, nil, 0)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(bars) != 1 {
+		t.Fatalf("expected 1 bar, got %d", len(bars))
+	}
+	ts, ok := bars[0]["time"].(string)
+	if !ok || ts == "" {
+		t.Fatal("expected time string for intraday bar")
+	}
+	// Verify the format is "YYYY-MM-DD HH:MM"
+	if _, err := time.Parse("2006-01-02 15:04", ts); err != nil {
+		t.Errorf("intraday time is not valid YYYY-MM-DD HH:MM: %s", ts)
+	}
+	// Verify it's in Eastern time (1715788800000 = 2024-05-15T16:00:00Z = 2024-05-15 12:00 ET)
+	eastern, _ := time.LoadLocation("America/New_York")
+	expected := time.UnixMilli(1715788800000).In(eastern).Format("2006-01-02 15:04")
+	if ts != expected {
+		t.Errorf("expected Eastern time %q, got %q", expected, ts)
+	}
+
+	// Test daily timeframe — should produce "YYYY-MM-DD"
+	bars, err = p.GetHistoricalBars(context.Background(), "AAPL", "D", nil, nil, 0)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
+	}
+	if len(bars) != 1 {
+		t.Fatalf("expected 1 bar, got %d", len(bars))
+	}
+	ts, ok = bars[0]["time"].(string)
+	if !ok || ts == "" {
+		t.Fatal("expected time string for daily bar")
+	}
+	if _, err := time.Parse("2006-01-02", ts); err != nil {
+		t.Errorf("daily time is not valid YYYY-MM-DD: %s", ts)
+	}
+	expectedDaily := time.UnixMilli(1715788800000).UTC().Format("2006-01-02")
+	if ts != expectedDaily {
+		t.Errorf("expected UTC date %q, got %q", expectedDaily, ts)
 	}
 }

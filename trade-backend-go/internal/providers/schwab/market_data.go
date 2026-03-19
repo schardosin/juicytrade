@@ -612,7 +612,29 @@ type schwabTimeframeParams struct {
 }
 
 // mapTimeframe maps a JuicyTrade timeframe string to Schwab API parameters.
+// Uses case-sensitive matching for frontend values first, then falls back to
+// lowercased matching for backwards-compatible old values.
 func mapTimeframe(timeframe string) schwabTimeframeParams {
+	// Case-sensitive matching for frontend values first
+	switch timeframe {
+	case "1m":
+		return schwabTimeframeParams{"day", "minute", "1"}
+	case "5m":
+		return schwabTimeframeParams{"day", "minute", "5"}
+	case "15m":
+		return schwabTimeframeParams{"day", "minute", "15"}
+	case "30m":
+		return schwabTimeframeParams{"day", "minute", "30"}
+	case "1h", "4h":
+		return schwabTimeframeParams{"day", "minute", "30"}
+	case "D":
+		return schwabTimeframeParams{"year", "daily", "1"}
+	case "W":
+		return schwabTimeframeParams{"year", "weekly", "1"}
+	case "M":
+		return schwabTimeframeParams{"year", "monthly", "1"}
+	}
+	// Backwards-compatible case-insensitive matching for old values
 	switch strings.ToLower(timeframe) {
 	case "1min":
 		return schwabTimeframeParams{"day", "minute", "1"}
@@ -629,10 +651,26 @@ func mapTimeframe(timeframe string) schwabTimeframeParams {
 		return schwabTimeframeParams{"year", "daily", "1"}
 	case "1w", "weekly":
 		return schwabTimeframeParams{"year", "weekly", "1"}
+	case "monthly":
+		return schwabTimeframeParams{"year", "monthly", "1"}
 	default:
 		// Default to daily
 		return schwabTimeframeParams{"year", "daily", "1"}
 	}
+}
+
+// isIntradayTimeframe returns true if the timeframe represents an intraday interval
+// (minutes or hours), as opposed to daily/weekly/monthly.
+func isIntradayTimeframe(timeframe string) bool {
+	switch timeframe {
+	case "1m", "5m", "15m", "30m", "1h", "4h":
+		return true
+	}
+	switch strings.ToLower(timeframe) {
+	case "1min", "5min", "15min", "30min", "1hour", "60min":
+		return true
+	}
+	return false
 }
 
 // GetHistoricalBars gets historical OHLCV bars for charting.
@@ -680,6 +718,17 @@ func (s *SchwabProvider) GetHistoricalBars(ctx context.Context, symbol, timefram
 		return []map[string]interface{}{}, nil
 	}
 
+	// Load Eastern timezone once for intraday formatting
+	intraday := isIntradayTimeframe(timeframe)
+	var eastern *time.Location
+	if intraday {
+		var locErr error
+		eastern, locErr = time.LoadLocation("America/New_York")
+		if locErr != nil {
+			eastern = time.UTC
+		}
+	}
+
 	var bars []map[string]interface{}
 	for _, c := range candlesArr {
 		candle, ok := c.(map[string]interface{})
@@ -703,9 +752,14 @@ func (s *SchwabProvider) GetHistoricalBars(ctx context.Context, symbol, timefram
 		if v, ok := extractFloat64(candle, "volume"); ok {
 			bar["volume"] = v
 		}
-		// Convert datetime epoch millis to ISO 8601
+		// Convert datetime epoch millis to the format expected by the frontend
 		if dtMs, ok := extractFloat64(candle, "datetime"); ok && dtMs > 0 {
-			bar["timestamp"] = time.UnixMilli(int64(dtMs)).Format(time.RFC3339)
+			t := time.UnixMilli(int64(dtMs))
+			if intraday {
+				bar["time"] = t.In(eastern).Format("2006-01-02 15:04")
+			} else {
+				bar["time"] = t.UTC().Format("2006-01-02")
+			}
 		}
 
 		bars = append(bars, bar)
