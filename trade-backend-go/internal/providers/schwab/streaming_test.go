@@ -854,56 +854,74 @@ func TestProcessStreamData_OptionFieldsWithGreeks(t *testing.T) {
 
 	p.processStreamData(data)
 
-	select {
-	case md := <-queue:
-		// Symbol should be converted from Schwab format to OCC
-		if md.Symbol != "AAPL250117C00150000" {
-			t.Errorf("expected OCC symbol AAPL250117C00150000, got %s", md.Symbol)
+	// Should receive TWO messages: one quote, one greeks
+	var quoteMsg, greeksMsg *models.MarketData
+	for i := 0; i < 2; i++ {
+		select {
+		case md := <-queue:
+			switch md.DataType {
+			case "quote":
+				quoteMsg = md
+			case "greeks":
+				greeksMsg = md
+			default:
+				t.Errorf("unexpected DataType %q", md.DataType)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for market data message %d", i+1)
 		}
-		if md.DataType != "quote" {
-			t.Errorf("expected dataType 'quote', got %s", md.DataType)
-		}
+	}
 
-		// Check quote fields
-		if bid, ok := md.Data["bid"].(float64); !ok || bid != 5.25 {
-			t.Errorf("expected bid 5.25, got %v", md.Data["bid"])
+	// Verify quote message
+	if quoteMsg == nil {
+		t.Fatal("expected a quote message, got none")
+	}
+	if quoteMsg.Symbol != "AAPL250117C00150000" {
+		t.Errorf("expected OCC symbol AAPL250117C00150000, got %s", quoteMsg.Symbol)
+	}
+	if bid, ok := quoteMsg.Data["bid"].(float64); !ok || bid != 5.25 {
+		t.Errorf("expected bid 5.25, got %v", quoteMsg.Data["bid"])
+	}
+	if ask, ok := quoteMsg.Data["ask"].(float64); !ok || ask != 5.40 {
+		t.Errorf("expected ask 5.40, got %v", quoteMsg.Data["ask"])
+	}
+	if mark, ok := quoteMsg.Data["mark"].(float64); !ok || mark != 5.33 {
+		t.Errorf("expected mark 5.33, got %v", quoteMsg.Data["mark"])
+	}
+	if up, ok := quoteMsg.Data["underlying_price"].(float64); !ok || up != 150.27 {
+		t.Errorf("expected underlying_price 150.27, got %v", quoteMsg.Data["underlying_price"])
+	}
+	if sym, ok := quoteMsg.Data["symbol"].(string); !ok || sym != "AAPL250117C00150000" {
+		t.Errorf("expected symbol in data to be OCC format, got %v", quoteMsg.Data["symbol"])
+	}
+	// Quote message must NOT contain Greeks
+	for _, field := range []string{"delta", "gamma", "theta", "vega", "rho"} {
+		if _, ok := quoteMsg.Data[field]; ok {
+			t.Errorf("quote message should NOT contain %s", field)
 		}
-		if ask, ok := md.Data["ask"].(float64); !ok || ask != 5.40 {
-			t.Errorf("expected ask 5.40, got %v", md.Data["ask"])
-		}
-		if mark, ok := md.Data["mark"].(float64); !ok || mark != 5.33 {
-			t.Errorf("expected mark 5.33, got %v", md.Data["mark"])
-		}
+	}
 
-		// Check Greeks
-		if delta, ok := md.Data["delta"].(float64); !ok || delta != 0.65 {
-			t.Errorf("expected delta 0.65, got %v", md.Data["delta"])
-		}
-		if gamma, ok := md.Data["gamma"].(float64); !ok || gamma != 0.04 {
-			t.Errorf("expected gamma 0.04, got %v", md.Data["gamma"])
-		}
-		if theta, ok := md.Data["theta"].(float64); !ok || theta != -0.08 {
-			t.Errorf("expected theta -0.08, got %v", md.Data["theta"])
-		}
-		if vega, ok := md.Data["vega"].(float64); !ok || vega != 0.12 {
-			t.Errorf("expected vega 0.12, got %v", md.Data["vega"])
-		}
-		if rho, ok := md.Data["rho"].(float64); !ok || rho != 0.03 {
-			t.Errorf("expected rho 0.03, got %v", md.Data["rho"])
-		}
-
-		// Check underlying price
-		if up, ok := md.Data["underlying_price"].(float64); !ok || up != 150.27 {
-			t.Errorf("expected underlying_price 150.27, got %v", md.Data["underlying_price"])
-		}
-
-		// Check symbol in data was also converted
-		if sym, ok := md.Data["symbol"].(string); !ok || sym != "AAPL250117C00150000" {
-			t.Errorf("expected symbol in data to be OCC format, got %v", md.Data["symbol"])
-		}
-
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for market data on queue")
+	// Verify greeks message
+	if greeksMsg == nil {
+		t.Fatal("expected a greeks message, got none")
+	}
+	if greeksMsg.Symbol != "AAPL250117C00150000" {
+		t.Errorf("expected OCC symbol AAPL250117C00150000, got %s", greeksMsg.Symbol)
+	}
+	if delta, ok := greeksMsg.Data["delta"].(float64); !ok || delta != 0.65 {
+		t.Errorf("expected delta 0.65, got %v", greeksMsg.Data["delta"])
+	}
+	if gamma, ok := greeksMsg.Data["gamma"].(float64); !ok || gamma != 0.04 {
+		t.Errorf("expected gamma 0.04, got %v", greeksMsg.Data["gamma"])
+	}
+	if theta, ok := greeksMsg.Data["theta"].(float64); !ok || theta != -0.08 {
+		t.Errorf("expected theta -0.08, got %v", greeksMsg.Data["theta"])
+	}
+	if vega, ok := greeksMsg.Data["vega"].(float64); !ok || vega != 0.12 {
+		t.Errorf("expected vega 0.12, got %v", greeksMsg.Data["vega"])
+	}
+	if rho, ok := greeksMsg.Data["rho"].(float64); !ok || rho != 0.03 {
+		t.Errorf("expected rho 0.03, got %v", greeksMsg.Data["rho"])
 	}
 }
 
@@ -1194,22 +1212,233 @@ func TestDispatchMarketData_OptionFields(t *testing.T) {
 
 	p.dispatchMarketData("LEVELONE_OPTIONS", "AAPL250117C00150000", decoded)
 
+	// Should receive TWO messages: one quote, one greeks
+	var quoteMsg, greeksMsg *models.MarketData
+	for i := 0; i < 2; i++ {
+		select {
+		case md := <-queue:
+			switch md.DataType {
+			case "quote":
+				quoteMsg = md
+			case "greeks":
+				greeksMsg = md
+			default:
+				t.Errorf("unexpected DataType %q", md.DataType)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for market data message %d", i+1)
+		}
+	}
+
+	// Verify quote message has price fields but NOT Greeks
+	if quoteMsg == nil {
+		t.Fatal("expected a quote message, got none")
+	}
+	if quoteMsg.Data["bid"] != 5.25 {
+		t.Errorf("expected bid 5.25, got %v", quoteMsg.Data["bid"])
+	}
+	if quoteMsg.Data["ask"] != 5.40 {
+		t.Errorf("expected ask 5.40, got %v", quoteMsg.Data["ask"])
+	}
+	if quoteMsg.Data["underlying_price"] != 150.27 {
+		t.Errorf("expected underlying_price 150.27, got %v", quoteMsg.Data["underlying_price"])
+	}
+	if quoteMsg.Data["contract_type"] != "C" {
+		t.Errorf("expected contract_type 'C', got %v", quoteMsg.Data["contract_type"])
+	}
+	for _, field := range []string{"delta", "gamma", "theta", "vega", "rho"} {
+		if _, ok := quoteMsg.Data[field]; ok {
+			t.Errorf("quote message should NOT contain %s", field)
+		}
+	}
+
+	// Verify greeks message has Greeks fields
+	if greeksMsg == nil {
+		t.Fatal("expected a greeks message, got none")
+	}
+	if greeksMsg.Data["delta"] != 0.65 {
+		t.Errorf("expected delta 0.65, got %v", greeksMsg.Data["delta"])
+	}
+	if greeksMsg.Data["theta"] != -0.08 {
+		t.Errorf("expected theta -0.08, got %v", greeksMsg.Data["theta"])
+	}
+	if greeksMsg.Data["vega"] != 0.12 {
+		t.Errorf("expected vega 0.12, got %v", greeksMsg.Data["vega"])
+	}
+	if greeksMsg.Data["gamma"] != 0.04 {
+		t.Errorf("expected gamma 0.04, got %v", greeksMsg.Data["gamma"])
+	}
+	if greeksMsg.Data["rho"] != 0.03 {
+		t.Errorf("expected rho 0.03, got %v", greeksMsg.Data["rho"])
+	}
+}
+
+// =============================================================================
+// streamReadLoop data dispatch integration test
+// =============================================================================
+
+func TestDispatchMarketData_OptionsGreeksSeparateFromQuotes(t *testing.T) {
+	p := newTestProvider("http://unused")
+
+	queue := make(chan *models.MarketData, 10)
+	p.StreamingQueue = queue
+
+	// Option data with both price and Greeks fields
+	optionDecoded := map[string]interface{}{
+		"SYMBOL":           "SPY250321P00500000",
+		"BID_PRICE":        3.10,
+		"ASK_PRICE":        3.25,
+		"LAST_PRICE":       3.18,
+		"TOTAL_VOLUME":     45000.0,
+		"UNDERLYING_PRICE": 502.50,
+		"CONTRACT_TYPE":    "P",
+		"DELTA":            -0.35,
+		"GAMMA":            0.02,
+		"THETA":            -0.06,
+		"VEGA":             0.15,
+		"RHO":              -0.01,
+	}
+
+	p.dispatchMarketData("LEVELONE_OPTIONS", "SPY250321P00500000", optionDecoded)
+
+	// Should produce exactly 2 messages for options
+	var quoteMsg, greeksMsg *models.MarketData
+	for i := 0; i < 2; i++ {
+		select {
+		case md := <-queue:
+			switch md.DataType {
+			case "quote":
+				quoteMsg = md
+			case "greeks":
+				greeksMsg = md
+			default:
+				t.Errorf("unexpected DataType %q", md.DataType)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for option message %d", i+1)
+		}
+	}
+
+	// No more messages should be on the queue
+	select {
+	case extra := <-queue:
+		t.Errorf("unexpected extra message with DataType %q", extra.DataType)
+	default:
+	}
+
+	// Verify quote has price fields, NOT Greeks
+	if quoteMsg == nil {
+		t.Fatal("expected a quote message")
+	}
+	if quoteMsg.Data["bid"] != 3.10 {
+		t.Errorf("expected bid 3.10, got %v", quoteMsg.Data["bid"])
+	}
+	if quoteMsg.Data["volume"] != 45000.0 {
+		t.Errorf("expected volume 45000, got %v", quoteMsg.Data["volume"])
+	}
+	if quoteMsg.Data["underlying_price"] != 502.50 {
+		t.Errorf("expected underlying_price 502.50, got %v", quoteMsg.Data["underlying_price"])
+	}
+	for _, field := range []string{"delta", "gamma", "theta", "vega", "rho"} {
+		if _, ok := quoteMsg.Data[field]; ok {
+			t.Errorf("quote message should NOT contain %s", field)
+		}
+	}
+
+	// Verify greeks has ONLY Greeks and symbol
+	if greeksMsg == nil {
+		t.Fatal("expected a greeks message")
+	}
+	if greeksMsg.Data["delta"] != -0.35 {
+		t.Errorf("expected delta -0.35, got %v", greeksMsg.Data["delta"])
+	}
+	if greeksMsg.Data["gamma"] != 0.02 {
+		t.Errorf("expected gamma 0.02, got %v", greeksMsg.Data["gamma"])
+	}
+	if greeksMsg.Data["theta"] != -0.06 {
+		t.Errorf("expected theta -0.06, got %v", greeksMsg.Data["theta"])
+	}
+	if greeksMsg.Data["vega"] != 0.15 {
+		t.Errorf("expected vega 0.15, got %v", greeksMsg.Data["vega"])
+	}
+	if greeksMsg.Data["rho"] != -0.01 {
+		t.Errorf("expected rho -0.01, got %v", greeksMsg.Data["rho"])
+	}
+	// Greeks message should NOT have price fields
+	for _, field := range []string{"bid", "ask", "last", "volume", "underlying_price", "contract_type"} {
+		if _, ok := greeksMsg.Data[field]; ok {
+			t.Errorf("greeks message should NOT contain %s", field)
+		}
+	}
+
+	// Now verify equity dispatch still produces exactly 1 message
+	equityDecoded := map[string]interface{}{
+		"SYMBOL":    "AAPL",
+		"BID_PRICE": 150.25,
+		"ASK_PRICE": 150.30,
+	}
+	p.dispatchMarketData("LEVELONE_EQUITIES", "AAPL", equityDecoded)
+
 	select {
 	case md := <-queue:
-		if md.Data["delta"] != 0.65 {
-			t.Errorf("expected delta 0.65, got %v", md.Data["delta"])
+		if md.DataType != "quote" {
+			t.Errorf("expected equity DataType 'quote', got %q", md.DataType)
 		}
-		if md.Data["theta"] != -0.08 {
-			t.Errorf("expected theta -0.08, got %v", md.Data["theta"])
+		if md.Symbol != "AAPL" {
+			t.Errorf("expected symbol AAPL, got %s", md.Symbol)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for equity quote message")
+	}
+
+	// No second message for equities
+	select {
+	case extra := <-queue:
+		t.Errorf("equity dispatch should produce exactly 1 message, got extra with DataType %q", extra.DataType)
+	default:
+	}
+}
+
+func TestDispatchMarketData_OptionsNoGreeksIfMissing(t *testing.T) {
+	p := newTestProvider("http://unused")
+
+	queue := make(chan *models.MarketData, 10)
+	p.StreamingQueue = queue
+
+	// Option data with only price fields — no Greeks at all
+	decoded := map[string]interface{}{
+		"SYMBOL":           "AAPL250117C00150000",
+		"BID_PRICE":        5.25,
+		"ASK_PRICE":        5.40,
+		"LAST_PRICE":       5.32,
+		"UNDERLYING_PRICE": 150.27,
+		"CONTRACT_TYPE":    "C",
+	}
+
+	p.dispatchMarketData("LEVELONE_OPTIONS", "AAPL250117C00150000", decoded)
+
+	// Should receive exactly ONE message (quote only, no greeks)
+	select {
+	case md := <-queue:
+		if md.DataType != "quote" {
+			t.Errorf("expected DataType 'quote', got %q", md.DataType)
+		}
+		if md.Data["bid"] != 5.25 {
+			t.Errorf("expected bid 5.25, got %v", md.Data["bid"])
 		}
 		if md.Data["underlying_price"] != 150.27 {
 			t.Errorf("expected underlying_price 150.27, got %v", md.Data["underlying_price"])
 		}
-		if md.Data["contract_type"] != "C" {
-			t.Errorf("expected contract_type 'C', got %v", md.Data["contract_type"])
-		}
 	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for data on queue")
+		t.Fatal("timed out waiting for quote message")
+	}
+
+	// No second message should exist
+	select {
+	case extra := <-queue:
+		t.Errorf("expected no greeks message when Greeks fields are missing, got DataType %q", extra.DataType)
+	default:
+		// Expected: only one quote message dispatched
 	}
 }
 

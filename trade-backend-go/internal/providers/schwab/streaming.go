@@ -583,29 +583,58 @@ func (s *SchwabProvider) processStreamResponse(resp schwabStreamResponseItem) {
 // Market Data Dispatch
 // =============================================================================
 
-// dispatchMarketData converts decoded streaming fields to a models.MarketData
-// and sends it to the StreamingCache (preferred) or StreamingQueue (fallback).
+// dispatchMarketData converts decoded streaming fields to models.MarketData
+// and sends them via sendToDispatch.
 //
-// For equities the DataType is "quote". For options the DataType is "quote"
-// with Greeks fields embedded in the Data map alongside quote fields.
+// For LEVELONE_EQUITIES: a single "quote" message is dispatched.
+// For LEVELONE_OPTIONS: TWO messages are dispatched —
+//  1. DataType "quote" with price/quote fields (bid, ask, last, volume, etc.)
+//  2. DataType "greeks" with Greeks fields (delta, gamma, theta, vega, rho),
+//     but only if any Greeks field is present in the decoded data.
+//
+// This matches the TastyTrade behavior where the WebSocket handler routes
+// "quote" → "price_update" and "greeks" → "greeks_update" to the frontend.
 func (s *SchwabProvider) dispatchMarketData(service, symbol string, decoded map[string]interface{}) {
-	// Build the data map for models.MarketData using standardized field names
-	data := make(map[string]interface{}, len(decoded))
+	timestamp := time.Now().Format(time.RFC3339)
 
 	switch service {
 	case "LEVELONE_EQUITIES":
+		data := make(map[string]interface{}, len(decoded))
 		mapEquityFields(decoded, data)
+		marketData := models.NewMarketData(symbol, "quote", timestamp, data)
+		s.sendToDispatch(symbol, marketData)
+
 	case "LEVELONE_OPTIONS":
-		mapOptionFields(decoded, data)
+		// Dispatch 1: Quote data (prices)
+		quoteData := make(map[string]interface{})
+		mapOptionQuoteFields(decoded, quoteData)
+		if len(quoteData) > 0 {
+			quoteMarketData := models.NewMarketData(symbol, "quote", timestamp, quoteData)
+			s.sendToDispatch(symbol, quoteMarketData)
+		}
+
+		// Dispatch 2: Greeks data (separate, matching TastyTrade behavior)
+		greeksData := make(map[string]interface{})
+		mapOptionGreeksFields(decoded, greeksData)
+		// Only dispatch if we have actual Greeks fields (not just the symbol)
+		hasGreeks := false
+		for k := range greeksData {
+			if k != "symbol" {
+				hasGreeks = true
+				break
+			}
+		}
+		if hasGreeks {
+			greeksMarketData := models.NewMarketData(symbol, "greeks", timestamp, greeksData)
+			s.sendToDispatch(symbol, greeksMarketData)
+		}
 	}
+}
 
-	// Determine the data type — options with Greeks get "quote" with Greeks embedded
-	dataType := "quote"
-
-	timestamp := time.Now().Format(time.RFC3339)
-	marketData := models.NewMarketData(symbol, dataType, timestamp, data)
-
-	// Dispatch: prefer StreamingCache, fall back to StreamingQueue
+// sendToDispatch sends a MarketData message to the StreamingCache (preferred)
+// or StreamingQueue (fallback). This is a helper to avoid duplicating dispatch
+// logic in dispatchMarketData.
+func (s *SchwabProvider) sendToDispatch(symbol string, marketData *models.MarketData) {
 	if s.StreamingCache != nil {
 		go func() {
 			if err := s.StreamingCache.Update(marketData); err != nil {
@@ -652,9 +681,10 @@ func mapEquityFields(decoded, data map[string]interface{}) {
 	}
 }
 
-// mapOptionFields maps decoded option streaming fields to standardized names
-// for the MarketData.Data map, including Greeks.
-func mapOptionFields(decoded, data map[string]interface{}) {
+// mapOptionQuoteFields maps decoded option streaming fields to standardized
+// price/quote field names for the MarketData.Data map. Greeks are excluded —
+// they are handled separately by mapOptionGreeksFields.
+func mapOptionQuoteFields(decoded, data map[string]interface{}) {
 	fieldMapping := map[string]string{
 		"BID_PRICE":        "bid",
 		"ASK_PRICE":        "ask",
@@ -674,7 +704,25 @@ func mapOptionFields(decoded, data map[string]interface{}) {
 		"EXPIRATION_YEAR":  "expiration_year",
 		"EXPIRATION_MONTH": "expiration_month",
 		"EXPIRATION_DAY":   "expiration_day",
-		// Greeks
+	}
+
+	for schwabField, standardField := range fieldMapping {
+		if val, ok := decoded[schwabField]; ok {
+			data[standardField] = val
+		}
+	}
+
+	// Keep the symbol
+	if sym, ok := decoded["SYMBOL"]; ok {
+		data["symbol"] = sym
+	}
+}
+
+// mapOptionGreeksFields maps decoded option streaming fields to standardized
+// Greeks field names for the MarketData.Data map. Only Greeks fields (delta,
+// gamma, theta, vega, rho) and the symbol are included.
+func mapOptionGreeksFields(decoded, data map[string]interface{}) {
+	fieldMapping := map[string]string{
 		"DELTA": "delta",
 		"GAMMA": "gamma",
 		"THETA": "theta",
