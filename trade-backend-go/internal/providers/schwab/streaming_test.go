@@ -288,14 +288,10 @@ func TestStreamReadLoop_Heartbeat(t *testing.T) {
 		respData, _ := json.Marshal(loginResp)
 		conn.WriteMessage(websocket.TextMessage, respData)
 
-		// Send heartbeat
-		heartbeat := schwabStreamResponse{
-			Notify: []schwabStreamNotifyItem{
-				{Heartbeat: time.Now().UnixMilli()},
-			},
-		}
-		hbData, _ := json.Marshal(heartbeat)
-		conn.WriteMessage(websocket.TextMessage, hbData)
+		// Send heartbeat as a raw JSON string value — this matches real Schwab
+		// behavior where heartbeat is a string like "1715908546054", not a number.
+		hbJSON := []byte(`{"notify":[{"heartbeat":"1715908546054"}]}`)
+		conn.WriteMessage(websocket.TextMessage, hbJSON)
 
 		// Wait a moment then close (triggers read error in loop)
 		time.Sleep(200 * time.Millisecond)
@@ -755,7 +751,8 @@ func TestProcessStreamData_EquityFields(t *testing.T) {
 	queue := make(chan *models.MarketData, 10)
 	p.StreamingQueue = queue
 
-	// Simulate Schwab equity data with numerical keys
+	// Simulate Schwab equity data with numerical keys.
+	// Real Schwab sends symbol under "key" only — no "0" field.
 	data := schwabStreamDataItem{
 		Service:   "LEVELONE_EQUITIES",
 		Timestamp: time.Now().UnixMilli(),
@@ -763,7 +760,6 @@ func TestProcessStreamData_EquityFields(t *testing.T) {
 		Content: []map[string]interface{}{
 			{
 				"key": "AAPL",
-				"0":   "AAPL",    // SYMBOL
 				"1":   150.25,    // BID_PRICE
 				"2":   150.30,    // ASK_PRICE
 				"3":   150.27,    // LAST_PRICE
@@ -824,7 +820,8 @@ func TestProcessStreamData_OptionFieldsWithGreeks(t *testing.T) {
 	queue := make(chan *models.MarketData, 10)
 	p.StreamingQueue = queue
 
-	// Simulate Schwab option data with numerical keys — uses space-padded symbol
+	// Simulate Schwab option data with numerical keys — uses space-padded symbol.
+	// Real Schwab sends symbol under "key" only — no "0" field.
 	data := schwabStreamDataItem{
 		Service:   "LEVELONE_OPTIONS",
 		Timestamp: time.Now().UnixMilli(),
@@ -832,26 +829,25 @@ func TestProcessStreamData_OptionFieldsWithGreeks(t *testing.T) {
 		Content: []map[string]interface{}{
 			{
 				"key": "AAPL  250117C00150000",
-				"0":   "AAPL  250117C00150000", // SYMBOL (Schwab space-padded)
-				"2":   5.25,                    // BID_PRICE
-				"3":   5.40,                    // ASK_PRICE
-				"4":   5.32,                    // LAST_PRICE
-				"5":   6.00,                    // HIGH_PRICE
-				"6":   4.80,                    // LOW_PRICE
-				"7":   5.10,                    // CLOSE_PRICE
-				"8":   12500.0,                 // TOTAL_VOLUME
-				"9":   85000.0,                 // OPEN_INTEREST
-				"10":  0.32,                    // VOLATILITY
-				"19":  0.22,                    // NET_CHANGE
-				"21":  "C",                     // CONTRACT_TYPE
-				"22":  "AAPL",                  // UNDERLYING
-				"28":  0.65,                    // DELTA
-				"29":  0.04,                    // GAMMA
-				"30":  -0.08,                   // THETA
-				"31":  0.12,                    // VEGA
-				"32":  0.03,                    // RHO
-				"35":  150.27,                  // UNDERLYING_PRICE
-				"37":  5.33,                    // MARK
+				"2":   5.25,    // BID_PRICE
+				"3":   5.40,    // ASK_PRICE
+				"4":   5.32,    // LAST_PRICE
+				"5":   6.00,    // HIGH_PRICE
+				"6":   4.80,    // LOW_PRICE
+				"7":   5.10,    // CLOSE_PRICE
+				"8":   12500.0, // TOTAL_VOLUME
+				"9":   85000.0, // OPEN_INTEREST
+				"10":  0.32,    // VOLATILITY
+				"19":  0.22,    // NET_CHANGE
+				"21":  "C",     // CONTRACT_TYPE
+				"22":  "AAPL",  // UNDERLYING
+				"28":  0.65,    // DELTA
+				"29":  0.04,    // GAMMA
+				"30":  -0.08,   // THETA
+				"31":  0.12,    // VEGA
+				"32":  0.03,    // RHO
+				"35":  150.27,  // UNDERLYING_PRICE
+				"37":  5.33,    // MARK
 			},
 		},
 	}
@@ -918,14 +914,14 @@ func TestProcessStreamData_MultipleItems(t *testing.T) {
 	queue := make(chan *models.MarketData, 10)
 	p.StreamingQueue = queue
 
-	// Two symbols in one data message
+	// Two symbols in one data message — using "key" field like real Schwab
 	data := schwabStreamDataItem{
 		Service:   "LEVELONE_EQUITIES",
 		Timestamp: time.Now().UnixMilli(),
 		Command:   "SUBS",
 		Content: []map[string]interface{}{
-			{"0": "AAPL", "1": 150.25, "2": 150.30, "3": 150.27},
-			{"0": "MSFT", "1": 380.00, "2": 380.10, "3": 380.05},
+			{"key": "AAPL", "1": 150.25, "2": 150.30, "3": 150.27},
+			{"key": "MSFT", "1": 380.00, "2": 380.10, "3": 380.05},
 		},
 	}
 
@@ -984,12 +980,12 @@ func TestProcessStreamData_MissingSymbol(t *testing.T) {
 	queue := make(chan *models.MarketData, 10)
 	p.StreamingQueue = queue
 
-	// Equity data without field "0" (SYMBOL)
+	// Equity data without "key" or "0" — symbol is truly missing
 	data := schwabStreamDataItem{
 		Service:   "LEVELONE_EQUITIES",
 		Timestamp: time.Now().UnixMilli(),
 		Content: []map[string]interface{}{
-			{"1": 150.25, "2": 150.30}, // No "0" key
+			{"1": 150.25, "2": 150.30}, // No "key" and no "0"
 		},
 	}
 
@@ -1000,6 +996,82 @@ func TestProcessStreamData_MissingSymbol(t *testing.T) {
 		t.Error("expected no data dispatched for missing symbol")
 	case <-time.After(100 * time.Millisecond):
 		// Expected: skipped
+	}
+}
+
+func TestProcessStreamData_SymbolFromKeyField(t *testing.T) {
+	p := newTestProvider("http://unused")
+	p.IsConnected = true
+
+	queue := make(chan *models.MarketData, 10)
+	p.StreamingQueue = queue
+
+	// Real Schwab format: symbol in "key" field only, no "0" field
+	data := schwabStreamDataItem{
+		Service:   "LEVELONE_EQUITIES",
+		Timestamp: time.Now().UnixMilli(),
+		Command:   "SUBS",
+		Content: []map[string]interface{}{
+			{
+				"key": "SPY",
+				"1":   560.50, // BID_PRICE
+				"2":   560.55, // ASK_PRICE
+				"3":   560.52, // LAST_PRICE
+			},
+		},
+	}
+
+	p.processStreamData(data)
+
+	select {
+	case md := <-queue:
+		if md.Symbol != "SPY" {
+			t.Errorf("expected symbol SPY, got %s", md.Symbol)
+		}
+		if md.DataType != "quote" {
+			t.Errorf("expected dataType 'quote', got %s", md.DataType)
+		}
+		if bid, ok := md.Data["bid"].(float64); !ok || bid != 560.50 {
+			t.Errorf("expected bid 560.50, got %v", md.Data["bid"])
+		}
+		if ask, ok := md.Data["ask"].(float64); !ok || ask != 560.55 {
+			t.Errorf("expected ask 560.55, got %v", md.Data["ask"])
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for market data on queue")
+	}
+}
+
+func TestProcessStreamData_SymbolFallbackToField0(t *testing.T) {
+	p := newTestProvider("http://unused")
+	p.IsConnected = true
+
+	queue := make(chan *models.MarketData, 10)
+	p.StreamingQueue = queue
+
+	// Edge case: no "key" field, but "0" field is present (fallback path)
+	data := schwabStreamDataItem{
+		Service:   "LEVELONE_EQUITIES",
+		Timestamp: time.Now().UnixMilli(),
+		Command:   "SUBS",
+		Content: []map[string]interface{}{
+			{
+				"0": "GOOG",
+				"1": 175.00, // BID_PRICE
+				"2": 175.10, // ASK_PRICE
+			},
+		},
+	}
+
+	p.processStreamData(data)
+
+	select {
+	case md := <-queue:
+		if md.Symbol != "GOOG" {
+			t.Errorf("expected symbol GOOG from field 0 fallback, got %s", md.Symbol)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for market data on queue")
 	}
 }
 
@@ -1157,7 +1229,7 @@ func TestStreamReadLoop_DataDispatch(t *testing.T) {
 		respData, _ := json.Marshal(loginResp)
 		conn.WriteMessage(websocket.TextMessage, respData)
 
-		// Send equity data through the WebSocket
+		// Send equity data through the WebSocket — use "key" like real Schwab
 		dataMsg := schwabStreamResponse{
 			Data: []schwabStreamDataItem{
 				{
@@ -1166,10 +1238,10 @@ func TestStreamReadLoop_DataDispatch(t *testing.T) {
 					Command:   "SUBS",
 					Content: []map[string]interface{}{
 						{
-							"0": "AAPL",
-							"1": 150.25,
-							"2": 150.30,
-							"3": 150.27,
+							"key": "AAPL",
+							"1":   150.25,
+							"2":   150.30,
+							"3":   150.27,
 						},
 					},
 				},

@@ -68,8 +68,9 @@ type schwabStreamDataItem struct {
 }
 
 // schwabStreamNotifyItem represents a notification (heartbeats).
+// Heartbeat is json.Number because Schwab sends it as a string (e.g., "1715908546054").
 type schwabStreamNotifyItem struct {
-	Heartbeat int64 `json:"heartbeat,omitempty"`
+	Heartbeat json.Number `json:"heartbeat,omitempty"`
 }
 
 // streamRequestCounter is an atomic counter for generating unique request IDs.
@@ -479,8 +480,8 @@ func (s *SchwabProvider) streamReadLoop() {
 
 		// Handle heartbeats (notify)
 		for _, notify := range response.Notify {
-			if notify.Heartbeat > 0 {
-				s.logger.Debug("heartbeat received", "timestamp", notify.Heartbeat)
+			if notify.Heartbeat.String() != "" {
+				s.logger.Debug("heartbeat received", "timestamp", notify.Heartbeat.String())
 			}
 		}
 
@@ -522,10 +523,21 @@ func (s *SchwabProvider) processStreamData(data schwabStreamDataItem) {
 		decoded := make(map[string]interface{}, len(item))
 		var symbol string
 
+		// Extract symbol from "key" field first — this is the primary symbol
+		// source in real Schwab streaming data (e.g., {"key": "AAPL", "1": 150.25, ...}).
+		if sym, ok := item["key"].(string); ok && sym != "" {
+			symbol = sym
+			decoded["SYMBOL"] = sym
+		}
+
 		for key, value := range item {
+			if key == "key" {
+				// Already handled above; skip to avoid overwriting decoded["key"]
+				continue
+			}
 			if fieldName, ok := fieldMap[key]; ok {
 				decoded[fieldName] = value
-				if key == "0" { // Field 0 is always SYMBOL
+				if key == "0" && symbol == "" { // Field 0 is SYMBOL (fallback)
 					if sym, ok := value.(string); ok {
 						symbol = sym
 					}
