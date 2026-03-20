@@ -17,6 +17,8 @@ type (
 	TradeStrategy             = types.TradeStrategy
 	IndicatorConfig           = types.IndicatorConfig
 	IndicatorResult           = types.IndicatorResult
+	IndicatorGroup            = types.IndicatorGroup
+	GroupResult               = types.GroupResult
 	TradeConfiguration        = types.TradeConfiguration
 	IronCondorSideConfig      = types.IronCondorSideConfig
 	IronCondorStrikeSelection = types.IronCondorStrikeSelection
@@ -62,6 +64,7 @@ var (
 	NewTradeConfiguration = types.NewTradeConfiguration
 	NewAutomationConfig   = types.NewAutomationConfig
 	GenerateIndicatorID   = types.GenerateIndicatorID
+	GenerateGroupID       = types.GenerateGroupID
 )
 
 // generateID creates a unique ID for new automation configs

@@ -107,6 +107,14 @@ type IndicatorConfig struct {
 	Params map[string]float64 `json:"params,omitempty"`
 }
 
+// IndicatorGroup defines a named group of indicators that are AND-ed together.
+// Multiple groups are OR-ed: if ANY group passes, the automation proceeds.
+type IndicatorGroup struct {
+	ID         string            `json:"id"`
+	Name       string            `json:"name"`
+	Indicators []IndicatorConfig `json:"indicators"`
+}
+
 // IndicatorResult contains the result of an indicator evaluation
 type IndicatorResult struct {
 	Type          IndicatorType `json:"type"`
@@ -122,6 +130,14 @@ type IndicatorResult struct {
 	Details       string        `json:"details,omitempty"`
 	Error         string        `json:"error,omitempty"`
 	ParamSummary  string        `json:"param_summary,omitempty"` // e.g., "14" or "12/26/9"
+}
+
+// GroupResult contains the evaluation result for an entire indicator group.
+type GroupResult struct {
+	GroupID          string            `json:"group_id"`
+	GroupName        string            `json:"group_name"`
+	Pass             bool              `json:"pass"`
+	IndicatorResults []IndicatorResult `json:"indicator_results"`
 }
 
 // IronCondorSideConfig defines per-side configuration for an Iron Condor
@@ -161,18 +177,19 @@ const (
 
 // AutomationConfig defines a complete automation configuration
 type AutomationConfig struct {
-	ID            string             `json:"id"`
-	Name          string             `json:"name"`
-	Description   string             `json:"description,omitempty"`
-	Symbol        string             `json:"symbol"`         // Underlying symbol (e.g., "NDX", "SPX")
-	Indicators    []IndicatorConfig  `json:"indicators"`     // List of indicator configurations
-	EntryTime     string             `json:"entry_time"`     // Entry time in HH:MM format (e.g., "12:25")
-	EntryTimezone string             `json:"entry_timezone"` // Timezone (e.g., "America/New_York")
-	Enabled       bool               `json:"enabled"`        // Whether this automation is active
-	Recurrence    RecurrenceMode     `json:"recurrence"`     // "once" or "daily" (default: "once")
-	TradeConfig   TradeConfiguration `json:"trade_config"`   // Trade parameters
-	Created       time.Time          `json:"created"`
-	Updated       time.Time          `json:"updated"`
+	ID              string             `json:"id"`
+	Name            string             `json:"name"`
+	Description     string             `json:"description,omitempty"`
+	Symbol          string             `json:"symbol"`                     // Underlying symbol (e.g., "NDX", "SPX")
+	Indicators      []IndicatorConfig  `json:"indicators"`                 // List of indicator configurations (legacy, kept for backward compat)
+	IndicatorGroups []IndicatorGroup   `json:"indicator_groups,omitempty"` // Grouped indicators: groups are OR-ed, indicators within AND-ed
+	EntryTime       string             `json:"entry_time"`                 // Entry time in HH:MM format (e.g., "12:25")
+	EntryTimezone   string             `json:"entry_timezone"`             // Timezone (e.g., "America/New_York")
+	Enabled         bool               `json:"enabled"`                    // Whether this automation is active
+	Recurrence      RecurrenceMode     `json:"recurrence"`                 // "once" or "daily" (default: "once")
+	TradeConfig     TradeConfiguration `json:"trade_config"`               // Trade parameters
+	Created         time.Time          `json:"created"`
+	Updated         time.Time          `json:"updated"`
 }
 
 // PlacedOrder tracks an order placed by the automation
@@ -221,6 +238,7 @@ type ActiveAutomation struct {
 	Config            *AutomationConfig `json:"config"`
 	Status            AutomationStatus  `json:"status"`
 	IndicatorResults  []IndicatorResult `json:"indicator_results"`
+	GroupResults      []GroupResult     `json:"group_results,omitempty"`
 	AllIndicatorsPass bool              `json:"all_indicators_pass"`
 	PlacedOrders      []PlacedOrder     `json:"placed_orders"`
 	CurrentOrder      *PlacedOrder      `json:"current_order,omitempty"`
@@ -287,6 +305,11 @@ type DailyData struct {
 // GenerateIndicatorID creates a unique ID for an indicator
 func GenerateIndicatorID() string {
 	return fmt.Sprintf("ind_%d_%s", time.Now().UnixNano(), randomString(4))
+}
+
+// GenerateGroupID creates a unique ID for an indicator group
+func GenerateGroupID() string {
+	return fmt.Sprintf("grp_%d_%s", time.Now().UnixNano(), randomString(4))
 }
 
 // GetIndicatorMetadata returns metadata for all available indicator types.
@@ -474,17 +497,33 @@ func NewTradeConfiguration() TradeConfiguration {
 // Note: Indicators array starts empty - user adds only the indicators they need
 func NewAutomationConfig(name, symbol string) *AutomationConfig {
 	return &AutomationConfig{
-		ID:            generateID(),
-		Name:          name,
-		Symbol:        symbol,
-		Indicators:    []IndicatorConfig{}, // Empty - user adds indicators via UI
-		EntryTime:     "12:25",
-		EntryTimezone: "America/New_York",
-		Enabled:       true,
-		TradeConfig:   NewTradeConfiguration(),
-		Created:       time.Now(),
-		Updated:       time.Now(),
+		ID:              generateID(),
+		Name:            name,
+		Symbol:          symbol,
+		Indicators:      []IndicatorConfig{}, // Legacy - kept empty for backward compat
+		IndicatorGroups: []IndicatorGroup{},  // Empty - user adds groups via UI
+		EntryTime:       "12:25",
+		EntryTimezone:   "America/New_York",
+		Enabled:         true,
+		TradeConfig:     NewTradeConfiguration(),
+		Created:         time.Now(),
+		Updated:         time.Now(),
 	}
+}
+
+// GetEffectiveIndicatorGroups returns the indicator groups to evaluate.
+// If IndicatorGroups is populated, it is returned directly.
+// Otherwise, legacy Indicators are wrapped in a single "Default" group for backward compatibility.
+func (c *AutomationConfig) GetEffectiveIndicatorGroups() []IndicatorGroup {
+	if len(c.IndicatorGroups) > 0 {
+		return c.IndicatorGroups
+	}
+	if len(c.Indicators) > 0 {
+		return []IndicatorGroup{
+			{ID: "default", Name: "Default", Indicators: c.Indicators},
+		}
+	}
+	return []IndicatorGroup{}
 }
 
 // AddLog adds a log entry to an active automation
