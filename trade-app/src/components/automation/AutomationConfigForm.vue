@@ -107,156 +107,240 @@
       <div class="form-section">
         <h2 class="section-title">Entry Indicators</h2>
         <p class="section-description">
-          All enabled indicators must pass for a trade to be executed. Add indicators using the button below.
+          <template v-if="config.indicator_groups.length <= 1">
+            All enabled indicators must pass for a trade to be executed. Add indicators using the button below.
+          </template>
+          <template v-else>
+            Indicators are organized into groups. All indicators within a group must pass (AND). If <strong>any</strong> group passes, the trade executes (OR).
+          </template>
         </p>
-        
-        <!-- Empty state when no indicators -->
-        <div v-if="!config.indicators.length" class="indicators-empty">
-          <i class="pi pi-filter"></i>
-          <p>No indicators configured. Add indicators to define entry criteria.</p>
-        </div>
-        
-        <div v-else class="indicators-list">
+
+        <!-- Groups -->
+        <div
+          v-for="(group, groupIndex) in config.indicator_groups"
+          :key="group.id"
+        >
+          <!-- OR divider between groups (not before first) -->
+          <div v-if="groupIndex > 0" class="or-divider">
+            <span class="or-divider-label">OR</span>
+          </div>
+
           <div
-            v-for="indicator in config.indicators"
-            :key="indicator.id"
-            class="indicator-card"
-            :class="{ 'disabled': !indicator.enabled }"
+            class="indicator-group"
+            :class="{ 'lightweight': config.indicator_groups.length === 1 }"
           >
-            <!-- HEADER: Always visible summary row -->
-            <div class="indicator-header" @click="toggleIndicatorExpand(indicator.id)">
-              <div class="indicator-toggle" @click.stop>
-                <InputSwitch v-model="indicator.enabled" />
+            <!-- Group Header -->
+            <div class="group-header">
+              <div class="group-name-wrapper">
+                <InputText
+                  v-model="group.name"
+                  class="group-name-input"
+                  :class="{ 'lightweight': config.indicator_groups.length === 1 }"
+                  placeholder="Group name"
+                  maxlength="30"
+                />
               </div>
-              <div class="indicator-summary">
-                <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
-                <span class="indicator-rule">
-                  {{ getOperatorLabel(indicator.operator) }} {{ formatThreshold(indicator) }}
-                </span>
-                <span v-if="getIndicatorParams(indicator.type).length > 0 && indicator.params" class="indicator-params-summary">
-                  ({{ formatParamsSummary(indicator) }})
-                </span>
-              </div>
-              <div class="indicator-header-actions">
-                <span 
-                  v-if="indicatorResults[indicator.id]" 
-                  class="test-result" 
-                  :class="getIndicatorResultClass(indicatorResults[indicator.id])"
-                  :title="indicatorResults[indicator.id].stale ? `Stale: ${indicatorResults[indicator.id].error}` : ''"
+              <div class="group-header-actions">
+                <span
+                  v-if="groupTestResults[group.id]"
+                  class="group-test-badge"
+                  :class="groupTestResults[group.id].pass ? 'passed' : 'failed'"
                 >
-                  <span v-if="indicatorResults[indicator.id].stale" class="stale-icon">⚠</span>
-                  {{ indicatorResults[indicator.id].value?.toFixed(2) || 'N/A' }}
+                  {{ groupTestResults[group.id].pass ? '&#10003; Pass' : '&#10007; Fail' }}
                 </span>
                 <Button
-                  v-if="!isMobile"
-                  icon="pi pi-sync"
-                  class="p-button-text p-button-sm"
-                  title="Test this indicator"
-                  @click.stop="testIndicator(indicator)"
-                  :loading="testingIndicator === indicator.id"
-                  :disabled="!indicator.enabled"
-                />
-                <Button
-                  icon="pi pi-times"
+                  v-if="config.indicator_groups.length > 1"
+                  icon="pi pi-trash"
                   class="p-button-text p-button-danger p-button-sm"
-                  title="Remove indicator"
-                  @click.stop="removeIndicator(indicator.id)"
-                />
-                <i 
-                  class="pi expand-icon"
-                  :class="isIndicatorExpanded(indicator.id) ? 'pi-chevron-up' : 'pi-chevron-down'"
+                  title="Delete group"
+                  @click="removeGroup(groupIndex)"
                 />
               </div>
             </div>
 
-            <!-- BODY: Collapsible configuration area -->
-            <div class="indicator-body" v-show="isIndicatorExpanded(indicator.id)">
-              <div class="indicator-config-grid">
-                <!-- Rule fields -->
-                <div class="config-field">
-                  <label class="config-label">Operator</label>
-                  <Dropdown
-                    v-model="indicator.operator"
-                    :options="displayOperators"
-                    optionLabel="label"
-                    optionValue="value"
-                    class="config-input"
-                    :disabled="!indicator.enabled"
-                  />
-                </div>
-                <div class="config-field">
-                  <label class="config-label">Threshold</label>
-                  <InputNumber
-                    v-model="indicator.threshold"
-                    :minFractionDigits="indicator.type === 'calendar' ? 0 : 2"
-                    :maxFractionDigits="indicator.type === 'calendar' ? 0 : 2"
-                    class="config-input"
-                    :disabled="!indicator.enabled"
-                    :placeholder="indicator.type === 'calendar' ? '0 or 1' : 'Value'"
-                  />
-                </div>
+            <!-- Group Body: indicator cards -->
+            <div class="group-body">
+              <!-- Empty state within group -->
+              <div v-if="group.indicators.length === 0" class="indicators-empty-group">
+                <i class="pi pi-filter"></i>
+                <p>No indicators. Add one below.</p>
+              </div>
 
-                <!-- Dynamic parameter fields -->
-                <template v-if="getIndicatorParams(indicator.type).length > 0 && indicator.params">
-                  <div
-                    v-for="paramDef in getIndicatorParams(indicator.type)"
-                    :key="paramDef.key"
-                    class="config-field"
-                  >
-                    <label class="config-label">{{ paramDef.label }}</label>
-                    <InputNumber
-                      v-model="indicator.params[paramDef.key]"
-                      :min="paramDef.min"
-                      :max="paramDef.max"
-                      :step="paramDef.step"
-                      :minFractionDigits="paramDef.type === 'float' ? 1 : 0"
-                      :maxFractionDigits="paramDef.type === 'float' ? 2 : 0"
-                      class="config-input"
-                      :disabled="!indicator.enabled"
-                    />
+              <div v-else class="indicators-list">
+                <div
+                  v-for="indicator in group.indicators"
+                  :key="indicator.id"
+                  class="indicator-card"
+                  :class="{ 'disabled': !indicator.enabled }"
+                >
+                  <!-- HEADER: Always visible summary row -->
+                  <div class="indicator-header" @click="toggleIndicatorExpand(indicator.id)">
+                    <div class="indicator-toggle" @click.stop>
+                      <InputSwitch v-model="indicator.enabled" />
+                    </div>
+                    <div class="indicator-summary">
+                      <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
+                      <span class="indicator-rule">
+                        {{ getOperatorLabel(indicator.operator) }} {{ formatThreshold(indicator) }}
+                      </span>
+                      <span v-if="getIndicatorParams(indicator.type).length > 0 && indicator.params" class="indicator-params-summary">
+                        ({{ formatParamsSummary(indicator) }})
+                      </span>
+                    </div>
+                    <div class="indicator-header-actions">
+                      <span 
+                        v-if="indicatorResults[indicator.id]" 
+                        class="test-result" 
+                        :class="getIndicatorResultClass(indicatorResults[indicator.id])"
+                        :title="indicatorResults[indicator.id].stale ? `Stale: ${indicatorResults[indicator.id].error}` : ''"
+                      >
+                        <span v-if="indicatorResults[indicator.id].stale" class="stale-icon">&#9888;</span>
+                        {{ indicatorResults[indicator.id].value?.toFixed(2) || 'N/A' }}
+                      </span>
+                      <Button
+                        v-if="!isMobile"
+                        icon="pi pi-sync"
+                        class="p-button-text p-button-sm"
+                        title="Test this indicator"
+                        @click.stop="testIndicator(indicator)"
+                        :loading="testingIndicator === indicator.id"
+                        :disabled="!indicator.enabled"
+                      />
+                      <Button
+                        icon="pi pi-times"
+                        class="p-button-text p-button-danger p-button-sm"
+                        title="Remove indicator"
+                        @click.stop="removeIndicatorFromGroup(groupIndex, indicator.id)"
+                      />
+                      <i 
+                        class="pi expand-icon"
+                        :class="isIndicatorExpanded(indicator.id) ? 'pi-chevron-up' : 'pi-chevron-down'"
+                      />
+                    </div>
                   </div>
-                </template>
 
-                <!-- Symbol field with label -->
-                <div v-if="getIndicatorNeedsSymbol(indicator.type)" class="config-field">
-                  <label class="config-label">Symbol</label>
-                  <InputText
-                    v-model="indicator.symbol"
-                    :placeholder="getIndicatorDefaultSymbol(indicator.type)"
-                    class="config-input"
-                    :disabled="!indicator.enabled"
-                  />
+                  <!-- BODY: Collapsible configuration area -->
+                  <div class="indicator-body" v-show="isIndicatorExpanded(indicator.id)">
+                    <div class="indicator-config-grid">
+                      <!-- Rule fields -->
+                      <div class="config-field">
+                        <label class="config-label">Operator</label>
+                        <Dropdown
+                          v-model="indicator.operator"
+                          :options="displayOperators"
+                          optionLabel="label"
+                          optionValue="value"
+                          class="config-input"
+                          :disabled="!indicator.enabled"
+                        />
+                      </div>
+                      <div class="config-field">
+                        <label class="config-label">Threshold</label>
+                        <InputNumber
+                          v-model="indicator.threshold"
+                          :minFractionDigits="indicator.type === 'calendar' ? 0 : 2"
+                          :maxFractionDigits="indicator.type === 'calendar' ? 0 : 2"
+                          class="config-input"
+                          :disabled="!indicator.enabled"
+                          :placeholder="indicator.type === 'calendar' ? '0 or 1' : 'Value'"
+                        />
+                      </div>
+
+                      <!-- Dynamic parameter fields -->
+                      <template v-if="getIndicatorParams(indicator.type).length > 0 && indicator.params">
+                        <div
+                          v-for="paramDef in getIndicatorParams(indicator.type)"
+                          :key="paramDef.key"
+                          class="config-field"
+                        >
+                          <label class="config-label">{{ paramDef.label }}</label>
+                          <InputNumber
+                            v-model="indicator.params[paramDef.key]"
+                            :min="paramDef.min"
+                            :max="paramDef.max"
+                            :step="paramDef.step"
+                            :minFractionDigits="paramDef.type === 'float' ? 1 : 0"
+                            :maxFractionDigits="paramDef.type === 'float' ? 2 : 0"
+                            class="config-input"
+                            :disabled="!indicator.enabled"
+                          />
+                        </div>
+                      </template>
+
+                      <!-- Symbol field with label -->
+                      <div v-if="getIndicatorNeedsSymbol(indicator.type)" class="config-field">
+                        <label class="config-label">Symbol</label>
+                        <InputText
+                          v-model="indicator.symbol"
+                          :placeholder="getIndicatorDefaultSymbol(indicator.type)"
+                          class="config-input"
+                          :disabled="!indicator.enabled"
+                        />
+                      </div>
+                    </div>
+                  </div>
                 </div>
               </div>
+            </div>
+
+            <!-- Group Actions: Add Indicator within group -->
+            <div class="group-actions">
+              <Button
+                icon="pi pi-plus"
+                label="Add Indicator"
+                class="p-button-outlined p-button-sm"
+                @click="addIndicatorTargetGroup = groupIndex; showAddIndicatorDialog = true"
+              />
             </div>
           </div>
         </div>
 
-        <div class="indicators-actions">
+        <!-- Section Actions: Add Group (standalone when 2+ groups), Test All, overall result -->
+        <div class="section-actions">
+          <div class="section-actions-left">
+            <Button
+              v-if="config.indicator_groups.length <= 1"
+              icon="pi pi-plus-circle"
+              label="Add Group"
+              class="p-button-text"
+              @click="addGroup"
+            />
+          </div>
+          <div class="section-actions-right">
+            <Button
+              v-if="config.indicator_groups.some(g => g.indicators.length > 0)"
+              icon="pi pi-play"
+              label="Test All"
+              class="p-button-outlined"
+              @click="testAllIndicators"
+              :loading="testingAll"
+            />
+            <span v-if="allIndicatorsResult !== null" class="all-result" :class="allIndicatorsResult ? 'passed' : 'failed'">
+              <template v-if="config.indicator_groups.length <= 1">
+                {{ allIndicatorsResult ? 'All Passed' : 'Some Failed' }}
+              </template>
+              <template v-else>
+                {{ allIndicatorsResult ? `${Object.values(groupTestResults).filter(r => r.pass).length} of ${config.indicator_groups.length} groups passing` : 'No groups passing' }}
+              </template>
+            </span>
+          </div>
+        </div>
+
+        <!-- Add Group button (standalone, below groups, when 2+ groups) -->
+        <div v-if="config.indicator_groups.length > 1" class="add-group-standalone">
           <Button
             icon="pi pi-plus"
-            label="Add Indicator"
+            label="Add Group"
             class="p-button-outlined"
-            @click="showAddIndicatorDialog = true"
+            @click="addGroup"
           />
-          <Button
-            v-if="config.indicators.length > 0"
-            icon="pi pi-play"
-            label="Test All"
-            class="p-button-outlined"
-            @click="testAllIndicators"
-            :loading="testingAll"
-          />
-          <span v-if="allIndicatorsResult !== null" class="all-result" :class="allIndicatorsResult ? 'passed' : 'failed'">
-            {{ allIndicatorsResult ? 'All Passed' : 'Some Failed' }}
-          </span>
         </div>
       </div>
 
       <!-- Add Indicator Dialog -->
       <Dialog
         v-model:visible="showAddIndicatorDialog"
-        header="Add Indicator"
+        :header="config.indicator_groups.length > 1 ? `Add Indicator to '${config.indicator_groups[addIndicatorTargetGroup]?.name || 'Group'}'` : 'Add Indicator'"
         :modal="true"
         :style="{ width: '650px', maxWidth: '90vw' }"
       >
@@ -278,7 +362,7 @@
                 v-for="type in types"
                 :key="type.value"
                 class="indicator-type-option"
-                @click="addIndicator(type.value)"
+                @click="addIndicatorToGroup(type.value, addIndicatorTargetGroup)"
               >
                 <div class="option-header">
                   <span class="option-label">{{ type.label }}</span>
@@ -810,7 +894,7 @@ export default {
     const strikePreview = ref(null)
     const previewError = ref(null)
 
-    // Config data - starts with empty indicators for new configs
+    // Config data - starts with empty indicator groups for new configs
     const config = ref({
       name: '',
       symbol: 'NDX',
@@ -818,7 +902,10 @@ export default {
       entry_timezone: 'America/New_York',
       recurrence: 'once',
       enabled: true,
-      indicators: [], // Empty - user adds indicators via Add Indicator dialog
+      indicators: [], // Legacy — kept empty for backward compat
+      indicator_groups: [
+        { id: 'grp_default', name: 'Default', indicators: [] }
+      ],
       trade_config: {
         strategy: 'put_spread',
         width: 20,
@@ -1032,8 +1119,19 @@ export default {
       return `ind_${Date.now()}_${Math.random().toString(36).substr(2, 4)}`
     }
 
-    // Add a new indicator
-    const addIndicator = (type) => {
+    // Generate unique ID for indicator groups
+    const generateGroupId = () => {
+      return `grp_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
+    }
+
+    // Group test results: groupId → { pass: bool }
+    const groupTestResults = ref({})
+
+    // Track which group the "Add Indicator" dialog is targeting
+    const addIndicatorTargetGroup = ref(0)
+
+    // Add a new indicator to a specific group
+    const addIndicatorToGroup = (type, groupIndex) => {
       const meta = indicatorMetadataMap.value[type]
       const params = {}
       if (meta && meta.params && meta.params.length > 0) {
@@ -1051,15 +1149,61 @@ export default {
         symbol: '',     // No default symbol - user must set
         params: Object.keys(params).length > 0 ? params : undefined,
       }
-      config.value.indicators.push(newIndicator)
+      config.value.indicator_groups[groupIndex].indicators.push(newIndicator)
       expandedIndicators.value[newIndicator.id] = true
       showAddIndicatorDialog.value = false
     }
 
-    // Remove an indicator
+    // Legacy: Add indicator to flat list (kept for backward compat, delegates to group)
+    const addIndicator = (type) => {
+      addIndicatorToGroup(type, addIndicatorTargetGroup.value)
+    }
+
+    // Add a new group
+    const addGroup = () => {
+      const groupNum = config.value.indicator_groups.length + 1
+      config.value.indicator_groups.push({
+        id: generateGroupId(),
+        name: `Group ${groupNum}`,
+        indicators: []
+      })
+    }
+
+    // Remove a group
+    const removeGroup = (groupIndex) => {
+      const group = config.value.indicator_groups[groupIndex]
+      if (group.indicators.length > 0) {
+        if (!confirm(`Delete group "${group.name}" and its ${group.indicators.length} indicators?`)) {
+          return
+        }
+      }
+      // Clean up test results for indicators in this group
+      group.indicators.forEach(ind => {
+        delete indicatorResults.value[ind.id]
+        delete expandedIndicators.value[ind.id]
+      })
+      delete groupTestResults.value[group.id]
+      config.value.indicator_groups.splice(groupIndex, 1)
+    }
+
+    // Remove an indicator from a specific group
+    const removeIndicatorFromGroup = (groupIndex, indicatorId) => {
+      const group = config.value.indicator_groups[groupIndex]
+      group.indicators = group.indicators.filter(ind => ind.id !== indicatorId)
+      delete indicatorResults.value[indicatorId]
+      delete expandedIndicators.value[indicatorId]
+    }
+
+    // Remove an indicator (legacy — searches all groups)
     const removeIndicator = (indicatorId) => {
-      config.value.indicators = config.value.indicators.filter(ind => ind.id !== indicatorId)
-      // Also remove any test results for this indicator
+      for (let g = 0; g < config.value.indicator_groups.length; g++) {
+        const group = config.value.indicator_groups[g]
+        const idx = group.indicators.findIndex(ind => ind.id === indicatorId)
+        if (idx !== -1) {
+          group.indicators.splice(idx, 1)
+          break
+        }
+      }
       delete indicatorResults.value[indicatorId]
       delete expandedIndicators.value[indicatorId]
     }
@@ -1085,6 +1229,20 @@ export default {
             trade_config: {
               ...config.value.trade_config,
               ...configData.trade_config
+            }
+          }
+
+          // Ensure indicator_groups is populated (client-side migration of legacy configs)
+          if (!config.value.indicator_groups || config.value.indicator_groups.length === 0) {
+            if (config.value.indicators && config.value.indicators.length > 0) {
+              config.value.indicator_groups = [{
+                id: generateGroupId(),
+                name: 'Default',
+                indicators: config.value.indicators
+              }]
+              config.value.indicators = []
+            } else {
+              config.value.indicator_groups = [{ id: generateGroupId(), name: 'Default', indicators: [] }]
             }
           }
         }
@@ -1119,12 +1277,16 @@ export default {
       
       isSaving.value = true
       try {
-        // Clean up indicator symbols (remove empty ones for calendar)
+        // Clean up: send indicator_groups, clear legacy indicators field
         const cleanedConfig = {
           ...config.value,
-          indicators: config.value.indicators.map(ind => ({
-            ...ind,
-            symbol: ind.symbol?.trim() || undefined
+          indicators: [], // Legacy field — always empty
+          indicator_groups: config.value.indicator_groups.map(group => ({
+            ...group,
+            indicators: group.indicators.map(ind => ({
+              ...ind,
+              symbol: ind.symbol?.trim() || undefined
+            }))
           }))
         }
         
@@ -1180,46 +1342,52 @@ export default {
       testingAll.value = true
       allIndicatorsResult.value = null
       indicatorResults.value = {}
+      groupTestResults.value = {}
       
       try {
-        const enabledIndicators = config.value.indicators.filter(ind => ind.enabled)
+        const groupsPayload = config.value.indicator_groups.map(g => ({
+          ...g,
+          indicators: g.indicators.filter(ind => ind.enabled)
+        }))
+
         const response = await api.previewAutomationIndicators({
-          indicators: enabledIndicators
+          indicator_groups: groupsPayload
         })
-        // Handle response format: data.indicators is an array, data.all_pass is boolean
-        const indicators = response.data?.indicators || response.indicators || []
-        const allPass = response.data?.all_pass ?? response.all_pass ?? false
-        
-        // Convert array to object keyed by indicator ID
-        // Match results to original indicators by type and index
-        const enabledByType = {}
-        enabledIndicators.forEach(ind => {
-          if (!enabledByType[ind.type]) enabledByType[ind.type] = []
-          enabledByType[ind.type].push(ind)
-        })
-        
-        const typeCounters = {}
-        indicators.forEach(result => {
-          // Find the matching indicator by type (in order)
-          const typeList = enabledByType[result.type] || []
-          const typeIdx = typeCounters[result.type] || 0
-          typeCounters[result.type] = typeIdx + 1
-          
-          const matchingIndicator = typeList[typeIdx]
-          if (matchingIndicator) {
-            indicatorResults.value[matchingIndicator.id] = {
-              value: result.value,
-              passed: result.pass,
-              operator: result.operator,
-              threshold: result.threshold,
-              symbol: result.symbol,
-              details: result.details,
-              stale: result.stale || false,
-              error: result.error || ''
-            }
+
+        const groupResultsData = response.data?.group_results || []
+        const anyGroupPasses = response.data?.all_pass ?? false
+
+        // Map group results
+        groupResultsData.forEach(gr => {
+          groupTestResults.value[gr.group_id] = { pass: gr.pass }
+
+          // Map per-indicator results by ID within each group
+          const matchingGroup = config.value.indicator_groups.find(g => g.id === gr.group_id)
+          if (matchingGroup && gr.indicator_results) {
+            const enabledInGroup = matchingGroup.indicators.filter(ind => ind.enabled)
+            const typeCounters = {}
+            gr.indicator_results.forEach(result => {
+              const typeList = enabledInGroup.filter(ind => ind.type === result.type)
+              const idx = typeCounters[result.type] || 0
+              typeCounters[result.type] = idx + 1
+              const match = typeList[idx]
+              if (match) {
+                indicatorResults.value[match.id] = {
+                  value: result.value,
+                  passed: result.pass,
+                  operator: result.operator,
+                  threshold: result.threshold,
+                  symbol: result.symbol,
+                  details: result.details,
+                  stale: result.stale || false,
+                  error: result.error || ''
+                }
+              }
+            })
           }
         })
-        allIndicatorsResult.value = allPass
+
+        allIndicatorsResult.value = anyGroupPasses
       } catch (err) {
         console.error('Failed to test indicators:', err)
         allIndicatorsResult.value = false
@@ -1348,7 +1516,9 @@ export default {
       getRecurrenceHint,
       getIndicatorResultClass,
       addIndicator,
+      addIndicatorToGroup,
       removeIndicator,
+      removeIndicatorFromGroup,
       saveConfig,
       cancel,
       testIndicator,
@@ -1356,6 +1526,13 @@ export default {
       loadStrikePreview,
       formatPrice,
       calculateStartingPrice,
+
+      // Group management
+      groupTestResults,
+      addIndicatorTargetGroup,
+      generateGroupId,
+      addGroup,
+      removeGroup,
     }
   }
 }
@@ -1941,6 +2118,180 @@ export default {
 /* Add Indicator Dialog */
 .add-indicator-content {
   padding: var(--spacing-sm);
+}
+
+/* Indicator Group Container */
+.indicator-group {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  padding: var(--spacing-md);
+}
+
+.indicator-group.lightweight {
+  background: none;
+  border: none;
+  padding: 0;
+  border-radius: 0;
+}
+
+/* Group Header */
+.group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-sm);
+  min-height: 32px;
+}
+
+.group-name-wrapper {
+  flex: 1;
+  min-width: 0;
+}
+
+.group-name-input {
+  border: 1px solid transparent;
+  background: transparent;
+  font-size: var(--font-size-md);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  width: auto;
+  max-width: 250px;
+  transition: border-color 0.2s, background 0.2s;
+}
+
+.group-name-input:hover {
+  border-color: var(--border-secondary);
+}
+
+.group-name-input:focus {
+  border-color: var(--color-brand);
+  background: var(--bg-secondary);
+  outline: none;
+}
+
+.group-name-input.lightweight {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  color: var(--text-tertiary);
+}
+
+.group-header-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  flex-shrink: 0;
+}
+
+/* Group Test Badge */
+.group-test-badge {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  padding: 2px 8px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.group-test-badge.passed {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--color-success);
+}
+
+.group-test-badge.failed {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--color-danger);
+}
+
+/* Group Body */
+.group-body {
+  margin-bottom: var(--spacing-sm);
+}
+
+/* Group Actions */
+.group-actions {
+  padding-top: var(--spacing-sm);
+}
+
+/* Empty state within a group */
+.indicators-empty-group {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: var(--spacing-md);
+  text-align: center;
+  background: var(--bg-secondary);
+  border-radius: var(--radius-md);
+  border: 1px dashed var(--border-secondary);
+}
+
+.indicators-empty-group i {
+  font-size: var(--font-size-lg);
+  color: var(--text-tertiary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.indicators-empty-group p {
+  color: var(--text-secondary);
+  margin: 0;
+  font-size: var(--font-size-sm);
+}
+
+/* OR Divider */
+.or-divider {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin: var(--spacing-lg) 0;
+}
+
+.or-divider::before,
+.or-divider::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-secondary);
+}
+
+.or-divider-label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-brand);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  padding: var(--spacing-xs) var(--spacing-sm);
+}
+
+/* Section Actions (outside groups) */
+.section-actions {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: var(--spacing-md);
+  margin-top: var(--spacing-md);
+  padding-top: var(--spacing-md);
+  border-top: 1px solid var(--border-primary);
+}
+
+.section-actions-left {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+.section-actions-right {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-md);
+}
+
+/* Add Group Standalone (below groups, when 2+ groups) */
+.add-group-standalone {
+  display: flex;
+  justify-content: center;
+  margin-top: var(--spacing-md);
 }
 
 .add-indicator-description {
