@@ -1566,6 +1566,7 @@ func main() {
 				"status":              automation.Status,
 				"message":             automation.Message,
 				"indicator_results":   automation.IndicatorResults,
+				"group_results":       automation.GroupResults,
 				"all_indicators_pass": automation.AllIndicatorsPass,
 				"current_order":       automation.CurrentOrder,
 				"placed_orders":       automation.PlacedOrders,

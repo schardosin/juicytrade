@@ -98,8 +98,9 @@ func (h *AutomationHandler) CreateConfig(c *gin.Context) {
 		return
 	}
 
-	// Set defaults if not provided
-	if len(config.Indicators) == 0 {
+	// Set defaults if not provided — only apply default indicators if both
+	// Indicators and IndicatorGroups are empty
+	if len(config.Indicators) == 0 && len(config.IndicatorGroups) == 0 {
 		config.Indicators = []types.IndicatorConfig{
 			types.NewIndicatorConfig(types.IndicatorVIX),
 			types.NewIndicatorConfig(types.IndicatorGap),
@@ -359,7 +360,8 @@ func (h *AutomationHandler) EvaluateIndicators(c *gin.Context) {
 // EvaluateIndicatorsPreview evaluates indicators for a config that hasn't been saved yet
 func (h *AutomationHandler) EvaluateIndicatorsPreview(c *gin.Context) {
 	var request struct {
-		Indicators []types.IndicatorConfig `json:"indicators"`
+		Indicators      []types.IndicatorConfig `json:"indicators"`
+		IndicatorGroups []types.IndicatorGroup  `json:"indicator_groups"`
 	}
 	if err := c.ShouldBindJSON(&request); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
@@ -369,26 +371,37 @@ func (h *AutomationHandler) EvaluateIndicatorsPreview(c *gin.Context) {
 		return
 	}
 
-	// Set default indicators if not provided
-	if len(request.Indicators) == 0 {
-		request.Indicators = []types.IndicatorConfig{
-			types.NewIndicatorConfig(types.IndicatorVIX),
-			types.NewIndicatorConfig(types.IndicatorGap),
-			types.NewIndicatorConfig(types.IndicatorRange),
-			types.NewIndicatorConfig(types.IndicatorTrend),
-			types.NewIndicatorConfig(types.IndicatorCalendar),
+	// Determine which groups to evaluate
+	var groups []types.IndicatorGroup
+	if len(request.IndicatorGroups) > 0 {
+		groups = request.IndicatorGroups
+	} else if len(request.Indicators) > 0 {
+		groups = []types.IndicatorGroup{
+			{ID: "preview_default", Name: "Default", Indicators: request.Indicators},
+		}
+	} else {
+		// Existing default indicator fallback
+		groups = []types.IndicatorGroup{
+			{ID: "preview_default", Name: "Default", Indicators: []types.IndicatorConfig{
+				types.NewIndicatorConfig(types.IndicatorVIX),
+				types.NewIndicatorConfig(types.IndicatorGap),
+				types.NewIndicatorConfig(types.IndicatorRange),
+				types.NewIndicatorConfig(types.IndicatorTrend),
+				types.NewIndicatorConfig(types.IndicatorCalendar),
+			}},
 		}
 	}
 
 	// Empty configID for preview mode - no caching
-	results := h.engine.GetIndicatorService().EvaluateAllIndicators(c.Request.Context(), "", request.Indicators)
-	allPass := h.engine.GetIndicatorService().AllIndicatorsPass(results)
+	groupResults, flatResults, anyGroupPasses := h.engine.GetIndicatorService().EvaluateIndicatorGroups(
+		c.Request.Context(), "", groups)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": map[string]interface{}{
-			"indicators": results,
-			"all_pass":   allPass,
+			"indicators":    flatResults,
+			"group_results": groupResults,
+			"all_pass":      anyGroupPasses,
 		},
 		"message": "Indicators evaluated successfully",
 	})
