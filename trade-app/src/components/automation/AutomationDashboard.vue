@@ -511,6 +511,11 @@ export default {
     const error = ref(null)
     const actionLoading = ref(null)
     const expandedCards = ref(new Set()) // Track expanded cards on mobile
+
+    // Compact mode collapse state (per-card)
+    const expandedEntrySections = ref({})  // { [configId]: boolean } — Entry Criteria section expanded?
+    const expandedEvalSections = ref({})   // { [configId]: boolean } — Last Evaluation section expanded?
+    const expandedGroups = ref({})         // { [configId__section__groupIdx]: boolean } — individual group expanded?
     
     // Dialogs
     const showEvalDialog = ref(false)
@@ -904,6 +909,73 @@ export default {
       return expandedCards.value.has(configId)
     }
 
+    // Compact mode toggle methods
+    const toggleEntrySection = (configId) => {
+      expandedEntrySections.value = {
+        ...expandedEntrySections.value,
+        [configId]: !expandedEntrySections.value[configId]
+      }
+    }
+
+    const toggleEvalSection = (configId) => {
+      expandedEvalSections.value = {
+        ...expandedEvalSections.value,
+        [configId]: !expandedEvalSections.value[configId]
+      }
+    }
+
+    const toggleGroup = (configId, section, groupIdx) => {
+      // section: 'entry' | 'eval'
+      const key = `${configId}__${section}__${groupIdx}`
+      expandedGroups.value = {
+        ...expandedGroups.value,
+        [key]: !expandedGroups.value[key]
+      }
+    }
+
+    const isGroupExpanded = (configId, section, groupIdx) => {
+      return !!expandedGroups.value[`${configId}__${section}__${groupIdx}`]
+    }
+
+    // Compact mode helper methods
+    const isMultiGroup = (config) => {
+      return (config.indicator_groups?.length || 0) > 1
+    }
+
+    const getTotalGroupCount = (config) => {
+      return config.indicator_groups?.length || 0
+    }
+
+    const getTotalIndicatorCount = (config) => {
+      if (!config.indicator_groups?.length) return 0
+      return config.indicator_groups.reduce((sum, g) => {
+        return sum + (g.indicators || []).filter(ind => ind.enabled).length
+      }, 0)
+    }
+
+    const getEntrySummary = (config) => {
+      // Returns: "3 groups · 9 indicators" (FR-1.2)
+      const groups = getTotalGroupCount(config)
+      const indicators = getTotalIndicatorCount(config)
+      return `${groups} groups · ${indicators} indicators`
+    }
+
+    const getEvalSummary = (configId) => {
+      // Returns: { passing: boolean, passingGroupName: string|null, summary: string } (FR-2.2)
+      const status = statuses.value[configId]
+      if (!status?.group_results?.length) return null
+
+      const groupResults = status.group_results
+      const passingGroups = groupResults.filter(g => g.pass)
+      const passing = passingGroups.length > 0
+
+      return {
+        passing,
+        passingGroupName: passingGroups[0]?.group_name || null,
+        summary: `${passingGroups.length} of ${groupResults.length} groups passing`
+      }
+    }
+
     // Lifecycle
     onMounted(async () => {
       isLoading.value = true
@@ -982,6 +1054,20 @@ export default {
       expandedCards,
       toggleCardExpanded,
       isCardExpanded,
+
+      // Compact mode (progressive disclosure)
+      expandedEntrySections,
+      expandedEvalSections,
+      expandedGroups,
+      toggleEntrySection,
+      toggleEvalSection,
+      toggleGroup,
+      isGroupExpanded,
+      isMultiGroup,
+      getTotalGroupCount,
+      getTotalIndicatorCount,
+      getEntrySummary,
+      getEvalSummary,
     }
   }
 }

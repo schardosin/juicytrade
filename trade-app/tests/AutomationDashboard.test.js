@@ -357,4 +357,207 @@ describe('AutomationDashboard', () => {
       expect(wrapper.findAll('.indicator-chip').length).toBe(2);
     });
   });
+
+  // ─── Compact mode helpers ────────────────────────────────────────────
+
+  describe('Compact mode helpers', () => {
+
+    // ─── isMultiGroup ───────────────────────────────────────────────
+
+    describe('isMultiGroup', () => {
+      it('returns true for config with 2+ indicator_groups', () => {
+        const config = {
+          indicator_groups: [
+            { id: 'grp_1', name: 'Group 1', indicators: [] },
+            { id: 'grp_2', name: 'Group 2', indicators: [] },
+          ]
+        };
+        expect(wrapper.vm.isMultiGroup(config)).toBe(true);
+      });
+
+      it('returns false for config with 1 group', () => {
+        const config = {
+          indicator_groups: [
+            { id: 'grp_1', name: 'Group 1', indicators: [] },
+          ]
+        };
+        expect(wrapper.vm.isMultiGroup(config)).toBe(false);
+      });
+
+      it('returns false for config with no groups (legacy)', () => {
+        const config = {
+          indicators: [{ id: 'ind_1', type: 'vix', enabled: true }]
+        };
+        expect(wrapper.vm.isMultiGroup(config)).toBe(false);
+      });
+
+      it('returns false for config with empty indicator_groups array', () => {
+        const config = { indicator_groups: [] };
+        expect(wrapper.vm.isMultiGroup(config)).toBe(false);
+      });
+    });
+
+    // ─── getEntrySummary ────────────────────────────────────────────
+
+    describe('getEntrySummary', () => {
+      it('returns correct summary for 3 groups with 3 enabled indicators each', () => {
+        const config = {
+          indicator_groups: [
+            { id: 'grp_1', indicators: [
+              { type: 'vix', enabled: true }, { type: 'gap', enabled: true }, { type: 'rsi', enabled: true }
+            ]},
+            { id: 'grp_2', indicators: [
+              { type: 'macd', enabled: true }, { type: 'cci', enabled: true }, { type: 'adx', enabled: true }
+            ]},
+            { id: 'grp_3', indicators: [
+              { type: 'sma', enabled: true }, { type: 'ema', enabled: true }, { type: 'atr', enabled: true }
+            ]},
+          ]
+        };
+        expect(wrapper.vm.getEntrySummary(config)).toBe('3 groups · 9 indicators');
+      });
+
+      it('counts only enabled indicators (skips enabled: false)', () => {
+        const config = {
+          indicator_groups: [
+            { id: 'grp_1', indicators: [
+              { type: 'vix', enabled: true }, { type: 'gap', enabled: false }, { type: 'rsi', enabled: true }
+            ]},
+            { id: 'grp_2', indicators: [
+              { type: 'macd', enabled: false }, { type: 'cci', enabled: true }
+            ]},
+          ]
+        };
+        expect(wrapper.vm.getEntrySummary(config)).toBe('2 groups · 3 indicators');
+      });
+
+      it('returns "2 groups · 0 indicators" when groups exist but all indicators are disabled', () => {
+        const config = {
+          indicator_groups: [
+            { id: 'grp_1', indicators: [
+              { type: 'vix', enabled: false }, { type: 'gap', enabled: false }
+            ]},
+            { id: 'grp_2', indicators: [
+              { type: 'rsi', enabled: false }
+            ]},
+          ]
+        };
+        expect(wrapper.vm.getEntrySummary(config)).toBe('2 groups · 0 indicators');
+      });
+    });
+
+    // ─── getEvalSummary ─────────────────────────────────────────────
+
+    describe('getEvalSummary', () => {
+      it('returns null when no status exists for the config', () => {
+        expect(wrapper.vm.getEvalSummary('nonexistent-id')).toBeNull();
+      });
+
+      it('returns null when status has no group_results', async () => {
+        wrapper.vm.statuses = {
+          'cfg-1': { state: 'waiting', indicator_results: [] }
+        };
+        await nextTick();
+        expect(wrapper.vm.getEvalSummary('cfg-1')).toBeNull();
+      });
+
+      it('returns correct summary when 1 of 3 groups passes', async () => {
+        wrapper.vm.statuses = {
+          'cfg-eval': {
+            state: 'waiting',
+            group_results: [
+              { group_id: 'g1', group_name: 'Low VIX', pass: true, indicator_results: [] },
+              { group_id: 'g2', group_name: 'High Vol', pass: false, indicator_results: [] },
+              { group_id: 'g3', group_name: 'Trend Up', pass: false, indicator_results: [] },
+            ]
+          }
+        };
+        await nextTick();
+        const result = wrapper.vm.getEvalSummary('cfg-eval');
+        expect(result).toEqual({
+          passing: true,
+          passingGroupName: 'Low VIX',
+          summary: '1 of 3 groups passing'
+        });
+      });
+
+      it('returns correct summary when no groups pass', async () => {
+        wrapper.vm.statuses = {
+          'cfg-eval': {
+            state: 'waiting',
+            group_results: [
+              { group_id: 'g1', group_name: 'Group A', pass: false, indicator_results: [] },
+              { group_id: 'g2', group_name: 'Group B', pass: false, indicator_results: [] },
+            ]
+          }
+        };
+        await nextTick();
+        const result = wrapper.vm.getEvalSummary('cfg-eval');
+        expect(result).toEqual({
+          passing: false,
+          passingGroupName: null,
+          summary: '0 of 2 groups passing'
+        });
+      });
+    });
+
+    // ─── Toggle behavior ────────────────────────────────────────────
+
+    describe('Toggle behavior', () => {
+      it('toggleEntrySection flips from collapsed (default) to expanded', () => {
+        expect(wrapper.vm.expandedEntrySections['cfg-toggle']).toBeFalsy();
+        wrapper.vm.toggleEntrySection('cfg-toggle');
+        expect(wrapper.vm.expandedEntrySections['cfg-toggle']).toBe(true);
+      });
+
+      it('calling toggleEntrySection twice returns to collapsed', () => {
+        wrapper.vm.toggleEntrySection('cfg-toggle2');
+        wrapper.vm.toggleEntrySection('cfg-toggle2');
+        expect(wrapper.vm.expandedEntrySections['cfg-toggle2']).toBe(false);
+      });
+
+      it('toggleEvalSection works independently from toggleEntrySection on the same card', () => {
+        wrapper.vm.toggleEntrySection('cfg-independent');
+        expect(wrapper.vm.expandedEntrySections['cfg-independent']).toBe(true);
+        expect(wrapper.vm.expandedEvalSections['cfg-independent']).toBeFalsy();
+
+        wrapper.vm.toggleEvalSection('cfg-independent');
+        expect(wrapper.vm.expandedEvalSections['cfg-independent']).toBe(true);
+        // Entry should still be expanded
+        expect(wrapper.vm.expandedEntrySections['cfg-independent']).toBe(true);
+      });
+
+      it('toggleGroup expands group 0 without affecting group 1', () => {
+        wrapper.vm.toggleGroup('cfg-grp', 'entry', 0);
+        expect(wrapper.vm.isGroupExpanded('cfg-grp', 'entry', 0)).toBe(true);
+        expect(wrapper.vm.isGroupExpanded('cfg-grp', 'entry', 1)).toBe(false);
+      });
+
+      it('isGroupExpanded returns false by default, true after toggle', () => {
+        expect(wrapper.vm.isGroupExpanded('cfg-new', 'eval', 0)).toBe(false);
+        wrapper.vm.toggleGroup('cfg-new', 'eval', 0);
+        expect(wrapper.vm.isGroupExpanded('cfg-new', 'eval', 0)).toBe(true);
+      });
+    });
+
+    // ─── State independence ─────────────────────────────────────────
+
+    describe('State independence', () => {
+      it('toggling card A does not affect card B', () => {
+        wrapper.vm.toggleEntrySection('card-A');
+        wrapper.vm.toggleEvalSection('card-A');
+        wrapper.vm.toggleGroup('card-A', 'entry', 0);
+
+        // Card B should all be default (collapsed)
+        expect(wrapper.vm.expandedEntrySections['card-B']).toBeFalsy();
+        expect(wrapper.vm.expandedEvalSections['card-B']).toBeFalsy();
+        expect(wrapper.vm.isGroupExpanded('card-B', 'entry', 0)).toBe(false);
+
+        // Card A should be expanded
+        expect(wrapper.vm.expandedEntrySections['card-A']).toBe(true);
+        expect(wrapper.vm.expandedEvalSections['card-A']).toBe(true);
+        expect(wrapper.vm.isGroupExpanded('card-A', 'entry', 0)).toBe(true);
+      });
+    });
+  });
 });
