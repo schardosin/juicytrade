@@ -304,8 +304,10 @@ func (e *Engine) ResetTradedToday(id string) error {
 
 // EvaluateIndicators evaluates indicators for a config without starting
 // Uses the config ID for caching results
-func (e *Engine) EvaluateIndicators(ctx context.Context, config *types.AutomationConfig) []types.IndicatorResult {
-	return e.indicatorService.EvaluateAllIndicators(ctx, config.ID, config.Indicators)
+// Returns: (groupResults, flatResults, anyGroupPasses)
+func (e *Engine) EvaluateIndicators(ctx context.Context, config *types.AutomationConfig) ([]types.GroupResult, []types.IndicatorResult, bool) {
+	groups := config.GetEffectiveIndicatorGroups()
+	return e.indicatorService.EvaluateIndicatorGroups(ctx, config.ID, groups)
 }
 
 // PreviewStrikes finds strikes for a given configuration without placing an order
@@ -415,18 +417,20 @@ func (e *Engine) handleWaitingState(id string, active *types.ActiveAutomation, s
 		"entryTime", active.Config.EntryTime,
 		"isEntryTime", isEntryTime)
 
-	// Evaluate indicators (use config ID for caching)
-	results := e.indicatorService.EvaluateAllIndicators(ctx, id, active.Config.Indicators)
+	// Evaluate indicators using group-based evaluation (use config ID for caching)
+	groups := active.Config.GetEffectiveIndicatorGroups()
+	groupResults, flatResults, anyGroupPasses := e.indicatorService.EvaluateIndicatorGroups(ctx, id, groups)
 
 	e.mu.Lock()
-	active.IndicatorResults = results
-	active.AllIndicatorsPass = e.indicatorService.AllIndicatorsPass(results)
+	active.GroupResults = groupResults
+	active.IndicatorResults = flatResults
+	active.AllIndicatorsPass = anyGroupPasses
 	active.LastEvaluation = time.Now()
 	e.mu.Unlock()
 
 	// Check if any indicators are stale
 	hasStaleIndicators := false
-	for _, result := range results {
+	for _, result := range flatResults {
 		if result.Enabled && result.Stale {
 			hasStaleIndicators = true
 			break
@@ -437,12 +441,12 @@ func (e *Engine) handleWaitingState(id string, active *types.ActiveAutomation, s
 		slog.Warn("🤖 Indicators evaluated with stale data",
 			"id", id,
 			"allPass", active.AllIndicatorsPass,
-			"results", results)
+			"results", flatResults)
 	} else {
 		slog.Info("🤖 Indicators evaluated",
 			"id", id,
 			"allPass", active.AllIndicatorsPass,
-			"results", results)
+			"results", flatResults)
 	}
 
 	// Check if it's time to trade
@@ -470,7 +474,7 @@ func (e *Engine) handleWaitingState(id string, active *types.ActiveAutomation, s
 		slog.Warn("🤖 Entry time but indicators failing",
 			"id", id,
 			"hasStaleIndicators", hasStaleIndicators,
-			"results", results)
+			"results", flatResults)
 	} else if !isEntryTime {
 		e.mu.Lock()
 		active.Message = fmt.Sprintf("Waiting for entry time: %s", active.Config.EntryTime)

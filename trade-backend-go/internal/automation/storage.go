@@ -76,11 +76,17 @@ func (s *Storage) load() error {
 		s.configs = make(map[string]*AutomationConfig)
 	}
 
-	// Migrate existing indicators to have IDs (for backward compatibility)
+	// Run migrations in order: IDs first (so indicators have IDs before grouping), then groups
+	needsSave := false
 	if s.migrateIndicatorIDs() {
-		// Save the migrated configs
+		needsSave = true
+	}
+	if s.migrateIndicatorGroups() {
+		needsSave = true
+	}
+	if needsSave {
 		if err := s.saveWithoutLock(); err != nil {
-			slog.Warn("Failed to save migrated indicator IDs", "error", err)
+			slog.Warn("Failed to save migrated configs", "error", err)
 		}
 	}
 
@@ -93,6 +99,7 @@ func (s *Storage) migrateIndicatorIDs() bool {
 	migrated := false
 
 	for _, config := range s.configs {
+		// Migrate flat Indicators (legacy)
 		for i := range config.Indicators {
 			if config.Indicators[i].ID == "" {
 				config.Indicators[i].ID = types.GenerateIndicatorID()
@@ -103,8 +110,50 @@ func (s *Storage) migrateIndicatorIDs() bool {
 				migrated = true
 			}
 		}
+		// Migrate indicators within IndicatorGroups
+		for g := range config.IndicatorGroups {
+			for i := range config.IndicatorGroups[g].Indicators {
+				if config.IndicatorGroups[g].Indicators[i].ID == "" {
+					config.IndicatorGroups[g].Indicators[i].ID = types.GenerateIndicatorID()
+					slog.Info("Migrated indicator ID (in group)",
+						"automation", config.Name,
+						"group", config.IndicatorGroups[g].Name,
+						"type", config.IndicatorGroups[g].Indicators[i].Type,
+						"newID", config.IndicatorGroups[g].Indicators[i].ID)
+					migrated = true
+				}
+			}
+		}
 	}
 
+	return migrated
+}
+
+// migrateIndicatorGroups migrates configs with flat Indicators into a single "Default" IndicatorGroup.
+// Returns true if any migrations were made.
+func (s *Storage) migrateIndicatorGroups() bool {
+	migrated := false
+	for _, config := range s.configs {
+		if len(config.IndicatorGroups) > 0 {
+			continue
+		}
+		if len(config.Indicators) == 0 {
+			continue
+		}
+		config.IndicatorGroups = []types.IndicatorGroup{
+			{
+				ID:         types.GenerateGroupID(),
+				Name:       "Default",
+				Indicators: config.Indicators,
+			},
+		}
+		config.Indicators = []types.IndicatorConfig{}
+		slog.Info("Migrated indicators to group",
+			"automation", config.Name,
+			"groupName", "Default",
+			"indicatorCount", len(config.IndicatorGroups[0].Indicators))
+		migrated = true
+	}
 	return migrated
 }
 
@@ -116,7 +165,7 @@ func (s *Storage) save() error {
 // saveWithoutLock writes configurations to disk (caller must hold lock)
 func (s *Storage) saveWithoutLock() error {
 	storageData := StorageData{
-		Version:   "1.0",
+		Version:   "1.1",
 		UpdatedAt: time.Now(),
 		Configs:   s.configs,
 	}

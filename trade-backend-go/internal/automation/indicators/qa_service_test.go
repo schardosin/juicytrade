@@ -595,3 +595,486 @@ func TestOHLCUsageClassification(t *testing.T) {
 		}
 	}
 }
+
+// =============================================================================
+// Step 3, Section 3.1 — EvaluateIndicatorGroups Additional Edge Cases
+//
+// These tests use the computeGroupORLogic helper (defined in service_test.go)
+// to test evaluation logic without provider dependencies.
+// =============================================================================
+
+// 3.1.1: One group where all indicators have Enabled: false.
+// AllIndicatorsPass returns true for that group (vacuously true per FR-2.3).
+// Verify anyGroupPasses = true.
+func TestQA_GroupEval_AllDisabledIndicatorsInGroup(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_1", Name: "All Disabled"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		{
+			{Type: types.IndicatorVIX, Enabled: false, Pass: false, Stale: false},
+			{Type: types.IndicatorRSI, Enabled: false, Pass: false, Stale: false},
+		},
+	}
+
+	groupResults, _, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if !anyGroupPasses {
+		t.Error("expected anyGroupPasses=true when all indicators are disabled (vacuously true)")
+	}
+	if !groupResults[0].Pass {
+		t.Error("expected group Pass=true when all indicators are disabled")
+	}
+}
+
+// 3.1.2: Group A: one enabled (passes) + one disabled. Group B: one enabled (fails).
+// Verify Group A passes (disabled is skipped), Group B fails, anyGroupPasses = true.
+func TestQA_GroupEval_MixedDisabledAndEnabled(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_a", Name: "Group A"},
+		{ID: "grp_b", Name: "Group B"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		// Group A: one enabled+passing, one disabled
+		{
+			{Type: types.IndicatorVIX, Enabled: true, Pass: true, Stale: false},
+			{Type: types.IndicatorRSI, Enabled: false, Pass: false, Stale: false},
+		},
+		// Group B: one enabled+failing
+		{
+			{Type: types.IndicatorGap, Enabled: true, Pass: false, Stale: false},
+		},
+	}
+
+	groupResults, _, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if !anyGroupPasses {
+		t.Error("expected anyGroupPasses=true (Group A passes)")
+	}
+	if !groupResults[0].Pass {
+		t.Error("expected Group A to pass (disabled indicator skipped)")
+	}
+	if groupResults[1].Pass {
+		t.Error("expected Group B to fail")
+	}
+}
+
+// 3.1.3: One group with Indicators: []. AllIndicatorsPass([]) returns true.
+// Verify anyGroupPasses = true, groupResults[0].Pass = true.
+func TestQA_GroupEval_EmptyGroupAutoPassesVacuouslyTrue(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_empty", Name: "Empty Group", Indicators: []types.IndicatorConfig{}},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		{}, // Empty results for empty group
+	}
+
+	groupResults, _, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if !anyGroupPasses {
+		t.Error("expected anyGroupPasses=true for empty group (vacuously true)")
+	}
+	if len(groupResults) != 1 {
+		t.Fatalf("expected 1 group result, got %d", len(groupResults))
+	}
+	if !groupResults[0].Pass {
+		t.Error("expected empty group Pass=true (vacuously true)")
+	}
+}
+
+// 3.1.4: Group A: empty (passes vacuously). Group B: one indicator fails.
+// Verify anyGroupPasses = true (Group A passes), both group results are populated.
+func TestQA_GroupEval_EmptyGroupPlusFailingGroup(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_a", Name: "Empty Group"},
+		{ID: "grp_b", Name: "Failing Group"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		{}, // Group A: empty
+		{ // Group B: one failing indicator
+			{Type: types.IndicatorVIX, Enabled: true, Pass: false, Stale: false, Value: 25},
+		},
+	}
+
+	groupResults, _, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if !anyGroupPasses {
+		t.Error("expected anyGroupPasses=true (empty Group A passes vacuously)")
+	}
+	if len(groupResults) != 2 {
+		t.Fatalf("expected 2 group results, got %d", len(groupResults))
+	}
+	if !groupResults[0].Pass {
+		t.Error("expected Group A (empty) to pass")
+	}
+	if groupResults[1].Pass {
+		t.Error("expected Group B to fail")
+	}
+}
+
+// 3.1.5: Group A: indicator is stale (fails per stale-blocking rule).
+// Group B: indicator is fresh and passes.
+// Verify anyGroupPasses = true — stale data in one group does not block another
+// group's fresh passing data.
+func TestQA_GroupEval_MixedStaleAndFreshAcrossGroups(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_stale", Name: "Stale Group"},
+		{ID: "grp_fresh", Name: "Fresh Group"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		// Group A: stale indicator (stale always blocks regardless of Pass value)
+		{
+			{Type: types.IndicatorVIX, Enabled: true, Pass: true, Stale: true, Value: 18},
+		},
+		// Group B: fresh and passing
+		{
+			{Type: types.IndicatorRSI, Enabled: true, Pass: true, Stale: false, Value: 45},
+		},
+	}
+
+	groupResults, _, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if !anyGroupPasses {
+		t.Error("expected anyGroupPasses=true (fresh Group B passes, stale Group A doesn't block it)")
+	}
+	if groupResults[0].Pass {
+		t.Error("expected stale Group A to fail (stale blocks)")
+	}
+	if !groupResults[1].Pass {
+		t.Error("expected fresh Group B to pass")
+	}
+}
+
+// 3.1.6: Group A: stale indicator. Group B: stale indicator.
+// Verify anyGroupPasses = false.
+func TestQA_GroupEval_AllGroupsStale(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_a", Name: "Stale A"},
+		{ID: "grp_b", Name: "Stale B"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		{
+			{Type: types.IndicatorVIX, Enabled: true, Pass: true, Stale: true},
+		},
+		{
+			{Type: types.IndicatorRSI, Enabled: true, Pass: true, Stale: true},
+		},
+	}
+
+	groupResults, _, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if anyGroupPasses {
+		t.Error("expected anyGroupPasses=false when all groups have stale indicators")
+	}
+	if groupResults[0].Pass {
+		t.Error("expected Group A to fail (stale)")
+	}
+	if groupResults[1].Pass {
+		t.Error("expected Group B to fail (stale)")
+	}
+}
+
+// 3.1.7: One group with 3 indicators (all pass). Verify behavior is identical to
+// calling AllIndicatorsPass directly on the same results.
+// This validates AC-4's requirement that single-group behaves like the old flat list.
+func TestQA_GroupEval_SingleGroupBehavesLikeFlatList(t *testing.T) {
+	s := &Service{}
+
+	results := []types.IndicatorResult{
+		{Type: types.IndicatorVIX, Enabled: true, Pass: true, Stale: false, Value: 15},
+		{Type: types.IndicatorGap, Enabled: true, Pass: true, Stale: false, Value: 0.3},
+		{Type: types.IndicatorRSI, Enabled: true, Pass: true, Stale: false, Value: 45},
+	}
+
+	groups := []types.IndicatorGroup{
+		{ID: "grp_single", Name: "Single Group"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{results}
+
+	groupResults, flatResults, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	// anyGroupPasses should match AllIndicatorsPass
+	directPass := s.AllIndicatorsPass(results)
+	if anyGroupPasses != directPass {
+		t.Errorf("anyGroupPasses (%v) != AllIndicatorsPass (%v) — single group should behave like flat list", anyGroupPasses, directPass)
+	}
+
+	// The group should pass
+	if !groupResults[0].Pass {
+		t.Error("expected single group to pass")
+	}
+
+	// Flat results should match group results
+	if len(flatResults) != len(results) {
+		t.Errorf("expected %d flat results, got %d", len(results), len(flatResults))
+	}
+	for i, r := range flatResults {
+		if r.Type != results[i].Type {
+			t.Errorf("flat result[%d]: expected type %s, got %s", i, results[i].Type, r.Type)
+		}
+		if r.Value != results[i].Value {
+			t.Errorf("flat result[%d]: expected value %v, got %v", i, results[i].Value, r.Value)
+		}
+	}
+
+	// Group results should contain the same indicator results
+	if len(groupResults[0].IndicatorResults) != len(results) {
+		t.Errorf("expected %d indicator results in group, got %d", len(results), len(groupResults[0].IndicatorResults))
+	}
+}
+
+// 3.1.8: One group with 1 indicator that fails.
+// Verify anyGroupPasses = false, groupResults[0].Pass = false.
+func TestQA_GroupEval_SingleGroupSingleIndicatorFails(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_1", Name: "Failing Group"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		{
+			{Type: types.IndicatorVIX, Enabled: true, Pass: false, Stale: false, Value: 25},
+		},
+	}
+
+	groupResults, _, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if anyGroupPasses {
+		t.Error("expected anyGroupPasses=false when single group's indicator fails")
+	}
+	if groupResults[0].Pass {
+		t.Error("expected group Pass=false")
+	}
+}
+
+// 3.1.9: Group A passes. Group B fails. Verify both groupResults entries are populated
+// with correct data — proves all groups are evaluated (FR-2.6, no short-circuit).
+func TestQA_GroupEval_NoShortCircuit(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_pass", Name: "Passing Group"},
+		{ID: "grp_fail", Name: "Failing Group"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		// Group A: passes
+		{
+			{Type: types.IndicatorVIX, Enabled: true, Pass: true, Stale: false, Value: 15},
+		},
+		// Group B: fails
+		{
+			{Type: types.IndicatorRSI, Enabled: true, Pass: false, Stale: false, Value: 72},
+		},
+	}
+
+	groupResults, _, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if !anyGroupPasses {
+		t.Error("expected anyGroupPasses=true")
+	}
+
+	// Both groups must be evaluated (no short-circuit after Group A passes)
+	if len(groupResults) != 2 {
+		t.Fatalf("expected 2 group results (no short-circuit), got %d", len(groupResults))
+	}
+
+	// Verify Group A result is populated correctly
+	if groupResults[0].GroupID != "grp_pass" {
+		t.Errorf("group 0 ID: expected 'grp_pass', got %q", groupResults[0].GroupID)
+	}
+	if !groupResults[0].Pass {
+		t.Error("expected Group A to pass")
+	}
+	if len(groupResults[0].IndicatorResults) != 1 {
+		t.Errorf("expected 1 indicator result in Group A, got %d", len(groupResults[0].IndicatorResults))
+	}
+
+	// Verify Group B result is populated correctly (proves it was evaluated despite Group A passing)
+	if groupResults[1].GroupID != "grp_fail" {
+		t.Errorf("group 1 ID: expected 'grp_fail', got %q", groupResults[1].GroupID)
+	}
+	if groupResults[1].Pass {
+		t.Error("expected Group B to fail")
+	}
+	if len(groupResults[1].IndicatorResults) != 1 {
+		t.Errorf("expected 1 indicator result in Group B, got %d", len(groupResults[1].IndicatorResults))
+	}
+	if groupResults[1].IndicatorResults[0].Value != 72 {
+		t.Errorf("expected Group B indicator value 72, got %v", groupResults[1].IndicatorResults[0].Value)
+	}
+}
+
+// 3.1.10: Group A: fails. Group B: passes. Group C: fails.
+// Verify anyGroupPasses = true and only groupResults[1].Pass = true.
+func TestQA_GroupEval_ThreeGroupsSecondPasses(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_a", Name: "Group A"},
+		{ID: "grp_b", Name: "Group B"},
+		{ID: "grp_c", Name: "Group C"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		// Group A: fails
+		{{Type: types.IndicatorVIX, Enabled: true, Pass: false, Stale: false}},
+		// Group B: passes
+		{{Type: types.IndicatorRSI, Enabled: true, Pass: true, Stale: false}},
+		// Group C: fails
+		{{Type: types.IndicatorGap, Enabled: true, Pass: false, Stale: false}},
+	}
+
+	groupResults, _, anyGroupPasses := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if !anyGroupPasses {
+		t.Error("expected anyGroupPasses=true (Group B passes)")
+	}
+	if len(groupResults) != 3 {
+		t.Fatalf("expected 3 group results, got %d", len(groupResults))
+	}
+	if groupResults[0].Pass {
+		t.Error("expected Group A to fail")
+	}
+	if !groupResults[1].Pass {
+		t.Error("expected Group B to pass")
+	}
+	if groupResults[2].Pass {
+		t.Error("expected Group C to fail")
+	}
+}
+
+// 3.1.11: Three groups with 2, 1, and 3 indicators respectively.
+// Verify flatResults has 6 entries in group-then-indicator order.
+func TestQA_GroupEval_FlatResultsOrder(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_a", Name: "Group A"},
+		{ID: "grp_b", Name: "Group B"},
+		{ID: "grp_c", Name: "Group C"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		// Group A: 2 indicators
+		{
+			{Type: types.IndicatorVIX, Enabled: true, Pass: true, Stale: false, Value: 15},
+			{Type: types.IndicatorGap, Enabled: true, Pass: true, Stale: false, Value: 0.3},
+		},
+		// Group B: 1 indicator
+		{
+			{Type: types.IndicatorRSI, Enabled: true, Pass: true, Stale: false, Value: 45},
+		},
+		// Group C: 3 indicators
+		{
+			{Type: types.IndicatorATR, Enabled: true, Pass: true, Stale: false, Value: 3.2},
+			{Type: types.IndicatorMACD, Enabled: true, Pass: false, Stale: false, Value: -0.5},
+			{Type: types.IndicatorEMA, Enabled: true, Pass: true, Stale: false, Value: 450.0},
+		},
+	}
+
+	_, flatResults, _ := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if len(flatResults) != 6 {
+		t.Fatalf("expected 6 flat results, got %d", len(flatResults))
+	}
+
+	// Verify order: Group A's indicators, then Group B's, then Group C's
+	expectedTypes := []types.IndicatorType{
+		types.IndicatorVIX,  // Group A[0]
+		types.IndicatorGap,  // Group A[1]
+		types.IndicatorRSI,  // Group B[0]
+		types.IndicatorATR,  // Group C[0]
+		types.IndicatorMACD, // Group C[1]
+		types.IndicatorEMA,  // Group C[2]
+	}
+	expectedValues := []float64{15, 0.3, 45, 3.2, -0.5, 450.0}
+
+	for i, expected := range expectedTypes {
+		if flatResults[i].Type != expected {
+			t.Errorf("flatResults[%d]: expected type %s, got %s", i, expected, flatResults[i].Type)
+		}
+		if flatResults[i].Value != expectedValues[i] {
+			t.Errorf("flatResults[%d]: expected value %v, got %v", i, expectedValues[i], flatResults[i].Value)
+		}
+	}
+}
+
+// 3.1.12: Verify GroupResult.GroupID and GroupResult.GroupName match the input
+// IndicatorGroup.ID and IndicatorGroup.Name for each group.
+func TestQA_GroupEval_GroupMetadataPreserved(t *testing.T) {
+	s := &Service{}
+	groups := []types.IndicatorGroup{
+		{ID: "grp_alpha", Name: "Alpha Strategy"},
+		{ID: "grp_beta", Name: "Beta Strategy"},
+		{ID: "grp_gamma", Name: "Gamma Strategy"},
+	}
+	resultsByGroup := [][]types.IndicatorResult{
+		{{Type: types.IndicatorVIX, Enabled: true, Pass: true, Stale: false}},
+		{{Type: types.IndicatorRSI, Enabled: true, Pass: false, Stale: false}},
+		{{Type: types.IndicatorATR, Enabled: true, Pass: true, Stale: false}},
+	}
+
+	groupResults, _, _ := computeGroupORLogic(s, groups, resultsByGroup)
+
+	if len(groupResults) != 3 {
+		t.Fatalf("expected 3 group results, got %d", len(groupResults))
+	}
+
+	for i, gr := range groupResults {
+		if gr.GroupID != groups[i].ID {
+			t.Errorf("groupResults[%d].GroupID: expected %q, got %q", i, groups[i].ID, gr.GroupID)
+		}
+		if gr.GroupName != groups[i].Name {
+			t.Errorf("groupResults[%d].GroupName: expected %q, got %q", i, groups[i].Name, gr.GroupName)
+		}
+	}
+}
+
+// =============================================================================
+// Step 3, Section 3.2 — AllIndicatorsPass Additional Edge Cases
+// =============================================================================
+
+// 3.2.1: All indicators in the list are disabled. Verify returns true (vacuously true).
+func TestQA_AllIndicatorsPass_AllDisabled(t *testing.T) {
+	s := &Service{}
+	results := []types.IndicatorResult{
+		{Type: types.IndicatorVIX, Enabled: false, Pass: false, Stale: false},
+		{Type: types.IndicatorGap, Enabled: false, Pass: false, Stale: false},
+		{Type: types.IndicatorRSI, Enabled: false, Pass: false, Stale: true},
+	}
+
+	if !s.AllIndicatorsPass(results) {
+		t.Error("expected AllIndicatorsPass=true when all indicators are disabled (vacuously true)")
+	}
+}
+
+// 3.2.2: One indicator is stale (Stale: true) but its value still passes the threshold
+// (Pass: true). Verify returns false — stale always blocks regardless of the pass value.
+func TestQA_AllIndicatorsPass_StaleButPassingValue(t *testing.T) {
+	s := &Service{}
+	results := []types.IndicatorResult{
+		{Type: types.IndicatorVIX, Enabled: true, Pass: true, Stale: true, Value: 18},
+	}
+
+	if s.AllIndicatorsPass(results) {
+		t.Error("expected AllIndicatorsPass=false — stale always blocks regardless of Pass value")
+	}
+}
+
+// 3.2.3: Three indicators: (1) disabled, (2) enabled + stale, (3) enabled + fresh + passing.
+// Verify returns false because indicator (2) is stale.
+func TestQA_AllIndicatorsPass_MixOfDisabledStaleFresh(t *testing.T) {
+	s := &Service{}
+	results := []types.IndicatorResult{
+		// (1) disabled — skipped
+		{Type: types.IndicatorVIX, Enabled: false, Pass: false, Stale: false},
+		// (2) enabled + stale — should block
+		{Type: types.IndicatorGap, Enabled: true, Pass: true, Stale: true, Value: 0.5},
+		// (3) enabled + fresh + passing
+		{Type: types.IndicatorRSI, Enabled: true, Pass: true, Stale: false, Value: 45},
+	}
+
+	if s.AllIndicatorsPass(results) {
+		t.Error("expected AllIndicatorsPass=false because indicator (2) is stale")
+	}
+}
