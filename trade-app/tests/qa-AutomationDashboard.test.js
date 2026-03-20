@@ -136,11 +136,7 @@ describe('QA — AutomationDashboard', () => {
       await wrapper.find('.status-details .indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand both groups to reveal result chips
-      const groupHeaders = wrapper.findAll('.status-details .indicator-results .group-collapse-header');
-      await groupHeaders[0].trigger('click');
-      await groupHeaders[1].trigger('click');
-      await nextTick();
+      // Result chips are visible immediately (no group-level collapse)
 
       const groups = wrapper.findAll('.status-details .indicator-group-dashboard');
       expect(groups.length).toBe(2);
@@ -238,11 +234,7 @@ describe('QA — AutomationDashboard', () => {
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand both groups to reveal result chips
-      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
-      await groupHeaders[0].trigger('click');
-      await groupHeaders[1].trigger('click');
-      await nextTick();
+      // Result chips are visible immediately (no group-level collapse)
 
       const staleChips = wrapper.findAll('.result-chip.stale');
       expect(staleChips.length).toBe(1);

@@ -258,21 +258,20 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       const summaryText = wrapper.find('.collapse-summary-text').text();
       expect(summaryText).toBe('2 groups · 1 indicators');
 
-      // Expand section and then expand the null-indicators group
+      // Expand section — groups are always visible (no group-level collapse)
       await wrapper.find('.section-collapse-header').trigger('click');
       await nextTick();
 
-      const groupHeaders = wrapper.findAll('.group-collapse-header');
+      const groupHeaders = wrapper.findAll('.group-header-static');
       expect(groupHeaders.length).toBe(2);
 
-      // Expand the group with null indicators
-      await groupHeaders[1].trigger('click');
-      await nextTick();
-
-      // Should render indicators-grid with 0 chips (no crash)
+      // Both indicators-grids should be visible immediately
       const grids = wrapper.findAll('.section-collapse-body .indicators-grid');
-      expect(grids.length).toBe(1);
-      expect(grids[0].findAll('.indicator-chip').length).toBe(0);
+      expect(grids.length).toBe(2);
+      // Group A has 1 enabled indicator chip
+      expect(grids[0].findAll('.indicator-chip').length).toBe(1);
+      // Group with null indicators has 0 chips (no crash)
+      expect(grids[1].findAll('.indicator-chip').length).toBe(0);
     });
 
     it('3.4: status with group_results: [] — getEvalSummary returns null, flat path, no crash', async () => {
@@ -327,17 +326,11 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       };
       await nextTick();
 
-      // Expand eval section
+      // Expand eval section — results grids are visible immediately
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand both groups
-      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
-      await groupHeaders[0].trigger('click');
-      await groupHeaders[1].trigger('click');
-      await nextTick();
-
-      // Group A should have results-grid but 0 result chips
+      // Both groups' results-grids should be visible (no group-level collapse)
       const grids = wrapper.findAll('.indicator-results .section-collapse-body .results-grid');
       expect(grids.length).toBe(2);
       expect(grids[0].findAll('.result-chip').length).toBe(0);
@@ -365,20 +358,11 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       };
       await nextTick();
 
-      // Expand eval section
+      // Expand eval section — groups are always visible (no group-level collapse)
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand group A (with undefined indicator_results)
-      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
-      expect(() => {
-        // This should not throw — Vue's v-for on undefined just renders nothing
-      }).not.toThrow();
-
-      await groupHeaders[0].trigger('click');
-      await nextTick();
-
-      // The results-grid should render but with 0 result chips
+      // The results-grid should render but with 0 result chips for undefined indicator_results
       // (v-for on undefined renders nothing — no crash)
       const groupDashboards = wrapper.findAll('.indicator-results .indicator-group-dashboard');
       expect(groupDashboards.length).toBe(2);
@@ -499,7 +483,7 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       expect(summaryText).toBe('20 groups · 200 indicators');
     });
 
-    it('4.2: expand section → 20 group-collapse-headers, 19 OR dividers', async () => {
+    it('4.2: expand section → 20 group-header-static, 19 OR dividers', async () => {
       wrapper.vm.configs = [makeLargeConfig(20, 10)];
       await nextTick();
 
@@ -507,8 +491,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await wrapper.find('.section-collapse-header').trigger('click');
       await nextTick();
 
-      // 20 group headers
-      expect(wrapper.findAll('.group-collapse-header').length).toBe(20);
+      // 20 static group headers
+      expect(wrapper.findAll('.group-header-static').length).toBe(20);
       // 19 OR dividers (between 20 groups)
       expect(wrapper.findAll('.or-divider-compact').length).toBe(19);
       // 20 indicator-group-dashboard containers
@@ -649,7 +633,7 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       expect(cards[2].findAll('.indicator-chip').length).toBe(1);
     });
 
-    it('5.2: expand card A eval + group 0, then expand card B eval → B group 0 is collapsed', async () => {
+    it('5.2: expand card A eval, then expand card B eval → both show all results-grids independently', async () => {
       wrapper.vm.configs = [cardA, cardB];
 
       // Set up running statuses for both cards
@@ -677,24 +661,19 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await cards[0].find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand card A group 0
-      const cardAGroupHeaders = cards[0].findAll('.indicator-results .group-collapse-header');
-      await cardAGroupHeaders[0].trigger('click');
-      await nextTick();
-
-      // Card A group 0 should be expanded (results-grid visible)
-      expect(cards[0].findAll('.indicator-results .results-grid').length).toBe(1);
+      // Card A: all results-grids visible immediately (no group-level collapse)
+      expect(cards[0].findAll('.indicator-results .results-grid').length).toBe(2);
 
       // Now expand card B eval section
       await cards[1].find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Card B eval is expanded but group 0 should be COLLAPSED (no results-grid)
+      // Card B: all results-grids visible immediately
       expect(cards[1].find('.indicator-results .section-collapse-body').exists()).toBe(true);
-      expect(cards[1].findAll('.indicator-results .results-grid').length).toBe(0);
+      expect(cards[1].findAll('.indicator-results .results-grid').length).toBe(2);
 
-      // Verify card B group headers exist but are not expanded
-      const cardBGroupHeaders = cards[1].findAll('.indicator-results .group-collapse-header');
+      // Verify card B has static group headers
+      const cardBGroupHeaders = cards[1].findAll('.indicator-results .group-header-static');
       expect(cardBGroupHeaders.length).toBe(2);
     });
 
@@ -725,7 +704,7 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       expect(cards[1].findAll('.indicator-group-dashboard').length).toBe(2);
     });
 
-    it('5.4: expand entry on both, expand group 1 on A, group 2 (idx 1) on B — cross-card independence', async () => {
+    it('5.4: expand entry on both → all groups visible on both cards independently', async () => {
       wrapper.vm.configs = [cardA, cardB];
       await nextTick();
 
@@ -737,34 +716,25 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await cards[1].find('.indicators-section .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Card A: expand group 0 (A-Group1)
-      const cardAGroups = cards[0].findAll('.indicators-section .group-collapse-header');
-      await cardAGroups[0].trigger('click');
-      await nextTick();
+      // Verify static group headers exist (no clickable group-collapse-header)
+      expect(cards[0].findAll('.indicators-section .group-header-static').length).toBe(2);
+      expect(cards[1].findAll('.indicators-section .group-header-static').length).toBe(2);
 
-      // Card B: expand group 1 (B-Group2)
-      const cardBGroups = cards[1].findAll('.indicators-section .group-collapse-header');
-      await cardBGroups[1].trigger('click');
-      await nextTick();
+      // All indicators-grids visible on both cards (no group-level collapse)
+      expect(cards[0].findAll('.indicators-section .indicators-grid').length).toBe(2);
+      expect(cards[1].findAll('.indicators-section .indicators-grid').length).toBe(2);
 
-      // Verify state via isGroupExpanded
-      expect(wrapper.vm.isGroupExpanded('card-A', 'entry', 0)).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('card-A', 'entry', 1)).toBe(false);
-      expect(wrapper.vm.isGroupExpanded('card-B', 'entry', 0)).toBe(false);
-      expect(wrapper.vm.isGroupExpanded('card-B', 'entry', 1)).toBe(true);
-
-      // Verify via DOM: card A has 1 indicators-grid (group 0), card B has 1 (group 1)
-      expect(cards[0].findAll('.indicators-section .indicators-grid').length).toBe(1);
-      expect(cards[1].findAll('.indicators-section .indicators-grid').length).toBe(1);
-
-      // Card A's expanded group shows VIX chip, Card B's expanded group shows SMA chip
+      // Card A shows VIX and RSI chips
       const cardAChips = cards[0].findAll('.indicators-section .indicator-chip .indicator-name');
-      expect(cardAChips.length).toBe(1);
+      expect(cardAChips.length).toBe(2);
       expect(cardAChips[0].text()).toBe('VIX');
+      expect(cardAChips[1].text()).toBe('RSI');
 
+      // Card B shows MACD and SMA chips
       const cardBChips = cards[1].findAll('.indicators-section .indicator-chip .indicator-name');
-      expect(cardBChips.length).toBe(1);
-      expect(cardBChips[0].text()).toBe('SMA');
+      expect(cardBChips.length).toBe(2);
+      expect(cardBChips[0].text()).toBe('MACD');
+      expect(cardBChips[1].text()).toBe('SMA');
     });
 
   });
@@ -827,28 +797,7 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       expect(wrapper.find('.indicator-results .section-collapse-body').exists()).toBe(false);
     });
 
-    it('6.3: expand entry section, click group 0 header 10 times rapidly — parity check', async () => {
-      wrapper.vm.configs = [multiGroupConfig];
-      await nextTick();
-
-      // First expand the section
-      await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-
-      const groupHeader = wrapper.findAll('.group-collapse-header')[0];
-
-      // Click group header 10 times (even → collapsed)
-      for (let i = 0; i < 10; i++) {
-        await groupHeader.trigger('click');
-      }
-      await nextTick();
-
-      // 10 clicks (even) → group 0 is back to collapsed
-      expect(wrapper.vm.isGroupExpanded('cfg-rapid', 'entry', 0)).toBe(false);
-      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(0);
-    });
-
-    it('6.4: expand entry + group 0, collapse section, re-expand → group 0 still expanded', async () => {
+    it('6.4: expand entry, collapse section, re-expand → indicators-grids still visible', async () => {
       wrapper.vm.configs = [multiGroupConfig];
       await nextTick();
 
@@ -856,13 +805,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand group 0
-      await wrapper.findAll('.group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      // Verify group 0 is expanded
-      expect(wrapper.vm.isGroupExpanded('cfg-rapid', 'entry', 0)).toBe(true);
-      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(1);
+      // All indicators-grids visible (no group-level collapse)
+      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(2);
 
       // Collapse the section
       await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
@@ -871,19 +815,15 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       // Section body gone
       expect(wrapper.find('.indicators-section .section-collapse-body').exists()).toBe(false);
 
-      // Group state should still be stored as expanded
-      expect(wrapper.vm.isGroupExpanded('cfg-rapid', 'entry', 0)).toBe(true);
-
       // Re-expand the section
       await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Group 0 should still be expanded (indicators-grid visible)
-      expect(wrapper.vm.isGroupExpanded('cfg-rapid', 'entry', 0)).toBe(true);
-      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(1);
+      // All indicators-grids should be visible again
+      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(2);
     });
 
-    it('6.5: expand eval + group 0, collapse eval, WebSocket update, re-expand → group 0 still expanded', async () => {
+    it('6.5: expand eval, collapse eval, WebSocket update, re-expand → results-grids visible', async () => {
       wrapper.vm.configs = [multiGroupConfig];
       wrapper.vm.statuses = multiGroupStatuses;
       await nextTick();
@@ -892,12 +832,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand group 0
-      await wrapper.findAll('.indicator-results .group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      // Verify group 0 is expanded
-      expect(wrapper.vm.isGroupExpanded('cfg-rapid', 'eval', 0)).toBe(true);
+      // All results-grids visible immediately (no group-level collapse)
+      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(2);
 
       // Collapse the eval section
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
@@ -926,9 +862,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Group 0 should still be expanded (state survived collapse + data update)
-      expect(wrapper.vm.isGroupExpanded('cfg-rapid', 'eval', 0)).toBe(true);
-      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(1);
+      // All results-grids should be visible (state survived collapse + data update)
+      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(2);
     });
 
   });
@@ -939,7 +874,7 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
 
   describe('Step 7 — State Persistence Across Data Updates', () => {
 
-    it('7.1: expand entry + group 0, update configs (same ID, new data) → entry + group 0 remain expanded', async () => {
+    it('7.1: expand entry, update configs (same ID, new data) → entry remains expanded with all groups visible', async () => {
       wrapper.vm.configs = [makeConfig({
         id: 'cfg-persist',
         indicator_groups: [
@@ -953,13 +888,9 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand group 0
-      await wrapper.findAll('.group-collapse-header')[0].trigger('click');
-      await nextTick();
-
       expect(wrapper.vm.expandedEntrySections['cfg-persist']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-persist', 'entry', 0)).toBe(true);
-      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(1);
+      // All indicators-grids visible (no group-level collapse)
+      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(2);
 
       // Update configs with new indicator data (same config ID, changed thresholds)
       wrapper.vm.configs = [makeConfig({
@@ -975,9 +906,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       expect(wrapper.vm.expandedEntrySections['cfg-persist']).toBe(true);
       expect(wrapper.find('.indicators-section .section-collapse-body').exists()).toBe(true);
 
-      // Group 0 should still be expanded
-      expect(wrapper.vm.isGroupExpanded('cfg-persist', 'entry', 0)).toBe(true);
-      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(1);
+      // All indicators-grids should still be visible
+      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(2);
     });
 
     it('7.2: expand eval, WebSocket update with new group_results → eval stays expanded', async () => {
@@ -1027,7 +957,7 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       expect(wrapper.find('.indicator-results .section-collapse-body').exists()).toBe(true);
     });
 
-    it('7.3: expand eval + group 1, WebSocket removes a group (3→2) → eval stays expanded, no crash', async () => {
+    it('7.3: expand eval, WebSocket removes a group (3→2) → eval stays expanded, no crash', async () => {
       wrapper.vm.configs = [makeConfig({
         id: 'cfg-shrink',
         indicator_groups: [
@@ -1052,13 +982,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand group 1 (B)
-      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
-      await groupHeaders[1].trigger('click');
-      await nextTick();
-
-      expect(wrapper.vm.isGroupExpanded('cfg-shrink', 'eval', 1)).toBe(true);
-      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(1);
+      // All results-grids visible (no group-level collapse)
+      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(3);
 
       // WebSocket update: group C removed (3 → 2 groups)
       const addCallbackCalls = webSocketClient.addCallback.mock.calls;
@@ -1084,13 +1009,9 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
 
       // Now only 2 groups rendered
       expect(wrapper.findAll('.indicator-results .indicator-group-dashboard').length).toBe(2);
-
-      // Group 1 key still in expandedGroups (stale but harmless)
-      expect(wrapper.vm.isGroupExpanded('cfg-shrink', 'eval', 1)).toBe(true);
-      // Group 2 (old group C) is no longer rendered — no crash
     });
 
-    it('7.4: expand eval + group 0, WebSocket adds a group (2→3) → group 0 still expanded, new group collapsed', async () => {
+    it('7.4: expand eval, WebSocket adds a group (2→3) → all groups visible including new group', async () => {
       wrapper.vm.configs = [makeConfig({
         id: 'cfg-grow',
         indicator_groups: [
@@ -1113,12 +1034,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand group 0
-      await wrapper.findAll('.indicator-results .group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      expect(wrapper.vm.isGroupExpanded('cfg-grow', 'eval', 0)).toBe(true);
-      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(1);
+      // All results-grids visible (no group-level collapse)
+      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(2);
 
       // WebSocket update: group C added (2 → 3 groups)
       const addCallbackCalls = webSocketClient.addCallback.mock.calls;
@@ -1145,10 +1062,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       // Now 3 groups rendered
       expect(wrapper.findAll('.indicator-results .indicator-group-dashboard').length).toBe(3);
 
-      // Group 0 should still be expanded
-      expect(wrapper.vm.isGroupExpanded('cfg-grow', 'eval', 0)).toBe(true);
-      // New group 2 should be collapsed (no key in expandedGroups)
-      expect(wrapper.vm.isGroupExpanded('cfg-grow', 'eval', 2)).toBe(false);
+      // All 3 results-grids should be visible
+      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(3);
     });
 
     it('7.5: expand entry, replace configs with same ID but different group count → entry remains expanded', async () => {
@@ -1577,42 +1492,6 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       expect(chevron.classes()).not.toContain('pi-chevron-right');
     });
 
-    it('10.5: collapsed group within expanded section → chevron has class pi-chevron-right', async () => {
-      wrapper.vm.configs = [chevronConfig];
-      await nextTick();
-
-      // Expand entry section
-      await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-
-      // Group headers should have right chevron (collapsed by default)
-      const groupChevrons = wrapper.findAll('.group-collapse-header .collapse-chevron');
-      expect(groupChevrons.length).toBe(2);
-      expect(groupChevrons[0].classes()).toContain('pi-chevron-right');
-      expect(groupChevrons[0].classes()).not.toContain('pi-chevron-down');
-      expect(groupChevrons[1].classes()).toContain('pi-chevron-right');
-    });
-
-    it('10.6: expanded group → chevron has class pi-chevron-down', async () => {
-      wrapper.vm.configs = [chevronConfig];
-      await nextTick();
-
-      // Expand entry section
-      await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-
-      // Expand group 0
-      await wrapper.findAll('.group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      const groupChevrons = wrapper.findAll('.group-collapse-header .collapse-chevron');
-      // Group 0: expanded → pi-chevron-down
-      expect(groupChevrons[0].classes()).toContain('pi-chevron-down');
-      expect(groupChevrons[0].classes()).not.toContain('pi-chevron-right');
-      // Group 1: still collapsed → pi-chevron-right
-      expect(groupChevrons[1].classes()).toContain('pi-chevron-right');
-    });
-
     it('10.7: collapse a section and re-expand → chevron returns to pi-chevron-down', async () => {
       wrapper.vm.configs = [chevronConfig];
       await nextTick();
@@ -1686,7 +1565,7 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       expect(wrapper.vm.expandedEntrySections['cfg-action']).toBe(true);
     });
 
-    it('11.2: with eval section + group expanded, stopAutomation calls api.stopAutomation with correct config ID', async () => {
+    it('11.2: with eval section expanded, stopAutomation calls api.stopAutomation with correct config ID', async () => {
       wrapper.vm.configs = [actionConfig];
       wrapper.vm.statuses = actionStatuses;
       await nextTick();
@@ -1695,12 +1574,9 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Expand group 0
-      await wrapper.findAll('.indicator-results .group-collapse-header')[0].trigger('click');
-      await nextTick();
-
       expect(wrapper.vm.expandedEvalSections['cfg-action']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-action', 'eval', 0)).toBe(true);
+      // All results-grids visible immediately (no group-level collapse)
+      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(2);
 
       // Call stopAutomation
       await wrapper.vm.stopAutomation(actionConfig);
@@ -1708,9 +1584,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
 
       expect(api.stopAutomation).toHaveBeenCalledWith('cfg-action');
 
-      // Eval section + group should still be expanded
+      // Eval section should still be expanded
       expect(wrapper.vm.expandedEvalSections['cfg-action']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-action', 'eval', 0)).toBe(true);
     });
 
     it('11.3: with entry section expanded, evaluateIndicators opens eval dialog, collapse state unchanged after close', async () => {
@@ -1780,14 +1655,13 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       wrapper.vm.configs = [actionConfig];
       await nextTick();
 
-      // Expand entry section + group 0
+      // Expand entry section
       await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-      await wrapper.findAll('.group-collapse-header')[0].trigger('click');
       await nextTick();
 
       expect(wrapper.vm.expandedEntrySections['cfg-action']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-action', 'entry', 0)).toBe(true);
+      // All indicators-grids visible (no group-level collapse)
+      expect(wrapper.findAll('.indicators-section .indicators-grid').length).toBe(2);
 
       // Call duplicateConfig
       await wrapper.vm.duplicateConfig(actionConfig);
@@ -1799,7 +1673,6 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
 
       // Collapse state should be unchanged
       expect(wrapper.vm.expandedEntrySections['cfg-action']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-action', 'entry', 0)).toBe(true);
     });
 
     it('11.6: with entry section expanded, confirmDelete opens dialog, confirming deletes config', async () => {
@@ -1854,14 +1727,13 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       wrapper.vm.statuses = actionStatuses;
       await nextTick();
 
-      // Expand eval section + group 0
+      // Expand eval section
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
-      await nextTick();
-      await wrapper.findAll('.indicator-results .group-collapse-header')[0].trigger('click');
       await nextTick();
 
       expect(wrapper.vm.expandedEvalSections['cfg-action']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-action', 'eval', 0)).toBe(true);
+      // All results-grids visible immediately (no group-level collapse)
+      expect(wrapper.findAll('.indicator-results .results-grid').length).toBe(2);
 
       // Call showLogs
       await wrapper.vm.showLogs(actionConfig);
@@ -1870,9 +1742,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       expect(wrapper.vm.showLogsDialog).toBe(true);
       expect(api.getAutomationLogs).toHaveBeenCalledWith('cfg-action');
 
-      // Eval section + group should still be expanded
+      // Eval section should still be expanded
       expect(wrapper.vm.expandedEvalSections['cfg-action']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-action', 'eval', 0)).toBe(true);
     });
 
   });
@@ -2005,21 +1876,15 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       };
       await nextTick();
 
-      // Expand both entry and eval sections + group 0 in each
+      // Expand both entry and eval sections
       await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
       await nextTick();
-      await wrapper.findAll('.indicators-section .group-collapse-header')[0].trigger('click');
-      await nextTick();
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
-      await nextTick();
-      await wrapper.findAll('.indicator-results .group-collapse-header')[0].trigger('click');
       await nextTick();
 
       // Verify expanded state
       expect(wrapper.vm.expandedEntrySections['cfg-eval-close']).toBe(true);
       expect(wrapper.vm.expandedEvalSections['cfg-eval-close']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-eval-close', 'entry', 0)).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-eval-close', 'eval', 0)).toBe(true);
 
       // Open eval dialog
       await wrapper.vm.evaluateIndicators(config);
@@ -2033,8 +1898,6 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       // All card collapse states should be unchanged
       expect(wrapper.vm.expandedEntrySections['cfg-eval-close']).toBe(true);
       expect(wrapper.vm.expandedEvalSections['cfg-eval-close']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-eval-close', 'entry', 0)).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-eval-close', 'eval', 0)).toBe(true);
 
       // DOM should still show expanded sections
       expect(wrapper.find('.indicators-section .section-collapse-body').exists()).toBe(true);
@@ -2334,10 +2197,8 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
       };
       await nextTick();
 
-      // Expand entry section and group 0
+      // Expand entry section
       await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-      await wrapper.findAll('.group-collapse-header')[0].trigger('click');
       await nextTick();
 
       // Expand eval section
@@ -2346,7 +2207,6 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
 
       // Verify expanded state
       expect(wrapper.vm.expandedEntrySections['cfg-mid-interact']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-mid-interact', 'entry', 0)).toBe(true);
       expect(wrapper.vm.expandedEvalSections['cfg-mid-interact']).toBe(true);
 
       // WebSocket update arrives mid-interaction
@@ -2366,7 +2226,6 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
 
       // All collapse states should be preserved
       expect(wrapper.vm.expandedEntrySections['cfg-mid-interact']).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-mid-interact', 'entry', 0)).toBe(true);
       expect(wrapper.vm.expandedEvalSections['cfg-mid-interact']).toBe(true);
 
       // DOM should reflect both expanded states
@@ -2376,179 +2235,4 @@ describe('QA — Dashboard Compact Mode (Steps 2–3)', () => {
 
   });
 
-  // =========================================================================
-  // Step 15 — Group Expand State Key Integrity (AC-5, AC-7)
-  // =========================================================================
-
-  describe('Step 15 — Group Expand State Key Integrity', () => {
-
-    it('15.1: expand entry group 0 and eval group 0 for same config — both independently expanded', async () => {
-      const config = makeConfig({
-        id: 'cfg-key',
-        indicator_groups: [
-          { id: 'g1', name: 'A', indicators: [{ id: 'i1', type: 'vix', enabled: true, operator: 'lt', threshold: 20 }] },
-          { id: 'g2', name: 'B', indicators: [{ id: 'i2', type: 'rsi', enabled: true, operator: 'gt', threshold: 70 }] },
-        ],
-      });
-      wrapper.vm.configs = [config];
-      wrapper.vm.statuses = {
-        'cfg-key': {
-          state: 'waiting', is_running: true, all_indicators_pass: true,
-          group_results: [
-            { group_id: 'g1', group_name: 'A', pass: true, indicator_results: [{ type: 'vix', value: 15, pass: true }] },
-            { group_id: 'g2', group_name: 'B', pass: false, indicator_results: [{ type: 'rsi', value: 40, pass: false }] },
-          ],
-        }
-      };
-      await nextTick();
-
-      // Expand entry section + entry group 0
-      await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-      await wrapper.findAll('.indicators-section .group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      // Expand eval section + eval group 0
-      await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
-      await nextTick();
-      await wrapper.findAll('.indicator-results .group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      // Both should be independently expanded (different section in key)
-      // Key format: configId__section__groupIdx
-      expect(wrapper.vm.isGroupExpanded('cfg-key', 'entry', 0)).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg-key', 'eval', 0)).toBe(true);
-
-      // Collapse entry group 0 — eval group 0 should remain expanded
-      await wrapper.findAll('.indicators-section .group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      expect(wrapper.vm.isGroupExpanded('cfg-key', 'entry', 0)).toBe(false);
-      expect(wrapper.vm.isGroupExpanded('cfg-key', 'eval', 0)).toBe(true);
-    });
-
-    it('15.2: expand entry group 0 on card A and entry group 0 on card B — both independently expanded', async () => {
-      const cardA = makeConfig({
-        id: 'key-A',
-        name: 'Card A',
-        indicator_groups: [
-          { id: 'g1', name: 'A1', indicators: [{ id: 'i1', type: 'vix', enabled: true, operator: 'lt', threshold: 20 }] },
-          { id: 'g2', name: 'A2', indicators: [{ id: 'i2', type: 'rsi', enabled: true, operator: 'gt', threshold: 70 }] },
-        ],
-      });
-      const cardB = makeConfig({
-        id: 'key-B',
-        name: 'Card B',
-        indicator_groups: [
-          { id: 'g1', name: 'B1', indicators: [{ id: 'i1', type: 'macd', enabled: true, operator: 'gt', threshold: 0 }] },
-          { id: 'g2', name: 'B2', indicators: [{ id: 'i2', type: 'sma', enabled: true, operator: 'gt', threshold: 50 }] },
-        ],
-      });
-      wrapper.vm.configs = [cardA, cardB];
-      await nextTick();
-
-      const cards = wrapper.findAll('.config-card');
-
-      // Expand both cards' entry sections
-      await cards[0].find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-      await cards[1].find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-
-      // Expand group 0 on card A
-      await cards[0].findAll('.group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      // Expand group 0 on card B
-      await cards[1].findAll('.group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      // Both should be expanded (different configId in key)
-      expect(wrapper.vm.isGroupExpanded('key-A', 'entry', 0)).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('key-B', 'entry', 0)).toBe(true);
-
-      // Collapse A's group 0 — B's group 0 should remain
-      await cards[0].findAll('.group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      expect(wrapper.vm.isGroupExpanded('key-A', 'entry', 0)).toBe(false);
-      expect(wrapper.vm.isGroupExpanded('key-B', 'entry', 0)).toBe(true);
-    });
-
-    it('15.3: expand entry group 2, collapse section, re-expand — isGroupExpanded still true', async () => {
-      const config = makeConfig({
-        id: 'cfg-persist-key',
-        indicator_groups: [
-          { id: 'g1', name: 'A', indicators: [{ id: 'i1', type: 'vix', enabled: true, operator: 'lt', threshold: 20 }] },
-          { id: 'g2', name: 'B', indicators: [{ id: 'i2', type: 'rsi', enabled: true, operator: 'gt', threshold: 70 }] },
-          { id: 'g3', name: 'C', indicators: [{ id: 'i3', type: 'macd', enabled: true, operator: 'gt', threshold: 0 }] },
-        ],
-      });
-      wrapper.vm.configs = [config];
-      await nextTick();
-
-      // Expand entry section
-      await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-
-      // Expand group 2 (index 2)
-      await wrapper.findAll('.group-collapse-header')[2].trigger('click');
-      await nextTick();
-
-      expect(wrapper.vm.isGroupExpanded('cfg-persist-key', 'entry', 2)).toBe(true);
-
-      // Collapse the section
-      await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-
-      // Group state persists even when section is collapsed
-      expect(wrapper.vm.isGroupExpanded('cfg-persist-key', 'entry', 2)).toBe(true);
-
-      // Re-expand section
-      await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-
-      // Group 2 should still be expanded
-      expect(wrapper.vm.isGroupExpanded('cfg-persist-key', 'entry', 2)).toBe(true);
-
-      // DOM should reflect: group 2 has indicators-grid
-      const grids = wrapper.findAll('.indicators-section .indicators-grid');
-      expect(grids.length).toBe(1); // Only group 2 expanded
-    });
-
-    it('15.4: config ID with double underscores — key "cfg__special__entry__0" still works', async () => {
-      const config = makeConfig({
-        id: 'cfg__special',
-        indicator_groups: [
-          { id: 'g1', name: 'A', indicators: [{ id: 'i1', type: 'vix', enabled: true, operator: 'lt', threshold: 20 }] },
-          { id: 'g2', name: 'B', indicators: [{ id: 'i2', type: 'rsi', enabled: true, operator: 'gt', threshold: 70 }] },
-        ],
-      });
-      wrapper.vm.configs = [config];
-      await nextTick();
-
-      // Expand entry section
-      await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
-      await nextTick();
-
-      // Expand group 0
-      await wrapper.findAll('.group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      // The key will be "cfg__special__entry__0" — verify it works
-      expect(wrapper.vm.isGroupExpanded('cfg__special', 'entry', 0)).toBe(true);
-      expect(wrapper.vm.isGroupExpanded('cfg__special', 'entry', 1)).toBe(false);
-
-      // Verify the actual key in expandedGroups
-      expect(wrapper.vm.expandedGroups['cfg__special__entry__0']).toBe(true);
-
-      // Collapse and re-expand — should still work
-      await wrapper.findAll('.group-collapse-header')[0].trigger('click');
-      await nextTick();
-
-      expect(wrapper.vm.isGroupExpanded('cfg__special', 'entry', 0)).toBe(false);
-      expect(wrapper.vm.expandedGroups['cfg__special__entry__0']).toBe(false);
-    });
-
-  });
 });
