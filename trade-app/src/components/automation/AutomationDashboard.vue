@@ -117,17 +117,13 @@
                     <span class="or-divider-compact-label">OR</span>
                   </div>
                   <div class="indicator-group-dashboard">
-                    <!-- Group-level collapse header (FR-3.1, FR-3.2, FR-3.5) -->
-                    <div
-                      class="group-collapse-header"
-                      @click="toggleGroup(config.id, 'entry', gIdx)"
-                    >
-                      <i :class="isGroupExpanded(config.id, 'entry', gIdx) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" class="collapse-chevron collapse-chevron-sm"></i>
+                    <!-- Static group header (always visible, not clickable) -->
+                    <div class="group-header-static">
                       <span class="group-label">{{ group.name || 'Group ' + (gIdx + 1) }}</span>
                       <span class="group-indicator-count">{{ (group.indicators || []).filter(ind => ind.enabled).length }} indicators</span>
                     </div>
-                    <!-- Group body: indicator chips (FR-3.3) -->
-                    <div v-if="isGroupExpanded(config.id, 'entry', gIdx)" class="indicators-grid">
+                    <!-- Indicator chips (always visible when section is expanded) -->
+                    <div class="indicators-grid">
                       <div
                         v-for="indicator in (group.indicators || []).filter(ind => ind.enabled)"
                         :key="indicator.id || indicator.type"
@@ -238,19 +234,15 @@
                       <span class="or-divider-compact-label">OR</span>
                     </div>
                     <div class="indicator-group-dashboard">
-                      <!-- Group-level collapse header (FR-3.1, FR-3.2, FR-3.5) -->
-                      <div
-                        class="group-collapse-header"
-                        @click="toggleGroup(config.id, 'eval', grIdx)"
-                      >
-                        <i :class="isGroupExpanded(config.id, 'eval', grIdx) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" class="collapse-chevron collapse-chevron-sm"></i>
+                      <!-- Static group header with pass/fail badge (always visible) -->
+                      <div class="group-header-static">
                         <span class="group-label">{{ gr.group_name || 'Group ' + (grIdx + 1) }}</span>
                         <span class="group-result-badge" :class="gr.pass ? 'passed' : 'failed'">
                           {{ gr.pass ? '&#10003; Pass' : '&#10007; Fail' }}
                         </span>
                       </div>
-                      <!-- Group body: indicator result chips (FR-3.3) -->
-                      <div v-if="isGroupExpanded(config.id, 'eval', grIdx)" class="results-grid">
+                      <!-- Result chips (always visible when section is expanded) -->
+                      <div class="results-grid">
                         <div
                           v-for="(result, idx) in gr.indicator_results"
                           :key="idx"
@@ -562,7 +554,6 @@ export default {
     // Compact mode collapse state (per-card)
     const expandedEntrySections = ref({})  // { [configId]: boolean } — Entry Criteria section expanded?
     const expandedEvalSections = ref({})   // { [configId]: boolean } — Last Evaluation section expanded?
-    const expandedGroups = ref({})         // { [configId__section__groupIdx]: boolean } — individual group expanded?
     
     // Dialogs
     const showEvalDialog = ref(false)
@@ -971,19 +962,6 @@ export default {
       }
     }
 
-    const toggleGroup = (configId, section, groupIdx) => {
-      // section: 'entry' | 'eval'
-      const key = `${configId}__${section}__${groupIdx}`
-      expandedGroups.value = {
-        ...expandedGroups.value,
-        [key]: !expandedGroups.value[key]
-      }
-    }
-
-    const isGroupExpanded = (configId, section, groupIdx) => {
-      return !!expandedGroups.value[`${configId}__${section}__${groupIdx}`]
-    }
-
     // Compact mode helper methods
     const isMultiGroup = (config) => {
       return (config.indicator_groups?.length || 0) > 1
@@ -1105,11 +1083,8 @@ export default {
       // Compact mode (progressive disclosure)
       expandedEntrySections,
       expandedEvalSections,
-      expandedGroups,
       toggleEntrySection,
       toggleEvalSection,
-      toggleGroup,
-      isGroupExpanded,
       isMultiGroup,
       getTotalGroupCount,
       getTotalIndicatorCount,

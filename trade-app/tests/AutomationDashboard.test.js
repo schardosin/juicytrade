@@ -421,7 +421,7 @@ describe('AutomationDashboard', () => {
       expect(wrapper.findAll('.section-collapse-body .or-divider-compact').length).toBe(2);
     });
 
-    it('groups are collapsed by default within expanded section', async () => {
+    it('groups are always visible within expanded section', async () => {
       wrapper.vm.configs = [multiGroupConfig];
       await nextTick();
 
@@ -429,37 +429,18 @@ describe('AutomationDashboard', () => {
       await wrapper.find('.section-collapse-header').trigger('click');
       await nextTick();
 
-      // Group collapse headers should exist for each group
-      expect(wrapper.findAll('.group-collapse-header').length).toBe(3);
-      // But no indicator grids should be visible (groups collapsed)
-      expect(wrapper.findAll('.section-collapse-body .indicators-grid').length).toBe(0);
+      // Static group headers should exist for each group
+      expect(wrapper.findAll('.group-header-static').length).toBe(3);
+      // No clickable group-collapse-header should exist
+      expect(wrapper.find('.group-collapse-header').exists()).toBe(false);
+      // All indicator grids should be visible (no group-level collapse)
+      expect(wrapper.findAll('.section-collapse-body .indicators-grid').length).toBe(3);
       // Group indicator counts should be visible
       const counts = wrapper.findAll('.group-indicator-count');
       expect(counts.length).toBe(3);
       expect(counts[0].text()).toBe('2 indicators'); // grp_1: 2 enabled out of 3
       expect(counts[1].text()).toBe('2 indicators'); // grp_2: 2 enabled
       expect(counts[2].text()).toBe('3 indicators'); // grp_3: 3 enabled
-    });
-
-    it('clicking a group header expands that group', async () => {
-      wrapper.vm.configs = [multiGroupConfig];
-      await nextTick();
-
-      // Expand the section first
-      await wrapper.find('.section-collapse-header').trigger('click');
-      await nextTick();
-
-      // Click the first group header
-      const groupHeaders = wrapper.findAll('.group-collapse-header');
-      await groupHeaders[0].trigger('click');
-      await nextTick();
-
-      // First group should now show its indicators grid
-      const grids = wrapper.findAll('.section-collapse-body .indicators-grid');
-      expect(grids.length).toBe(1);
-      // Should have 2 indicator chips (2 enabled in grp_1)
-      expect(grids[0].findAll('.indicator-chip').length).toBe(2);
-      // Other groups should remain collapsed (no additional grids)
     });
 
     it('single-group configs render flat without collapse', async () => {
@@ -614,7 +595,7 @@ describe('AutomationDashboard', () => {
       expect(body.find('.overall-status').exists()).toBe(true);
     });
 
-    it('groups show name and badge but no result chips when collapsed', async () => {
+    it('groups show name, badge, and result chips when section is expanded', async () => {
       wrapper.vm.configs = [evalMultiGroupConfig];
       wrapper.vm.statuses = passingStatuses;
       await nextTick();
@@ -623,39 +604,19 @@ describe('AutomationDashboard', () => {
       await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
-      // Group collapse headers should exist
-      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
+      // Static group headers should exist
+      const groupHeaders = wrapper.findAll('.indicator-results .group-header-static');
       expect(groupHeaders.length).toBe(3);
+      // No clickable group-collapse-header should exist
+      expect(wrapper.find('.indicator-results .group-collapse-header').exists()).toBe(false);
 
       // Each group should have pass/fail badge
       expect(groupHeaders[0].find('.group-result-badge.passed').exists()).toBe(true);
       expect(groupHeaders[1].find('.group-result-badge.failed').exists()).toBe(true);
       expect(groupHeaders[2].find('.group-result-badge.failed').exists()).toBe(true);
 
-      // No results grids should be visible (groups collapsed by default)
-      expect(wrapper.findAll('.indicator-results .section-collapse-body .results-grid').length).toBe(0);
-    });
-
-    it('clicking a group header expands that group to show result chips', async () => {
-      wrapper.vm.configs = [evalMultiGroupConfig];
-      wrapper.vm.statuses = passingStatuses;
-      await nextTick();
-
-      // Expand the eval section
-      await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
-      await nextTick();
-
-      // Click the first group header
-      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
-      await groupHeaders[0].trigger('click');
-      await nextTick();
-
-      // First group should now show results grid with 2 result chips
-      const grids = wrapper.findAll('.indicator-results .section-collapse-body .results-grid');
-      expect(grids.length).toBe(1);
-      expect(grids[0].findAll('.result-chip').length).toBe(2);
-
-      // Other groups remain collapsed (only 1 grid total)
+      // All results grids should be visible (no group-level collapse)
+      expect(wrapper.findAll('.indicator-results .section-collapse-body .results-grid').length).toBe(3);
     });
 
     it('single-group running config renders flat without collapse', async () => {
@@ -699,11 +660,8 @@ describe('AutomationDashboard', () => {
       await nextTick();
       expect(wrapper.find('.indicator-results .section-collapse-body').exists()).toBe(true);
 
-      // Expand first group
-      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
-      await groupHeaders[0].trigger('click');
-      await nextTick();
-      expect(wrapper.findAll('.indicator-results .section-collapse-body .results-grid').length).toBe(1);
+      // All results grids should be visible immediately (no group-level collapse)
+      expect(wrapper.findAll('.indicator-results .section-collapse-body .results-grid').length).toBe(3);
 
       // Update statuses with new data (same config ID, different values)
       wrapper.vm.statuses = {
@@ -728,8 +686,8 @@ describe('AutomationDashboard', () => {
 
       // Section should still be expanded after data update
       expect(wrapper.find('.indicator-results .section-collapse-body').exists()).toBe(true);
-      // First group should still be expanded
-      expect(wrapper.findAll('.indicator-results .section-collapse-body .results-grid').length).toBe(1);
+      // All results grids should still be visible after data update
+      expect(wrapper.findAll('.indicator-results .section-collapse-body .results-grid').length).toBe(3);
     });
   });
 
@@ -901,18 +859,6 @@ describe('AutomationDashboard', () => {
         // Entry should still be expanded
         expect(wrapper.vm.expandedEntrySections['cfg-independent']).toBe(true);
       });
-
-      it('toggleGroup expands group 0 without affecting group 1', () => {
-        wrapper.vm.toggleGroup('cfg-grp', 'entry', 0);
-        expect(wrapper.vm.isGroupExpanded('cfg-grp', 'entry', 0)).toBe(true);
-        expect(wrapper.vm.isGroupExpanded('cfg-grp', 'entry', 1)).toBe(false);
-      });
-
-      it('isGroupExpanded returns false by default, true after toggle', () => {
-        expect(wrapper.vm.isGroupExpanded('cfg-new', 'eval', 0)).toBe(false);
-        wrapper.vm.toggleGroup('cfg-new', 'eval', 0);
-        expect(wrapper.vm.isGroupExpanded('cfg-new', 'eval', 0)).toBe(true);
-      });
     });
 
     // ─── State independence ─────────────────────────────────────────
@@ -921,17 +867,14 @@ describe('AutomationDashboard', () => {
       it('toggling card A does not affect card B', () => {
         wrapper.vm.toggleEntrySection('card-A');
         wrapper.vm.toggleEvalSection('card-A');
-        wrapper.vm.toggleGroup('card-A', 'entry', 0);
 
         // Card B should all be default (collapsed)
         expect(wrapper.vm.expandedEntrySections['card-B']).toBeFalsy();
         expect(wrapper.vm.expandedEvalSections['card-B']).toBeFalsy();
-        expect(wrapper.vm.isGroupExpanded('card-B', 'entry', 0)).toBe(false);
 
         // Card A should be expanded
         expect(wrapper.vm.expandedEntrySections['card-A']).toBe(true);
         expect(wrapper.vm.expandedEvalSections['card-A']).toBe(true);
-        expect(wrapper.vm.isGroupExpanded('card-A', 'entry', 0)).toBe(true);
       });
     });
   });
