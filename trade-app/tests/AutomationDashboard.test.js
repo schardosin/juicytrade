@@ -314,6 +314,11 @@ describe('AutomationDashboard', () => {
       }];
       await nextTick();
 
+      // Multi-group now renders collapsed by default — expand the section first
+      expect(wrapper.find('.section-collapse-header').exists()).toBe(true);
+      await wrapper.find('.section-collapse-header').trigger('click');
+      await nextTick();
+
       expect(wrapper.findAll('.indicator-group-dashboard').length).toBe(2);
       expect(wrapper.findAll('.or-divider-compact').length).toBe(1);
     });
@@ -354,6 +359,150 @@ describe('AutomationDashboard', () => {
       await nextTick();
 
       expect(wrapper.findAll('.indicator-group-dashboard').length).toBe(0);
+      expect(wrapper.findAll('.indicator-chip').length).toBe(2);
+    });
+  });
+
+  // ─── Compact mode — Entry Criteria ───────────────────────────────────
+
+  describe('Compact mode — Entry Criteria', () => {
+    const multiGroupConfig = {
+      id: 'cfg-multi',
+      name: 'Multi Group Config',
+      symbol: 'NDX',
+      enabled: true,
+      indicator_groups: [
+        { id: 'grp_1', name: 'Low Vol', indicators: [
+          { id: 'ind_1', type: 'vix', enabled: true, operator: 'lt', threshold: 20 },
+          { id: 'ind_2', type: 'gap', enabled: true, operator: 'lt', threshold: 1 },
+          { id: 'ind_3', type: 'range', enabled: false, operator: 'gt', threshold: 5 },
+        ]},
+        { id: 'grp_2', name: 'High Vol', indicators: [
+          { id: 'ind_4', type: 'rsi', enabled: true, operator: 'gt', threshold: 70 },
+          { id: 'ind_5', type: 'macd', enabled: true, operator: 'gt', threshold: 0 },
+        ]},
+        { id: 'grp_3', name: 'Trend Up', indicators: [
+          { id: 'ind_6', type: 'sma', enabled: true, operator: 'gt', threshold: 100 },
+          { id: 'ind_7', type: 'ema', enabled: true, operator: 'gt', threshold: 50 },
+          { id: 'ind_8', type: 'adx', enabled: true, operator: 'gt', threshold: 25 },
+        ]},
+      ],
+      indicators: [],
+      trade_config: { strategy: 'put_spread', max_capital: 5000 },
+    };
+
+    it('renders collapsed by default for multi-group cards', async () => {
+      wrapper.vm.configs = [multiGroupConfig];
+      await nextTick();
+
+      // Section collapse header should exist
+      expect(wrapper.find('.section-collapse-header').exists()).toBe(true);
+      // Summary text should show correct counts (3 groups, 7 enabled indicators)
+      expect(wrapper.find('.collapse-summary-text').text()).toBe('3 groups · 7 indicators');
+      // Section body should NOT exist (collapsed by default)
+      expect(wrapper.find('.section-collapse-body').exists()).toBe(false);
+      // No group containers visible when collapsed
+      expect(wrapper.findAll('.indicator-group-dashboard').length).toBe(0);
+    });
+
+    it('clicking expands the Entry Criteria section', async () => {
+      wrapper.vm.configs = [multiGroupConfig];
+      await nextTick();
+
+      // Click the section collapse header
+      await wrapper.find('.section-collapse-header').trigger('click');
+      await nextTick();
+
+      // Section body should now be rendered
+      expect(wrapper.find('.section-collapse-body').exists()).toBe(true);
+      // Should have 3 group containers
+      expect(wrapper.findAll('.indicator-group-dashboard').length).toBe(3);
+      // Should have OR dividers between groups (2 dividers for 3 groups)
+      expect(wrapper.findAll('.section-collapse-body .or-divider-compact').length).toBe(2);
+    });
+
+    it('groups are collapsed by default within expanded section', async () => {
+      wrapper.vm.configs = [multiGroupConfig];
+      await nextTick();
+
+      // Expand the section
+      await wrapper.find('.section-collapse-header').trigger('click');
+      await nextTick();
+
+      // Group collapse headers should exist for each group
+      expect(wrapper.findAll('.group-collapse-header').length).toBe(3);
+      // But no indicator grids should be visible (groups collapsed)
+      expect(wrapper.findAll('.section-collapse-body .indicators-grid').length).toBe(0);
+      // Group indicator counts should be visible
+      const counts = wrapper.findAll('.group-indicator-count');
+      expect(counts.length).toBe(3);
+      expect(counts[0].text()).toBe('2 indicators'); // grp_1: 2 enabled out of 3
+      expect(counts[1].text()).toBe('2 indicators'); // grp_2: 2 enabled
+      expect(counts[2].text()).toBe('3 indicators'); // grp_3: 3 enabled
+    });
+
+    it('clicking a group header expands that group', async () => {
+      wrapper.vm.configs = [multiGroupConfig];
+      await nextTick();
+
+      // Expand the section first
+      await wrapper.find('.section-collapse-header').trigger('click');
+      await nextTick();
+
+      // Click the first group header
+      const groupHeaders = wrapper.findAll('.group-collapse-header');
+      await groupHeaders[0].trigger('click');
+      await nextTick();
+
+      // First group should now show its indicators grid
+      const grids = wrapper.findAll('.section-collapse-body .indicators-grid');
+      expect(grids.length).toBe(1);
+      // Should have 2 indicator chips (2 enabled in grp_1)
+      expect(grids[0].findAll('.indicator-chip').length).toBe(2);
+      // Other groups should remain collapsed (no additional grids)
+    });
+
+    it('single-group configs render flat without collapse', async () => {
+      wrapper.vm.configs = [{
+        id: 'cfg-single',
+        name: 'Single Group Config',
+        symbol: 'NDX',
+        enabled: true,
+        indicator_groups: [
+          { id: 'grp_1', name: 'Default', indicators: [
+            { id: 'ind_1', type: 'vix', enabled: true, operator: 'lt', threshold: 20 },
+          ]},
+        ],
+        indicators: [],
+        trade_config: { strategy: 'put_spread', max_capital: 5000 },
+      }];
+      await nextTick();
+
+      // No section collapse header for single group
+      expect(wrapper.find('.section-collapse-header').exists()).toBe(false);
+      // Indicator chips should render flat
+      expect(wrapper.findAll('.indicator-chip').length).toBe(1);
+      // No group collapse headers
+      expect(wrapper.find('.group-collapse-header').exists()).toBe(false);
+    });
+
+    it('legacy configs (no groups) render flat without collapse', async () => {
+      wrapper.vm.configs = [{
+        id: 'cfg-legacy',
+        name: 'Legacy Config',
+        symbol: 'NDX',
+        enabled: true,
+        indicators: [
+          { id: 'ind_1', type: 'vix', enabled: true, operator: 'lt', threshold: 20 },
+          { id: 'ind_2', type: 'gap', enabled: true, operator: 'lt', threshold: 1.0 },
+        ],
+        trade_config: { strategy: 'put_spread', max_capital: 5000 },
+      }];
+      await nextTick();
+
+      // No section collapse header
+      expect(wrapper.find('.section-collapse-header').exists()).toBe(false);
+      // Flat indicator chips
       expect(wrapper.findAll('.indicator-chip').length).toBe(2);
     });
   });

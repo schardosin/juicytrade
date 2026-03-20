@@ -96,26 +96,47 @@
         <!-- Indicators Summary -->
           <div class="indicators-section">
             <div class="section-label">Entry Criteria</div>
-            <!-- Multiple groups: grouped display -->
-            <template v-if="config.indicator_groups?.length > 1">
+            <!-- Multiple groups: collapsible display (progressive disclosure) -->
+            <template v-if="isMultiGroup(config)">
+              <!-- Collapsed summary (FR-1.1, FR-1.2) -->
               <div
-                v-for="(group, gIdx) in config.indicator_groups"
-                :key="group.id || gIdx"
+                class="section-collapse-header"
+                @click="toggleEntrySection(config.id)"
               >
-                <div v-if="gIdx > 0" class="or-divider-compact">
-                  <span class="or-divider-compact-label">OR</span>
-                </div>
-                <div class="indicator-group-dashboard">
-                  <div class="group-label">{{ group.name || 'Group ' + (gIdx + 1) }}</div>
-                  <div class="indicators-grid">
+                <i :class="expandedEntrySections[config.id] ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" class="collapse-chevron"></i>
+                <span class="collapse-summary-text">{{ getEntrySummary(config) }}</span>
+              </div>
+
+              <!-- Expanded: groups with individual collapse (FR-1.3, FR-1.4, FR-3) -->
+              <div v-if="expandedEntrySections[config.id]" class="section-collapse-body">
+                <div
+                  v-for="(group, gIdx) in config.indicator_groups"
+                  :key="group.id || gIdx"
+                >
+                  <div v-if="gIdx > 0" class="or-divider-compact">
+                    <span class="or-divider-compact-label">OR</span>
+                  </div>
+                  <div class="indicator-group-dashboard">
+                    <!-- Group-level collapse header (FR-3.1, FR-3.2, FR-3.5) -->
                     <div
-                      v-for="indicator in (group.indicators || []).filter(ind => ind.enabled)"
-                      :key="indicator.id || indicator.type"
-                      class="indicator-chip"
-                      :class="getIndicatorStatusClass(config, indicator)"
+                      class="group-collapse-header"
+                      @click="toggleGroup(config.id, 'entry', gIdx)"
                     >
-                      <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
-                      <span class="indicator-value">{{ formatIndicatorCondition(indicator) }}</span>
+                      <i :class="isGroupExpanded(config.id, 'entry', gIdx) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" class="collapse-chevron collapse-chevron-sm"></i>
+                      <span class="group-label">{{ group.name || 'Group ' + (gIdx + 1) }}</span>
+                      <span class="group-indicator-count">{{ (group.indicators || []).filter(ind => ind.enabled).length }} indicators</span>
+                    </div>
+                    <!-- Group body: indicator chips (FR-3.3) -->
+                    <div v-if="isGroupExpanded(config.id, 'entry', gIdx)" class="indicators-grid">
+                      <div
+                        v-for="indicator in (group.indicators || []).filter(ind => ind.enabled)"
+                        :key="indicator.id || indicator.type"
+                        class="indicator-chip"
+                        :class="getIndicatorStatusClass(config, indicator)"
+                      >
+                        <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
+                        <span class="indicator-value">{{ formatIndicatorCondition(indicator) }}</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -1777,6 +1798,65 @@ export default {
   font-weight: var(--font-weight-semibold);
   color: var(--text-primary);
   font-size: var(--font-size-md);
+}
+
+/* Section Collapse Header (Entry Criteria / Last Evaluation) */
+.section-collapse-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  padding: var(--spacing-xs) 0;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  user-select: none;
+}
+
+.section-collapse-header:hover {
+  opacity: 0.8;
+}
+
+.collapse-chevron {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  transition: transform 0.15s ease;
+  flex-shrink: 0;
+}
+
+.collapse-chevron-sm {
+  font-size: 10px;
+}
+
+.collapse-summary-text {
+  font-size: var(--font-size-sm);
+  color: var(--text-secondary);
+}
+
+.section-collapse-body {
+  margin-top: var(--spacing-xs);
+}
+
+/* Group Collapse Header (within expanded sections) */
+.group-collapse-header {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  cursor: pointer;
+  margin-bottom: var(--spacing-xs);
+  user-select: none;
+}
+
+.group-collapse-header:hover {
+  opacity: 0.8;
+}
+
+.group-collapse-header .group-label {
+  margin-bottom: 0;
+}
+
+.group-indicator-count {
+  font-size: var(--font-size-xs);
+  color: var(--text-tertiary);
+  margin-left: auto;
 }
 
 /* Responsive */
