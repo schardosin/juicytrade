@@ -1823,10 +1823,6 @@ export default {
   flex-shrink: 0;
 }
 
-.collapse-chevron-sm {
-  font-size: 10px;
-}
-
 .collapse-summary-text {
   font-size: var(--font-size-sm);
   color: var(--text-secondary);
@@ -1836,21 +1832,16 @@ export default {
   margin-top: var(--spacing-xs);
 }
 
-/* Group Collapse Header (within expanded sections) */
-.group-collapse-header {
+/* Static group header (non-clickable, always visible) */
+.group-header-static {
   display: flex;
   align-items: center;
   gap: var(--spacing-xs);
-  cursor: pointer;
   margin-bottom: var(--spacing-xs);
   user-select: none;
 }
 
-.group-collapse-header:hover {
-  opacity: 0.8;
-}
-
-.group-collapse-header .group-label {
+.group-header-static .group-label {
   margin-bottom: 0;
 }
 
