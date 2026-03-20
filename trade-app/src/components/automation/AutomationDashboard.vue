@@ -208,50 +208,76 @@
               <span class="status-label">Message:</span>
               <span class="status-value">{{ getAutomationStatus(config.id)?.message }}</span>
             </div>
-            <!-- Group-aware indicator results -->
+            <!-- Group-aware indicator results (collapsible) -->
             <template v-if="getAutomationStatus(config.id)?.group_results?.length > 1">
               <div class="indicator-results">
-                <div class="results-label">Last Evaluation:</div>
+                <!-- Collapsed summary line (FR-2.1, FR-2.2) -->
                 <div
-                  v-for="(gr, grIdx) in getAutomationStatus(config.id).group_results"
-                  :key="gr.group_id || grIdx"
+                  class="section-collapse-header"
+                  @click="toggleEvalSection(config.id)"
                 >
-                  <div v-if="grIdx > 0" class="or-divider-compact">
-                    <span class="or-divider-compact-label">OR</span>
-                  </div>
-                  <div class="indicator-group-dashboard">
-                    <div class="group-header-dashboard">
-                      <span class="group-label">{{ gr.group_name || 'Group ' + (grIdx + 1) }}</span>
-                      <span class="group-result-badge" :class="gr.pass ? 'passed' : 'failed'">
-                        {{ gr.pass ? '&#10003; Pass' : '&#10007; Fail' }}
-                      </span>
+                  <i :class="expandedEvalSections[config.id] ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" class="collapse-chevron"></i>
+                  <span class="results-label" style="margin-bottom: 0;">Last Evaluation:</span>
+                  <span v-if="getEvalSummary(config.id)" class="collapse-summary-text">
+                    <template v-if="getEvalSummary(config.id).passing">
+                      &#10003; Passing ({{ getEvalSummary(config.id).passingGroupName }}) · {{ getEvalSummary(config.id).summary }}
+                    </template>
+                    <template v-else>
+                      &#10007; Not passing · {{ getEvalSummary(config.id).summary }}
+                    </template>
+                  </span>
+                </div>
+
+                <!-- Expanded: group-by-group results (FR-2.3, FR-2.4, FR-3) -->
+                <div v-if="expandedEvalSections[config.id]" class="section-collapse-body">
+                  <div
+                    v-for="(gr, grIdx) in getAutomationStatus(config.id).group_results"
+                    :key="gr.group_id || grIdx"
+                  >
+                    <div v-if="grIdx > 0" class="or-divider-compact">
+                      <span class="or-divider-compact-label">OR</span>
                     </div>
-                    <div class="results-grid">
+                    <div class="indicator-group-dashboard">
+                      <!-- Group-level collapse header (FR-3.1, FR-3.2, FR-3.5) -->
                       <div
-                        v-for="(result, idx) in gr.indicator_results"
-                        :key="idx"
-                        class="result-chip"
-                        :class="{ 
-                          'passed': result.pass && !result.stale, 
-                          'failed': !result.pass && !result.stale,
-                          'stale': result.stale 
-                        }"
-                        :title="result.stale ? `Stale data: ${result.error || 'Fetch failed'}` : result.details"
+                        class="group-collapse-header"
+                        @click="toggleGroup(config.id, 'eval', grIdx)"
                       >
-                        <span>{{ formatIndicatorType(result.type) }}</span>
-                        <span v-if="result.stale" class="stale-icon">&#9888;</span>
-                        <span>{{ formatIndicatorValue(result) }}</span>
+                        <i :class="isGroupExpanded(config.id, 'eval', grIdx) ? 'pi pi-chevron-down' : 'pi pi-chevron-right'" class="collapse-chevron collapse-chevron-sm"></i>
+                        <span class="group-label">{{ gr.group_name || 'Group ' + (grIdx + 1) }}</span>
+                        <span class="group-result-badge" :class="gr.pass ? 'passed' : 'failed'">
+                          {{ gr.pass ? '&#10003; Pass' : '&#10007; Fail' }}
+                        </span>
+                      </div>
+                      <!-- Group body: indicator result chips (FR-3.3) -->
+                      <div v-if="isGroupExpanded(config.id, 'eval', grIdx)" class="results-grid">
+                        <div
+                          v-for="(result, idx) in gr.indicator_results"
+                          :key="idx"
+                          class="result-chip"
+                          :class="{ 
+                            'passed': result.pass && !result.stale, 
+                            'failed': !result.pass && !result.stale,
+                            'stale': result.stale 
+                          }"
+                          :title="result.stale ? `Stale data: ${result.error || 'Fetch failed'}` : result.details"
+                        >
+                          <span>{{ formatIndicatorType(result.type) }}</span>
+                          <span v-if="result.stale" class="stale-icon">&#9888;</span>
+                          <span>{{ formatIndicatorValue(result) }}</span>
+                        </div>
                       </div>
                     </div>
                   </div>
-                </div>
-                <div class="overall-status" :class="getAutomationStatus(config.id)?.all_indicators_pass ? 'passing' : 'failing'">
-                  <template v-if="getAutomationStatus(config.id)?.all_indicators_pass">
-                    &#10003; Passing ({{ getAutomationStatus(config.id).group_results.find(g => g.pass)?.group_name || 'Group' }})
-                  </template>
-                  <template v-else>
-                    &#10007; Not passing
-                  </template>
+                  <!-- Overall status line (unchanged from current) -->
+                  <div class="overall-status" :class="getAutomationStatus(config.id)?.all_indicators_pass ? 'passing' : 'failing'">
+                    <template v-if="getAutomationStatus(config.id)?.all_indicators_pass">
+                      &#10003; Passing ({{ getAutomationStatus(config.id).group_results.find(g => g.pass)?.group_name || 'Group' }})
+                    </template>
+                    <template v-else>
+                      &#10007; Not passing
+                    </template>
+                  </div>
                 </div>
               </div>
             </template>

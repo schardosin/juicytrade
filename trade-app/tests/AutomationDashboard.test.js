@@ -507,6 +507,232 @@ describe('AutomationDashboard', () => {
     });
   });
 
+  // ─── Compact mode — Last Evaluation ──────────────────────────────────
+
+  describe('Compact mode — Last Evaluation', () => {
+    const evalMultiGroupConfig = {
+      id: 'cfg-multi',
+      name: 'Multi Group Config',
+      symbol: 'NDX',
+      enabled: true,
+      indicator_groups: [
+        { id: 'grp_1', name: 'Low VIX', indicators: [
+          { id: 'i1', type: 'vix', enabled: true, operator: 'lt', threshold: 20 },
+          { id: 'i2', type: 'gap', enabled: true, operator: 'lt', threshold: 0 },
+        ]},
+        { id: 'grp_2', name: 'Mid VIX', indicators: [
+          { id: 'i3', type: 'vix', enabled: true, operator: 'lt', threshold: 25 },
+          { id: 'i4', type: 'gap', enabled: true, operator: 'lt', threshold: 1 },
+        ]},
+        { id: 'grp_3', name: 'High VIX', indicators: [
+          { id: 'i5', type: 'vix', enabled: true, operator: 'gt', threshold: 25 },
+        ]},
+      ],
+      trade_config: { strategy: 'put_spread', max_capital: 5000 },
+    };
+
+    const passingStatuses = {
+      'cfg-multi': {
+        state: 'waiting', is_running: true, all_indicators_pass: true,
+        group_results: [
+          { group_id: 'grp_1', group_name: 'Low VIX', pass: true, indicator_results: [
+            { type: 'vix', pass: true, value: 15.5 },
+            { type: 'gap', pass: true, value: -0.5 },
+          ]},
+          { group_id: 'grp_2', group_name: 'Mid VIX', pass: false, indicator_results: [
+            { type: 'vix', pass: true, value: 15.5 },
+            { type: 'gap', pass: false, value: 2.1 },
+          ]},
+          { group_id: 'grp_3', group_name: 'High VIX', pass: false, indicator_results: [
+            { type: 'vix', pass: false, value: 15.5 },
+          ]},
+        ]
+      }
+    };
+
+    it('renders collapsed by default for multi-group eval', async () => {
+      wrapper.vm.configs = [evalMultiGroupConfig];
+      wrapper.vm.statuses = passingStatuses;
+      await nextTick();
+
+      // Find section-collapse-header inside status-details
+      const statusDetails = wrapper.find('.status-details');
+      expect(statusDetails.exists()).toBe(true);
+      const collapseHeader = statusDetails.find('.indicator-results .section-collapse-header');
+      expect(collapseHeader.exists()).toBe(true);
+
+      // Summary text should mention passing, group name, and count
+      const summaryText = collapseHeader.find('.collapse-summary-text').text();
+      expect(summaryText).toContain('Passing');
+      expect(summaryText).toContain('Low VIX');
+      expect(summaryText).toContain('1 of 3 groups passing');
+
+      // Section body should NOT exist (collapsed)
+      expect(statusDetails.find('.section-collapse-body').exists()).toBe(false);
+    });
+
+    it('shows "Not passing" when no groups pass', async () => {
+      wrapper.vm.configs = [evalMultiGroupConfig];
+      wrapper.vm.statuses = {
+        'cfg-multi': {
+          state: 'waiting', is_running: true, all_indicators_pass: false,
+          group_results: [
+            { group_id: 'grp_1', group_name: 'Low VIX', pass: false, indicator_results: [
+              { type: 'vix', pass: false, value: 25 },
+            ]},
+            { group_id: 'grp_2', group_name: 'Mid VIX', pass: false, indicator_results: [
+              { type: 'vix', pass: false, value: 25 },
+            ]},
+          ]
+        }
+      };
+      await nextTick();
+
+      const summaryText = wrapper.find('.indicator-results .section-collapse-header .collapse-summary-text').text();
+      expect(summaryText).toContain('Not passing');
+      expect(summaryText).toContain('0 of 2 groups passing');
+    });
+
+    it('clicking expands the Last Evaluation section', async () => {
+      wrapper.vm.configs = [evalMultiGroupConfig];
+      wrapper.vm.statuses = passingStatuses;
+      await nextTick();
+
+      // Click the eval section collapse header
+      const collapseHeader = wrapper.find('.indicator-results .section-collapse-header');
+      await collapseHeader.trigger('click');
+      await nextTick();
+
+      // Section body should now be rendered
+      const body = wrapper.find('.indicator-results .section-collapse-body');
+      expect(body.exists()).toBe(true);
+      // Should have 3 group containers
+      expect(body.findAll('.indicator-group-dashboard').length).toBe(3);
+      // Should have 2 OR dividers (between 3 groups)
+      expect(body.findAll('.or-divider-compact').length).toBe(2);
+      // Overall status line should be visible
+      expect(body.find('.overall-status').exists()).toBe(true);
+    });
+
+    it('groups show name and badge but no result chips when collapsed', async () => {
+      wrapper.vm.configs = [evalMultiGroupConfig];
+      wrapper.vm.statuses = passingStatuses;
+      await nextTick();
+
+      // Expand the eval section
+      await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
+      await nextTick();
+
+      // Group collapse headers should exist
+      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
+      expect(groupHeaders.length).toBe(3);
+
+      // Each group should have pass/fail badge
+      expect(groupHeaders[0].find('.group-result-badge.passed').exists()).toBe(true);
+      expect(groupHeaders[1].find('.group-result-badge.failed').exists()).toBe(true);
+      expect(groupHeaders[2].find('.group-result-badge.failed').exists()).toBe(true);
+
+      // No results grids should be visible (groups collapsed by default)
+      expect(wrapper.findAll('.indicator-results .section-collapse-body .results-grid').length).toBe(0);
+    });
+
+    it('clicking a group header expands that group to show result chips', async () => {
+      wrapper.vm.configs = [evalMultiGroupConfig];
+      wrapper.vm.statuses = passingStatuses;
+      await nextTick();
+
+      // Expand the eval section
+      await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
+      await nextTick();
+
+      // Click the first group header
+      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
+      await groupHeaders[0].trigger('click');
+      await nextTick();
+
+      // First group should now show results grid with 2 result chips
+      const grids = wrapper.findAll('.indicator-results .section-collapse-body .results-grid');
+      expect(grids.length).toBe(1);
+      expect(grids[0].findAll('.result-chip').length).toBe(2);
+
+      // Other groups remain collapsed (only 1 grid total)
+    });
+
+    it('single-group running config renders flat without collapse', async () => {
+      wrapper.vm.configs = [{
+        id: 'cfg-flat',
+        name: 'Flat Config',
+        symbol: 'NDX',
+        enabled: true,
+        indicator_groups: [
+          { id: 'grp_1', name: 'Default', indicators: [
+            { id: 'i1', type: 'vix', enabled: true, operator: 'lt', threshold: 20 },
+          ]},
+        ],
+        trade_config: { strategy: 'put_spread', max_capital: 5000 },
+      }];
+      wrapper.vm.statuses = {
+        'cfg-flat': {
+          state: 'waiting', is_running: true,
+          indicator_results: [
+            { type: 'vix', pass: true, value: 15.5 },
+          ]
+        }
+      };
+      await nextTick();
+
+      // No section collapse header in eval area
+      const statusDetails = wrapper.find('.status-details');
+      expect(statusDetails.exists()).toBe(true);
+      expect(statusDetails.find('.indicator-results .section-collapse-header').exists()).toBe(false);
+      // Flat result chips should render
+      expect(statusDetails.findAll('.result-chip').length).toBe(1);
+    });
+
+    it('state persists across data updates', async () => {
+      wrapper.vm.configs = [evalMultiGroupConfig];
+      wrapper.vm.statuses = passingStatuses;
+      await nextTick();
+
+      // Expand eval section
+      await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
+      await nextTick();
+      expect(wrapper.find('.indicator-results .section-collapse-body').exists()).toBe(true);
+
+      // Expand first group
+      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
+      await groupHeaders[0].trigger('click');
+      await nextTick();
+      expect(wrapper.findAll('.indicator-results .section-collapse-body .results-grid').length).toBe(1);
+
+      // Update statuses with new data (same config ID, different values)
+      wrapper.vm.statuses = {
+        'cfg-multi': {
+          state: 'evaluating', is_running: true, all_indicators_pass: false,
+          group_results: [
+            { group_id: 'grp_1', group_name: 'Low VIX', pass: false, indicator_results: [
+              { type: 'vix', pass: false, value: 22.0 },
+              { type: 'gap', pass: true, value: -0.3 },
+            ]},
+            { group_id: 'grp_2', group_name: 'Mid VIX', pass: false, indicator_results: [
+              { type: 'vix', pass: true, value: 22.0 },
+              { type: 'gap', pass: false, value: 1.8 },
+            ]},
+            { group_id: 'grp_3', group_name: 'High VIX', pass: false, indicator_results: [
+              { type: 'vix', pass: false, value: 22.0 },
+            ]},
+          ]
+        }
+      };
+      await nextTick();
+
+      // Section should still be expanded after data update
+      expect(wrapper.find('.indicator-results .section-collapse-body').exists()).toBe(true);
+      // First group should still be expanded
+      expect(wrapper.findAll('.indicator-results .section-collapse-body .results-grid').length).toBe(1);
+    });
+  });
+
   // ─── Compact mode helpers ────────────────────────────────────────────
 
   describe('Compact mode helpers', () => {
