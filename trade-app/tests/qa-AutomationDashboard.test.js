@@ -97,9 +97,13 @@ describe('QA — AutomationDashboard', () => {
       };
       await nextTick();
 
-      // status-details section should contain indicator-group-dashboard containers
+      // Expand the collapsed eval section first
       const statusDetails = wrapper.find('.status-details');
       expect(statusDetails.exists()).toBe(true);
+      await statusDetails.find('.indicator-results .section-collapse-header').trigger('click');
+      await nextTick();
+
+      // status-details section should contain indicator-group-dashboard containers
       const groupDashboards = statusDetails.findAll('.indicator-group-dashboard');
       expect(groupDashboards.length).toBe(2);
 
@@ -126,6 +130,16 @@ describe('QA — AutomationDashboard', () => {
           all_indicators_pass: true,
         }
       };
+      await nextTick();
+
+      // Expand the eval section
+      await wrapper.find('.status-details .indicator-results .section-collapse-header').trigger('click');
+      await nextTick();
+
+      // Expand both groups to reveal result chips
+      const groupHeaders = wrapper.findAll('.status-details .indicator-results .group-collapse-header');
+      await groupHeaders[0].trigger('click');
+      await groupHeaders[1].trigger('click');
       await nextTick();
 
       const groups = wrapper.findAll('.status-details .indicator-group-dashboard');
@@ -156,6 +170,10 @@ describe('QA — AutomationDashboard', () => {
       };
       await nextTick();
 
+      // Expand the eval section to reveal overall-status
+      await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
+      await nextTick();
+
       const overall = wrapper.find('.overall-status');
       expect(overall.exists()).toBe(true);
       expect(overall.classes()).toContain('passing');
@@ -180,6 +198,10 @@ describe('QA — AutomationDashboard', () => {
           all_indicators_pass: false,
         }
       };
+      await nextTick();
+
+      // Expand the eval section to reveal overall-status
+      await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
       await nextTick();
 
       const overall = wrapper.find('.overall-status');
@@ -210,6 +232,16 @@ describe('QA — AutomationDashboard', () => {
           all_indicators_pass: true,
         }
       };
+      await nextTick();
+
+      // Expand the eval section
+      await wrapper.find('.indicator-results .section-collapse-header').trigger('click');
+      await nextTick();
+
+      // Expand both groups to reveal result chips
+      const groupHeaders = wrapper.findAll('.indicator-results .group-collapse-header');
+      await groupHeaders[0].trigger('click');
+      await groupHeaders[1].trigger('click');
       await nextTick();
 
       const staleChips = wrapper.findAll('.result-chip.stale');
@@ -246,7 +278,11 @@ describe('QA — AutomationDashboard', () => {
       };
       await nextTick();
 
+      // Expand the eval section to reveal OR dividers
       const statusDetails = wrapper.find('.status-details');
+      await statusDetails.find('.indicator-results .section-collapse-header').trigger('click');
+      await nextTick();
+
       const dividers = statusDetails.findAll('.or-divider-compact');
       expect(dividers.length).toBe(1);
     });
@@ -258,6 +294,10 @@ describe('QA — AutomationDashboard', () => {
           { id: 'grp_2', name: 'Group B', indicators: [{ id: 'ind_2', type: 'rsi', enabled: true, operator: 'gt', threshold: 30 }] },
         ],
       })];
+      await nextTick();
+
+      // Expand the collapsed entry section to reveal OR dividers
+      await wrapper.find('.indicators-section .section-collapse-header').trigger('click');
       await nextTick();
 
       const indicatorsSection = wrapper.find('.indicators-section');
