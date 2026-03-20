@@ -96,17 +96,45 @@
         <!-- Indicators Summary -->
           <div class="indicators-section">
             <div class="section-label">Entry Criteria</div>
-            <div class="indicators-grid">
+            <!-- Multiple groups: grouped display -->
+            <template v-if="config.indicator_groups?.length > 1">
               <div
-                v-for="indicator in getEnabledIndicators(config)"
-                :key="indicator.id || indicator.type"
-                class="indicator-chip"
-                :class="getIndicatorStatusClass(config, indicator)"
+                v-for="(group, gIdx) in config.indicator_groups"
+                :key="group.id || gIdx"
               >
-                <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
-                <span class="indicator-value">{{ formatIndicatorCondition(indicator) }}</span>
+                <div v-if="gIdx > 0" class="or-divider-compact">
+                  <span class="or-divider-compact-label">OR</span>
+                </div>
+                <div class="indicator-group-dashboard">
+                  <div class="group-label">{{ group.name || 'Group ' + (gIdx + 1) }}</div>
+                  <div class="indicators-grid">
+                    <div
+                      v-for="indicator in (group.indicators || []).filter(ind => ind.enabled)"
+                      :key="indicator.id || indicator.type"
+                      class="indicator-chip"
+                      :class="getIndicatorStatusClass(config, indicator)"
+                    >
+                      <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
+                      <span class="indicator-value">{{ formatIndicatorCondition(indicator) }}</span>
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
+            </template>
+            <!-- Single group or flat: flat display (identical to current) -->
+            <template v-else>
+              <div class="indicators-grid">
+                <div
+                  v-for="indicator in getEnabledIndicators(config)"
+                  :key="indicator.id || indicator.type"
+                  class="indicator-chip"
+                  :class="getIndicatorStatusClass(config, indicator)"
+                >
+                  <span class="indicator-name">{{ formatIndicatorType(indicator.type) }}</span>
+                  <span class="indicator-value">{{ formatIndicatorCondition(indicator) }}</span>
+                </div>
+              </div>
+            </template>
           </div>
 
           <!-- Trade Config Summary -->
@@ -159,7 +187,55 @@
               <span class="status-label">Message:</span>
               <span class="status-value">{{ getAutomationStatus(config.id)?.message }}</span>
             </div>
-            <div v-if="getAutomationStatus(config.id)?.indicator_results" class="indicator-results">
+            <!-- Group-aware indicator results -->
+            <template v-if="getAutomationStatus(config.id)?.group_results?.length > 1">
+              <div class="indicator-results">
+                <div class="results-label">Last Evaluation:</div>
+                <div
+                  v-for="(gr, grIdx) in getAutomationStatus(config.id).group_results"
+                  :key="gr.group_id || grIdx"
+                >
+                  <div v-if="grIdx > 0" class="or-divider-compact">
+                    <span class="or-divider-compact-label">OR</span>
+                  </div>
+                  <div class="indicator-group-dashboard">
+                    <div class="group-header-dashboard">
+                      <span class="group-label">{{ gr.group_name || 'Group ' + (grIdx + 1) }}</span>
+                      <span class="group-result-badge" :class="gr.pass ? 'passed' : 'failed'">
+                        {{ gr.pass ? '&#10003; Pass' : '&#10007; Fail' }}
+                      </span>
+                    </div>
+                    <div class="results-grid">
+                      <div
+                        v-for="(result, idx) in gr.indicator_results"
+                        :key="idx"
+                        class="result-chip"
+                        :class="{ 
+                          'passed': result.pass && !result.stale, 
+                          'failed': !result.pass && !result.stale,
+                          'stale': result.stale 
+                        }"
+                        :title="result.stale ? `Stale data: ${result.error || 'Fetch failed'}` : result.details"
+                      >
+                        <span>{{ formatIndicatorType(result.type) }}</span>
+                        <span v-if="result.stale" class="stale-icon">&#9888;</span>
+                        <span>{{ formatIndicatorValue(result) }}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+                <div class="overall-status" :class="getAutomationStatus(config.id)?.all_indicators_pass ? 'passing' : 'failing'">
+                  <template v-if="getAutomationStatus(config.id)?.all_indicators_pass">
+                    &#10003; Passing ({{ getAutomationStatus(config.id).group_results.find(g => g.pass)?.group_name || 'Group' }})
+                  </template>
+                  <template v-else>
+                    &#10007; Not passing
+                  </template>
+                </div>
+              </div>
+            </template>
+            <!-- Flat indicator results (single group or backward compat) -->
+            <div v-else-if="getAutomationStatus(config.id)?.indicator_results" class="indicator-results">
               <div class="results-label">Last Evaluation:</div>
               <div class="results-grid">
                 <div
@@ -174,7 +250,7 @@
                   :title="result.stale ? `Stale data: ${result.error || 'Fetch failed'}` : result.details"
                 >
                   <span>{{ formatIndicatorType(result.type) }}</span>
-                  <span v-if="result.stale" class="stale-icon">⚠</span>
+                  <span v-if="result.stale" class="stale-icon">&#9888;</span>
                   <span>{{ formatIndicatorValue(result) }}</span>
                 </div>
               </div>
@@ -310,30 +386,81 @@
       <div v-if="evalResult" class="eval-results">
         <div class="eval-summary" :class="{ 'all-passed': evalResult.all_passed }">
           <i :class="evalResult.all_passed ? 'pi pi-check-circle' : 'pi pi-times-circle'"></i>
-          <span>{{ evalResult.all_passed ? 'All indicators passed' : 'Some indicators failed' }}</span>
+          <span v-if="evalResult.group_results?.length > 1">
+            {{ evalResult.all_passed
+              ? `${evalResult.group_results.filter(g => g.pass).length} of ${evalResult.group_results.length} groups passing`
+              : 'No groups passing' }}
+          </span>
+          <span v-else>{{ evalResult.all_passed ? 'All indicators passed' : 'Some indicators failed' }}</span>
         </div>
-        <div class="eval-details">
+
+        <!-- Multi-group eval results -->
+        <template v-if="evalResult.group_results?.length > 1">
           <div
-            v-for="(result, type) in evalResult.results"
-            :key="type"
-            class="eval-item"
-            :class="{ 'passed': result.passed, 'failed': !result.passed }"
+            v-for="(gr, grIdx) in evalResult.group_results"
+            :key="gr.group_id || grIdx"
           >
-            <div class="eval-header">
-              <span class="eval-type">{{ formatIndicatorType(type) }}</span>
-              <span class="eval-status">
-                <i :class="result.passed ? 'pi pi-check' : 'pi pi-times'"></i>
-              </span>
+            <div v-if="grIdx > 0" class="or-divider-compact">
+              <span class="or-divider-compact-label">OR</span>
             </div>
-            <div class="eval-body">
-              <span class="eval-actual">Current: {{ formatIndicatorValue(result) }}</span>
-              <span class="eval-condition">{{ result.operator }} {{ result.threshold }}</span>
-            </div>
-            <div v-if="result.symbol" class="eval-symbol">
-              Symbol: {{ result.symbol }}
+            <div class="eval-group-section">
+              <div class="eval-group-header">
+                <span class="eval-group-name">{{ gr.group_name || 'Group ' + (grIdx + 1) }}</span>
+                <span class="group-result-badge" :class="gr.pass ? 'passed' : 'failed'">
+                  {{ gr.pass ? '&#10003; Pass' : '&#10007; Fail' }}
+                </span>
+              </div>
+              <div class="eval-details">
+                <div
+                  v-for="(result, idx) in gr.indicator_results"
+                  :key="idx"
+                  class="eval-item"
+                  :class="{ 'passed': result.pass, 'failed': !result.pass }"
+                >
+                  <div class="eval-header">
+                    <span class="eval-type">{{ formatIndicatorType(result.type) }}</span>
+                    <span class="eval-status">
+                      <i :class="result.pass ? 'pi pi-check' : 'pi pi-times'"></i>
+                    </span>
+                  </div>
+                  <div class="eval-body">
+                    <span class="eval-actual">Current: {{ formatIndicatorValue(result) }}</span>
+                    <span class="eval-condition">{{ result.operator }} {{ result.threshold }}</span>
+                  </div>
+                  <div v-if="result.symbol" class="eval-symbol">
+                    Symbol: {{ result.symbol }}
+                  </div>
+                </div>
+              </div>
             </div>
           </div>
-        </div>
+        </template>
+
+        <!-- Flat eval results (single group or legacy) -->
+        <template v-else>
+          <div class="eval-details">
+            <div
+              v-for="(result, idx) in evalResult.results"
+              :key="idx"
+              class="eval-item"
+              :class="{ 'passed': result.pass, 'failed': !result.pass }"
+            >
+              <div class="eval-header">
+                <span class="eval-type">{{ formatIndicatorType(result.type) }}</span>
+                <span class="eval-status">
+                  <i :class="result.pass ? 'pi pi-check' : 'pi pi-times'"></i>
+                </span>
+              </div>
+              <div class="eval-body">
+                <span class="eval-actual">Current: {{ formatIndicatorValue(result) }}</span>
+                <span class="eval-condition">{{ result.operator }} {{ result.threshold }}</span>
+              </div>
+              <div v-if="result.symbol" class="eval-symbol">
+                Symbol: {{ result.symbol }}
+              </div>
+            </div>
+          </div>
+        </template>
       </div>
     </Dialog>
 
@@ -546,6 +673,9 @@ export default {
     }
 
     const getEnabledIndicators = (config) => {
+      if (config.indicator_groups?.length > 0) {
+        return config.indicator_groups.flatMap(g => (g.indicators || []).filter(ind => ind.enabled))
+      }
       return (config.indicators || []).filter(ind => ind.enabled)
     }
 
@@ -561,11 +691,10 @@ export default {
 
     const formatIndicatorType = (type) => {
       const types = {
-        vix: 'VIX',
-        gap: 'Gap',
-        range: 'Range',
-        trend: 'Trend',
-        calendar: 'FOMC'
+        vix: 'VIX', gap: 'Gap', range: 'Range', trend: 'Trend', calendar: 'FOMC',
+        rsi: 'RSI', macd: 'MACD', momentum: 'Momentum', cmo: 'CMO',
+        stoch: 'Stoch', stoch_rsi: 'StochRSI', adx: 'ADX', cci: 'CCI',
+        sma: 'SMA', ema: 'EMA', atr: 'ATR', bb_percent: 'BB%B'
       }
       return types[type] || type
     }
@@ -629,7 +758,11 @@ export default {
       actionLoading.value = `eval_${config.id}`
       try {
         const response = await api.evaluateAutomationConfig(config.id)
-        evalResult.value = response
+        evalResult.value = {
+          all_passed: response.data?.all_pass ?? false,
+          results: response.data?.indicators || [],
+          group_results: response.data?.group_results || [],
+        }
         showEvalDialog.value = true
       } catch (err) {
         console.error('Failed to evaluate indicators:', err)
@@ -664,9 +797,11 @@ export default {
           name: `${config.name} (Copy)`,
           description: config.description,
           symbol: config.symbol,
-          indicators: config.indicators,
+          indicators: config.indicators || [],
+          indicator_groups: config.indicator_groups || [],
           entry_time: config.entry_time,
           entry_timezone: config.entry_timezone,
+          recurrence: config.recurrence,
           enabled: false, // Start disabled so user can review
           trade_config: config.trade_config
         }
@@ -1454,6 +1589,108 @@ export default {
 .expand-toggle:hover {
   background: var(--bg-quaternary, var(--border-primary));
   color: var(--text-primary);
+}
+
+/* Indicator Group Dashboard Container */
+.indicator-group-dashboard {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-md);
+  padding: var(--spacing-sm);
+}
+
+.group-label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-secondary);
+  margin-bottom: var(--spacing-xs);
+}
+
+.group-header-dashboard {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-xs);
+}
+
+.group-result-badge {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-medium);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  white-space: nowrap;
+}
+
+.group-result-badge.passed {
+  background: rgba(34, 197, 94, 0.1);
+  color: var(--color-success);
+}
+
+.group-result-badge.failed {
+  background: rgba(239, 68, 68, 0.1);
+  color: var(--color-danger);
+}
+
+/* Compact OR Divider for Dashboard */
+.or-divider-compact {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-sm);
+  margin: var(--spacing-sm) 0;
+}
+
+.or-divider-compact::before,
+.or-divider-compact::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: var(--border-primary);
+}
+
+.or-divider-compact-label {
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-brand);
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+/* Overall Status Line */
+.overall-status {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  margin-top: var(--spacing-sm);
+  padding: var(--spacing-xs) var(--spacing-sm);
+  border-radius: var(--radius-sm);
+}
+
+.overall-status.passing {
+  color: var(--color-success);
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.overall-status.failing {
+  color: var(--color-danger);
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Eval Dialog Group Sections */
+.eval-group-section {
+  margin-bottom: var(--spacing-sm);
+}
+
+.eval-group-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: var(--spacing-sm);
+  padding-bottom: var(--spacing-xs);
+  border-bottom: 1px solid var(--border-primary);
+}
+
+.eval-group-name {
+  font-weight: var(--font-weight-semibold);
+  color: var(--text-primary);
+  font-size: var(--font-size-md);
 }
 
 /* Responsive */
