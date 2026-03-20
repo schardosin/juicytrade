@@ -542,6 +542,52 @@ func (s *Service) AllIndicatorsPass(results []types.IndicatorResult) bool {
 	return true
 }
 
+// EvaluateIndicatorGroups evaluates all indicator groups and returns per-group results.
+// All groups are always evaluated (no short-circuit) so the dashboard shows the full picture.
+// Returns: (groupResults, flatResults, anyGroupPasses)
+func (s *Service) EvaluateIndicatorGroups(
+	ctx context.Context,
+	configID string,
+	groups []types.IndicatorGroup,
+) ([]types.GroupResult, []types.IndicatorResult, bool) {
+	groupResults := make([]types.GroupResult, 0, len(groups))
+	allFlatResults := make([]types.IndicatorResult, 0)
+	anyGroupPasses := false
+
+	for _, group := range groups {
+		indicatorResults := s.EvaluateAllIndicators(ctx, configID, group.Indicators)
+		groupPass := s.AllIndicatorsPass(indicatorResults)
+
+		groupResults = append(groupResults, types.GroupResult{
+			GroupID:          group.ID,
+			GroupName:        group.Name,
+			Pass:             groupPass,
+			IndicatorResults: indicatorResults,
+		})
+
+		allFlatResults = append(allFlatResults, indicatorResults...)
+
+		if groupPass {
+			anyGroupPasses = true
+		}
+
+		slog.Info("📊 Group evaluation complete",
+			"group", group.Name,
+			"groupID", group.ID,
+			"pass", groupPass,
+			"indicators", len(group.Indicators),
+			"configID", configID)
+	}
+
+	slog.Info("📊 All groups evaluated",
+		"totalGroups", len(groups),
+		"anyGroupPasses", anyGroupPasses,
+		"totalIndicators", len(allFlatResults),
+		"configID", configID)
+
+	return groupResults, allFlatResults, anyGroupPasses
+}
+
 // GetVIXValue fetches the current VIX value
 // If customSymbol is provided (e.g., "UVXY", "VXX"), use streaming quotes
 // For VIX index, use historical bars API (streaming quotes don't work for indices)
