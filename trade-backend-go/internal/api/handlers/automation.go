@@ -342,15 +342,15 @@ func (h *AutomationHandler) EvaluateIndicators(c *gin.Context) {
 		return
 	}
 
-	results := h.engine.EvaluateIndicators(c.Request.Context(), config)
-	allPass := h.engine.GetIndicatorService().AllIndicatorsPass(results)
+	groupResults, flatResults, anyGroupPasses := h.engine.EvaluateIndicators(c.Request.Context(), config)
 
 	c.JSON(http.StatusOK, gin.H{
 		"success": true,
 		"data": map[string]interface{}{
-			"indicators": results,
-			"all_pass":   allPass,
-			"symbol":     config.Symbol,
+			"indicators":    flatResults,
+			"group_results": groupResults,
+			"all_pass":      anyGroupPasses,
+			"symbol":        config.Symbol,
 		},
 		"message": "Indicators evaluated successfully",
 	})
