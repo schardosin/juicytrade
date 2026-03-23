@@ -1745,6 +1745,15 @@ export default {
   overflow: visible;
 }
 
+.provider-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -8px;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
 .tooltip-header {
   padding: var(--spacing-md) var(--spacing-lg);
   background: var(--bg-quaternary);
