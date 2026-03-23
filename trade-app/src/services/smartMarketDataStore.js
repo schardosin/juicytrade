@@ -1684,6 +1684,22 @@ class SmartMarketDataStore {
   }
 
   /**
+   * Force refresh balance data
+   * Useful when switching trade accounts to ensure we have the latest data
+   */
+  async refreshBalance() {
+    const config = this.strategies.get("balance");
+    if (config && config.strategy === "periodic") {
+      // Clear any existing timer and restart
+      const existingTimer = this.timers.get("balance");
+      if (existingTimer) {
+        clearInterval(existingTimer);
+      }
+      this.setupPeriodicUpdate("balance", config);
+    }
+  }
+
+  /**
    * Get data with options (for on-demand and one-time strategies)
    */
   async getData(key, options = {}) {

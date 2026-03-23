@@ -250,7 +250,7 @@ export function useMarketData() {
    * Manual refresh methods for periodic data
    */
   const refreshBalance = () =>
-    smartMarketDataStore.getData("balance", { forceRefresh: true });
+    smartMarketDataStore.refreshBalance();
   const refreshPositions = () =>
     smartMarketDataStore.getData("positions", { forceRefresh: true });
   const refreshOrders = () =>
