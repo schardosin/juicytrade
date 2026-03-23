@@ -264,6 +264,8 @@ export default {
       getAccountInfo, 
       getAvailableProviders, 
       getProviderConfig,
+      updateProviderConfig,
+      refreshBalance,
       isLoading,
       getError
     } = useMarketData();
@@ -289,6 +291,12 @@ export default {
     
     // Provider configuration data - now using smart data system
     const showProviderTooltip = ref(false);
+    
+    // Trade account switching state
+    const switchingAccount = ref(false);
+    const switchError = ref(null);
+    const dropdownOpen = ref(false);
+    const selectedTradeAccount = ref(null);
     
     // Mobile search overlay
     const showMobileSearch = ref(false);
@@ -489,6 +497,31 @@ export default {
       
       const providerData = providers[tradeProvider];
       return providerData.paper ? "type-paper" : "type-live";
+    });
+
+    // Trade account dropdown options — filtered for trade_account capability
+    const tradeAccountOptions = computed(() => {
+      const providers = reactiveAvailableProviders.value;
+      if (!providers) return [];
+
+      const options = [];
+      for (const [instanceId, providerData] of Object.entries(providers)) {
+        const restCapabilities = providerData.capabilities?.rest || [];
+        if (restCapabilities.includes('trade_account')) {
+          options.push({
+            label: `${providerData.display_name || instanceId} (${providerData.paper ? 'Paper' : 'Live'})`,
+            value: instanceId,
+            paper: providerData.paper,
+            displayName: providerData.display_name || instanceId
+          });
+        }
+      }
+      return options;
+    });
+
+    // Whether the trade account dropdown should be disabled
+    const tradeDropdownDisabled = computed(() => {
+      return switchingAccount.value || tradeAccountOptions.value.length <= 1;
     });
 
     // Market data services for tooltip
@@ -742,6 +775,58 @@ export default {
       return `${displayName} ${accountType}`;
     };
 
+    // Handle trade account switch from dropdown
+    const handleTradeAccountSwitch = async (event) => {
+      const newInstanceId = event.value;
+      const currentConfig = reactiveProviderConfig.value;
+
+      // Guard: no change needed
+      if (!newInstanceId || newInstanceId === currentConfig?.trade_account) {
+        return;
+      }
+
+      // Save previous value for rollback
+      const previousAccount = currentConfig?.trade_account;
+      switchingAccount.value = true;
+      switchError.value = null;
+
+      try {
+        // Build full config with only trade_account changed
+        const updatedConfig = { ...currentConfig, trade_account: newInstanceId };
+        await updateProviderConfig(updatedConfig);
+
+        // Force refresh balance to show new account's Net Liq / BP
+        await refreshBalance();
+
+        // Success — close the tooltip after a brief moment
+        setTimeout(() => {
+          showProviderTooltip.value = false;
+          dropdownOpen.value = false;
+        }, 300);
+
+      } catch (error) {
+        console.error('Failed to switch trade account:', error);
+        // Revert dropdown selection
+        selectedTradeAccount.value = previousAccount;
+        switchError.value = 'Failed to switch account. Please try again.';
+
+        // Auto-clear error after 4 seconds
+        setTimeout(() => {
+          switchError.value = null;
+        }, 4000);
+      } finally {
+        switchingAccount.value = false;
+      }
+    };
+
+    // Conditional tooltip close — keep open if dropdown overlay is active
+    const onTooltipAreaLeave = () => {
+      if (dropdownOpen.value) {
+        return;
+      }
+      showProviderTooltip.value = false;
+    };
+
     // Watch reactive account data and update local state
     const updateAccountDisplay = () => {
       const balanceData = reactiveBalance.value;
@@ -974,6 +1059,17 @@ export default {
       { immediate: true }
     );
 
+    // Sync selectedTradeAccount with provider config (external changes e.g. Settings dialog)
+    watch(
+      () => reactiveProviderConfig.value?.trade_account,
+      (newVal) => {
+        if (newVal && !switchingAccount.value) {
+          selectedTradeAccount.value = newVal;
+        }
+      },
+      { immediate: true }
+    );
+
     // Clean up intervals when component is unmounted
     onUnmounted(() => {
       if (searchTimeout) {
@@ -1028,6 +1124,14 @@ export default {
       tradeAccountType,
       tradeAccountTypeClass,
 
+      // Trade account switching
+      selectedTradeAccount,
+      tradeAccountOptions,
+      tradeDropdownDisabled,
+      switchingAccount,
+      switchError,
+      dropdownOpen,
+
       // Mobile search overlay
       showMobileSearch,
 
@@ -1045,6 +1149,8 @@ export default {
       getTypeClass,
       getTypeLabel,
       formatProviderName,
+      handleTradeAccountSwitch,
+      onTooltipAreaLeave,
       openMobileSearch,
       closeMobileSearch,
       onMobileSymbolSelected,
