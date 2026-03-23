@@ -1742,7 +1742,7 @@ export default {
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-lg);
   z-index: 1000;
-  overflow: hidden;
+  overflow: visible;
 }
 
 .tooltip-header {
@@ -1761,7 +1761,7 @@ export default {
 .tooltip-content {
   padding: var(--spacing-md);
   max-height: 400px;
-  overflow-y: auto;
+  overflow: visible;
 }
 
 .provider-category {
@@ -1802,6 +1802,83 @@ export default {
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+/* Trade Account Dropdown in Tooltip */
+.trade-account-row {
+  flex-wrap: wrap;
+  gap: var(--spacing-xs);
+}
+
+.trade-account-row .service-name {
+  flex-shrink: 0;
+}
+
+.trade-account-dropdown-wrapper {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  position: relative;
+  overflow: visible;
+}
+
+.trade-account-dropdown {
+  width: 180px;
+  font-size: var(--font-size-base);
+}
+
+:deep(.trade-account-dropdown .p-dropdown) {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-sm);
+  min-height: unset;
+  height: 28px;
+}
+
+:deep(.trade-account-dropdown .p-dropdown-label) {
+  padding: 2px 8px;
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+}
+
+:deep(.trade-account-dropdown .p-dropdown-trigger) {
+  width: 24px;
+}
+
+:deep(.trade-account-dropdown .p-dropdown-panel) {
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-sm);
+  box-shadow: var(--shadow-md);
+}
+
+:deep(.trade-account-dropdown .p-dropdown-item) {
+  padding: var(--spacing-xs) var(--spacing-sm);
+  font-size: var(--font-size-base);
+  color: var(--text-primary);
+}
+
+:deep(.trade-account-dropdown .p-dropdown-item:hover) {
+  background: var(--bg-quaternary);
+}
+
+:deep(.trade-account-dropdown .p-dropdown-item.p-highlight) {
+  background: var(--color-info);
+  color: white;
+}
+
+.switch-error {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  color: var(--color-danger);
+  font-size: var(--font-size-xs);
+  padding-top: var(--spacing-xs);
+}
+
+.switch-error i {
+  font-size: var(--font-size-xs);
 }
 
 /* Custom scrollbar for tooltip */
