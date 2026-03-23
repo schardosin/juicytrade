@@ -143,12 +143,14 @@
         </div>
 
         <!-- Trade Account Indicator -->
-        <div class="trade-account-section">
+        <div
+          class="trade-account-section"
+          @mouseenter="showProviderTooltip = true"
+          @mouseleave="onTooltipAreaLeave"
+        >
           <div 
             class="trade-account-indicator"
             :class="{ loading: providersLoading, error: providersError }"
-            @mouseenter="showProviderTooltip = true"
-            @mouseleave="showProviderTooltip = false"
           >
             <i class="pi pi-building account-icon"></i>
             <span class="account-name">
@@ -172,9 +174,28 @@
             <div class="tooltip-content">
               <div class="provider-category">
                 <h5>Trading Services</h5>
-                <div class="provider-item">
+                <div class="provider-item trade-account-row">
                   <span class="service-name">Trade Account</span>
-                  <span class="provider-name">{{ formatProviderName('trade_account') }}</span>
+                  <div class="trade-account-dropdown-wrapper">
+                    <Dropdown
+                      v-model="selectedTradeAccount"
+                      :options="tradeAccountOptions"
+                      option-label="label"
+                      option-value="value"
+                      :loading="switchingAccount"
+                      :disabled="tradeDropdownDisabled"
+                      @change="handleTradeAccountSwitch"
+                      @show="dropdownOpen = true"
+                      @hide="dropdownOpen = false"
+                      class="trade-account-dropdown"
+                      append-to="self"
+                      placeholder="Select account"
+                    />
+                    <div v-if="switchError" class="switch-error">
+                      <i class="pi pi-exclamation-triangle"></i>
+                      {{ switchError }}
+                    </div>
+                  </div>
                 </div>
               </div>
               <div class="provider-category">
