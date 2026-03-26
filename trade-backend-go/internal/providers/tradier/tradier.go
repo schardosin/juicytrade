@@ -2246,6 +2246,10 @@ func (t *TradierProvider) DisconnectStreaming(ctx context.Context) (bool, error)
 	t.IsConnected = false
 	t.sessionID = ""
 
+	// Reset streaming disabled flag so recovery attempts can reconnect
+	t.streamingDisabled = false
+	t.lastConnectionError = time.Time{}
+
 	// Cancel stream handler
 	if t.streamCancel != nil {
 		t.streamCancel()

@@ -704,9 +704,16 @@ func (hm *StreamingHealthManager) recoverConnection(ctx context.Context, connect
 		slog.Info(fmt.Sprintf("🔄 [%d/%d] Connecting %s", attempt, maxRetries, connectionID))
 		success, err := provider.ConnectStreaming(context.Background())
 		if err != nil || !success {
-			slog.Error(fmt.Sprintf("❌ [%d/%d] Connect failed for %s: %v", attempt, maxRetries, connectionID, err))
+			isCooldownError := err != nil && strings.Contains(err.Error(), "streaming temporarily disabled")
+			if isCooldownError {
+				slog.Warn(fmt.Sprintf("⚠️  [%d/%d] Provider self-blocked for %s, retrying without circuit breaker penalty", attempt, maxRetries, connectionID))
+			} else {
+				slog.Error(fmt.Sprintf("❌ [%d/%d] Connect failed for %s: %v", attempt, maxRetries, connectionID, err))
+			}
 			if attempt == maxRetries {
-				hm.UpdateConnectionState(connectionID, StateFailed)
+				if !isCooldownError {
+					hm.UpdateConnectionState(connectionID, StateFailed)
+				}
 				return
 			}
 			continue
