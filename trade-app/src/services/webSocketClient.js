@@ -12,16 +12,12 @@ class WebSocketStreamingClient {
         // Use the configured WebSocket URL from environment
         this.baseUrl = envWebSocketUrl;
       } else {
-        // Fallback: check if we're in development mode (localhost:3001) or production
-        if (window.location.hostname === 'localhost' && window.location.port === '3001') {
-          // Development mode - use default backend port
-          this.baseUrl = 'ws://localhost:8008';
-        } else {
-          // Production/containerized mode - auto-detect based on current location
-          const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          const host = window.location.host;
-          this.baseUrl = `${protocol}//${host}`;
-        }
+        // Auto-detect based on current location (works for both dev and production)
+        // In dev, Vite proxies /ws to the backend via vite.config.js
+        // In production, nginx/ingress proxies /ws to the backend
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host;
+        this.baseUrl = `${protocol}//${host}`;
       }
     } else {
       this.baseUrl = baseUrl;
