@@ -14,14 +14,13 @@ export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
     const netPremium =
       short_put_price + short_call_price - long_put_price - long_call_price;
 
-    const lowerBound = Math.floor(long_put_strike - legWidth);
-    const upperBound = Math.ceil(long_call_strike + legWidth);
-    const step =
-      upperBound - lowerBound > 100
-        ? upperBound - lowerBound > 200
-          ? 5
-          : 2
-        : 1;
+    // Estimate underlying price from the midpoint of the strategy
+    const estimatedPrice = (long_put_strike + long_call_strike) / 2;
+    const butterflyExtension = Math.max(legWidth, estimatedPrice * 0.10, 50);
+    const lowerBound = Math.floor(long_put_strike - butterflyExtension);
+    const upperBound = Math.ceil(long_call_strike + butterflyExtension);
+    const totalRange = upperBound - lowerBound;
+    const step = Math.max(Math.ceil(totalRange / 400), 1);
 
     const prices = [];
     const payoffs = [];
@@ -68,10 +67,12 @@ export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
   }
 
   // Generate price range
-  const lowerBound = Math.floor(lower_strike - legWidth);
-  const upperBound = Math.ceil(upper_strike + legWidth);
-  const step =
-    upperBound - lowerBound > 100 ? (upperBound - lowerBound > 200 ? 5 : 2) : 1;
+  const estimatedPrice = (lower_strike + upper_strike) / 2;
+  const butterflyExtension = Math.max(legWidth, estimatedPrice * 0.10, 50);
+  const lowerBound = Math.floor(lower_strike - butterflyExtension);
+  const upperBound = Math.ceil(upper_strike + butterflyExtension);
+  const totalRange = upperBound - lowerBound;
+  const step = Math.max(Math.ceil(totalRange / 400), 1);
 
   const prices = [];
   const payoffs = [];
