@@ -14,14 +14,13 @@ export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
     const netPremium =
       short_put_price + short_call_price - long_put_price - long_call_price;
 
-    const lowerBound = Math.floor(long_put_strike - legWidth);
-    const upperBound = Math.ceil(long_call_strike + legWidth);
-    const step =
-      upperBound - lowerBound > 100
-        ? upperBound - lowerBound > 200
-          ? 5
-          : 2
-        : 1;
+    // Estimate underlying price from the midpoint of the strategy
+    const estimatedPrice = (long_put_strike + long_call_strike) / 2;
+    const butterflyExtension = Math.max(legWidth, estimatedPrice * 0.10, 50);
+    const lowerBound = Math.floor(long_put_strike - butterflyExtension);
+    const upperBound = Math.ceil(long_call_strike + butterflyExtension);
+    const totalRange = upperBound - lowerBound;
+    const step = Math.max(Math.ceil(totalRange / 400), 1);
 
     const prices = [];
     const payoffs = [];
@@ -68,10 +67,12 @@ export function generateButterflyPayoff(butterflyInfo, strategyType, legWidth) {
   }
 
   // Generate price range
-  const lowerBound = Math.floor(lower_strike - legWidth);
-  const upperBound = Math.ceil(upper_strike + legWidth);
-  const step =
-    upperBound - lowerBound > 100 ? (upperBound - lowerBound > 200 ? 5 : 2) : 1;
+  const estimatedPrice = (lower_strike + upper_strike) / 2;
+  const butterflyExtension = Math.max(legWidth, estimatedPrice * 0.10, 50);
+  const lowerBound = Math.floor(lower_strike - butterflyExtension);
+  const upperBound = Math.ceil(upper_strike + butterflyExtension);
+  const totalRange = upperBound - lowerBound;
+  const step = Math.max(Math.ceil(totalRange / 400), 1);
 
   const prices = [];
   const payoffs = [];
@@ -403,45 +404,31 @@ export function generateMultiLegPayoff(positions, underlyingPrice, adjustedNetCr
     // Single leg: create much wider range to show full P&L spectrum
     const singleStrike = minStrike;
 
-    // Use a much wider range to show both profit and loss areas (10x increase)
-    let range;
+    // Use tiered multiplier with percentage-based floor
+    let tierRange;
     if (singleStrike < 50) {
-      range = Math.max(singleStrike * 8.0, 250); // 800% range for low-priced stocks (10x increase)
+      tierRange = Math.max(singleStrike * 8.0, 250);
     } else if (singleStrike < 200) {
-      range = Math.max(singleStrike * 5.0, 500); // 500% range for mid-priced stocks (10x increase)
+      tierRange = Math.max(singleStrike * 5.0, 500);
     } else {
-      range = Math.max(singleStrike * 3.0, 1000); // 300% range for high-priced stocks (10x increase)
+      tierRange = Math.max(singleStrike * 3.0, 1000);
     }
+    const range = Math.max(tierRange, underlyingPrice * 0.10, 50);
 
     lowerBound = Math.floor(singleStrike - range);
     upperBound = Math.ceil(singleStrike + range);
-    step = range > 200 ? 5 : range > 100 ? 2 : 1;
   } else {
-    // Multi-leg: significantly expand the range to show full profit/loss spectrum (10x increase)
-    const baseExtension = Math.max(strikeRange * 5.0, 500); // At least 500% extension or $500 (10x increase)
-    const maxExtension = Math.min(baseExtension, 2000); // Cap at $2000 for very wide spreads (10x increase)
-
-    lowerBound = Math.floor(minStrike - maxExtension);
-    upperBound = Math.ceil(maxStrike + maxExtension);
-
-    // CRITICAL FIX: Use finer step size for narrow strike ranges (1-wide strategies)
-    // But limit total data points to prevent Chart.js performance issues
-    if (strikeRange <= 2) {
-      // For 1-wide strategies, use 1.0 step but ensure we hit critical strike prices
-      step = 1;
-    } else if (strikeRange <= 5) {
-      // For narrow strategies (2-5 wide), use 1.0 step
-      step = 1;
-    } else {
-      // For wider strategies, use the original logic
-      step =
-        upperBound - lowerBound > 200
-          ? 5
-          : upperBound - lowerBound > 100
-          ? 2
-          : 1;
-    }
+    // Multi-leg: use percentage-based range with strike-based and absolute floors
+    const percentageRange = underlyingPrice * 0.10;
+    const strikeBasedRange = strikeRange * 3.0;
+    const extension = Math.max(percentageRange, strikeBasedRange, 50);
+    lowerBound = Math.floor(minStrike - extension);
+    upperBound = Math.ceil(maxStrike + extension);
   }
+
+  // Adaptive step size: target ~400 data points regardless of price level
+  const totalRange = upperBound - lowerBound;
+  step = Math.max(Math.ceil(totalRange / 400), 1);
 
   // Ensure all strike prices are included in the data points for accuracy
   const priceSet = new Set(strikes);
@@ -763,20 +750,12 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
     const sMax = Math.max(...chartData.strikes);
     strikeSpan = Math.max(sMax - sMin, 1); // avoid zero
 
-    // Derivation:
-    // We want sMin at ~1/6 from left and sMax at ~5/6 from left (positions 2 and 6 7).
-    // baseRange = sMax - sMin = (4/6) * width = (2/3) * width => width = baseRange * (3/2) = 1.5 * baseRange
-    const width = strikeSpan * 1.5;
-
-    // Symmetric padding to place strikes at ~2/7 and ~6/7 positions:
-    // pad = (width - baseRange) / 2 = (1.5 - 1)/2 * baseRange = 0.25 *Range
-    const pad = Math.max(0.25 * strikeSpan, 5); // ensure minimum padding
-
-    suggestedMin = Math.floor(sMin - pad);
-    suggestedMax = Math.ceil(sMax + pad);
+    const viewPad = Math.max(underlyingPrice * 0.05, strikeSpan * 1.5, 25);
+    suggestedMin = Math.floor(sMin - viewPad);
+    suggestedMax = Math.ceil(sMax + viewPad);
   } else {
-    // Fallback: center around current price with a small fixed range
-    const initialRange = 15; // $15 on each side by default
+    // Fallback: center around current price with a percentage-based range
+    const initialRange = Math.max(underlyingPrice * 0.05, 15);
     suggestedMin = Math.max(currentPrice - initialRange, pMin);
     suggestedMax = Math.min(currentPrice + initialRange, pMax);
   }
@@ -1073,13 +1052,9 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
             },
           },
           limits: {
-            // Use strike-based limits when possible so the allowed pan/zoom range is focused
-            // around the strategy legs instead of the full expanded prices array.
-            // These limits are intentionally wider than the suggested view, but much smaller
-            // than the full prices extent which made tight strategies invisible.
             x: {
-              min: typeof suggestedMin === "number" ? Math.floor(suggestedMin - Math.max((Math.max(...chartData.strikes || [suggestedMin]) - Math.min(...chartData.strikes || [suggestedMax])) * 2, 50)) : Math.min(...prices) - 50,
-              max: typeof suggestedMax === "number" ? Math.ceil(suggestedMax + Math.max((Math.max(...chartData.strikes || [suggestedMin]) - Math.min(...chartData.strikes || [suggestedMax])) * 2, 50)) : Math.max(...prices) + 50,
+              min: Math.min(...prices),
+              max: Math.max(...prices),
             },
             // Remove Y limits to prevent vertical zoom/pan
           },
