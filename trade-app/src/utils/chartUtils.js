@@ -749,20 +749,12 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
     const sMax = Math.max(...chartData.strikes);
     strikeSpan = Math.max(sMax - sMin, 1); // avoid zero
 
-    // Derivation:
-    // We want sMin at ~1/6 from left and sMax at ~5/6 from left (positions 2 and 6 7).
-    // baseRange = sMax - sMin = (4/6) * width = (2/3) * width => width = baseRange * (3/2) = 1.5 * baseRange
-    const width = strikeSpan * 1.5;
-
-    // Symmetric padding to place strikes at ~2/7 and ~6/7 positions:
-    // pad = (width - baseRange) / 2 = (1.5 - 1)/2 * baseRange = 0.25 *Range
-    const pad = Math.max(0.25 * strikeSpan, 5); // ensure minimum padding
-
-    suggestedMin = Math.floor(sMin - pad);
-    suggestedMax = Math.ceil(sMax + pad);
+    const viewPad = Math.max(underlyingPrice * 0.05, strikeSpan * 1.5, 25);
+    suggestedMin = Math.floor(sMin - viewPad);
+    suggestedMax = Math.ceil(sMax + viewPad);
   } else {
-    // Fallback: center around current price with a small fixed range
-    const initialRange = 15; // $15 on each side by default
+    // Fallback: center around current price with a percentage-based range
+    const initialRange = Math.max(underlyingPrice * 0.05, 15);
     suggestedMin = Math.max(currentPrice - initialRange, pMin);
     suggestedMax = Math.min(currentPrice + initialRange, pMax);
   }
@@ -1059,13 +1051,9 @@ export function createMultiLegChartConfig(chartData, underlyingPrice) {
             },
           },
           limits: {
-            // Use strike-based limits when possible so the allowed pan/zoom range is focused
-            // around the strategy legs instead of the full expanded prices array.
-            // These limits are intentionally wider than the suggested view, but much smaller
-            // than the full prices extent which made tight strategies invisible.
             x: {
-              min: typeof suggestedMin === "number" ? Math.floor(suggestedMin - Math.max((Math.max(...chartData.strikes || [suggestedMin]) - Math.min(...chartData.strikes || [suggestedMax])) * 2, 50)) : Math.min(...prices) - 50,
-              max: typeof suggestedMax === "number" ? Math.ceil(suggestedMax + Math.max((Math.max(...chartData.strikes || [suggestedMin]) - Math.min(...chartData.strikes || [suggestedMax])) * 2, 50)) : Math.max(...prices) + 50,
+              min: Math.min(...prices),
+              max: Math.max(...prices),
             },
             // Remove Y limits to prevent vertical zoom/pan
           },
