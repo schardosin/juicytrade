@@ -198,13 +198,13 @@ export default {
           timeframe = "D"; // Daily bars
           break;
         case "1W":
-          // 1W timeframe but show 1 year of weekly data
-          startDate = new Date(now.getFullYear() - 1, now.getMonth(), now.getDate());
+          // 1W timeframe but show 2 years of weekly data
+          startDate = new Date(now.getFullYear() - 2, now.getMonth(), now.getDate());
           timeframe = "W"; // Weekly bars
           break;
         case "1M":
-          // 1M timeframe but show 2 years of monthly data
-          startDate = new Date(now.getFullYear() - 2, now.getMonth(), now.getDate());
+          // 1M timeframe but show 5 years of monthly data
+          startDate = new Date(now.getFullYear() - 5, now.getMonth(), now.getDate());
           timeframe = "M"; // Monthly bars
           break;
         default:
@@ -238,7 +238,7 @@ export default {
         const { startDate, timeframe } = calculateDateRange(range);
 
         // Use regular historical data for all ranges
-        const limit = range === "1D" ? 365 : (range === "1W" ? 52 : 24); // 1 year daily, 1 year weekly, 2 years monthly
+        const limit = range === "1D" ? 365 : (range === "1W" ? 104 : 60); // 1 year daily, 2 years weekly, 5 years monthly
         data = await getHistoricalData(props.symbol, timeframe, {
           limit,
           start_date: startDate,
