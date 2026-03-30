@@ -615,6 +615,20 @@ func (p *TastyTradeProvider) GetExpirationDates(ctx context.Context, symbol stri
 	return enhancedDates, nil
 }
 
+func computeUnderlyingPriceFromQuote(quote *models.StockQuote) *float64 {
+	if quote == nil {
+		return nil
+	}
+	if quote.Bid != nil && quote.Ask != nil {
+		avgPrice := (*quote.Bid + *quote.Ask) / 2
+		return &avgPrice
+	}
+	if quote.Last != nil {
+		return quote.Last
+	}
+	return nil
+}
+
 // GetOptionsChainBasic gets basic options chain data.
 // Exact conversion of Python get_options_chain_basic method.
 func (p *TastyTradeProvider) GetOptionsChainBasic(ctx context.Context, symbol, expiry string, underlyingPrice *float64, strikeCount int, optionType, underlyingSymbol *string) ([]*models.OptionContract, error) {
@@ -699,11 +713,9 @@ func (p *TastyTradeProvider) GetOptionsChainBasic(ctx context.Context, symbol, e
 
 	// Get underlying price if not provided
 	if underlyingPrice == nil {
-		// Try to get quote for the underlying (respect underlying_symbol override used for API calls)
 		quote, err := p.GetStockQuote(ctx, apiSymbol)
-		if err == nil && quote != nil && quote.Bid != nil && quote.Ask != nil {
-			avgPrice := (*quote.Bid + *quote.Ask) / 2
-			underlyingPrice = &avgPrice
+		if err == nil {
+			underlyingPrice = computeUnderlyingPriceFromQuote(quote)
 		}
 	}
 
