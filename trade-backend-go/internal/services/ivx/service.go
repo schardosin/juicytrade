@@ -24,17 +24,17 @@ func (s *Service) getSymbolsToFetch(symbol string) []string {
 	// Map of weekly symbols to their base symbol
 	weeklySymbolMap := map[string]string{
 		"SPX": "SPXW", // SPX → include SPXW (SPX Weeklys)
-		"NDX": "NDXP", // NDX → include NDXP  
+		"NDX": "NDXP", // NDX → include NDXP
 		"RUT": "RUTW", // RUT → include RUTW
 	}
-	
+
 	symbols := []string{symbol}
-	
+
 	// If this symbol has a weekly variant, include it
 	if weeklySymbol, exists := weeklySymbolMap[symbol]; exists {
 		symbols = append(symbols, weeklySymbol)
 	}
-	
+
 	return symbols
 }
 
@@ -65,7 +65,7 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 		for _, exp := range cached {
 			updates <- StreamUpdate{Type: "data", Payload: exp}
 		}
-		
+
 		// Send completion with cached flag
 		updates <- StreamUpdate{Type: "complete", Payload: models.IVxResponse{
 			Symbol:          symbol,
@@ -79,22 +79,13 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 	// 2. Send initial status
 	updates <- StreamUpdate{Type: "status", Payload: "Fetching underlying price..."}
 
-	// 1. Get underlying price
-	quote, err := s.providerManager.GetStockQuote(ctx, symbol)
+	// Get underlying price with fallback logic (mid-price > last > options chain estimate)
+	pricePtr, err := s.getUnderlyingPrice(ctx, symbol)
 	if err != nil {
-		updates <- StreamUpdate{Type: "error", Payload: fmt.Sprintf("Failed to get quote: %v", err)}
+		updates <- StreamUpdate{Type: "error", Payload: fmt.Sprintf("Failed to get underlying price: %v", err)}
 		return
 	}
-
-	var underlyingPrice float64
-	if quote.Bid != nil && quote.Ask != nil && *quote.Bid > 0 && *quote.Ask > 0 {
-		underlyingPrice = (*quote.Bid + *quote.Ask) / 2
-	} else if quote.Last != nil && *quote.Last > 0 {
-		underlyingPrice = *quote.Last
-	} else {
-		updates <- StreamUpdate{Type: "error", Payload: "Invalid quote data: missing bid/ask and last price"}
-		return
-	}
+	underlyingPrice := *pricePtr
 	updates <- StreamUpdate{Type: "status", Payload: fmt.Sprintf("Underlying price: %.2f", underlyingPrice)}
 
 	// 2. Get all symbols to fetch (base + weekly variants like SPXW)
@@ -104,7 +95,7 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 	// 3. Fetch FULL chain ONCE per symbol (major optimization: 50+ calls → 1-2 calls)
 	// Pass expiry="" to get all expirations in a single API call
 	updates <- StreamUpdate{Type: "status", Payload: "Fetching full options chain..."}
-	
+
 	var allContracts []*models.OptionContract
 	for _, sym := range symbolsToFetch {
 		// Fetch full chain: no expiry filter, no strike filter (we'll filter in-memory)
@@ -188,7 +179,6 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 		}
 	}
 
-	
 	if len(validExpirations) == 0 {
 		updates <- StreamUpdate{Type: "error", Payload: "No valid expirations found"}
 		return
@@ -272,7 +262,7 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 	})
 
 	calculationTime := time.Since(startTime).Seconds()
-	
+
 	if len(allResults) > 0 {
 		s.cache.Set(symbol, allResults)
 	}
@@ -290,7 +280,7 @@ func (s *Service) GetIVxStream(ctx context.Context, symbol string, updates chan<
 // GetIVxSnapshot returns the full IVx data for a symbol (on-demand)
 func (s *Service) GetIVxSnapshot(ctx context.Context, symbol string) (*models.IVxResponse, error) {
 	updates := make(chan StreamUpdate)
-	
+
 	// Start streaming in background
 	go s.GetIVxStream(ctx, symbol, updates)
 
@@ -308,17 +298,21 @@ func (s *Service) GetIVxSnapshot(ctx context.Context, symbol string) (*models.IV
 	return nil, fmt.Errorf("stream closed without completion")
 }
 
-// getUnderlyingPrice gets the underlying price with fallback logic
+// getUnderlyingPrice gets the underlying price with fallback logic.
+// Priority: mid-price (bid+ask)/2 > last price > estimate from options chain strikes.
+// Mid-price is preferred for IVx calculations as it's more accurate than last trade price.
 func (s *Service) getUnderlyingPrice(ctx context.Context, symbol string) (*float64, error) {
 	// Try direct quote first
 	quote, err := s.providerManager.GetStockQuote(ctx, symbol)
 	if err == nil && quote != nil {
-		if quote.Last != nil && *quote.Last > 0 {
-			return quote.Last, nil
-		}
+		// Prefer mid-price from bid/ask (more accurate for IVx)
 		if quote.Bid != nil && quote.Ask != nil && *quote.Bid > 0 && *quote.Ask > 0 {
 			mid := (*quote.Bid + *quote.Ask) / 2
 			return &mid, nil
+		}
+		// Fall back to last trade price (essential for indices like NDX where bid/ask are unavailable)
+		if quote.Last != nil && *quote.Last > 0 {
+			return quote.Last, nil
 		}
 	}
 
@@ -353,7 +347,7 @@ func (s *Service) getUnderlyingPrice(ctx context.Context, symbol string) (*float
 		}
 	}
 	sort.Float64s(strikes)
-	
+
 	if len(strikes) > 0 {
 		median := strikes[len(strikes)/2]
 		return &median, nil

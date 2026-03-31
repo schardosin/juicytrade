@@ -178,13 +178,15 @@ export const api = {
       if (symbol in data) {
         const priceData = data[symbol];
         if (typeof priceData === "object" && priceData !== null) {
-          const { ask, bid } = priceData;
-          if (ask !== null && bid !== null) {
+          const { ask, bid, last } = priceData;
+          if (ask != null && bid != null) {
             return (ask + bid) / 2;
-          } else if (ask !== null) {
+          } else if (ask != null) {
             return ask;
-          } else if (bid !== null) {
+          } else if (bid != null) {
             return bid;
+          } else if (last != null) {
+            return last;
           }
         } else if (typeof priceData === "number") {
           return priceData;
