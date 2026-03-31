@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/url"
 	"strconv"
 	"strings"
@@ -2002,8 +2003,10 @@ func (p *TastyTradeProvider) SubscribeToSymbols(ctx context.Context, symbols []s
 
 		// Add Trade (Volume) subscription - automatically included with Greeks for options
 		// Trade events contain dayVolume which we need for the options chain
-		// Also supports explicit "Volume" or "Trade" data type requests
-		if (containsString(dataTypes, "Greeks") || containsString(dataTypes, "Volume") || containsString(dataTypes, "Trade")) && p.isOptionSymbol(symbol) {
+		// Also supports explicit "Volume" or "Trade" data type requests for ANY symbol type
+		// This is essential for indices like NDX/SPX where bid/ask are NaN but last trade price is valid
+		if (containsString(dataTypes, "Greeks") && p.isOptionSymbol(symbol)) ||
+			containsString(dataTypes, "Volume") || containsString(dataTypes, "Trade") {
 			allSubscriptions = append(allSubscriptions, map[string]interface{}{
 				"type":   "Trade",
 				"symbol": streamingSymbol,
@@ -2096,6 +2099,15 @@ func (p *TastyTradeProvider) UnsubscribeFromSymbols(ctx context.Context, symbols
 					"symbol": streamingSymbol,
 				})
 				// Also unsubscribe from Trade (volume) which was auto-subscribed with Greeks
+				subscriptions = append(subscriptions, map[string]interface{}{
+					"type":   "Trade",
+					"symbol": streamingSymbol,
+				})
+			}
+
+			// Unsubscribe from Trade for non-option symbols (e.g., indices like NDX/SPX)
+			// that were explicitly subscribed with "Trade" or "Volume" data types
+			if (dataType == "Trade" || dataType == "Volume") && !p.isOptionSymbol(symbol) {
 				subscriptions = append(subscriptions, map[string]interface{}{
 					"type":   "Trade",
 					"symbol": streamingSymbol,
@@ -2614,6 +2626,12 @@ func (p *TastyTradeProvider) processFeedEvents(feedData []interface{}) {
 			}
 			p.streamingState.requestsLock.Unlock()
 
+			// Skip sending to cache/queue if all values are NaN (e.g., NDX bid/ask)
+			if !hasValidMarketData(quote) {
+				slog.Debug(fmt.Sprintf("TastyTrade: Skipping all-NaN quote for %s", standardSymbol))
+				continue
+			}
+
 			// Send to cache or queue
 			marketData := &models.MarketData{
 				Symbol:    standardSymbol,
@@ -2641,6 +2659,12 @@ func (p *TastyTradeProvider) processFeedEvents(feedData []interface{}) {
 			// This allows the frontend to fall back to last price when bid/ask unavailable
 			quoteFromTrade := map[string]interface{}{
 				"last": trade["last"],
+			}
+
+			// Skip if last price is also NaN
+			if !hasValidMarketData(quoteFromTrade) {
+				slog.Debug(fmt.Sprintf("TastyTrade: Skipping NaN trade-only update for %s", standardSymbol))
+				continue
 			}
 
 			marketData := &models.MarketData{
@@ -2707,6 +2731,12 @@ func (p *TastyTradeProvider) processFeedEvents(feedData []interface{}) {
 				"volume": trade["volume"],
 			}
 
+			// Skip if volume is NaN (e.g., NDX which is not an option)
+			if !hasValidMarketData(volumeData) {
+				slog.Debug(fmt.Sprintf("TastyTrade: Skipping NaN volume-only update for %s", standardSymbol))
+				continue
+			}
+
 			marketData := &models.MarketData{
 				Symbol:    standardSymbol,
 				Data:      volumeData,
@@ -2717,6 +2747,32 @@ func (p *TastyTradeProvider) processFeedEvents(feedData []interface{}) {
 			slog.Debug(fmt.Sprintf("TastyTrade: Sent volume-only update for %s", standardSymbol))
 		}
 	}
+}
+
+// hasValidMarketData checks if a data map contains at least one valid (non-NaN) numeric value.
+// Returns false if all numeric values are NaN, meaning the data carries no useful information.
+// This filters out events like NDX quotes where bid/ask are all NaN.
+func hasValidMarketData(data map[string]interface{}) bool {
+	for _, v := range data {
+		switch val := v.(type) {
+		case float64:
+			if !math.IsNaN(val) {
+				return true
+			}
+		case string:
+			// String "NaN" from DXLink is not valid data, but other strings (symbol, etc.) are
+			if val != "NaN" {
+				return true
+			}
+		case nil:
+			// nil is not valid data
+			continue
+		default:
+			// Any other type (int, bool, etc.) is considered valid
+			return true
+		}
+	}
+	return false
 }
 
 // processQuoteFeedData processes FEED_DATA messages and extracts Quote events.
