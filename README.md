@@ -8,7 +8,7 @@ Juicy Trade connects to multiple brokerages through a unified API, letting you t
 
 ## ✨ Key Features
 
-- **Multi-Broker Support** — Alpaca, Tradier, TastyTrade, and Public.com with live & paper trading
+- **Multi-Broker Support** — Alpaca, Tradier, TastyTrade, and Schwab with live & paper trading
 - **Real-Time Streaming** — WebSocket-based price feeds with sleep/wake recovery and automatic reconnection
 - **Options Chain** — Live bid/ask, Greeks, and interactive payoff charts for complex strategies
 - **Strategy Simulation** — Backtest options strategies against historical data
@@ -27,7 +27,7 @@ graph LR
     B <--> C["Alpaca"]
     B <--> D["Tradier"]
     B <--> E["TastyTrade"]
-    B <--> F["Public.com"]
+    B <--> F["Schwab"]
     B --- G["<b>strategy-service</b><br/>Python Backtesting<br/><i>port 8009</i>"]
 ```
 
@@ -115,7 +115,7 @@ Supported brokers:
 | **Alpaca** | ✅ | ✅ | WebSocket | API Key + Secret |
 | **Tradier** | ✅ | ✅ | WebSocket | Bearer Token |
 | **TastyTrade** | ✅ | ✅ | DXLink | OAuth2 (refresh token) |
-| **Public.com** | — | — | — | API Key (data only) |
+| **Schwab** | ✅ | ✅ | WebSocket | OAuth2 |
 
 ### Authentication
 
