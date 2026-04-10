@@ -1,4 +1,4 @@
-# 🍊 Juicy Trade
+# <img src="trade-app/public/logos/favicon.svg" width="32" height="32" alt="Juicy Trade logo"> Juicy Trade
 
 **A self-hosted options trading platform with real-time streaming, multi-broker support, and a professional trading interface.**
 
