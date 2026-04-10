@@ -33,41 +33,23 @@ services:
     depends_on:
       - trade-backend
 
-  # Strategy Simulation Service (Go) - On-Demand
-  strategy-simulation:
-    build: ./strategy-simulation-go
+  # Strategy Service (Python - backtesting, strategies + data-import)
+  strategy-service:
+    build: ./strategy-service
     ports:
       - "8009:8009"
-    container_name: strategy-simulation
-    restart: "no"  # On-demand - don't auto-restart
-    profiles:
-      - simulation  # Only start with: docker compose --profile simulation up
+    container_name: strategy-service
+    restart: unless-stopped
     environment:
       - HOST=0.0.0.0
       - PORT=8009
       - LOG_LEVEL=info
-      - DATA_PATH=/app/data
-      - PARQUET_PATH=/app/data/parquet
-      - DBN_PATH=/app/data/dbn
-      - DATABASE_PATH=/app/data/strategies/strategies.db
       - CORS_ALLOW_ORIGINS=http://localhost:3001,http://localhost:5173
     volumes:
-      - ./data:/app/data  # Shared with other services
+      - ./data:/app/data
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8009/health"]
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 5s
-
-  # Legacy Python Backend (deprecated - to be removed)
-  # juicytrade:
-  #   build: .
-  #   ports:
-  #     - "80:80"
-  #   container_name: juicytrade
-  #   restart: unless-stopped
-  #   env_file:
-  #     - .env
-  #   volumes:
-  #     - ./data:/app/data
+      start_period: 10s
