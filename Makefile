@@ -2,19 +2,18 @@
 REGISTRY := registry.gitlab.com/schardosin/juicytrade
 BACKEND_IMAGE := trade-backend
 FRONTEND_IMAGE := trade-app
-SIMULATION_IMAGE := strategy-simulation
 STRATEGY_IMAGE := strategy-service
 TAG ?= latest
 PLATFORM ?= linux/amd64
 
 # Targets
-.PHONY: all build push build-backend push-backend run-backend build-frontend push-frontend run-frontend build-simulation push-simulation run-simulation build-strategy push-strategy run-strategy help
+.PHONY: all build push build-backend push-backend run-backend build-frontend push-frontend run-frontend build-strategy push-strategy run-strategy help
 
 all: build ## Build all images
 
-build: build-backend build-frontend build-simulation build-strategy ## Build all images
+build: build-backend build-frontend build-strategy ## Build all images
 
-push: push-backend push-frontend push-simulation push-strategy ## Push all images to registry
+push: push-backend push-frontend push-strategy ## Push all images to registry
 
 # Backend (Core Trading - Go, port 8008)
 build-backend: ## Build the backend Docker image
@@ -42,20 +41,7 @@ run-frontend: ## Run the frontend locally (port 3001)
 	@echo "Starting frontend on port 3001..."
 	cd trade-app && npm run dev
 
-# Strategy Simulation Service (Go)
-build-simulation: ## Build the strategy simulation Docker image
-	@echo "Building strategy simulation image..."
-	docker build --platform $(PLATFORM) --load -t $(REGISTRY)/$(SIMULATION_IMAGE):$(TAG) ./strategy-simulation-go
-
-push-simulation: ## Push the strategy simulation Docker image to registry
-	@echo "Pushing strategy simulation image..."
-	docker push $(REGISTRY)/$(SIMULATION_IMAGE):$(TAG)
-
-run-simulation: ## Run the strategy simulation service locally
-	@echo "Starting strategy simulation service..."
-	cd strategy-simulation-go && go run cmd/server/main.go
-
-# Strategy Service (Python, port 8009 - handles strategies + data-import)
+# Strategy Service (Python, port 8009 - backtesting, strategies + data-import)
 build-strategy: ## Build the strategy service Docker image
 	@echo "Building strategy service image..."
 	docker build --platform $(PLATFORM) --load -t $(REGISTRY)/$(STRATEGY_IMAGE):$(TAG) ./strategy-service
@@ -76,23 +62,15 @@ dev: ## Run all services locally for development (backend, frontend, strategy)
 	@echo "  - Frontend:         http://localhost:3001"
 	@make -j3 run-backend run-strategy run-frontend
 
-dev-all: ## Run all services including simulation
-	@echo "Starting all services including simulation..."
-	@make -j4 run-backend run-frontend run-simulation run-strategy
-
 test-backend: ## Run tests for Go backend
 	@echo "Running Go backend tests..."
 	cd trade-backend-go && go test ./...
-
-test-simulation: ## Run tests for strategy simulation service
-	@echo "Running strategy simulation tests..."
-	cd strategy-simulation-go && go test ./...
 
 test-strategy: ## Run tests for strategy service
 	@echo "Running strategy service tests..."
 	cd strategy-service && python -m pytest
 
-test: test-backend test-simulation test-strategy ## Run all tests
+test: test-backend test-strategy ## Run all tests
 
 logs-strategy: ## Tail strategy service logs
 	@echo "Tailing strategy service..."
@@ -107,7 +85,7 @@ help: ## Display this help message
 	@echo ""
 	@echo "Services:"
 	@echo "  trade-backend-go  - Go backend (port 8008) - main API gateway"
-	@echo "  strategy-service  - Python service (port 8009) - strategies + data-import"
+	@echo "  strategy-service  - Python service (port 8009) - backtesting, strategies + data-import"
 	@echo "  trade-app         - Vue.js frontend (port 3001)"
 	@echo ""
 	@echo "Targets:"
