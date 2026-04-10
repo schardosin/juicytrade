@@ -28,21 +28,21 @@ graph LR
     B <--> D["Tradier"]
     B <--> E["TastyTrade"]
     B <--> F["Public.com"]
-    B --- G["<b>strategy-simulation-go</b><br/>Backtesting Engine<br/><i>port 8009</i>"]
+    B --- G["<b>strategy-service</b><br/>Python Backtesting<br/><i>port 8009</i>"]
 ```
 
 | Service | Tech | Description |
 |---------|------|-------------|
 | **trade-backend-go** | Go 1.24 | Core API — broker connections, streaming, orders, positions |
 | **trade-app** | Vue.js | Trading UI — charts, options chain, order panel, watchlists |
-| **strategy-simulation-go** | Go | Backtesting engine for options strategies (optional) |
-| **strategy-service** | Python | Legacy strategy service (being migrated to Go) |
+| **strategy-service** | Python | Backtesting engine — strategy simulation, historical data, analytics |
 
 ## 🚀 Getting Started
 
 ### Prerequisites
 
 - **Go 1.24+**
+- **Python 3.10+** (for strategy service)
 - **Node.js 18+**
 - **Docker** (optional, for containerized deployment)
 - API credentials for at least one supported broker
@@ -65,7 +65,6 @@ This starts the backend, strategy service, and frontend concurrently:
 ```bash
 make run-backend      # Go backend on port 8008
 make run-frontend     # Vue.js frontend on port 3001
-make run-simulation   # Strategy simulation service
 make run-strategy     # Strategy service on port 8009
 ```
 
@@ -78,13 +77,10 @@ make build
 # Or build individually
 make build-backend
 make build-frontend
-make build-simulation
+make build-strategy
 
 # Run with Docker Compose
 docker compose up -d
-
-# Include simulation service (optional)
-docker compose --profile simulation up -d
 ```
 
 ### Run Tests
@@ -92,7 +88,6 @@ docker compose --profile simulation up -d
 ```bash
 make test              # Run all tests
 make test-backend      # Go backend tests only
-make test-simulation   # Simulation tests only
 make test-strategy     # Strategy service tests only
 ```
 
