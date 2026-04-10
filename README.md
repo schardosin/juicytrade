@@ -21,18 +21,14 @@ Juicy Trade connects to multiple brokerages through a unified API, letting you t
 
 ## 🏗️ Architecture
 
-```
-┌─────────────────┐     ┌──────────────────────┐     ┌──────────────────┐
-│   trade-app     │────▶│  trade-backend-go     │────▶│  Alpaca          │
-│   Vue.js SPA    │ WS  │  Go API (port 8008)   │     │  Tradier         │
-│   (port 3001)   │◀────│  REST + WebSocket     │◀────│  TastyTrade      │
-└─────────────────┘     └──────────────────────┘     │  Public.com      │
-                                │                     └──────────────────┘
-                        ┌───────┴────────┐
-                        │ strategy-      │
-                        │ simulation-go  │
-                        │ (port 8009)    │
-                        └────────────────┘
+```mermaid
+graph LR
+    A["<b>trade-app</b><br/>Vue.js SPA<br/><i>port 3001</i>"] <-->|"REST &<br/>WebSocket"| B["<b>trade-backend-go</b><br/>Go API<br/><i>port 8008</i>"]
+    B <--> C["Alpaca"]
+    B <--> D["Tradier"]
+    B <--> E["TastyTrade"]
+    B <--> F["Public.com"]
+    B --- G["<b>strategy-simulation-go</b><br/>Backtesting Engine<br/><i>port 8009</i>"]
 ```
 
 | Service | Tech | Description |
