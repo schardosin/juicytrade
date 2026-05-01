@@ -145,11 +145,11 @@ func (c *Calculator) calculateDaysToExpiration(expirationDate string) (float64, 
 	}
 
 	now := time.Now().In(et)
-	today := now.Truncate(24 * time.Hour)
-	expDate = expDate.In(et)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, et)
+	expDateET := time.Date(expDate.Year(), expDate.Month(), expDate.Day(), 0, 0, 0, 0, et)
 
 	// For same-day expiration (0DTE)
-	if expDate.Equal(today) {
+	if expDateET.Equal(today) {
 		// Market close is 4:00 PM ET
 		marketClose := time.Date(today.Year(), today.Month(), today.Day(), 16, 0, 0, 0, et)
 
@@ -165,7 +165,7 @@ func (c *Calculator) calculateDaysToExpiration(expirationDate string) (float64, 
 	}
 
 	// For future expirations
-	fullDays := expDate.Sub(today).Hours() / 24
+	fullDays := expDateET.Sub(today).Hours() / 24
 
 	// Add fractional day based on current time (assume 4:00 PM ET expiration)
 	marketCloseToday := time.Date(today.Year(), today.Month(), today.Day(), 16, 0, 0, 0, et)
