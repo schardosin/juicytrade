@@ -131,6 +131,19 @@ func (c *Calculator) getIVFromGreeks(greeksMap map[string]map[string]interface{}
 
 // calculateDaysToExpiration calculates DTE with Eastern Time logic
 func (c *Calculator) calculateDaysToExpiration(expirationDate string) (float64, bool) {
+	// Always use Eastern Time for all date calculations
+	et, err := time.LoadLocation("America/New_York")
+	if err != nil {
+		// Fallback to UTC if ET fails, though this shouldn't happen in valid env
+		et = time.UTC
+	}
+
+	now := time.Now().In(et)
+	return c.calculateDaysToExpirationAt(expirationDate, now)
+}
+
+// calculateDaysToExpirationAt calculates DTE using the provided current time (must be in ET)
+func (c *Calculator) calculateDaysToExpirationAt(expirationDate string, now time.Time) (float64, bool) {
 	// Parse expiration date
 	expDate, err := time.Parse("2006-01-02", expirationDate)
 	if err != nil {
@@ -144,12 +157,11 @@ func (c *Calculator) calculateDaysToExpiration(expirationDate string) (float64, 
 		et = time.UTC
 	}
 
-	now := time.Now().In(et)
-	today := now.Truncate(24 * time.Hour)
-	expDate = expDate.In(et)
+	today := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, et)
+	expDateET := time.Date(expDate.Year(), expDate.Month(), expDate.Day(), 0, 0, 0, 0, et)
 
 	// For same-day expiration (0DTE)
-	if expDate.Equal(today) {
+	if expDateET.Equal(today) {
 		// Market close is 4:00 PM ET
 		marketClose := time.Date(today.Year(), today.Month(), today.Day(), 16, 0, 0, 0, et)
 
@@ -165,7 +177,7 @@ func (c *Calculator) calculateDaysToExpiration(expirationDate string) (float64, 
 	}
 
 	// For future expirations
-	fullDays := expDate.Sub(today).Hours() / 24
+	fullDays := expDateET.Sub(today).Hours() / 24
 
 	// Add fractional day based on current time (assume 4:00 PM ET expiration)
 	marketCloseToday := time.Date(today.Year(), today.Month(), today.Day(), 16, 0, 0, 0, et)
