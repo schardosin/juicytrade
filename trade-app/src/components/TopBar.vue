@@ -704,7 +704,8 @@ export default {
           break;
         case "Escape":
           showDropdown.value = false;
-          searchInput.value?.blur();
+          searchInput.value?.blur?.();
+          searchInput.value?.$el?.blur?.();
           break;
       }
     };
