@@ -114,6 +114,20 @@ const baseConfig = {
   historical_data: 'polygon_data'
 };
 
+const appleSymbol = {
+  symbol: 'AAPL',
+  description: 'Apple Inc.',
+  type: 'stock',
+  exchange: 'NASDAQ'
+};
+
+const microsoftSymbol = {
+  symbol: 'MSFT',
+  description: 'Microsoft Corporation',
+  type: 'stock',
+  exchange: 'NASDAQ'
+};
+
 const createWrapper = () => {
   return mount(TopBar, {
     global: {
@@ -609,7 +623,105 @@ describe('TopBar - Trade Account Switching', () => {
   });
 
   // =============================================================
-  // 6. Template rendering
+  // 6. Desktop search Enter key regressions
+  // =============================================================
+  describe('Desktop search Enter key regressions', () => {
+    it('highlighted-result Enter closes dropdown, resets transient state, and dispatches symbol-selected once', async () => {
+      wrapper = createWrapper();
+      await nextTick();
+
+      const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+      const keydownEvent = { key: 'Enter', preventDefault: vi.fn() };
+
+      wrapper.vm.searchQuery = 'AAP';
+      wrapper.vm.searchResults = [appleSymbol, microsoftSymbol];
+      wrapper.vm.showDropdown = true;
+      wrapper.vm.searchLoading = true;
+      wrapper.vm.highlightedIndex = 1;
+      await nextTick();
+
+      wrapper.vm.handleKeydown(keydownEvent);
+      await nextTick();
+
+      expect(keydownEvent.preventDefault).toHaveBeenCalledTimes(1);
+      expect(wrapper.vm.searchQuery).toBe('MSFT');
+      expect(wrapper.vm.searchResults).toEqual([]);
+      expect(wrapper.vm.showDropdown).toBe(false);
+      expect(wrapper.vm.searchLoading).toBe(false);
+      expect(wrapper.vm.highlightedIndex).toBe(-1);
+
+      expect(dispatchSpy).toHaveBeenCalledTimes(1);
+      const dispatchedEvent = dispatchSpy.mock.calls[0][0];
+      expect(dispatchedEvent.type).toBe('symbol-selected');
+      expect(dispatchedEvent.detail).toEqual(microsoftSymbol);
+    });
+
+    it('Enter with no highlighted result but valid search selection closes dropdown and dispatches the first result', async () => {
+      mockLookupSymbols.mockResolvedValueOnce([appleSymbol]);
+
+      wrapper = createWrapper();
+      await nextTick();
+
+      const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+      const keydownEvent = { key: 'Enter', preventDefault: vi.fn() };
+
+      wrapper.vm.searchQuery = 'AAPL';
+      wrapper.vm.searchResults = [microsoftSymbol];
+      wrapper.vm.showDropdown = true;
+      wrapper.vm.searchLoading = true;
+      wrapper.vm.highlightedIndex = -1;
+      await nextTick();
+
+      wrapper.vm.handleKeydown(keydownEvent);
+      await flushPromises();
+
+      expect(keydownEvent.preventDefault).toHaveBeenCalledTimes(1);
+      expect(mockLookupSymbols).toHaveBeenCalledWith('AAPL');
+      expect(wrapper.vm.searchQuery).toBe('AAPL');
+      expect(wrapper.vm.searchResults).toEqual([]);
+      expect(wrapper.vm.showDropdown).toBe(false);
+      expect(wrapper.vm.searchLoading).toBe(false);
+      expect(wrapper.vm.highlightedIndex).toBe(-1);
+
+      expect(dispatchSpy).toHaveBeenCalledTimes(1);
+      const dispatchedEvent = dispatchSpy.mock.calls[0][0];
+      expect(dispatchedEvent.type).toBe('symbol-selected');
+      expect(dispatchedEvent.detail).toEqual(appleSymbol);
+    });
+
+    it('Enter selection dispatch matches click selection event behavior', async () => {
+      wrapper = createWrapper();
+      await nextTick();
+
+      const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
+
+      wrapper.vm.selectSymbol(appleSymbol);
+      await nextTick();
+
+      const clickSelectionEvent = dispatchSpy.mock.calls[0][0];
+      expect(clickSelectionEvent.type).toBe('symbol-selected');
+      expect(clickSelectionEvent.detail).toEqual(appleSymbol);
+
+      dispatchSpy.mockClear();
+
+      wrapper.vm.searchQuery = 'MSF';
+      wrapper.vm.searchResults = [microsoftSymbol];
+      wrapper.vm.showDropdown = true;
+      wrapper.vm.highlightedIndex = 0;
+      await nextTick();
+
+      wrapper.vm.handleKeydown({ key: 'Enter', preventDefault: vi.fn() });
+      await nextTick();
+
+      expect(dispatchSpy).toHaveBeenCalledTimes(1);
+      const enterSelectionEvent = dispatchSpy.mock.calls[0][0];
+      expect(enterSelectionEvent.type).toBe(clickSelectionEvent.type);
+      expect(enterSelectionEvent.detail).toEqual(microsoftSymbol);
+    });
+  });
+
+  // =============================================================
+  // 7. Template rendering
   // =============================================================
   describe('Template rendering', () => {
     it('renders Dropdown in tooltip when showProviderTooltip is true', async () => {

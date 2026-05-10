@@ -47,7 +47,6 @@
           @focus="handleFocus"
           @blur="handleBlur"
           @keydown="handleKeydown"
-          @keyup.enter="performSearch"
         />
 
         <!-- Search Results Dropdown -->
@@ -600,18 +599,7 @@ export default {
           const results = await lookupSymbols(searchQuery.value);
 
           if (results && results.length > 0) {
-            // Take the first result and emit a symbol selection event
-            const selectedSymbol = results[0];
-
-            // Emit an event that the parent can listen to
-            // For now, we'll use a global event bus or direct method call
-            window.dispatchEvent(
-              new CustomEvent("symbol-selected", {
-                detail: selectedSymbol,
-              })
-            );
-
-            searchQuery.value = selectedSymbol.symbol;
+            selectSymbol(results[0]);
           } else {
             console.log("No symbols found");
             // Could show a toast notification here
