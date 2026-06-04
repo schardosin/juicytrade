@@ -520,6 +520,10 @@ func (s *Service) EvaluateIndicator(ctx context.Context, configID string, config
 // EvaluateAllIndicators evaluates all indicators
 // Each indicator uses its own configured symbol (or defaults like QQQ for Gap/Range/Trend)
 // configID is used for caching - pass empty string for preview/test mode (no caching)
+// EvaluateAllIndicators evaluates all indicators sequentially using the shared parent context.
+// NOTE: Future enhancement - each indicator could get its own timeout context (e.g., 30s per indicator)
+// so that a single slow indicator does not cascade timeouts to others. Currently, all indicators
+// share the parent context timeout (evaluationTimeout in engine.go).
 func (s *Service) EvaluateAllIndicators(ctx context.Context, configID string, configs []types.IndicatorConfig) []types.IndicatorResult {
 	results := make([]types.IndicatorResult, 0, len(configs))
 

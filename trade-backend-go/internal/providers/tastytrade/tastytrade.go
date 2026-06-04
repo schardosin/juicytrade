@@ -53,6 +53,7 @@ type TastyTradeProvider struct {
 	sessionExpires *time.Time
 	quoteToken     string
 	quoteExpires   *time.Time
+	quoteTokenMu   sync.RWMutex // Protects quoteToken and quoteExpires
 	dxlinkURL      string
 	httpClient     *utils.HTTPClient
 	streamingState *StreamingState
@@ -4243,9 +4244,33 @@ func (p *TastyTradeProvider) interfaceToFloat64(val interface{}) *float64 {
 
 // === Historical Data Helper Methods ===
 
+// quoteTokenSafetyMargin is the time before expiry when we proactively refresh the token.
+const quoteTokenSafetyMargin = 5 * time.Minute
+
 // getQuoteToken gets quote token for DXLink streaming.
-// Exact conversion of Python _get_quote_token method.
+// Uses cached token if still valid (tokens last 24h), avoiding unnecessary API calls.
 func (p *TastyTradeProvider) getQuoteToken(ctx context.Context) error {
+	// Fast path: check if cached token is still valid (with safety margin)
+	p.quoteTokenMu.RLock()
+	if p.quoteToken != "" && p.quoteExpires != nil && time.Now().Before(p.quoteExpires.Add(-quoteTokenSafetyMargin)) {
+		slog.Debug("TastyTrade: Using cached quote token", "expires_in", time.Until(*p.quoteExpires).String())
+		p.quoteTokenMu.RUnlock()
+		return nil
+	}
+	p.quoteTokenMu.RUnlock()
+
+	// Slow path: need to fetch a new token
+	p.quoteTokenMu.Lock()
+	defer p.quoteTokenMu.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine may have refreshed)
+	if p.quoteToken != "" && p.quoteExpires != nil && time.Now().Before(p.quoteExpires.Add(-quoteTokenSafetyMargin)) {
+		slog.Debug("TastyTrade: Quote token refreshed by another goroutine, using cached")
+		return nil
+	}
+
+	slog.Debug("TastyTrade: Fetching fresh quote token")
+
 	if err := p.ensureValidSession(ctx); err != nil {
 		return err
 	}

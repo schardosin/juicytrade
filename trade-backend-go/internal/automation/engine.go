@@ -14,6 +14,10 @@ import (
 	"trade-backend-go/internal/providers"
 )
 
+// evaluationTimeout is the maximum time allowed for evaluating all indicators in a single cycle.
+// Set to 60s to provide adequate headroom for multiple indicators that fetch historical data.
+const evaluationTimeout = 60 * time.Second
+
 // Engine manages automation instances
 type Engine struct {
 	providerManager   *providers.ProviderManager
@@ -386,7 +390,7 @@ func (e *Engine) runAutomationTick(id string, stopChan chan struct{}) {
 
 // handleWaitingState handles the waiting state - waiting for entry time
 func (e *Engine) handleWaitingState(id string, active *types.ActiveAutomation, stopChan chan struct{}) {
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), evaluationTimeout)
 	defer cancel()
 
 	// Check for new trading day and reset TradedToday if needed
