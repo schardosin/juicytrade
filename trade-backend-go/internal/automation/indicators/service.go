@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,19 @@ type cachedQuote struct {
 // quoteCacheTTL is how long to cache real-time quotes (prevents race condition when
 // multiple automations request the same symbol's quote simultaneously)
 const quoteCacheTTL = 5 * time.Second
+
+// vixMaxRetries is the maximum number of retry attempts for VIX evaluation.
+const vixMaxRetries = 2 // 3 total attempts (1 initial + 2 retries)
+
+// vixRetryDelay is the delay between VIX retry attempts.
+const vixRetryDelay = 2 * time.Second
+
+// vixEvaluationTimeout is the per-attempt timeout for VIX indicator evaluation.
+const vixEvaluationTimeout = 20 * time.Second
+
+// vixCacheFallbackTTL is the maximum age of a cached VIX value that can be used
+// as a fallback when evaluation fails.
+const vixCacheFallbackTTL = 5 * time.Minute
 
 // Service handles indicator calculations using the provider abstraction layer
 type Service struct {
@@ -237,7 +251,7 @@ func (s *Service) EvaluateIndicator(ctx context.Context, configID string, config
 		if vixSymbol == "" {
 			vixSymbol = "VIX"
 		}
-		result.Value, err = s.GetVIXValue(ctx, vixSymbol)
+		result.Value, err = s.getVIXValueWithRetry(ctx, vixSymbol)
 		result.Symbol = vixSymbol
 	case types.IndicatorGap:
 		// Use indicator's symbol if configured, otherwise default to QQQ for market reference
@@ -478,6 +492,34 @@ func (s *Service) EvaluateIndicator(ctx context.Context, configID string, config
 		result.Pass = false
 		result.Stale = true
 
+		// For VIX indicators: try cache fallback before marking as stale
+		if config.Type == types.IndicatorVIX && configID != "" && config.ID != "" {
+			if cached := s.getCachedResult(configID, config.ID); cached != nil {
+				if time.Since(cached.Timestamp) < vixCacheFallbackTTL {
+					// Cache is fresh enough — use it instead of marking stale
+					slog.Warn("⚠️ VIX evaluation failed, using cached value (within TTL)",
+						"indicatorID", config.ID,
+						"cachedValue", cached.Value,
+						"cachedAt", cached.Timestamp,
+						"cacheAge", time.Since(cached.Timestamp).Round(time.Second),
+						"error", err)
+
+					result.Value = cached.Value
+					result.Error = "" // Clear error — this is a valid fallback
+					result.Stale = false
+					result.Pass = result.Evaluate()
+					result.Details = fmt.Sprintf("VIX %.2f (cached %s ago) %s",
+						cached.Value,
+						time.Since(cached.Timestamp).Round(time.Second),
+						s.formatPassFail(result.Pass))
+
+					// Still cache this result to extend TTL for subsequent ticks
+					s.setCachedResult(configID, config.ID, cached.Value)
+					return result
+				}
+			}
+		}
+
 		// Try to use last known good value for display (only if we have a configID for caching)
 		if configID != "" && config.ID != "" {
 			if cached := s.getCachedResult(configID, config.ID); cached != nil {
@@ -622,6 +664,82 @@ func (s *Service) GetVIXValue(ctx context.Context, customSymbol string) (float64
 
 	// For other symbols (UVXY, VXX, etc.), use race-condition-safe caching
 	return s.getQuoteWithCache(ctx, symbol)
+}
+
+// isTransientError checks if an error is likely transient (connection/timeout related).
+func isTransientError(err error) bool {
+	if err == nil {
+		return false
+	}
+	errStr := err.Error()
+	return strings.Contains(errStr, "i/o timeout") ||
+		strings.Contains(errStr, "connection refused") ||
+		strings.Contains(errStr, "connection reset") ||
+		strings.Contains(errStr, "context deadline exceeded") ||
+		strings.Contains(errStr, "failed to connect") ||
+		strings.Contains(errStr, "EOF")
+}
+
+// getVIXValueWithRetry wraps GetVIXValue with retry logic for transient failures.
+// Each attempt gets its own 20s timeout context. On transient failures, retries up to
+// vixMaxRetries times with vixRetryDelay between attempts.
+func (s *Service) getVIXValueWithRetry(ctx context.Context, symbol string) (float64, error) {
+	var lastErr error
+
+	for attempt := 0; attempt <= vixMaxRetries; attempt++ {
+		if attempt > 0 {
+			slog.Warn("🔄 Retrying VIX evaluation",
+				"attempt", attempt+1,
+				"maxAttempts", vixMaxRetries+1,
+				"symbol", symbol,
+				"previousError", lastErr)
+
+			// Wait before retry, but respect context cancellation
+			select {
+			case <-ctx.Done():
+				return 0, fmt.Errorf("context cancelled during VIX retry: %w", ctx.Err())
+			case <-time.After(vixRetryDelay):
+			}
+		}
+
+		// Create per-attempt timeout context
+		attemptCtx, attemptCancel := context.WithTimeout(ctx, vixEvaluationTimeout)
+		value, err := s.GetVIXValue(attemptCtx, symbol)
+		attemptCancel()
+
+		if err == nil {
+			if attempt > 0 {
+				slog.Info("✅ VIX evaluation succeeded on retry",
+					"attempt", attempt+1,
+					"symbol", symbol,
+					"value", value)
+			}
+			return value, nil
+		}
+
+		lastErr = err
+
+		// Only retry on transient errors
+		if !isTransientError(err) {
+			return 0, err
+		}
+
+		slog.Warn("⚠️ VIX evaluation failed (transient)",
+			"attempt", attempt+1,
+			"maxAttempts", vixMaxRetries+1,
+			"symbol", symbol,
+			"error", err)
+	}
+
+	return 0, fmt.Errorf("VIX evaluation failed after %d attempts: %w", vixMaxRetries+1, lastErr)
+}
+
+// formatPassFail returns a pass/fail string for display.
+func (s *Service) formatPassFail(pass bool) string {
+	if pass {
+		return "(PASS)"
+	}
+	return "(FAIL)"
 }
 
 // GetGapPercent calculates the gap percentage: (Open - PrevClose) / PrevClose * 100
