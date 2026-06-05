@@ -4631,8 +4631,18 @@ type DXLinkCandleClient struct {
 func (c *DXLinkCandleClient) GetCandles(ctx context.Context, symbol, timeframe string, fromTime int64, limit int) ([]map[string]interface{}, error) {
 	slog.Debug(fmt.Sprintf("DXLink: Getting candles for %s %s from %d", symbol, timeframe, fromTime))
 
+	// Configure WebSocket dialer with HTTP/1.1 ALPN (matches streaming fix from 2ffba97).
+	// CRITICAL: Without this, Go's default TLS negotiates HTTP/2 via ALPN, causing
+	// DXLink's WebSocket server to silently drop the connection.
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 15 * time.Second,
+		TLSClientConfig: &tls.Config{
+			NextProtos: []string{"http/1.1"},
+		},
+	}
+
 	// Connect to DXLink WebSocket
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.dxlinkURL, nil)
+	conn, _, err := dialer.DialContext(ctx, c.dxlinkURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to DXLink WebSocket: %w", err)
 	}
