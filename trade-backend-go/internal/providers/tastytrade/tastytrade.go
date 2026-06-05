@@ -2,6 +2,7 @@ package tastytrade
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -1788,10 +1789,15 @@ func (p *TastyTradeProvider) ConnectStreaming(ctx context.Context) (bool, error)
 	var err error
 
 	// Configure WebSocket dialer with proper settings (matching Python websockets.connect parameters)
+	// CRITICAL: Must force http/1.1 ALPN - Go's default TLS config negotiates HTTP/2 via ALPN,
+	// which causes DXLink's WebSocket server to silently drop the connection.
 	dialer := &websocket.Dialer{
-		HandshakeTimeout: 5 * time.Second, // Reduced from 15s for faster failure detection
+		HandshakeTimeout: 15 * time.Second,
 		ReadBufferSize:   4096,
 		WriteBufferSize:  4096,
+		TLSClientConfig: &tls.Config{
+			NextProtos: []string{"http/1.1"},
+		},
 	}
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -2217,7 +2223,7 @@ func (p *TastyTradeProvider) periodicKeepalive(ctx context.Context) {
 // Exact conversion of Python _dxlink_streaming_setup method.
 func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 	conn := p.streamingState.streamConnection
-	timeout := 5 * time.Second
+	timeout := 15 * time.Second
 
 	// Helper to set deadlines
 	setDeadlines := func() {
