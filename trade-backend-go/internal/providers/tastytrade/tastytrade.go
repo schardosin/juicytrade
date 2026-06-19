@@ -2,6 +2,7 @@ package tastytrade
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -1787,10 +1788,15 @@ func (p *TastyTradeProvider) ConnectStreaming(ctx context.Context) (bool, error)
 	var err error
 
 	// Configure WebSocket dialer with proper settings (matching Python websockets.connect parameters)
+	// CRITICAL: Must force http/1.1 ALPN - Go's default TLS config negotiates HTTP/2 via ALPN,
+	// which causes DXLink's WebSocket server to silently drop the connection.
 	dialer := &websocket.Dialer{
-		HandshakeTimeout: 5 * time.Second, // Reduced from 15s for faster failure detection
+		HandshakeTimeout: 15 * time.Second,
 		ReadBufferSize:   4096,
 		WriteBufferSize:  4096,
+		TLSClientConfig: &tls.Config{
+			NextProtos: []string{"http/1.1"},
+		},
 	}
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -1945,8 +1951,10 @@ func (p *TastyTradeProvider) writeJSONWithTimeout(v interface{}) error {
 		return err
 	}
 
-	// Reset deadline (optional, but good practice if we want to leave it clean)
-	// p.streamingState.streamConnection.SetWriteDeadline(time.Time{})
+	// CRITICAL: Clear the write deadline after successful write.
+	// Without this, the deadline persists and causes subsequent writes (e.g. from Ping())
+	// to fail with "i/o timeout" if they happen after the deadline expires.
+	p.streamingState.streamConnection.SetWriteDeadline(time.Time{})
 	return nil
 }
 
@@ -2216,7 +2224,7 @@ func (p *TastyTradeProvider) periodicKeepalive(ctx context.Context) {
 // Exact conversion of Python _dxlink_streaming_setup method.
 func (p *TastyTradeProvider) dxlinkStreamingSetup(ctx context.Context) error {
 	conn := p.streamingState.streamConnection
-	timeout := 5 * time.Second
+	timeout := 15 * time.Second
 
 	// Helper to set deadlines
 	setDeadlines := func() {
@@ -3033,9 +3041,17 @@ func (p *TastyTradeProvider) Ping(ctx context.Context) error {
 	p.streamingState.writeLock.Lock()
 	defer p.streamingState.writeLock.Unlock()
 
+	// Set write deadline to avoid blocking indefinitely on a dead connection
+	if err := p.streamingState.streamConnection.SetWriteDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		return fmt.Errorf("failed to set write deadline: %w", err)
+	}
+
 	if err := p.streamingState.streamConnection.WriteJSON(keepaliveMsg); err != nil {
 		return fmt.Errorf("failed to send keepalive: %w", err)
 	}
+
+	// Clear deadline after successful write
+	p.streamingState.streamConnection.SetWriteDeadline(time.Time{})
 
 	// Note: We don't wait for response here as KEEPALIVE response is handled asynchronously
 	// in the reader goroutine. If the write succeeds, we assume the connection is at least
@@ -4600,8 +4616,18 @@ type DXLinkCandleClient struct {
 func (c *DXLinkCandleClient) GetCandles(ctx context.Context, symbol, timeframe string, fromTime int64, limit int) ([]map[string]interface{}, error) {
 	slog.Debug(fmt.Sprintf("DXLink: Getting candles for %s %s from %d", symbol, timeframe, fromTime))
 
+	// Configure WebSocket dialer with HTTP/1.1 ALPN.
+	// CRITICAL: Without this, Go's default TLS negotiates HTTP/2 via ALPN, causing
+	// DXLink's WebSocket server to silently drop the connection.
+	dialer := &websocket.Dialer{
+		HandshakeTimeout: 15 * time.Second,
+		TLSClientConfig: &tls.Config{
+			NextProtos: []string{"http/1.1"},
+		},
+	}
+
 	// Connect to DXLink WebSocket
-	conn, _, err := websocket.DefaultDialer.DialContext(ctx, c.dxlinkURL, nil)
+	conn, _, err := dialer.DialContext(ctx, c.dxlinkURL, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to DXLink WebSocket: %w", err)
 	}

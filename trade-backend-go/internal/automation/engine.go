@@ -12,6 +12,7 @@ import (
 	"trade-backend-go/internal/automation/types"
 	"trade-backend-go/internal/models"
 	"trade-backend-go/internal/providers"
+	"trade-backend-go/internal/streaming"
 )
 
 // Engine manages automation instances
@@ -35,9 +36,15 @@ func NewEngine(pm *providers.ProviderManager) (*Engine, error) {
 		return nil, fmt.Errorf("failed to create storage: %w", err)
 	}
 
+	indicatorSvc := indicators.NewService(pm)
+
+	// Wire streaming price source into indicator service
+	streamingMgr := streaming.GetStreamingManager()
+	indicatorSvc.SetStreamingSource(streamingMgr.GetLatestCache())
+
 	engine := &Engine{
 		providerManager:   pm,
-		indicatorService:  indicators.NewService(pm),
+		indicatorService:  indicatorSvc,
 		storage:           storage,
 		trackingStore:     NewTrackingStore(),
 		runtimeState:      NewRuntimeStateStorage(),
@@ -131,6 +138,9 @@ func (e *Engine) restoreFromPersistentState() error {
 		e.activeAutomations[id] = active
 		e.stopChannels[id] = make(chan struct{})
 
+		// Subscribe indicator symbols to streaming
+		e.subscribeIndicatorSymbols(config)
+
 		// Start the automation loop
 		go e.runAutomation(id, e.stopChannels[id])
 
@@ -196,6 +206,9 @@ func (e *Engine) Start(id string) error {
 
 	e.activeAutomations[id] = active
 	e.stopChannels[id] = make(chan struct{})
+
+	// Subscribe indicator symbols to streaming
+	e.subscribeIndicatorSymbols(config)
 
 	// Start the automation loop
 	go e.runAutomation(id, e.stopChannels[id])
@@ -314,6 +327,93 @@ func (e *Engine) EvaluateIndicators(ctx context.Context, config *types.Automatio
 // This allows users to preview what strikes would be selected for their config
 func (e *Engine) PreviewStrikes(ctx context.Context, config *types.AutomationConfig) (*types.StrikeSelection, error) {
 	return e.findStrikesForDelta(ctx, config)
+}
+
+// subscribeIndicatorSymbols extracts all unique symbols used by an automation's indicators
+// and subscribes them to the streaming manager so they get live price data.
+func (e *Engine) subscribeIndicatorSymbols(config *types.AutomationConfig) {
+	symbols := make(map[string]bool)
+
+	// Collect from indicator groups
+	for _, group := range config.IndicatorGroups {
+		for _, ind := range group.Indicators {
+			if !ind.Enabled {
+				continue
+			}
+			sym := ind.Symbol
+			switch ind.Type {
+			case types.IndicatorVIX:
+				if sym == "" {
+					sym = "VIX"
+				}
+			case types.IndicatorGap, types.IndicatorRange, types.IndicatorTrend,
+				types.IndicatorRSI, types.IndicatorMACD, types.IndicatorMomentum,
+				types.IndicatorCMO, types.IndicatorStoch, types.IndicatorStochRSI,
+				types.IndicatorADX, types.IndicatorCCI, types.IndicatorSMA,
+				types.IndicatorEMA, types.IndicatorATR, types.IndicatorBBPercent:
+				if sym == "" {
+					sym = "QQQ"
+				}
+			case types.IndicatorCalendar:
+				continue // No symbol needed
+			}
+			if sym != "" {
+				symbols[sym] = true
+			}
+		}
+	}
+
+	// Also collect from legacy indicators list
+	for _, ind := range config.Indicators {
+		if !ind.Enabled {
+			continue
+		}
+		sym := ind.Symbol
+		switch ind.Type {
+		case types.IndicatorVIX:
+			if sym == "" {
+				sym = "VIX"
+			}
+		case types.IndicatorGap, types.IndicatorRange, types.IndicatorTrend,
+			types.IndicatorRSI, types.IndicatorMACD, types.IndicatorMomentum,
+			types.IndicatorCMO, types.IndicatorStoch, types.IndicatorStochRSI,
+			types.IndicatorADX, types.IndicatorCCI, types.IndicatorSMA,
+			types.IndicatorEMA, types.IndicatorATR, types.IndicatorBBPercent:
+			if sym == "" {
+				sym = "QQQ"
+			}
+		case types.IndicatorCalendar:
+			continue
+		}
+		if sym != "" {
+			symbols[sym] = true
+		}
+	}
+
+	if len(symbols) == 0 {
+		return
+	}
+
+	// Convert to slice
+	symbolList := make([]string, 0, len(symbols))
+	for sym := range symbols {
+		symbolList = append(symbolList, sym)
+	}
+
+	// Subscribe via streaming manager
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	streamingMgr := streaming.GetStreamingManager()
+	if err := streamingMgr.AddSymbolsToSubscriptions(ctx, symbolList); err != nil {
+		slog.Warn("Failed to subscribe indicator symbols to streaming",
+			"symbols", symbolList,
+			"error", err)
+	} else {
+		slog.Info("📡 Subscribed indicator symbols to streaming",
+			"symbols", symbolList,
+			"automation", config.Name)
+	}
 }
 
 // runAutomation is the main automation loop

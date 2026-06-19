@@ -435,12 +435,29 @@ func (sm *StreamingManager) updateQuoteSubscriptions(ctx context.Context, symbol
 	// CRITICAL FIX: Always update HealthManager with the new full state for all quote providers
 	// This ensures that if we ONLY unsubscribed, the HealthManager still knows the new smaller list.
 	// This prevents "zombie" subscriptions from reappearing during recovery.
+	// NOTE: For shared providers (same provider for quotes AND Greeks), we must merge BOTH
+	// sets to avoid the Greeks update overwriting quote subscriptions with an empty list.
 	allSymbolsList := make([]string, 0, len(symbols))
 	for symbol := range symbols {
 		allSymbolsList = append(allSymbolsList, symbol)
 	}
 	for providerName := range sm.quoteProviders {
-		sm.healthManager.UpdateSubscriptions(providerName, allSymbolsList)
+		if _, isShared := sm.greeksProviders[providerName]; isShared {
+			merged := make(map[string]bool)
+			for _, s := range allSymbolsList {
+				merged[s] = true
+			}
+			for s := range sm.greeksSubscriptions {
+				merged[s] = true
+			}
+			mergedList := make([]string, 0, len(merged))
+			for s := range merged {
+				mergedList = append(mergedList, s)
+			}
+			sm.healthManager.UpdateSubscriptions(providerName, mergedList)
+		} else {
+			sm.healthManager.UpdateSubscriptions(providerName, allSymbolsList)
+		}
 	}
 
 	sm.quoteSubscriptions = symbols
@@ -500,12 +517,29 @@ func (sm *StreamingManager) updateGreeksSubscriptions(ctx context.Context, optio
 	}
 
 	// CRITICAL FIX: Always update HealthManager with the new full state for all Greeks providers
+	// NOTE: For shared providers (same provider for quotes AND Greeks), we must merge BOTH
+	// sets to avoid overwriting quote subscriptions with an empty list.
 	allGreeksList := make([]string, 0, len(optionSymbols))
 	for symbol := range optionSymbols {
 		allGreeksList = append(allGreeksList, symbol)
 	}
 	for providerName := range sm.greeksProviders {
-		sm.healthManager.UpdateSubscriptions(providerName, allGreeksList)
+		if _, isShared := sm.quoteProviders[providerName]; isShared {
+			merged := make(map[string]bool)
+			for _, s := range allGreeksList {
+				merged[s] = true
+			}
+			for s := range sm.quoteSubscriptions {
+				merged[s] = true
+			}
+			mergedList := make([]string, 0, len(merged))
+			for s := range merged {
+				mergedList = append(mergedList, s)
+			}
+			sm.healthManager.UpdateSubscriptions(providerName, mergedList)
+		} else {
+			sm.healthManager.UpdateSubscriptions(providerName+"_greeks", allGreeksList)
+		}
 	}
 
 	sm.greeksSubscriptions = optionSymbols

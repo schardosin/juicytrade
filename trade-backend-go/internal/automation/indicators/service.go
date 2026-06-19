@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"trade-backend-go/internal/automation/types"
+	"trade-backend-go/internal/models"
 	"trade-backend-go/internal/providers"
 )
 
@@ -29,6 +30,19 @@ type cachedQuote struct {
 	Timestamp time.Time
 }
 
+// dailyCacheEntry stores daily OHLC data that only changes once per day.
+// Populated after 9:30 ET from GetHistoricalBars, then reused all day.
+type dailyCacheEntry struct {
+	data *types.DailyData
+	date string // "2006-01-02" in ET
+}
+
+// StreamingPriceSource provides access to streaming market data prices.
+// This interface decouples indicators from the streaming package to avoid import cycles.
+type StreamingPriceSource interface {
+	GetLatest(symbol string) *models.MarketData
+}
+
 // quoteCacheTTL is how long to cache real-time quotes (prevents race condition when
 // multiple automations request the same symbol's quote simultaneously)
 const quoteCacheTTL = 5 * time.Second
@@ -37,6 +51,13 @@ const quoteCacheTTL = 5 * time.Second
 type Service struct {
 	providerManager *providers.ProviderManager
 	fomcDates       []time.Time // Pre-loaded FOMC dates
+
+	// Streaming price source for live prices (injected from streaming manager)
+	streamingSource StreamingPriceSource
+
+	// Daily data cache: keyed by symbol, populated once per day after 9:30 ET
+	dailyCacheMu sync.RWMutex
+	dailyCache   map[string]*dailyCacheEntry
 
 	// Cache for last known good indicator values (for stale fallback)
 	cacheMu sync.RWMutex
@@ -57,11 +78,18 @@ func NewService(pm *providers.ProviderManager) *Service {
 	s := &Service{
 		providerManager: pm,
 		fomcDates:       loadFOMCDates(),
+		dailyCache:      make(map[string]*dailyCacheEntry),
 		cache:           make(map[string]*cachedResult),
 		quoteCache:      make(map[string]*cachedQuote),
 		quoteFetchLock:  make(map[string]*sync.Mutex),
 	}
 	return s
+}
+
+// SetStreamingSource sets the streaming price source for live price lookups.
+// Call this after constructing the service to enable streaming-based indicators.
+func (s *Service) SetStreamingSource(source StreamingPriceSource) {
+	s.streamingSource = source
 }
 
 // getQuoteFetchLock returns a per-symbol mutex for serializing quote fetches
@@ -128,6 +156,96 @@ func (s *Service) ClearCache() {
 	s.cacheMu.Lock()
 	defer s.cacheMu.Unlock()
 	s.cache = make(map[string]*cachedResult)
+}
+
+// getDailyDataCached returns cached daily OHLC data for a symbol.
+// On first call each day (after 9:30 ET), fetches from GetHistoricalBars and caches.
+// Subsequent calls return the cached value for the rest of the day.
+func (s *Service) getDailyDataCached(ctx context.Context, symbol string) (*types.DailyData, error) {
+	now := time.Now().In(s.getNewYorkLocation())
+	today := now.Format("2006-01-02")
+
+	// Fast path: check if we have valid cached data for today
+	s.dailyCacheMu.RLock()
+	if entry, exists := s.dailyCache[symbol]; exists && entry.date == today {
+		s.dailyCacheMu.RUnlock()
+		return entry.data, nil
+	}
+	s.dailyCacheMu.RUnlock()
+
+	// Slow path: fetch from provider and cache
+	dailyData, err := s.GetDailyData(ctx, symbol)
+	if err != nil {
+		return nil, err
+	}
+
+	s.dailyCacheMu.Lock()
+	s.dailyCache[symbol] = &dailyCacheEntry{
+		data: dailyData,
+		date: today,
+	}
+	s.dailyCacheMu.Unlock()
+
+	slog.Info("📊 Cached daily data for symbol",
+		"symbol", symbol,
+		"date", today,
+		"open", dailyData.Open,
+		"prevClose", dailyData.PreviousClose)
+
+	return dailyData, nil
+}
+
+// getStreamingPrice retrieves the current price from the streaming cache.
+// Returns 0, false if streaming is not available or has no data for the symbol.
+func (s *Service) getStreamingPrice(symbol string) (float64, bool) {
+	if s.streamingSource == nil {
+		return 0, false
+	}
+
+	md := s.streamingSource.GetLatest(symbol)
+	if md == nil {
+		return 0, false
+	}
+
+	// Check freshness - streaming data older than 60s is considered stale
+	if md.AgeSeconds() > 60 {
+		return 0, false
+	}
+
+	// Extract price: prefer "last" (trade event), then midpoint of bid/ask
+	if last, ok := md.Data["last"].(float64); ok && last > 0 {
+		return last, true
+	}
+	bid, bidOk := md.Data["bid"].(float64)
+	ask, askOk := md.Data["ask"].(float64)
+	if bidOk && askOk && bid > 0 && ask > 0 {
+		return (bid + ask) / 2, true
+	}
+	if bidOk && bid > 0 {
+		return bid, true
+	}
+	if askOk && ask > 0 {
+		return ask, true
+	}
+
+	return 0, false
+}
+
+// getCurrentPrice gets the current price for a symbol, preferring streaming data.
+// Falls back to REST API (getQuoteWithCache) if streaming is unavailable.
+func (s *Service) getCurrentPrice(ctx context.Context, symbol string) (float64, error) {
+	// Try streaming first
+	if price, ok := s.getStreamingPrice(symbol); ok {
+		slog.Debug("Using streaming price for indicator",
+			"symbol", symbol,
+			"price", price)
+		return price, nil
+	}
+
+	// Fall back to REST
+	slog.Debug("Streaming unavailable, falling back to REST quote",
+		"symbol", symbol)
+	return s.getQuoteWithCache(ctx, symbol)
 }
 
 // getParamOrDefault extracts a parameter value from the config's Params map.
@@ -598,9 +716,16 @@ func (s *Service) GetVIXValue(ctx context.Context, customSymbol string) (float64
 		symbol = customSymbol
 	}
 
-	// For VIX index symbol, use historical bars (streaming quotes don't work for indices)
+	// Try streaming first for all VIX symbols (index + ETFs like UVXY, VXX)
+	if price, ok := s.getStreamingPrice(symbol); ok {
+		slog.Debug("Using streaming price for VIX indicator",
+			"symbol", symbol,
+			"price", price)
+		return price, nil
+	}
+
+	// Fallback: For VIX index symbol, use historical bars
 	if symbol == "VIX" || symbol == "$VIX.X" || symbol == "^VIX" {
-		// Get 1 day of historical data to get the latest close
 		bars, err := s.providerManager.GetHistoricalBars(ctx, "VIX", "D", nil, nil, 1)
 		if err != nil {
 			return 0, fmt.Errorf("failed to get VIX historical data: %w", err)
@@ -608,7 +733,6 @@ func (s *Service) GetVIXValue(ctx context.Context, customSymbol string) (float64
 		if len(bars) == 0 {
 			return 0, fmt.Errorf("no VIX historical data available")
 		}
-		// Use the close price from the most recent bar
 		closePrice := getFloatFromBar(bars[0], "close")
 		if closePrice > 0 {
 			return closePrice, nil
@@ -616,13 +740,14 @@ func (s *Service) GetVIXValue(ctx context.Context, customSymbol string) (float64
 		return 0, fmt.Errorf("VIX close price not available in historical data")
 	}
 
-	// For other symbols (UVXY, VXX, etc.), use race-condition-safe caching
+	// For other symbols (UVXY, VXX, etc.), fall back to REST
 	return s.getQuoteWithCache(ctx, symbol)
 }
 
 // GetGapPercent calculates the gap percentage: (Open - PrevClose) / PrevClose * 100
+// Uses daily cache - gap is constant all day (computed once after 9:30 ET).
 func (s *Service) GetGapPercent(ctx context.Context, symbol string) (float64, error) {
-	dailyData, err := s.GetDailyData(ctx, symbol)
+	dailyData, err := s.getDailyDataCached(ctx, symbol)
 	if err != nil {
 		return 0, err
 	}
@@ -636,24 +761,34 @@ func (s *Service) GetGapPercent(ctx context.Context, symbol string) (float64, er
 }
 
 // GetRangePercent calculates the range percentage: (High - Low) / Open * 100
+// Uses fresh GetDailyData for High/Low (intraday values change) but cached Open.
 func (s *Service) GetRangePercent(ctx context.Context, symbol string) (float64, error) {
+	// Fetch fresh data for High/Low (these update intraday)
 	dailyData, err := s.GetDailyData(ctx, symbol)
 	if err != nil {
 		return 0, err
 	}
 
-	if dailyData.Open == 0 {
+	// Use cached Open for denominator (constant all day)
+	cachedDaily, cacheErr := s.getDailyDataCached(ctx, symbol)
+	openPrice := dailyData.Open
+	if cacheErr == nil && cachedDaily.Open > 0 {
+		openPrice = cachedDaily.Open
+	}
+
+	if openPrice == 0 {
 		return 0, fmt.Errorf("open is zero for %s", symbol)
 	}
 
-	rangeVal := ((dailyData.High - dailyData.Low) / dailyData.Open) * 100
+	rangeVal := ((dailyData.High - dailyData.Low) / openPrice) * 100
 	return rangeVal, nil
 }
 
 // GetTrendPercent calculates the trend percentage: (Current - Open) / Open * 100
+// Uses daily cache for Open (constant) + streaming for current price.
 func (s *Service) GetTrendPercent(ctx context.Context, symbol string) (float64, error) {
-	// Get daily data for open price
-	dailyData, err := s.GetDailyData(ctx, symbol)
+	// Get cached daily data for open price (fetched once per day)
+	dailyData, err := s.getDailyDataCached(ctx, symbol)
 	if err != nil {
 		return 0, err
 	}
@@ -662,8 +797,8 @@ func (s *Service) GetTrendPercent(ctx context.Context, symbol string) (float64, 
 		return 0, fmt.Errorf("open is zero for %s", symbol)
 	}
 
-	// Get current price with race-condition-safe caching
-	currentPrice, err := s.getQuoteWithCache(ctx, symbol)
+	// Get current price: streaming first, REST fallback
+	currentPrice, err := s.getCurrentPrice(ctx, symbol)
 	if err != nil {
 		return 0, err
 	}
