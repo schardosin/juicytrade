@@ -2,6 +2,7 @@ package automation
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -27,6 +28,9 @@ type Engine struct {
 	stopChannels      map[string]chan struct{}
 	updateCallbacks   []func(string, *types.ActiveAutomation) // Callbacks for status updates
 	callbackMu        sync.RWMutex
+	// accountReader, when set, overrides the account lookup used for capital resolution.
+	// It defaults to nil, in which case e.providerManager.GetAccount is used. Primarily a test seam.
+	accountReader func(ctx context.Context) (*models.Account, error)
 }
 
 // NewEngine creates a new automation engine
@@ -82,6 +86,15 @@ func (e *Engine) notifyUpdate(id string, automation *types.ActiveAutomation) {
 	}
 }
 
+// readAccount reads the account used for capital resolution. It uses the
+// accountReader test seam when set, otherwise the configured provider manager.
+func (e *Engine) readAccount(ctx context.Context) (*models.Account, error) {
+	if e.accountReader != nil {
+		return e.accountReader(ctx)
+	}
+	return e.providerManager.GetAccount(ctx)
+}
+
 // readNetLiq extracts the account Net Liquidating Value.
 // Prefers PortfolioValue, falls back to Equity. Returns (0,false) when neither is usable.
 func readNetLiq(acct *models.Account) (float64, bool) {
@@ -95,6 +108,88 @@ func readNetLiq(acct *models.Account) (float64, bool) {
 		return *acct.Equity, true
 	}
 	return 0, false
+}
+
+// captureEffectiveCapital reads the account (percent mode only), resolves the
+// effective dollar capital, stamps the snapshot fields on the ActiveAutomation,
+// appends an audit log, and returns the effective capital (or an error in percent
+// mode when the capital cannot be resolved).
+//
+// Locking discipline: the GetAccount network call is performed WITHOUT holding
+// e.mu; e.mu is acquired only around the mutations of `active` and AddLog.
+func (e *Engine) captureEffectiveCapital(ctx context.Context, active *types.ActiveAutomation, phase string) (float64, error) {
+	tc := &active.Config.TradeConfig
+
+	// Read the account outside the lock (percent mode only).
+	var netLiq float64
+	var netLiqOK bool
+	if tc.MaxCapitalMode == types.MaxCapitalModePercent {
+		if acct, err := e.readAccount(ctx); err == nil {
+			netLiq, netLiqOK = readNetLiq(acct)
+		}
+	}
+
+	eff, err := tc.ResolveEffectiveCapital(netLiq, netLiqOK)
+	now := time.Now()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	active.EffectiveCapitalAt = &now
+	if err != nil {
+		// percent-mode failure; snapshot the failure context, let caller decide flow.
+		active.EffectiveCapitalNetLiq = netLiq
+		active.EffectiveCapitalPercent = tc.MaxCapitalPercent
+		active.AddLog("error", fmt.Sprintf("[%s] cannot resolve capital: %v", phase, err))
+		return 0, err
+	}
+
+	active.EffectiveCapital = eff
+	if tc.MaxCapitalMode == types.MaxCapitalModePercent {
+		active.EffectiveCapitalNetLiq = netLiq
+		active.EffectiveCapitalPercent = tc.MaxCapitalPercent
+		active.AddLog("info",
+			fmt.Sprintf("[%s] capital: $%.0f (%.1f%% of Net Liq $%.0f)", phase, eff, tc.MaxCapitalPercent, netLiq),
+			fmt.Sprintf("mode=percent net_liq=%.2f pct=%.2f effective=%.2f", netLiq, tc.MaxCapitalPercent, eff))
+	} else {
+		active.EffectiveCapitalNetLiq = 0
+		active.EffectiveCapitalPercent = 0
+		active.AddLog("info", fmt.Sprintf("[%s] capital: $%.0f (fixed)", phase, eff))
+	}
+	return eff, nil
+}
+
+// handleCapitalFailure handles a failure to resolve effective capital, mirroring
+// the existing strike-find retry/fail path. Invalid percentage config is a
+// permanent failure; Net Liq unavailable is treated as transient (retry-capable).
+func (e *Engine) handleCapitalFailure(id string, active *types.ActiveAutomation, err error) {
+	e.mu.Lock()
+	active.AddLog("error", fmt.Sprintf("Cannot size position: %v", err))
+
+	if errors.Is(err, types.ErrInvalidCapitalPercent) {
+		active.Status = types.StatusFailed
+		active.Message = "Invalid Max Capital percentage configuration"
+		e.mu.Unlock()
+		e.notifyUpdate(id, active)
+		return
+	}
+
+	// transient (Net Liq unavailable): mirror strike-find failure handling
+	active.ErrorCount++
+	if active.ErrorCount >= 3 {
+		if active.Config.Recurrence == types.RecurrenceDaily {
+			active.TradedToday = true
+			active.Status = types.StatusWaiting
+			active.Message = "Net Liq unavailable - waiting for next trading day"
+		} else {
+			active.Status = types.StatusFailed
+			active.Message = "Net Liq unavailable - cannot size position"
+		}
+	} else {
+		active.Message = "Net Liq unavailable - will retry"
+	}
+	e.mu.Unlock()
+	e.notifyUpdate(id, active)
 }
 
 // GetStorage returns the storage instance
@@ -638,8 +733,20 @@ func (e *Engine) handleTradingState(id string, active *types.ActiveAutomation, s
 	active.AddLog("info", "Finding strikes for target delta")
 	e.mu.Unlock()
 
+	// FR-6: resolve effective capital from the Net Liq read at THIS moment.
+	eff, capErr := e.captureEffectiveCapital(ctx, active, "trade-time")
+	if capErr != nil {
+		// FR-8: Net Liq unavailable/zero (percent mode) OR invalid pct config.
+		// Mirror the existing insufficient-capital / strike-find failure path.
+		e.handleCapitalFailure(id, active, capErr)
+		return
+	}
+	e.mu.Lock()
+	active.Message = fmt.Sprintf("Trading - capital $%.0f", eff)
+	e.mu.Unlock()
+
 	// Calculate position size (works for both spreads and iron condor)
-	units := active.Config.TradeConfig.CalculateUnits(active.Config.TradeConfig.MaxCapital)
+	units := active.Config.TradeConfig.CalculateUnits(eff)
 	if units == 0 {
 		e.mu.Lock()
 		active.Status = types.StatusFailed
