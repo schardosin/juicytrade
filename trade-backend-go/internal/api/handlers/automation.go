@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 
 	"trade-backend-go/internal/automation"
@@ -9,6 +10,23 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// validateTradeCapital validates the Max Capital configuration for an automation.
+// Percent mode requires MaxCapitalPercent in [1, 100]; fixed/empty mode requires
+// MaxCapital >= 100. Returns a non-nil error describing the first violation.
+func validateTradeCapital(tc types.TradeConfiguration) error {
+	if tc.MaxCapitalMode == types.MaxCapitalModePercent {
+		if tc.MaxCapitalPercent < 1 || tc.MaxCapitalPercent > 100 {
+			return fmt.Errorf("max_capital_percent must be between 1 and 100")
+		}
+		return nil
+	}
+	// fixed or empty (defaults to fixed)
+	if tc.MaxCapital < 100 {
+		return fmt.Errorf("max_capital must be at least 100")
+	}
+	return nil
+}
 
 // AutomationHandler handles automation-related HTTP endpoints
 type AutomationHandler struct {
@@ -122,6 +140,14 @@ func (h *AutomationHandler) CreateConfig(c *gin.Context) {
 		config.TradeConfig = types.NewTradeConfiguration()
 	}
 
+	if err := validateTradeCapital(config.TradeConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
 	if err := h.engine.GetStorage().Create(&config); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -160,6 +186,14 @@ func (h *AutomationHandler) UpdateConfig(c *gin.Context) {
 	}
 
 	config.ID = id
+
+	if err := validateTradeCapital(config.TradeConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
 
 	if err := h.engine.GetStorage().Update(&config); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{
