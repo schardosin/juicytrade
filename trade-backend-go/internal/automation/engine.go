@@ -82,6 +82,21 @@ func (e *Engine) notifyUpdate(id string, automation *types.ActiveAutomation) {
 	}
 }
 
+// readNetLiq extracts the account Net Liquidating Value.
+// Prefers PortfolioValue, falls back to Equity. Returns (0,false) when neither is usable.
+func readNetLiq(acct *models.Account) (float64, bool) {
+	if acct == nil {
+		return 0, false
+	}
+	if acct.PortfolioValue != nil && *acct.PortfolioValue > 0 {
+		return *acct.PortfolioValue, true
+	}
+	if acct.Equity != nil && *acct.Equity > 0 {
+		return *acct.Equity, true
+	}
+	return 0, false
+}
+
 // GetStorage returns the storage instance
 func (e *Engine) GetStorage() *Storage {
 	return e.storage
