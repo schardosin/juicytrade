@@ -31,6 +31,12 @@ type PersistedAutomation struct {
 	Message       string                 `json:"message,omitempty"`
 	CurrentOrder  *types.PlacedOrder     `json:"current_order,omitempty"`
 	PlacedOrders  []types.PlacedOrder    `json:"placed_orders,omitempty"`
+	// Effective capital snapshot (display-only continuity across restarts).
+	// Sizing is always re-resolved fresh at the next monitoring-start/trade-time capture.
+	EffectiveCapital        float64    `json:"effective_capital,omitempty"`
+	EffectiveCapitalNetLiq  float64    `json:"effective_capital_net_liq,omitempty"`
+	EffectiveCapitalPercent float64    `json:"effective_capital_percent,omitempty"`
+	EffectiveCapitalAt      *time.Time `json:"effective_capital_at,omitempty"`
 	// We don't persist logs - they can get large and aren't critical for recovery
 }
 
@@ -80,6 +86,11 @@ func (r *RuntimeStateStorage) Save(automations map[string]*types.ActiveAutomatio
 				Message:       active.Message,
 				CurrentOrder:  active.CurrentOrder,
 				PlacedOrders:  active.PlacedOrders,
+				// Display-only snapshot; re-resolved fresh at next capture on restore.
+				EffectiveCapital:        active.EffectiveCapital,
+				EffectiveCapitalNetLiq:  active.EffectiveCapitalNetLiq,
+				EffectiveCapitalPercent: active.EffectiveCapitalPercent,
+				EffectiveCapitalAt:      active.EffectiveCapitalAt,
 			}
 		}
 	}
@@ -188,6 +199,12 @@ func RestoreAutomation(persisted *PersistedAutomation, config *types.AutomationC
 		CurrentOrder:  persisted.CurrentOrder,
 		PlacedOrders:  persisted.PlacedOrders,
 		Logs:          make([]types.AutomationLog, 0),
+		// Display-only snapshot restored for UI continuity. Sizing is re-resolved
+		// fresh at the next monitoring-start/trade-time capture.
+		EffectiveCapital:        persisted.EffectiveCapital,
+		EffectiveCapitalNetLiq:  persisted.EffectiveCapitalNetLiq,
+		EffectiveCapitalPercent: persisted.EffectiveCapitalPercent,
+		EffectiveCapitalAt:      persisted.EffectiveCapitalAt,
 	}
 
 	// Add a log entry about the restoration
