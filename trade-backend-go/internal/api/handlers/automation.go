@@ -1,6 +1,7 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
 
 	"trade-backend-go/internal/automation"
@@ -9,6 +10,19 @@ import (
 
 	"github.com/gin-gonic/gin"
 )
+
+// validateCapitalConfig validates the capital-mode-specific fields of a trade
+// configuration. In percent mode, max_capital_percent must be within 1..100.
+// The backend never trusts the client, so this runs on create and update.
+func validateCapitalConfig(tc *types.TradeConfiguration) error {
+	if tc.EffectiveCapitalMode() != types.CapitalModePercent {
+		return nil
+	}
+	if tc.MaxCapitalPercent < 1 || tc.MaxCapitalPercent > 100 {
+		return fmt.Errorf("max_capital_percent must be between 1 and 100")
+	}
+	return nil
+}
 
 // AutomationHandler handles automation-related HTTP endpoints
 type AutomationHandler struct {
@@ -122,6 +136,15 @@ func (h *AutomationHandler) CreateConfig(c *gin.Context) {
 		config.TradeConfig = types.NewTradeConfiguration()
 	}
 
+	// Validate capital configuration (percent mode range check)
+	if err := validateCapitalConfig(&config.TradeConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
 	if err := h.engine.GetStorage().Create(&config); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -160,6 +183,15 @@ func (h *AutomationHandler) UpdateConfig(c *gin.Context) {
 	}
 
 	config.ID = id
+
+	// Validate capital configuration (percent mode range check)
+	if err := validateCapitalConfig(&config.TradeConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
 
 	if err := h.engine.GetStorage().Update(&config); err != nil {
 		c.JSON(http.StatusNotFound, gin.H{

@@ -175,6 +175,32 @@ func (e *Engine) persistState() {
 	}
 }
 
+// resolveTradeCapital fetches the active trade account's Net Liq (when needed)
+// and returns the resolved dollar cap. In fixed mode it returns MaxCapital and
+// makes no provider call. In percent mode it fetches account.equity and applies
+// the percentage. On any failure in percent mode it returns an error — the
+// caller MUST fail the operation (no fallback). netLiq is returned separately so
+// the caller can log the value that was read (FR-8).
+func (e *Engine) resolveTradeCapital(ctx context.Context, tc *types.TradeConfiguration) (resolved float64, netLiq float64, err error) {
+	if tc.EffectiveCapitalMode() == types.CapitalModeFixed {
+		return tc.MaxCapital, 0, nil
+	}
+
+	account, aerr := e.providerManager.GetAccount(ctx)
+	if aerr != nil {
+		return 0, 0, fmt.Errorf("failed to fetch account for Net Liq: %w", aerr)
+	}
+	if account == nil || account.Equity == nil || *account.Equity <= 0 {
+		return 0, 0, fmt.Errorf("Net Liq (account.equity) unavailable or non-positive")
+	}
+
+	cap, rerr := tc.ResolveMaxCapital(account.Equity)
+	if rerr != nil {
+		return 0, *account.Equity, rerr
+	}
+	return cap, *account.Equity, nil
+}
+
 // Start starts an automation by ID
 func (e *Engine) Start(id string) error {
 	e.mu.Lock()
@@ -203,6 +229,33 @@ func (e *Engine) Start(id string) error {
 		Logs:      make([]types.AutomationLog, 0),
 	}
 	active.AddLog("info", "Automation started")
+
+	// Activation-time capital resolution (percent mode only). No fallback:
+	// if Net Liq cannot be resolved, activation fails and the automation is not registered.
+	if config.TradeConfig.EffectiveCapitalMode() == types.CapitalModePercent {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		resolved, netLiq, rerr := e.resolveTradeCapital(ctx, &config.TradeConfig)
+		cancel()
+		if rerr != nil {
+			active.AddLog("error", fmt.Sprintf(
+				"Activation failed: cannot resolve %.2f%% of Net Liq: %v",
+				config.TradeConfig.MaxCapitalPercent, rerr))
+			slog.Error("🚫 Activation failed - Net Liq resolution", "id", id, "error", rerr)
+			return fmt.Errorf("cannot activate: %w", rerr)
+		}
+		now := time.Now()
+		active.ResolvedMaxCapital = resolved
+		active.ResolvedNetLiq = netLiq
+		active.ResolvedAt = &now
+		active.AddLog("info", fmt.Sprintf(
+			"💰 Capital resolved at activation: %.2f%% of Net Liq $%.2f = $%.2f",
+			config.TradeConfig.MaxCapitalPercent, netLiq, resolved))
+		slog.Info("💰 Capital resolved at activation",
+			"id", id,
+			"percent", config.TradeConfig.MaxCapitalPercent,
+			"netLiq", netLiq,
+			"resolved", resolved)
+	}
 
 	e.activeAutomations[id] = active
 	e.stopChannels[id] = make(chan struct{})
@@ -623,8 +676,49 @@ func (e *Engine) handleTradingState(id string, active *types.ActiveAutomation, s
 	active.AddLog("info", "Finding strikes for target delta")
 	e.mu.Unlock()
 
+	// LIVE capital resolution (percent mode re-fetches current Net Liq; fixed returns MaxCapital).
+	// No fallback: on failure the trade fails (once) or defers (daily) per recurrence logic.
+	resolvedCap, netLiq, rerr := e.resolveTradeCapital(ctx, &active.Config.TradeConfig)
+	if rerr != nil {
+		e.mu.Lock()
+		active.ErrorCount++
+		active.AddLog("error", fmt.Sprintf("Trade blocked: cannot resolve capital: %v", rerr))
+		slog.Error("🚫 Trade blocked - Net Liq resolution failed", "id", id, "error", rerr)
+		if active.Config.Recurrence == types.RecurrenceDaily {
+			active.TradedToday = true
+			active.Status = types.StatusWaiting
+			active.Message = "Net Liq unavailable at execution - waiting for next trading day"
+			active.AddLog("warn", "Capital resolution failed - will retry next trading day")
+		} else {
+			active.Status = types.StatusFailed
+			active.Message = "Net Liq unavailable at execution"
+		}
+		e.mu.Unlock()
+		e.notifyUpdate(id, active)
+		return
+	}
+
+	// Record the live-resolved value (percent mode) so it surfaces on the dashboard
+	// and is reused by delta-drift replacement paths within this trade attempt.
+	if active.Config.TradeConfig.EffectiveCapitalMode() == types.CapitalModePercent {
+		e.mu.Lock()
+		now := time.Now()
+		active.ResolvedMaxCapital = resolvedCap
+		active.ResolvedNetLiq = netLiq
+		active.ResolvedAt = &now
+		active.AddLog("info", fmt.Sprintf(
+			"💰 Capital resolved at execution: %.2f%% of Net Liq $%.2f = $%.2f",
+			active.Config.TradeConfig.MaxCapitalPercent, netLiq, resolvedCap))
+		e.mu.Unlock()
+		slog.Info("💰 Capital resolved at execution",
+			"id", id,
+			"percent", active.Config.TradeConfig.MaxCapitalPercent,
+			"netLiq", netLiq,
+			"resolved", resolvedCap)
+	}
+
 	// Calculate position size (works for both spreads and iron condor)
-	units := active.Config.TradeConfig.CalculateUnits()
+	units := active.Config.TradeConfig.CalculateUnitsWithCapital(resolvedCap)
 	if units == 0 {
 		e.mu.Lock()
 		active.Status = types.StatusFailed
@@ -936,7 +1030,12 @@ func (e *Engine) handleOrderAdjustment(ctx context.Context, id string, active *t
 						return
 					}
 
-					units := config.CalculateUnits()
+					// Reuse the cap resolved at the start of this trade attempt (no re-fetch).
+					resolvedCap := config.MaxCapital
+					if config.EffectiveCapitalMode() == types.CapitalModePercent {
+						resolvedCap = active.ResolvedMaxCapital
+					}
+					units := config.CalculateUnitsWithCapital(resolvedCap)
 					if units == 0 {
 						e.mu.Lock()
 						active.Status = types.StatusFailed
@@ -978,8 +1077,12 @@ func (e *Engine) handleOrderAdjustment(ctx context.Context, id string, active *t
 						return
 					}
 
-					// Calculate units (same as original)
-					units := config.CalculateUnits()
+					// Calculate units reusing the cap resolved at the start of this trade attempt
+					resolvedCap := config.MaxCapital
+					if config.EffectiveCapitalMode() == types.CapitalModePercent {
+						resolvedCap = active.ResolvedMaxCapital
+					}
+					units := config.CalculateUnitsWithCapital(resolvedCap)
 					if units == 0 {
 						e.mu.Lock()
 						active.Status = types.StatusFailed
