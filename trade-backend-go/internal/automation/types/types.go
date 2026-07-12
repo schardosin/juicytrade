@@ -146,22 +146,33 @@ type IronCondorSideConfig struct {
 	Width       int     `json:"width"`        // Spread width in points for this side (e.g., 50)
 }
 
+// MaxCapitalMode selects how MaxCapital is interpreted for position sizing.
+// "" (empty) and "fixed" are equivalent (backward compatibility).
+type MaxCapitalMode string
+
+const (
+	MaxCapitalModeFixed   MaxCapitalMode = "fixed"
+	MaxCapitalModePercent MaxCapitalMode = "percent"
+)
+
 // TradeConfiguration defines the trade parameters for an automation
 type TradeConfiguration struct {
-	Strategy         TradeStrategy `json:"strategy"`                    // "put_spread", "call_spread", "iron_condor"
-	Width            int           `json:"width"`                       // Spread width (e.g., 20, 30) - used for put_spread/call_spread
-	TargetDelta      float64       `json:"target_delta"`                // Target delta for short strike (e.g., 0.05) - used for put_spread/call_spread
-	MaxCapital       float64       `json:"max_capital"`                 // Maximum capital to use
-	OrderType        string        `json:"order_type"`                  // "limit" or "market"
-	TimeInForce      string        `json:"time_in_force"`               // "day" or "gtc"
-	PriceLadderStep  float64       `json:"price_ladder_step"`           // Price decrement step (e.g., 0.05)
-	MaxAttempts      int           `json:"max_attempts"`                // Maximum order replacement attempts
-	AttemptInterval  int           `json:"attempt_interval"`            // Seconds between price reductions
-	DeltaDriftLimit  float64       `json:"delta_drift_limit"`           // Max delta drift before replacing (e.g., 0.01)
-	StartingOffset   float64       `json:"starting_offset,omitempty"`   // Amount below mid to start (e.g., 0.10)
-	MinCredit        float64       `json:"min_credit,omitempty"`        // Minimum acceptable credit (stop if below)
-	ExpirationMode   string        `json:"expiration_mode,omitempty"`   // "0dte", "1dte", "2dte", "custom"
-	CustomExpiration string        `json:"custom_expiration,omitempty"` // Custom expiration date (YYYY-MM-DD)
+	Strategy          TradeStrategy  `json:"strategy"`                      // "put_spread", "call_spread", "iron_condor"
+	Width             int            `json:"width"`                         // Spread width (e.g., 20, 30) - used for put_spread/call_spread
+	TargetDelta       float64        `json:"target_delta"`                  // Target delta for short strike (e.g., 0.05) - used for put_spread/call_spread
+	MaxCapital        float64        `json:"max_capital"`                   // Maximum capital to use
+	MaxCapitalMode    MaxCapitalMode `json:"max_capital_mode,omitempty"`    // "" ⇒ fixed
+	MaxCapitalPercent float64        `json:"max_capital_percent,omitempty"` // 1..100, percent mode
+	OrderType         string         `json:"order_type"`                    // "limit" or "market"
+	TimeInForce       string         `json:"time_in_force"`                 // "day" or "gtc"
+	PriceLadderStep   float64        `json:"price_ladder_step"`             // Price decrement step (e.g., 0.05)
+	MaxAttempts       int            `json:"max_attempts"`                  // Maximum order replacement attempts
+	AttemptInterval   int            `json:"attempt_interval"`              // Seconds between price reductions
+	DeltaDriftLimit   float64        `json:"delta_drift_limit"`             // Max delta drift before replacing (e.g., 0.01)
+	StartingOffset    float64        `json:"starting_offset,omitempty"`     // Amount below mid to start (e.g., 0.10)
+	MinCredit         float64        `json:"min_credit,omitempty"`          // Minimum acceptable credit (stop if below)
+	ExpirationMode    string         `json:"expiration_mode,omitempty"`     // "0dte", "1dte", "2dte", "custom"
+	CustomExpiration  string         `json:"custom_expiration,omitempty"`   // Custom expiration date (YYYY-MM-DD)
 	// Iron Condor specific - per-side delta and width configuration
 	PutSideConfig  *IronCondorSideConfig `json:"put_side_config,omitempty"`  // Put side config (iron_condor only)
 	CallSideConfig *IronCondorSideConfig `json:"call_side_config,omitempty"` // Call side config (iron_condor only)
@@ -484,6 +495,7 @@ func NewTradeConfiguration() TradeConfiguration {
 		Width:           20,
 		TargetDelta:     0.05,
 		MaxCapital:      5000,
+		MaxCapitalMode:  MaxCapitalModeFixed,
 		OrderType:       "limit",
 		TimeInForce:     "day",
 		PriceLadderStep: 0.05,
