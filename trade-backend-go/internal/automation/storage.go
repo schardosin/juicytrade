@@ -84,6 +84,9 @@ func (s *Storage) load() error {
 	if s.migrateIndicatorGroups() {
 		needsSave = true
 	}
+	if s.migrateMaxCapitalMode() {
+		needsSave = true
+	}
 	if needsSave {
 		if err := s.saveWithoutLock(); err != nil {
 			slog.Warn("Failed to save migrated configs", "error", err)
@@ -153,6 +156,22 @@ func (s *Storage) migrateIndicatorGroups() bool {
 			"groupName", "Default",
 			"indicatorCount", len(config.IndicatorGroups[0].Indicators))
 		migrated = true
+	}
+	return migrated
+}
+
+// migrateMaxCapitalMode normalizes an empty MaxCapitalMode to "fixed" for clarity.
+// This is behavior-preserving: an empty mode is already treated as fixed everywhere
+// (see TradeConfiguration.ResolveEffectiveCapital). Returns true if any config changed.
+func (s *Storage) migrateMaxCapitalMode() bool {
+	migrated := false
+	for _, config := range s.configs {
+		if config.TradeConfig.MaxCapitalMode == "" {
+			config.TradeConfig.MaxCapitalMode = types.MaxCapitalModeFixed
+			slog.Info("Normalized empty max_capital_mode to fixed",
+				"automation", config.Name)
+			migrated = true
+		}
 	}
 	return migrated
 }

@@ -234,3 +234,63 @@ func TestMigrateIndicatorIDs_AlsoCoversGroups(t *testing.T) {
 		t.Errorf("expected generated ID to start with 'ind_', got %q", ind2.ID)
 	}
 }
+
+func TestMigrateMaxCapitalMode_EmptyNormalizesToFixed(t *testing.T) {
+	s := &Storage{
+		configs: map[string]*AutomationConfig{
+			"cfg1": {
+				ID:          "cfg1",
+				Name:        "Legacy Fixed",
+				TradeConfig: types.TradeConfiguration{MaxCapital: 5000}, // MaxCapitalMode == ""
+			},
+		},
+	}
+
+	if migrated := s.migrateMaxCapitalMode(); !migrated {
+		t.Error("expected migration to return true for empty mode")
+	}
+	if got := s.configs["cfg1"].TradeConfig.MaxCapitalMode; got != types.MaxCapitalModeFixed {
+		t.Errorf("expected mode normalized to fixed, got %q", got)
+	}
+	// MaxCapital must be untouched (behavior-preserving).
+	if s.configs["cfg1"].TradeConfig.MaxCapital != 5000 {
+		t.Errorf("MaxCapital should be unchanged, got %v", s.configs["cfg1"].TradeConfig.MaxCapital)
+	}
+}
+
+func TestMigrateMaxCapitalMode_PercentLeftUntouched(t *testing.T) {
+	s := &Storage{
+		configs: map[string]*AutomationConfig{
+			"cfg1": {
+				ID:   "cfg1",
+				Name: "Percent",
+				TradeConfig: types.TradeConfiguration{
+					MaxCapitalMode:    types.MaxCapitalModePercent,
+					MaxCapitalPercent: 60,
+				},
+			},
+		},
+	}
+
+	if migrated := s.migrateMaxCapitalMode(); migrated {
+		t.Error("expected no migration for a config already in percent mode")
+	}
+	if got := s.configs["cfg1"].TradeConfig.MaxCapitalMode; got != types.MaxCapitalModePercent {
+		t.Errorf("percent mode must be left untouched, got %q", got)
+	}
+}
+
+func TestMigrateMaxCapitalMode_ExplicitFixedNotChanged(t *testing.T) {
+	s := &Storage{
+		configs: map[string]*AutomationConfig{
+			"cfg1": {
+				ID:          "cfg1",
+				Name:        "Explicit Fixed",
+				TradeConfig: types.TradeConfiguration{MaxCapitalMode: types.MaxCapitalModeFixed, MaxCapital: 5000},
+			},
+		},
+	}
+	if migrated := s.migrateMaxCapitalMode(); migrated {
+		t.Error("expected no migration for a config already explicitly fixed")
+	}
+}
