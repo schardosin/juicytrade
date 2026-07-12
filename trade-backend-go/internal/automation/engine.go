@@ -533,6 +533,10 @@ func (e *Engine) runAutomation(id string, stopChan chan struct{}) {
 
 	slog.Info("🤖 Automation loop started", "id", id)
 
+	// FR-5: capture the effective capital at monitoring start (before the first tick).
+	// This does not hold e.mu across the account read (see captureMonitoringStartCapital).
+	e.captureMonitoringStartCapital(id)
+
 	// Run first evaluation immediately (don't wait 30 seconds)
 	e.runAutomationTick(id, stopChan)
 
@@ -545,6 +549,40 @@ func (e *Engine) runAutomation(id string, stopChan chan struct{}) {
 			e.runAutomationTick(id, stopChan)
 		}
 	}
+}
+
+// captureMonitoringStartCapital performs the FR-5 monitoring-start capital capture.
+// It is invoked as the first action inside the runAutomation goroutine (NOT inside
+// Start, which holds e.mu). Unlike the trade-time capture, an inability to resolve
+// the capital here is NON-FATAL: we log a warning and set a "capital pending"
+// message but keep the automation running so it can retry at trade time.
+func (e *Engine) captureMonitoringStartCapital(id string) {
+	e.mu.RLock()
+	active, exists := e.activeAutomations[id]
+	e.mu.RUnlock()
+	if !exists {
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	// captureEffectiveCapital performs the account read without holding e.mu and
+	// acquires e.mu only around the snapshot mutations + AddLog.
+	eff, err := e.captureEffectiveCapital(ctx, active, "monitoring-start")
+
+	e.mu.Lock()
+	if err != nil {
+		// Non-fatal at monitoring start: do NOT change Status. Reserve hard failure
+		// for the actual trade moment (FR-6/FR-8).
+		active.AddLog("warn", fmt.Sprintf("Monitoring-start capital could not be confirmed: %v", err))
+		active.Message = "Monitoring - capital pending (Net Liq unavailable)"
+	} else {
+		active.Message = fmt.Sprintf("Monitoring - capital $%.0f", eff)
+	}
+	e.mu.Unlock()
+
+	e.notifyUpdate(id, active)
 }
 
 // runAutomationTick runs a single automation evaluation tick

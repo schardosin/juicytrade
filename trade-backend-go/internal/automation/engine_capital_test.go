@@ -335,7 +335,82 @@ func TestCalculateUnits_DriftFixedModeParity(t *testing.T) {
 }
 
 // ---- Step 8: captureMonitoringStartCapital (FR-5) ----
-// (added in the FR-5 commit)
+
+func TestCaptureMonitoringStartCapital_PercentSuccess(t *testing.T) {
+	e := newTestEngine(t)
+	e.accountReader = func(ctx context.Context) (*models.Account, error) {
+		return &models.Account{PortfolioValue: fptr(10000)}, nil
+	}
+	active := &types.ActiveAutomation{Config: percentConfig(60, types.RecurrenceOnce), Status: types.StatusMonitoring}
+	e.activeAutomations["mon"] = active
+
+	e.captureMonitoringStartCapital("mon")
+
+	if active.EffectiveCapital != 6000 {
+		t.Errorf("expected EffectiveCapital 6000, got %v", active.EffectiveCapital)
+	}
+	if active.EffectiveCapitalNetLiq != 10000 || active.EffectiveCapitalPercent != 60 {
+		t.Errorf("expected snapshot net_liq=10000 pct=60, got net_liq=%v pct=%v",
+			active.EffectiveCapitalNetLiq, active.EffectiveCapitalPercent)
+	}
+	if active.Status != types.StatusMonitoring {
+		t.Errorf("status must be unchanged, got %v", active.Status)
+	}
+	if !containsAll(active.Message, "Monitoring", "6000") {
+		t.Errorf("expected message to include resolved capital, got %q", active.Message)
+	}
+}
+
+func TestCaptureMonitoringStartCapital_PercentNetLiqUnavailableNonFatal(t *testing.T) {
+	e := newTestEngine(t)
+	e.accountReader = func(ctx context.Context) (*models.Account, error) {
+		return nil, errors.New("provider down")
+	}
+	active := &types.ActiveAutomation{Config: percentConfig(60, types.RecurrenceOnce), Status: types.StatusMonitoring}
+	e.activeAutomations["mon"] = active
+
+	e.captureMonitoringStartCapital("mon")
+
+	// Must NOT fail — status stays as-is, capital pending message + warn log.
+	if active.Status != types.StatusMonitoring {
+		t.Errorf("monitoring-start failure must be non-fatal, got status %v", active.Status)
+	}
+	if !containsAll(active.Message, "pending") {
+		t.Errorf("expected capital-pending message, got %q", active.Message)
+	}
+	if lastLog(active).Level != "warn" {
+		t.Errorf("expected warn log on non-fatal monitoring-start failure, got %+v", lastLog(active))
+	}
+}
+
+func TestCaptureMonitoringStartCapital_FixedMode(t *testing.T) {
+	e := newTestEngine(t)
+	// Fixed mode must not read the account.
+	e.accountReader = func(ctx context.Context) (*models.Account, error) {
+		t.Error("fixed mode must not read the account at monitoring start")
+		return nil, errors.New("unexpected")
+	}
+	active := &types.ActiveAutomation{Config: fixedConfig(), Status: types.StatusMonitoring}
+	e.activeAutomations["mon"] = active
+
+	e.captureMonitoringStartCapital("mon")
+
+	if active.EffectiveCapital != 5000 {
+		t.Errorf("expected EffectiveCapital 5000, got %v", active.EffectiveCapital)
+	}
+	if active.Status != types.StatusMonitoring {
+		t.Errorf("status must be unchanged, got %v", active.Status)
+	}
+	if !containsAll(active.Message, "Monitoring", "5000") {
+		t.Errorf("expected message to include fixed capital, got %q", active.Message)
+	}
+}
+
+func TestCaptureMonitoringStartCapital_MissingAutomationNoOp(t *testing.T) {
+	e := newTestEngine(t)
+	// Should not panic when the id is absent.
+	e.captureMonitoringStartCapital("does-not-exist")
+}
 
 // containsAll reports whether s contains every substring in subs.
 func containsAll(s string, subs ...string) bool {
