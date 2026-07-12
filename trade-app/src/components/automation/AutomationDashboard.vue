@@ -192,6 +192,11 @@
               <span class="status-label">State:</span>
               <span class="status-value">{{ getAutomationStatus(config.id)?.status || getAutomationStatus(config.id)?.state }}</span>
             </div>
+            <!-- Resolved effective capital (percent-mode audit + fixed-mode display) -->
+            <div v-if="getAutomationStatus(config.id)?.effective_capital" class="status-row">
+              <span class="status-label">Capital Used:</span>
+              <span class="status-value">{{ formatCapitalUsed(getAutomationStatus(config.id)) }}</span>
+            </div>
             <!-- TradedToday indicator for daily automations -->
             <div v-if="config.recurrence === 'daily'" class="status-row">
               <span class="status-label">Today's Trade:</span>
@@ -771,6 +776,19 @@ export default {
       return num.toLocaleString()
     }
 
+    // Formats the resolved effective capital for the "Capital Used" status row.
+    // Percent mode (pct>0 && net_liq>0) → "$6,000 (60% of $10,000)"; fixed → "$5,000".
+    const formatCapitalUsed = (status) => {
+      const eff = status?.effective_capital
+      if (eff == null) return 'N/A'
+      const pct = status?.effective_capital_percent
+      const netLiq = status?.effective_capital_net_liq
+      if (pct > 0 && netLiq > 0) {
+        return `$${formatNumber(Math.round(eff))} (${pct}% of $${formatNumber(Math.round(netLiq))})`
+      }
+      return `$${formatNumber(Math.round(eff))}`
+    }
+
     const startAutomation = async (config) => {
       actionLoading.value = `start_${config.id}`
       try {
@@ -1061,6 +1079,7 @@ export default {
       formatIndicatorValue,
       formatStrategy,
       formatNumber,
+      formatCapitalUsed,
       startAutomation,
       stopAutomation,
       evaluateIndicators,

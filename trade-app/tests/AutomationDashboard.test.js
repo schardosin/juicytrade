@@ -878,4 +878,70 @@ describe('AutomationDashboard', () => {
       });
     });
   });
+
+  // ─── Max Capital: Capital Used row & summary (Steps 14 & 15) ─────────
+
+  describe('formatCapitalUsed', () => {
+    it('formats percent-mode capital as "$6,000 (60% of $10,000)"', () => {
+      const status = {
+        effective_capital: 6000,
+        effective_capital_percent: 60,
+        effective_capital_net_liq: 10000,
+      };
+      expect(wrapper.vm.formatCapitalUsed(status)).toBe('$6,000 (60% of $10,000)');
+    });
+
+    it('formats fixed-mode capital as "$5,000"', () => {
+      const status = { effective_capital: 5000 };
+      expect(wrapper.vm.formatCapitalUsed(status)).toBe('$5,000');
+    });
+
+    it('returns "N/A" when effective_capital is absent', () => {
+      expect(wrapper.vm.formatCapitalUsed({})).toBe('N/A');
+      expect(wrapper.vm.formatCapitalUsed(null)).toBe('N/A');
+    });
+
+    it('treats zero pct/net_liq as fixed (no percent suffix)', () => {
+      const status = { effective_capital: 5000, effective_capital_percent: 0, effective_capital_net_liq: 0 };
+      expect(wrapper.vm.formatCapitalUsed(status)).toBe('$5,000');
+    });
+  });
+
+  describe('Capital Used status row rendering', () => {
+    it('renders "Capital Used: $6,000 (60% of $10,000)" for a percent status', async () => {
+      wrapper.vm.configs = [{ id: 'cap-1', name: 'C1', enabled: true, trade_config: { max_capital: 5000 } }];
+      wrapper.vm.statuses = {
+        'cap-1': {
+          state: 'monitoring',
+          effective_capital: 6000,
+          effective_capital_percent: 60,
+          effective_capital_net_liq: 10000,
+        },
+      };
+      await nextTick();
+      expect(wrapper.text()).toContain('Capital Used:');
+      expect(wrapper.text()).toContain('$6,000 (60% of $10,000)');
+    });
+
+    it('renders "Capital Used: $5,000" for a fixed status', async () => {
+      wrapper.vm.configs = [{ id: 'cap-2', name: 'C2', enabled: true, trade_config: { max_capital: 5000 } }];
+      wrapper.vm.statuses = {
+        'cap-2': { state: 'monitoring', effective_capital: 5000 },
+      };
+      await nextTick();
+      expect(wrapper.text()).toContain('Capital Used:');
+      expect(wrapper.text()).toContain('$5,000');
+    });
+
+    it('hides the Capital Used row when effective_capital is absent, but keeps Message', async () => {
+      wrapper.vm.configs = [{ id: 'cap-3', name: 'C3', enabled: true, trade_config: { max_capital: 5000 } }];
+      wrapper.vm.statuses = {
+        'cap-3': { state: 'waiting', message: 'Waiting for entry' },
+      };
+      await nextTick();
+      expect(wrapper.text()).not.toContain('Capital Used:');
+      expect(wrapper.text()).toContain('Message:');
+      expect(wrapper.text()).toContain('Waiting for entry');
+    });
+  });
 });
