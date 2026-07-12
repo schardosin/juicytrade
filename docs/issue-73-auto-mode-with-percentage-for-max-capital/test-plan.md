@@ -100,7 +100,7 @@ Legend: **[EXISTS]** already covered by a passing test · **[GAP]** not covered,
 |---|---|---|---|
 | 6.1 | Trade-time percent capture: `eff=6000`, snapshot + info log w/ details `mode=percent net_liq=… pct=… effective=…` | [EXISTS] | `engine_capital_test.go` `TestCaptureEffectiveCapital_PercentSuccess` (:146, phase `trade-time`) |
 | 6.2 | Fixed trade-time log message contains `(fixed)` and `[trade-time]` | [EXISTS] | `engine_capital_test.go` `TestCaptureEffectiveCapital_FixedMode` (:140-143) |
-| 6.3 | **Full `handleTradingState` path: percent config sizes from trade-time capture, sets `Message="Trading - capital $6,000"`, then proceeds to strike-find** | [GAP] | New engine test driving `handleTradingState` with mock provider (strikes + account); assert `active.EffectiveCapital`, `Message`, units passed to order placement |
+| 6.3 | **Full `handleTradingState` path: percent config sizes from trade-time capture, sets `Message="Trading - capital $6,000"`, then proceeds to strike-find** | [RESIDUAL GAP] | Not automatable without a production seam — see G-1. Constituent pieces unit-tested; integration risk low |
 | 6.4 | Frontend `formatCapitalUsed` percent formatting `$6,000 (60% of $10,000)` | [EXISTS] | `AutomationDashboard.test.js` `formatCapitalUsed` (:885) |
 
 ### AC-7 — Legacy configs load and run as fixed
@@ -123,7 +123,7 @@ Legend: **[EXISTS]** already covered by a passing test · **[GAP]** not covered,
 | 8.4 | Transient below threshold (<3) → retry (message set, no terminal/waiting transition) | [EXISTS] | `engine_capital_test.go` `TestHandleCapitalFailure_TransientBelowThresholdRetries` (:237) |
 | 8.5 | Transient daily @ threshold (3) → `StatusWaiting` + `TradedToday=true` | [EXISTS] | `engine_capital_test.go` `TestHandleCapitalFailure_TransientDailyReachesThresholdWaits` (:253) |
 | 8.6 | Transient once @ threshold (3) → `StatusFailed` | [EXISTS] | `engine_capital_test.go` `TestHandleCapitalFailure_TransientOnceReachesThresholdFails` (:271) |
-| 8.7 | **`handleTradingState` end-to-end: percent + failing account reader → `handleCapitalFailure` invoked and NO order placed** | [GAP] | New engine test: assert no `placeOrder`/`CurrentOrder` set and status/error follow the failure path |
+| 8.7 | **`handleTradingState` end-to-end: percent + failing account reader → `handleCapitalFailure` invoked and NO order placed** | [RESIDUAL GAP] | Failure short-circuit reachable but only re-runs already-unit-tested helpers; success path needs a production seam — see G-1 |
 
 ### AC-9 — All existing tests pass; new tests cover percent resolution, $10k×60%, defaulting, Net-Liq-unavailable
 
@@ -193,19 +193,58 @@ Legend: **[EXISTS]** already covered by a passing test · **[GAP]** not covered,
 Ordered by priority. **No test code is written yet** — this is the backlog for the
 test-writing phase.
 
-### G-1 (High) — `handleTradingState` end-to-end (AC-6.3, AC-8.7)
+### G-1 (High) — `handleTradingState` end-to-end (AC-6.3, AC-8.7) — **RESIDUAL GAP (not automatable without production changes)**
+
 The two capture points and the failure handler are unit-tested in isolation, but
 the actual `handleTradingState` wiring (capture → `Message` → `CalculateUnits(eff)`
-→ order placement, and the failure short-circuit) is not exercised.
-**New test(s)** in `engine_capital_test.go` (or a new `engine_trading_state_test.go`):
+→ order placement, and the failure short-circuit) is not exercised end-to-end.
+
+**Feasibility outcome:** After inspecting `handleTradingState` (`engine.go:766-894`)
+and the `Engine` struct (`engine.go:20-34`), an end-to-end test is **not feasible
+without adding a production test seam**, which is out of scope:
+
+- The **only** injectable seam on `Engine` is `accountReader` (`engine.go:33`).
+- Strike-finding and order placement go through `e.findStrikesForDelta` /
+  `findStrikesForIronCondor` / `placeSpreadOrder` / `placeIronCondorOrder`, which
+  are **plain `*Engine` methods (no injectable function fields)** and call
+  `e.providerManager.*` directly (e.g. `findStrikesForDelta` →
+  `providerManager.GetExpirationDates`, `engine.go:1437`).
+- `providerManager` is a **concrete `*providers.ProviderManager`** (not an
+  interface). Its provider set lives in an **unexported `providers` map**
+  populated from an on-disk credential store; `NewProviderManager()` reads real
+  credentials. From the `automation` test package there is no way to inject a
+  mock provider, and no interface to substitute the manager.
+- Therefore the **success path (AC-6.3)** — reaching `placeSpreadOrder` and
+  asserting units — cannot be driven without a new seam (function fields on
+  `Engine` or a provider-manager interface), i.e. a production change.
+- The **failure short-circuit (AC-8.7)** *is* reachable (a failing `accountReader`
+  makes `handleTradingState` return at `engine.go:779-780` before any
+  `providerManager` access), but that path only re-runs `captureEffectiveCapital`
+  + `handleCapitalFailure`, which are **already directly unit-tested**
+  (`TestCaptureEffectiveCapital_PercentNetLiqUnavailable`, the four
+  `TestHandleCapitalFailure_*`). Adding a `handleTradingState`-level test for it
+  yields no new coverage and would imply false end-to-end confidence.
+
+**Decision:** documented as a residual gap; **no test written, no production code
+changed.** Integration risk is **low** because every constituent piece is unit-
+tested in isolation:
+- `captureEffectiveCapital` (fixed/percent/failure) — `engine_capital_test.go`
+- `CalculateUnits(eff)` incl. floor + Iron Condor wider-side — `types_test.go`
+- `handleCapitalFailure` (permanent vs transient, retry/wait/fail) — `engine_capital_test.go`
+- delta-drift re-placement reuses the snapshot — `engine_capital_test.go`
+
+**To close fully later (requires @dev):** introduce an injectable seam — either
+`Engine` function fields for strike-finding/order-placement, or a small interface
+abstracting `ProviderManager` — then add the success/failure end-to-end tests
+originally scoped here. This is a production change and must be a separate,
+approved task.
+
+Original intended tests (deferred):
 - Percent success: mock `accountReader` (10000) + mock strike/order placement →
   assert `active.EffectiveCapital==6000`, `Message` contains `6000`, order placed
   with `units==12`.
 - Percent failure: failing `accountReader` → assert **no order placed**, status/error
   match `handleCapitalFailure`.
-Requires stubbing strike-finding/order-placement; check whether existing engine
-tests provide seams for `findStrikes*`/`placeOrder` — if not, this may need a
-small additional test seam (flag as a note for @dev, not a behavior change).
 
 ### G-2 (High) — Config persistence round-trip (AC-2.4, PR-4)
 `storage.go` `Create`/`Update` → reload → assert `max_capital_mode` and
@@ -262,26 +301,29 @@ npx vitest run
 | Area | Existing | Gap / Verify |
 |---|---|---|
 | AC-1 mode toggle & default | ✅ full | — |
-| AC-2 percent persisted | ✅ types+UI | G-2 (storage), G-4 (HTTP) |
+| AC-2 percent persisted | ✅ types+UI+storage(G-2)+HTTP(G-4) | — |
 | AC-3 $10k×60%=$6k | ✅ full | — |
 | AC-4 fixed regression | ✅ full | — |
 | AC-5 monitoring-start display | ✅ full | — |
-| AC-6 trade-time display+log | ✅ unit | G-1 (`handleTradingState`) |
+| AC-6 trade-time display+log | ✅ unit | G-1 residual (not automatable w/o prod seam) |
 | AC-7 legacy compat | ✅ full | — (optional fixture) |
-| AC-8 Net-Liq failure path | ✅ unit | G-1 (end-to-end no-order) |
+| AC-8 Net-Liq failure path | ✅ unit | G-1 residual (helpers unit-tested; low risk) |
 | AC-9 suites + new coverage | ✅ mostly | G-7 (full-suite gate) |
 | PO: backward compat | ✅ full | — |
 | PO: sizing math (IC+floor) | ✅ core | G-5 (percent-derived IC edge) |
 | PO: failure transient/permanent | ✅ full | G-6 (strike-find parity) |
-| PO: persistence/restore re-resolution | ✅ snapshot | G-3 (re-resolution override) |
+| PO: persistence/restore re-resolution | ✅ snapshot + re-resolution (G-3) | — |
 | PO: test suite runs | partial | G-7 (run full gates) |
 
 **Bottom line:** the implementation is well-covered at the unit level (types,
 engine helpers, persistence, migration, handler-validation, and both frontend
-components). The remaining gaps are integration-level: the full `handleTradingState`
-flow (G-1), config-persistence round-trip (G-2), restart re-resolution (G-3), and
-HTTP-status validation (G-4), plus two low-priority reinforcement tests (G-5, G-6)
-and the full-suite verification gate (G-7).
+components). Completed since initial analysis: **G-2** (config-persistence
+round-trip), **G-3** (restart re-resolution override), **G-4** (HTTP 400
+validation). **G-1** (full `handleTradingState` end-to-end) is a **residual gap:
+not automatable without adding a production test seam** for strike-finding/order
+placement — its constituent pieces are all unit-tested, so integration risk is
+low. Remaining optional items: G-5, G-6 (low-priority reinforcement) and G-7
+(full-suite gate).
 
 ---
 
