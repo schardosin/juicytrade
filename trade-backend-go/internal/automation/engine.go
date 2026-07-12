@@ -1058,7 +1058,9 @@ func (e *Engine) handleOrderAdjustment(ctx context.Context, id string, active *t
 						return
 					}
 
-					units := config.CalculateUnits(config.MaxCapital)
+					// Reuse the trade-time effective-capital snapshot so re-placements
+					// within the same trade stay size-stable (no fresh account read).
+					units := active.Config.TradeConfig.CalculateUnits(active.EffectiveCapital)
 					if units == 0 {
 						e.mu.Lock()
 						active.Status = types.StatusFailed
@@ -1100,8 +1102,8 @@ func (e *Engine) handleOrderAdjustment(ctx context.Context, id string, active *t
 						return
 					}
 
-					// Calculate units (same as original)
-					units := config.CalculateUnits(config.MaxCapital)
+					// Reuse the trade-time effective-capital snapshot (same as original sizing).
+					units := active.Config.TradeConfig.CalculateUnits(active.EffectiveCapital)
 					if units == 0 {
 						e.mu.Lock()
 						active.Status = types.StatusFailed

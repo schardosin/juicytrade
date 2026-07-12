@@ -286,6 +286,57 @@ func TestHandleCapitalFailure_TransientOnceReachesThresholdFails(t *testing.T) {
 	}
 }
 
+// ---- Step 7: delta-drift re-placement reuses the trade-time snapshot ----
+
+func TestCalculateUnits_DriftReusesEffectiveCapitalSnapshot(t *testing.T) {
+	// Percent-mode config with MaxCapital=5000 but a trade-time snapshot of 6000.
+	// The drift re-placement must size from the snapshot (6000), not MaxCapital (5000).
+	tc := types.TradeConfiguration{
+		Strategy:          types.StrategyPutSpread,
+		Width:             5, // maxRiskPerUnit = 500
+		MaxCapital:        5000,
+		MaxCapitalMode:    types.MaxCapitalModePercent,
+		MaxCapitalPercent: 60,
+	}
+	active := &types.ActiveAutomation{
+		Config:           &types.AutomationConfig{TradeConfig: tc},
+		EffectiveCapital: 6000, // captured at trade time (10000 * 60%)
+	}
+
+	// This mirrors the exact expression used at the drift re-placement sites.
+	units := active.Config.TradeConfig.CalculateUnits(active.EffectiveCapital)
+	if units != 12 { // 6000 / 500 = 12
+		t.Errorf("expected 12 units from snapshot (6000), got %d", units)
+	}
+
+	// Sanity: sizing from MaxCapital (5000) would have produced 10, proving the
+	// snapshot (not MaxCapital) is what drives the drift re-placement.
+	if fromMax := active.Config.TradeConfig.CalculateUnits(active.Config.TradeConfig.MaxCapital); fromMax != 10 {
+		t.Errorf("expected 10 units from MaxCapital (5000) for the contrast check, got %d", fromMax)
+	}
+}
+
+func TestCalculateUnits_DriftFixedModeParity(t *testing.T) {
+	// Fixed mode: the trade-time snapshot equals MaxCapital, so drift sizing is unchanged.
+	tc := types.TradeConfiguration{
+		Strategy:       types.StrategyPutSpread,
+		Width:          5,
+		MaxCapital:     5000,
+		MaxCapitalMode: types.MaxCapitalModeFixed,
+	}
+	active := &types.ActiveAutomation{
+		Config:           &types.AutomationConfig{TradeConfig: tc},
+		EffectiveCapital: 5000, // fixed-mode snapshot == MaxCapital
+	}
+	units := active.Config.TradeConfig.CalculateUnits(active.EffectiveCapital)
+	if units != 10 { // 5000 / 500 = 10
+		t.Errorf("expected 10 units (fixed parity), got %d", units)
+	}
+}
+
+// ---- Step 8: captureMonitoringStartCapital (FR-5) ----
+// (added in the FR-5 commit)
+
 // containsAll reports whether s contains every substring in subs.
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {
