@@ -412,6 +412,48 @@ func TestCaptureMonitoringStartCapital_MissingAutomationNoOp(t *testing.T) {
 	e.captureMonitoringStartCapital("does-not-exist")
 }
 
+// ---- GAP G-3 (test-plan.md): restart re-resolution overrides stale snapshot ----
+
+// TestCaptureEffectiveCapital_ReResolvesOverStalePersistedSnapshot proves that a
+// restored automation carrying a STALE persisted EffectiveCapital snapshot has
+// that value overwritten by a FRESH trade-time capture. This confirms the
+// persisted snapshot is display-only and sizing is always re-resolved from the
+// Net Liq read at the actual trade moment (design §8.3).
+func TestCaptureEffectiveCapital_ReResolvesOverStalePersistedSnapshot(t *testing.T) {
+	e := newTestEngine(t)
+	// Fresh account read returns a DIFFERENT Net Liq than the stale snapshot implies.
+	e.accountReader = func(ctx context.Context) (*models.Account, error) {
+		return &models.Account{PortfolioValue: fptr(20000)}, nil
+	}
+
+	// Simulate a restored automation: percent 60, but a stale snapshot of 6000
+	// (as if Net Liq had been 10000 at the previous run before a restart).
+	active := &types.ActiveAutomation{
+		Config:                  percentConfig(60, types.RecurrenceOnce),
+		EffectiveCapital:        6000,
+		EffectiveCapitalNetLiq:  10000,
+		EffectiveCapitalPercent: 60,
+	}
+
+	eff, err := e.captureEffectiveCapital(context.Background(), active, "trade-time")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// 20000 * 60% = 12000 — the fresh read must override the stale 6000.
+	if eff != 12000 {
+		t.Errorf("expected fresh effective 12000, got %v", eff)
+	}
+	if active.EffectiveCapital != 12000 {
+		t.Errorf("stale snapshot not overwritten: EffectiveCapital = %v, want 12000", active.EffectiveCapital)
+	}
+	if active.EffectiveCapitalNetLiq != 20000 {
+		t.Errorf("expected net_liq updated to 20000, got %v", active.EffectiveCapitalNetLiq)
+	}
+	if active.EffectiveCapitalPercent != 60 {
+		t.Errorf("expected pct 60, got %v", active.EffectiveCapitalPercent)
+	}
+}
+
 // containsAll reports whether s contains every substring in subs.
 func containsAll(s string, subs ...string) bool {
 	for _, sub := range subs {

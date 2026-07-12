@@ -1,6 +1,7 @@
 package automation
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -292,5 +293,122 @@ func TestMigrateMaxCapitalMode_ExplicitFixedNotChanged(t *testing.T) {
 	}
 	if migrated := s.migrateMaxCapitalMode(); migrated {
 		t.Error("expected no migration for a config already explicitly fixed")
+	}
+}
+
+// ---- GAP G-2 (test-plan.md): config persistence round-trip ----
+
+// TestStorage_PercentConfigRoundTrip creates a percent-mode config via the
+// Storage API, persists it to a temp file, then loads it into a brand-new
+// Storage instance pointing at the same file and asserts that
+// max_capital_mode and max_capital_percent survive the disk round-trip.
+// A t.TempDir()-scoped file is used so nothing pollutes the working tree.
+func TestStorage_PercentConfigRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "automations.json")
+
+	// Writer store: seed via Create() (which calls save()).
+	writer := &Storage{
+		filePath: path,
+		configs:  make(map[string]*AutomationConfig),
+	}
+	cfg := &AutomationConfig{
+		ID:     "cfg-percent",
+		Name:   "Percent RoundTrip",
+		Symbol: "SPX",
+		TradeConfig: types.TradeConfiguration{
+			Strategy:          types.StrategyPutSpread,
+			Width:             20,
+			MaxCapital:        5000, // retained but unused in percent mode
+			MaxCapitalMode:    types.MaxCapitalModePercent,
+			MaxCapitalPercent: 60,
+		},
+	}
+	if err := writer.Create(cfg); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Reader store: fresh instance, same file, load from disk.
+	reader := &Storage{
+		filePath: path,
+		configs:  make(map[string]*AutomationConfig),
+	}
+	if err := reader.load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+
+	got, err := reader.Get("cfg-percent")
+	if err != nil {
+		t.Fatalf("Get after reload: %v", err)
+	}
+	if got.TradeConfig.MaxCapitalMode != types.MaxCapitalModePercent {
+		t.Errorf("MaxCapitalMode: got %q, want %q", got.TradeConfig.MaxCapitalMode, types.MaxCapitalModePercent)
+	}
+	if got.TradeConfig.MaxCapitalPercent != 60 {
+		t.Errorf("MaxCapitalPercent: got %v, want 60", got.TradeConfig.MaxCapitalPercent)
+	}
+	// MaxCapital is retained across the round-trip (used when toggling back to fixed).
+	if got.TradeConfig.MaxCapital != 5000 {
+		t.Errorf("MaxCapital: got %v, want 5000", got.TradeConfig.MaxCapital)
+	}
+}
+
+// TestStorage_UpdateToPercentRoundTrip creates a fixed config, updates it to
+// percent mode via Update() (which persists), then reloads from disk and
+// asserts the percent fields survived the update + round-trip.
+func TestStorage_UpdateToPercentRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "automations.json")
+
+	writer := &Storage{
+		filePath: path,
+		configs:  make(map[string]*AutomationConfig),
+	}
+	// Seed a fixed config.
+	if err := writer.Create(&AutomationConfig{
+		ID:     "cfg-upd",
+		Name:   "Starts Fixed",
+		Symbol: "SPX",
+		TradeConfig: types.TradeConfiguration{
+			Strategy:       types.StrategyPutSpread,
+			Width:          20,
+			MaxCapital:     5000,
+			MaxCapitalMode: types.MaxCapitalModeFixed,
+		},
+	}); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// Update it to percent mode.
+	if err := writer.Update(&AutomationConfig{
+		ID:     "cfg-upd",
+		Name:   "Now Percent",
+		Symbol: "SPX",
+		TradeConfig: types.TradeConfiguration{
+			Strategy:          types.StrategyPutSpread,
+			Width:             20,
+			MaxCapital:        5000,
+			MaxCapitalMode:    types.MaxCapitalModePercent,
+			MaxCapitalPercent: 42,
+		},
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	// Reload from disk into a fresh store.
+	reader := &Storage{
+		filePath: path,
+		configs:  make(map[string]*AutomationConfig),
+	}
+	if err := reader.load(); err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got, err := reader.Get("cfg-upd")
+	if err != nil {
+		t.Fatalf("Get after reload: %v", err)
+	}
+	if got.TradeConfig.MaxCapitalMode != types.MaxCapitalModePercent {
+		t.Errorf("MaxCapitalMode: got %q, want %q", got.TradeConfig.MaxCapitalMode, types.MaxCapitalModePercent)
+	}
+	if got.TradeConfig.MaxCapitalPercent != 42 {
+		t.Errorf("MaxCapitalPercent: got %v, want 42", got.TradeConfig.MaxCapitalPercent)
 	}
 }
