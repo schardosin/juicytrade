@@ -182,7 +182,14 @@
             </template>
             <div class="summary-item">
               <span class="summary-label">Max Capital</span>
-              <span class="summary-value">${{ formatNumber(config.trade_config?.max_capital) }}</span>
+              <span class="summary-value">
+                <template v-if="config.trade_config?.max_capital_mode === 'percent'">
+                  {{ config.trade_config?.max_capital_percent }}% of Net Liq.
+                </template>
+                <template v-else>
+                  ${{ formatNumber(config.trade_config?.max_capital) }}
+                </template>
+              </span>
             </div>
           </div>
 

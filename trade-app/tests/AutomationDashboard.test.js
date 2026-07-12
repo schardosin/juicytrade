@@ -944,4 +944,36 @@ describe('AutomationDashboard', () => {
       expect(wrapper.text()).toContain('Waiting for entry');
     });
   });
+
+  describe('Max Capital summary (mode-aware)', () => {
+    it('shows "60% of Net Liq." for a percent config', async () => {
+      wrapper.vm.configs = [{
+        id: 'sum-1', name: 'S1', enabled: true,
+        trade_config: { max_capital: 5000, max_capital_mode: 'percent', max_capital_percent: 60 },
+      }];
+      await nextTick();
+      expect(wrapper.text()).toContain('60% of Net Liq.');
+      expect(wrapper.text()).not.toContain('$5,000');
+    });
+
+    it('shows "$5,000" for a fixed config', async () => {
+      wrapper.vm.configs = [{
+        id: 'sum-2', name: 'S2', enabled: true,
+        trade_config: { max_capital: 5000, max_capital_mode: 'fixed' },
+      }];
+      await nextTick();
+      expect(wrapper.text()).toContain('$5,000');
+      expect(wrapper.text()).not.toContain('of Net Liq.');
+    });
+
+    it('shows "$5,000" for a config with no mode (legacy default)', async () => {
+      wrapper.vm.configs = [{
+        id: 'sum-3', name: 'S3', enabled: true,
+        trade_config: { max_capital: 5000 },
+      }];
+      await nextTick();
+      expect(wrapper.text()).toContain('$5,000');
+      expect(wrapper.text()).not.toContain('of Net Liq.');
+    });
+  });
 });
