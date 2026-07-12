@@ -602,7 +602,7 @@ func (tc *TradeConfiguration) ResolveEffectiveCapital(netLiq float64, netLiqOK b
 }
 
 // CalculateUnits calculates the number of spread units based on capital and width
-func (tc *TradeConfiguration) CalculateUnits() int {
+func (tc *TradeConfiguration) CalculateUnits(effectiveCapital float64) int {
 	width := tc.Width
 
 	// For Iron Condor, use the wider of the two sides for position sizing
@@ -622,7 +622,7 @@ func (tc *TradeConfiguration) CalculateUnits() int {
 	}
 	// Max risk per unit = width * 100 (options multiplier)
 	maxRiskPerUnit := float64(width) * 100.0
-	units := int(tc.MaxCapital / maxRiskPerUnit)
+	units := int(effectiveCapital / maxRiskPerUnit)
 	if units < 1 {
 		return 0
 	}

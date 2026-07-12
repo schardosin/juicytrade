@@ -318,3 +318,77 @@ func TestResolveEffectiveCapital_InvalidPercentTakesPrecedenceOverNetLiq(t *test
 		t.Errorf("expected ErrInvalidCapitalPercent to take precedence, got %v", err)
 	}
 }
+
+// ---- Step 3: CalculateUnits takes effective capital as a parameter ----
+
+func TestCalculateUnits_BasicFloor(t *testing.T) {
+	cases := []struct {
+		name             string
+		width            int
+		effectiveCapital float64
+		want             int
+	}{
+		// 6000 / (5*100) = 12
+		{"exact multiple", 5, 6000, 12},
+		// 5999 / 500 = 11.998 -> floor 11
+		{"floors truncated", 5, 5999, 11},
+		// less than one unit -> 0
+		{"below one unit", 20, 1000, 0},
+		// zero capital -> 0
+		{"zero capital", 20, 0, 0},
+		// zero width -> 0 (guard)
+		{"zero width", 0, 10000, 0},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tc := TradeConfiguration{Strategy: StrategyPutSpread, Width: c.width}
+			if got := tc.CalculateUnits(c.effectiveCapital); got != c.want {
+				t.Errorf("width=%d capital=%v: expected %d units, got %d", c.width, c.effectiveCapital, c.want, got)
+			}
+		})
+	}
+}
+
+func TestCalculateUnits_FixedModeRegressionParity(t *testing.T) {
+	// AC-4: calling CalculateUnits with MaxCapital must reproduce the pre-refactor
+	// behavior (which used tc.MaxCapital internally). We assert the value equals the
+	// hand-computed floor(MaxCapital / (width*100)).
+	cases := []struct {
+		maxCapital float64
+		width      int
+		want       int
+	}{
+		{5000, 20, 2},  // 5000 / 2000 = 2.5 -> 2
+		{6000, 5, 12},  // 6000 / 500 = 12
+		{10000, 50, 2}, // 10000 / 5000 = 2
+		{100, 20, 0},   // 100 / 2000 -> 0
+	}
+	for _, c := range cases {
+		tc := TradeConfiguration{Strategy: StrategyPutSpread, Width: c.width, MaxCapital: c.maxCapital}
+		// Fixed-mode-equivalent call as used by the temporary engine call sites.
+		got := tc.CalculateUnits(tc.MaxCapital)
+		if got != c.want {
+			t.Errorf("maxCapital=%v width=%d: expected %d, got %d", c.maxCapital, c.width, c.want, got)
+		}
+	}
+}
+
+func TestCalculateUnits_IronCondorUsesWiderSide(t *testing.T) {
+	// Iron Condor sizing uses max(putWidth, callWidth); the plain Width field is ignored.
+	tc := TradeConfiguration{
+		Strategy:       StrategyIronCondor,
+		Width:          10, // should be ignored for iron condor
+		PutSideConfig:  &IronCondorSideConfig{Width: 50},
+		CallSideConfig: &IronCondorSideConfig{Width: 20},
+	}
+	// wider side = 50 -> maxRiskPerUnit = 5000. 6000 / 5000 = 1.2 -> 1 unit.
+	if got := tc.CalculateUnits(6000); got != 1 {
+		t.Errorf("expected 1 unit using wider side (50), got %d", got)
+	}
+	// Swap so call side is wider; result must be identical (max selection is symmetric).
+	tc.PutSideConfig.Width = 20
+	tc.CallSideConfig.Width = 50
+	if got := tc.CalculateUnits(6000); got != 1 {
+		t.Errorf("expected 1 unit using wider side (call=50), got %d", got)
+	}
+}

@@ -624,7 +624,7 @@ func (e *Engine) handleTradingState(id string, active *types.ActiveAutomation, s
 	e.mu.Unlock()
 
 	// Calculate position size (works for both spreads and iron condor)
-	units := active.Config.TradeConfig.CalculateUnits()
+	units := active.Config.TradeConfig.CalculateUnits(active.Config.TradeConfig.MaxCapital)
 	if units == 0 {
 		e.mu.Lock()
 		active.Status = types.StatusFailed
@@ -936,7 +936,7 @@ func (e *Engine) handleOrderAdjustment(ctx context.Context, id string, active *t
 						return
 					}
 
-					units := config.CalculateUnits()
+					units := config.CalculateUnits(config.MaxCapital)
 					if units == 0 {
 						e.mu.Lock()
 						active.Status = types.StatusFailed
@@ -979,7 +979,7 @@ func (e *Engine) handleOrderAdjustment(ctx context.Context, id string, active *t
 					}
 
 					// Calculate units (same as original)
-					units := config.CalculateUnits()
+					units := config.CalculateUnits(config.MaxCapital)
 					if units == 0 {
 						e.mu.Lock()
 						active.Status = types.StatusFailed
