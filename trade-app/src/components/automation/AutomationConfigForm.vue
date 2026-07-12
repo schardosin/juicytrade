@@ -422,17 +422,49 @@
             </div>
           </template>
 
-          <div class="form-field">
+          <div class="form-field capital-field">
             <label for="maxCapital">Max Capital</label>
-            <InputNumber
-              id="maxCapital"
-              v-model="config.trade_config.max_capital"
-              mode="currency"
-              currency="USD"
-              :min="100"
-              placeholder="e.g., 5000"
+
+            <!-- Mode selector: Fixed Amount ($) vs Percentage (%) -->
+            <SelectButton
+              v-model="config.trade_config.capital_mode"
+              :options="capitalModeOptions"
+              optionLabel="label"
+              optionValue="value"
+              :allowEmpty="false"
+              class="capital-mode-select"
+              aria-label="Max Capital mode"
             />
-            <small class="field-hint">Maximum capital to risk on this trade</small>
+
+            <!-- Fixed mode: existing currency input, unchanged -->
+            <template v-if="config.trade_config.capital_mode === 'percent'">
+              <InputNumber
+                id="maxCapitalPercent"
+                v-model="config.trade_config.max_capital_percent"
+                suffix=" %"
+                :min="1"
+                :max="100"
+                :minFractionDigits="0"
+                :maxFractionDigits="1"
+                placeholder="e.g., 60"
+                :class="{ 'p-invalid': errors.max_capital_percent }"
+              />
+              <small class="field-hint">Percent of account Net Liq (1–100)</small>
+              <small v-if="errors.max_capital_percent" class="p-error">
+                {{ errors.max_capital_percent }}
+              </small>
+            </template>
+            <template v-else>
+              <InputNumber
+                id="maxCapital"
+                v-model="config.trade_config.max_capital"
+                mode="currency"
+                currency="USD"
+                :min="100"
+                placeholder="e.g., 5000"
+              />
+              <small class="field-hint">Maximum capital to risk on this trade</small>
+            </template>
           </div>
         </div>
 
@@ -871,6 +903,12 @@ export default {
     const isLoading = ref(false)
     const isSaving = ref(false)
     const errors = ref({})
+
+    // Capital mode selector options (Fixed dollar vs Percentage of Net Liq)
+    const capitalModeOptions = [
+      { label: 'Fixed Amount ($)', value: 'fixed' },
+      { label: 'Percentage (%)', value: 'percent' },
+    ]
     
     // Indicator testing
     const testingIndicator = ref(null)
@@ -911,6 +949,8 @@ export default {
         width: 20,
         target_delta: 0.05,
         max_capital: 5000,
+        capital_mode: 'fixed',
+        max_capital_percent: 60,
         order_type: 'limit',
         time_in_force: 'day',
         price_ladder_step: 0.05,
@@ -1268,7 +1308,15 @@ export default {
       if (!config.value.entry_time?.match(/^\d{1,2}:\d{2}$/)) {
         errors.value.entry_time = 'Invalid time format (use HH:MM)'
       }
-      
+
+      // Only validate the field for the active capital mode.
+      if (config.value.trade_config?.capital_mode === 'percent') {
+        const pct = config.value.trade_config.max_capital_percent
+        if (typeof pct !== 'number' || isNaN(pct) || pct < 1 || pct > 100) {
+          errors.value.max_capital_percent = 'Enter a value between 1 and 100'
+        }
+      }
+
       return Object.keys(errors.value).length === 0
     }
 
@@ -1466,6 +1514,7 @@ export default {
       isLoading,
       isSaving,
       errors,
+      capitalModeOptions,
       testingIndicator,
       testingAll,
       indicatorResults,
@@ -1520,6 +1569,7 @@ export default {
       removeIndicator,
       removeIndicatorFromGroup,
       saveConfig,
+      validateConfig,
       cancel,
       testIndicator,
       testAllIndicators,
@@ -1670,6 +1720,15 @@ export default {
 
 .p-error {
   color: var(--color-danger);
+}
+
+/* Max Capital mode selector */
+.capital-field .capital-mode-select {
+  display: flex;
+  margin-bottom: var(--spacing-sm);
+}
+.capital-field .capital-mode-select :deep(.p-button) {
+  flex: 1;
 }
 
 /* Indicators List */

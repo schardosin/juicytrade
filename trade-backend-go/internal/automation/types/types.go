@@ -2,6 +2,7 @@ package types
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"trade-backend-go/internal/models"
@@ -94,6 +95,14 @@ const (
 	StrategyIronCondor TradeStrategy = "iron_condor"
 )
 
+// CapitalMode selects how MaxCapital is interpreted.
+type CapitalMode string
+
+const (
+	CapitalModeFixed   CapitalMode = "fixed"   // MaxCapital is a dollar amount (default / legacy)
+	CapitalModePercent CapitalMode = "percent" // MaxCapital derived from % of account Net Liq
+)
+
 // IndicatorConfig defines configuration for a single indicator
 type IndicatorConfig struct {
 	ID        string        `json:"id,omitempty"` // Unique ID to support multiple instances of same type
@@ -148,20 +157,22 @@ type IronCondorSideConfig struct {
 
 // TradeConfiguration defines the trade parameters for an automation
 type TradeConfiguration struct {
-	Strategy         TradeStrategy `json:"strategy"`                    // "put_spread", "call_spread", "iron_condor"
-	Width            int           `json:"width"`                       // Spread width (e.g., 20, 30) - used for put_spread/call_spread
-	TargetDelta      float64       `json:"target_delta"`                // Target delta for short strike (e.g., 0.05) - used for put_spread/call_spread
-	MaxCapital       float64       `json:"max_capital"`                 // Maximum capital to use
-	OrderType        string        `json:"order_type"`                  // "limit" or "market"
-	TimeInForce      string        `json:"time_in_force"`               // "day" or "gtc"
-	PriceLadderStep  float64       `json:"price_ladder_step"`           // Price decrement step (e.g., 0.05)
-	MaxAttempts      int           `json:"max_attempts"`                // Maximum order replacement attempts
-	AttemptInterval  int           `json:"attempt_interval"`            // Seconds between price reductions
-	DeltaDriftLimit  float64       `json:"delta_drift_limit"`           // Max delta drift before replacing (e.g., 0.01)
-	StartingOffset   float64       `json:"starting_offset,omitempty"`   // Amount below mid to start (e.g., 0.10)
-	MinCredit        float64       `json:"min_credit,omitempty"`        // Minimum acceptable credit (stop if below)
-	ExpirationMode   string        `json:"expiration_mode,omitempty"`   // "0dte", "1dte", "2dte", "custom"
-	CustomExpiration string        `json:"custom_expiration,omitempty"` // Custom expiration date (YYYY-MM-DD)
+	Strategy          TradeStrategy `json:"strategy"`                      // "put_spread", "call_spread", "iron_condor"
+	Width             int           `json:"width"`                         // Spread width (e.g., 20, 30) - used for put_spread/call_spread
+	TargetDelta       float64       `json:"target_delta"`                  // Target delta for short strike (e.g., 0.05) - used for put_spread/call_spread
+	MaxCapital        float64       `json:"max_capital"`                   // Maximum capital to use (dollars; used when capital_mode == fixed)
+	CapitalMode       CapitalMode   `json:"capital_mode,omitempty"`        // "fixed" | "percent"; empty => fixed (backward compatible)
+	MaxCapitalPercent float64       `json:"max_capital_percent,omitempty"` // 1..100, percent of account Net Liq (used when capital_mode == percent)
+	OrderType         string        `json:"order_type"`                    // "limit" or "market"
+	TimeInForce       string        `json:"time_in_force"`                 // "day" or "gtc"
+	PriceLadderStep   float64       `json:"price_ladder_step"`             // Price decrement step (e.g., 0.05)
+	MaxAttempts       int           `json:"max_attempts"`                  // Maximum order replacement attempts
+	AttemptInterval   int           `json:"attempt_interval"`              // Seconds between price reductions
+	DeltaDriftLimit   float64       `json:"delta_drift_limit"`             // Max delta drift before replacing (e.g., 0.01)
+	StartingOffset    float64       `json:"starting_offset,omitempty"`     // Amount below mid to start (e.g., 0.10)
+	MinCredit         float64       `json:"min_credit,omitempty"`          // Minimum acceptable credit (stop if below)
+	ExpirationMode    string        `json:"expiration_mode,omitempty"`     // "0dte", "1dte", "2dte", "custom"
+	CustomExpiration  string        `json:"custom_expiration,omitempty"`   // Custom expiration date (YYYY-MM-DD)
 	// Iron Condor specific - per-side delta and width configuration
 	PutSideConfig  *IronCondorSideConfig `json:"put_side_config,omitempty"`  // Put side config (iron_condor only)
 	CallSideConfig *IronCondorSideConfig `json:"call_side_config,omitempty"` // Call side config (iron_condor only)
@@ -251,6 +262,10 @@ type ActiveAutomation struct {
 	// Daily recurrence tracking
 	TradedToday   bool   `json:"traded_today"`              // Whether a trade was completed today
 	LastTradeDate string `json:"last_trade_date,omitempty"` // Date of last completed trade (YYYY-MM-DD)
+	// Capital resolution (percent mode). Zero/omitted in fixed mode.
+	ResolvedMaxCapital float64    `json:"resolved_max_capital,omitempty"` // Dollars resolved from % of Net Liq
+	ResolvedNetLiq     float64    `json:"resolved_net_liq,omitempty"`     // Net Liq (account.equity) read at resolution
+	ResolvedAt         *time.Time `json:"resolved_at,omitempty"`          // Timestamp of the latest capital resolution
 }
 
 // LegDetail contains bid/ask/mid details for an option leg
@@ -484,6 +499,7 @@ func NewTradeConfiguration() TradeConfiguration {
 		Width:           20,
 		TargetDelta:     0.05,
 		MaxCapital:      5000,
+		CapitalMode:     CapitalModeFixed,
 		OrderType:       "limit",
 		TimeInForce:     "day",
 		PriceLadderStep: 0.05,
@@ -564,8 +580,56 @@ func (r *IndicatorResult) Evaluate() bool {
 	}
 }
 
+// EffectiveCapitalMode returns the capital mode, defaulting empty to fixed.
+// This preserves backward compatibility for configs persisted before capital_mode existed.
+func (tc *TradeConfiguration) EffectiveCapitalMode() CapitalMode {
+	if tc.CapitalMode == "" {
+		return CapitalModeFixed
+	}
+	return tc.CapitalMode
+}
+
+// ResolveMaxCapital computes the effective dollar cap for the given Net Liq.
+// In fixed mode it returns MaxCapital and ignores netLiq. In percent mode it
+// returns netLiq * (MaxCapitalPercent / 100). There is NO fallback: percent mode
+// returns an error when the percent is out of range or netLiq is nil/non-positive.
+func (tc *TradeConfiguration) ResolveMaxCapital(netLiq *float64) (float64, error) {
+	if tc.EffectiveCapitalMode() == CapitalModeFixed {
+		return tc.MaxCapital, nil
+	}
+
+	pct := tc.MaxCapitalPercent
+	// Reject non-finite percentages first: NaN slips through plain range
+	// comparisons (every comparison against NaN is false), so guard explicitly.
+	if math.IsNaN(pct) || math.IsInf(pct, 0) {
+		return 0, fmt.Errorf("invalid max_capital_percent %v (must be a finite number 1..100)", pct)
+	}
+	if pct < 1 || pct > 100 {
+		return 0, fmt.Errorf("invalid max_capital_percent %.2f (must be 1..100)", pct)
+	}
+	if netLiq == nil {
+		return 0, fmt.Errorf("net liq unavailable; cannot resolve percentage cap")
+	}
+	// Reject non-finite Net Liq for the same reason as the percent guard above.
+	if math.IsNaN(*netLiq) || math.IsInf(*netLiq, 0) {
+		return 0, fmt.Errorf("net liq is not a finite number; cannot resolve percentage cap")
+	}
+	if *netLiq <= 0 {
+		return 0, fmt.Errorf("net liq non-positive; cannot resolve percentage cap")
+	}
+	return *netLiq * (pct / 100.0), nil
+}
+
 // CalculateUnits calculates the number of spread units based on capital and width
 func (tc *TradeConfiguration) CalculateUnits() int {
+	return tc.CalculateUnitsWithCapital(tc.MaxCapital)
+}
+
+// CalculateUnitsWithCapital calculates the number of spread units using an
+// externally-resolved dollar cap (from fixed $ or % of Net Liq). This keeps the
+// sizing formula in one place while allowing percent-mode callers to size from a
+// live-resolved value.
+func (tc *TradeConfiguration) CalculateUnitsWithCapital(resolvedMaxCapital float64) int {
 	width := tc.Width
 
 	// For Iron Condor, use the wider of the two sides for position sizing
@@ -585,7 +649,7 @@ func (tc *TradeConfiguration) CalculateUnits() int {
 	}
 	// Max risk per unit = width * 100 (options multiplier)
 	maxRiskPerUnit := float64(width) * 100.0
-	units := int(tc.MaxCapital / maxRiskPerUnit)
+	units := int(resolvedMaxCapital / maxRiskPerUnit)
 	if units < 1 {
 		return 0
 	}

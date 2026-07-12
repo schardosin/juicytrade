@@ -182,7 +182,7 @@
             </template>
             <div class="summary-item">
               <span class="summary-label">Max Capital</span>
-              <span class="summary-value">${{ formatNumber(config.trade_config?.max_capital) }}</span>
+              <span class="summary-value">{{ formatMaxCapital(config) }}</span>
             </div>
           </div>
 
@@ -771,6 +771,25 @@ export default {
       return num.toLocaleString()
     }
 
+    // formatMaxCapital renders the Max Capital summary in a mode-aware way:
+    //   fixed / legacy      -> "$5,000"
+    //   percent (pre-resolve) -> "60%"
+    //   percent (resolved)  -> "60% (≈ $6,000)" once status carries resolved_max_capital
+    const formatMaxCapital = (config) => {
+      const tc = config?.trade_config || {}
+      const mode = tc.capital_mode || 'fixed' // empty => fixed (backward compat)
+      if (mode !== 'percent') {
+        return `$${formatNumber(tc.max_capital)}`
+      }
+      const pct = formatNumber(tc.max_capital_percent)
+      const status = getAutomationStatus(config.id)
+      const resolved = status?.resolved_max_capital
+      if (resolved && resolved > 0) {
+        return `${pct}% (≈ $${formatNumber(Math.round(resolved))})`
+      }
+      return `${pct}%`
+    }
+
     const startAutomation = async (config) => {
       actionLoading.value = `start_${config.id}`
       try {
@@ -1061,6 +1080,7 @@ export default {
       formatIndicatorValue,
       formatStrategy,
       formatNumber,
+      formatMaxCapital,
       startAutomation,
       stopAutomation,
       evaluateIndicators,
