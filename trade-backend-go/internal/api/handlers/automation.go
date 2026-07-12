@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"fmt"
+	"math"
 	"net/http"
 
 	"trade-backend-go/internal/automation"
@@ -17,6 +18,12 @@ import (
 func validateCapitalConfig(tc *types.TradeConfiguration) error {
 	if tc.EffectiveCapitalMode() != types.CapitalModePercent {
 		return nil
+	}
+	// Reject non-finite percentages: a NaN slips through the range comparison
+	// below (every comparison against NaN is false), so guard explicitly to
+	// fail loudly instead of persisting an unusable value.
+	if math.IsNaN(tc.MaxCapitalPercent) || math.IsInf(tc.MaxCapitalPercent, 0) {
+		return fmt.Errorf("max_capital_percent must be a finite number between 1 and 100")
 	}
 	if tc.MaxCapitalPercent < 1 || tc.MaxCapitalPercent > 100 {
 		return fmt.Errorf("max_capital_percent must be between 1 and 100")
@@ -132,8 +139,24 @@ func (h *AutomationHandler) CreateConfig(c *gin.Context) {
 		config.EntryTimezone = "America/New_York"
 	}
 
+	// Apply full trade-config defaults only when no strategy was supplied,
+	// but preserve any client-supplied capital configuration (mode + values)
+	// so a percent config is never silently downgraded to the fixed $5000
+	// default. The capital fields are validated below by validateCapitalConfig.
 	if config.TradeConfig.Strategy == "" {
+		capitalMode := config.TradeConfig.CapitalMode
+		maxCapital := config.TradeConfig.MaxCapital
+		maxCapitalPercent := config.TradeConfig.MaxCapitalPercent
+
 		config.TradeConfig = types.NewTradeConfiguration()
+
+		if capitalMode != "" {
+			config.TradeConfig.CapitalMode = capitalMode
+			config.TradeConfig.MaxCapitalPercent = maxCapitalPercent
+			if maxCapital > 0 {
+				config.TradeConfig.MaxCapital = maxCapital
+			}
+		}
 	}
 
 	// Validate capital configuration (percent mode range check)

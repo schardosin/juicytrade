@@ -2,6 +2,7 @@ package types
 
 import (
 	"fmt"
+	"math"
 	"time"
 
 	"trade-backend-go/internal/models"
@@ -598,11 +599,23 @@ func (tc *TradeConfiguration) ResolveMaxCapital(netLiq *float64) (float64, error
 	}
 
 	pct := tc.MaxCapitalPercent
+	// Reject non-finite percentages first: NaN slips through plain range
+	// comparisons (every comparison against NaN is false), so guard explicitly.
+	if math.IsNaN(pct) || math.IsInf(pct, 0) {
+		return 0, fmt.Errorf("invalid max_capital_percent %v (must be a finite number 1..100)", pct)
+	}
 	if pct < 1 || pct > 100 {
 		return 0, fmt.Errorf("invalid max_capital_percent %.2f (must be 1..100)", pct)
 	}
-	if netLiq == nil || *netLiq <= 0 {
-		return 0, fmt.Errorf("net liq unavailable or non-positive; cannot resolve percentage cap")
+	if netLiq == nil {
+		return 0, fmt.Errorf("net liq unavailable; cannot resolve percentage cap")
+	}
+	// Reject non-finite Net Liq for the same reason as the percent guard above.
+	if math.IsNaN(*netLiq) || math.IsInf(*netLiq, 0) {
+		return 0, fmt.Errorf("net liq is not a finite number; cannot resolve percentage cap")
+	}
+	if *netLiq <= 0 {
+		return 0, fmt.Errorf("net liq non-positive; cannot resolve percentage cap")
 	}
 	return *netLiq * (pct / 100.0), nil
 }
