@@ -307,4 +307,70 @@ describe('AutomationConfigForm — Max Capital mode', () => {
       expect(wrapper.vm.maxCapitalHint).toContain('60%');
     });
   });
+
+  describe('Net Liq preview fetch', () => {
+    it('sets netLiq from portfolio_value on mount', async () => {
+      vi.clearAllMocks();
+      api.getAccount.mockResolvedValue({ portfolio_value: 12345 });
+      await mountForm();
+      await nextTick();
+      expect(wrapper.vm.netLiq).toBe(12345);
+    });
+
+    it('falls back to equity when portfolio_value is absent', async () => {
+      vi.clearAllMocks();
+      api.getAccount.mockResolvedValue({ equity: 8000 });
+      await mountForm();
+      await nextTick();
+      expect(wrapper.vm.netLiq).toBe(8000);
+    });
+
+    it('leaves netLiq=0 when getAccount rejects, and does not block', async () => {
+      vi.clearAllMocks();
+      api.getAccount.mockRejectedValue(new Error('provider down'));
+      await mountForm();
+      await nextTick();
+      expect(wrapper.vm.netLiq).toBe(0);
+      // percent hint degrades to the plain fallback
+      wrapper.vm.setCapitalMode('percent');
+      wrapper.vm.config.trade_config.max_capital_percent = 60;
+      await nextTick();
+      expect(wrapper.vm.maxCapitalHint).toBe('60% of account Net Liquidating Value');
+    });
+  });
+
+  describe('Percent validation', () => {
+    beforeEach(async () => {
+      vi.clearAllMocks();
+      api.getAccount.mockResolvedValue({ portfolio_value: 10000 });
+      await mountForm();
+      // valid required fields so only percent validation is under test
+      wrapper.vm.config.name = 'My Config';
+      wrapper.vm.config.symbol = 'NDX';
+      wrapper.vm.config.entry_time = '12:25';
+      wrapper.vm.setCapitalMode('percent');
+      await nextTick();
+    });
+
+    it('blocks percent = 0', async () => {
+      wrapper.vm.config.trade_config.max_capital_percent = 0;
+      const ok = wrapper.vm.validateConfig();
+      expect(ok).toBe(false);
+      expect(wrapper.vm.errors.max_capital_percent).toBeTruthy();
+    });
+
+    it('blocks percent = 150', async () => {
+      wrapper.vm.config.trade_config.max_capital_percent = 150;
+      const ok = wrapper.vm.validateConfig();
+      expect(ok).toBe(false);
+      expect(wrapper.vm.errors.max_capital_percent).toBeTruthy();
+    });
+
+    it('passes percent = 60', async () => {
+      wrapper.vm.config.trade_config.max_capital_percent = 60;
+      const ok = wrapper.vm.validateConfig();
+      expect(ok).toBe(true);
+      expect(wrapper.vm.errors.max_capital_percent).toBeFalsy();
+    });
+  });
 });

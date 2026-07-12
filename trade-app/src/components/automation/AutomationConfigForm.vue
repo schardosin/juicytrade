@@ -1329,6 +1329,14 @@ export default {
         errors.value.entry_time = 'Invalid time format (use HH:MM)'
       }
 
+      // Percent-mode Max Capital must be within 1..100 (safety net; backend also validates).
+      if (config.value.trade_config.max_capital_mode === 'percent') {
+        const pct = config.value.trade_config.max_capital_percent
+        if (pct == null || pct < 1 || pct > 100) {
+          errors.value.max_capital_percent = 'Percentage must be between 1 and 100'
+        }
+      }
+
       return Object.keys(errors.value).length === 0
     }
 
@@ -1511,9 +1519,22 @@ export default {
       return midCredit - offset
     }
 
+    // Fetch the account Net Liq once for the percent-mode preview hint. Best-effort:
+    // on any failure netLiq stays 0 and the hint degrades gracefully. Never blocks.
+    const fetchNetLiq = async () => {
+      try {
+        const account = await api.getAccount()
+        const value = account?.portfolio_value ?? account?.equity ?? 0
+        netLiq.value = value > 0 ? value : 0
+      } catch (e) {
+        netLiq.value = 0
+      }
+    }
+
     // Lifecycle
     onMounted(async () => {
       await fetchIndicatorMetadata()
+      fetchNetLiq()
       if (isEditMode.value) {
         await loadConfig()
       }
@@ -1585,6 +1606,7 @@ export default {
       removeIndicator,
       removeIndicatorFromGroup,
       saveConfig,
+      validateConfig,
       cancel,
       testIndicator,
       testAllIndicators,
