@@ -22,6 +22,7 @@ vi.mock('../src/services/api.js', () => ({
     previewAutomationIndicators: vi.fn().mockResolvedValue({ data: { indicators: [], group_results: [], all_pass: false } }),
     getIndicatorMetadata: vi.fn().mockResolvedValue({ data: { indicators: [] } }),
     previewStrikes: vi.fn().mockResolvedValue({ success: true, data: {} }),
+    getAccount: vi.fn().mockResolvedValue({ portfolio_value: 0 }),
   }
 }));
 
@@ -210,6 +211,100 @@ describe('AutomationConfigForm — Indicator Groups', () => {
       expect(wrapper.vm.config.indicator_groups[0].name).toBe('Default');
       expect(wrapper.vm.config.indicator_groups[0].indicators.length).toBe(2);
       expect(wrapper.vm.config.indicators).toEqual([]);
+    });
+  });
+});
+
+// ─── Max Capital: fixed/percent toggle (Steps 12 & 13) ──────────────────
+
+describe('AutomationConfigForm — Max Capital mode', () => {
+  let wrapper;
+
+  afterEach(() => {
+    if (wrapper) wrapper.unmount();
+  });
+
+  const mountForm = async () => {
+    wrapper = mount(AutomationConfigForm);
+    await nextTick();
+    await nextTick();
+    return wrapper;
+  };
+
+  describe('Defaults & toggle', () => {
+    beforeEach(async () => {
+      vi.clearAllMocks();
+      api.getAccount.mockResolvedValue({ portfolio_value: 0 });
+      await mountForm();
+    });
+
+    it('defaults to fixed mode with the currency input rendered', () => {
+      expect(wrapper.vm.config.trade_config.max_capital_mode).toBe('fixed');
+      expect(wrapper.vm.config.trade_config.max_capital).toBe(5000);
+      expect(wrapper.vm.config.trade_config.max_capital_percent).toBe(60);
+      expect(wrapper.find('#maxCapital').exists()).toBe(true);
+      expect(wrapper.find('#maxCapitalPercent').exists()).toBe(false);
+    });
+
+    it('clicking percent shows the percent input', async () => {
+      wrapper.vm.setCapitalMode('percent');
+      await nextTick();
+      expect(wrapper.vm.config.trade_config.max_capital_mode).toBe('percent');
+      expect(wrapper.find('#maxCapitalPercent').exists()).toBe(true);
+      expect(wrapper.find('#maxCapital').exists()).toBe(false);
+    });
+
+    it('preserves both values across Fixed→Percent→Fixed toggles (FR-2)', async () => {
+      wrapper.vm.config.trade_config.max_capital = 7500;
+      wrapper.vm.config.trade_config.max_capital_percent = 42;
+
+      wrapper.vm.setCapitalMode('percent');
+      await nextTick();
+      wrapper.vm.setCapitalMode('fixed');
+      await nextTick();
+
+      expect(wrapper.vm.config.trade_config.max_capital).toBe(7500);
+      expect(wrapper.vm.config.trade_config.max_capital_percent).toBe(42);
+    });
+
+    it('setCapitalMode never mutates the numeric values', async () => {
+      const beforeFixed = wrapper.vm.config.trade_config.max_capital;
+      const beforePct = wrapper.vm.config.trade_config.max_capital_percent;
+      wrapper.vm.setCapitalMode('percent');
+      await nextTick();
+      expect(wrapper.vm.config.trade_config.max_capital).toBe(beforeFixed);
+      expect(wrapper.vm.config.trade_config.max_capital_percent).toBe(beforePct);
+    });
+  });
+
+  describe('maxCapitalHint', () => {
+    beforeEach(async () => {
+      vi.clearAllMocks();
+      api.getAccount.mockResolvedValue({ portfolio_value: 0 });
+      await mountForm();
+    });
+
+    it('shows generic hint in fixed mode', () => {
+      expect(wrapper.vm.maxCapitalHint).toBe('Maximum capital to risk on this trade');
+    });
+
+    it('shows plain fallback in percent mode when netLiq is unknown', async () => {
+      wrapper.vm.setCapitalMode('percent');
+      wrapper.vm.config.trade_config.max_capital_percent = 60;
+      wrapper.vm.netLiq = 0;
+      await nextTick();
+      expect(wrapper.vm.maxCapitalHint).toBe('60% of account Net Liquidating Value');
+    });
+
+    it('shows resolved dollars in percent mode when netLiq is known', async () => {
+      wrapper.vm.setCapitalMode('percent');
+      wrapper.vm.config.trade_config.max_capital_percent = 60;
+      wrapper.vm.netLiq = 10000;
+      await nextTick();
+      // 10000 * 60% = 6000
+      expect(wrapper.vm.maxCapitalHint).toContain('6,000');
+      expect(wrapper.vm.maxCapitalHint).toContain('10,000');
+      expect(wrapper.vm.maxCapitalHint).toContain('60%');
     });
   });
 });

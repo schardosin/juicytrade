@@ -424,7 +424,26 @@
 
           <div class="form-field">
             <label for="maxCapital">Max Capital</label>
+
+            <!-- Mode toggle: matches DataImportDialog.vue pill idiom -->
+            <div class="capital-mode-toggle">
+              <button
+                type="button"
+                class="mode-btn"
+                :class="{ active: config.trade_config.max_capital_mode !== 'percent' }"
+                @click="setCapitalMode('fixed')"
+              >$ Fixed</button>
+              <button
+                type="button"
+                class="mode-btn"
+                :class="{ active: config.trade_config.max_capital_mode === 'percent' }"
+                @click="setCapitalMode('percent')"
+              >% of Net Liq.</button>
+            </div>
+
+            <!-- Fixed mode: currency input (unchanged behavior) -->
             <InputNumber
+              v-if="config.trade_config.max_capital_mode !== 'percent'"
               id="maxCapital"
               v-model="config.trade_config.max_capital"
               mode="currency"
@@ -432,7 +451,21 @@
               :min="100"
               placeholder="e.g., 5000"
             />
-            <small class="field-hint">Maximum capital to risk on this trade</small>
+
+            <!-- Percent mode: percentage input 1..100 -->
+            <InputNumber
+              v-else
+              id="maxCapitalPercent"
+              v-model="config.trade_config.max_capital_percent"
+              suffix="%"
+              :min="1"
+              :max="100"
+              :maxFractionDigits="0"
+              placeholder="e.g., 60"
+            />
+
+            <small v-if="errors.max_capital_percent" class="p-error">{{ errors.max_capital_percent }}</small>
+            <small class="field-hint">{{ maxCapitalHint }}</small>
           </div>
         </div>
 
@@ -871,6 +904,10 @@ export default {
     const isLoading = ref(false)
     const isSaving = ref(false)
     const errors = ref({})
+
+    // Account Net Liquidating Value for the percent-mode preview hint (best-effort,
+    // client-side only; the backend resolves the authoritative figure at runtime).
+    const netLiq = ref(0)
     
     // Indicator testing
     const testingIndicator = ref(null)
@@ -911,6 +948,8 @@ export default {
         width: 20,
         target_delta: 0.05,
         max_capital: 5000,
+        max_capital_mode: 'fixed',
+        max_capital_percent: 60,
         order_type: 'limit',
         time_in_force: 'day',
         price_ladder_step: 0.05,
@@ -929,6 +968,27 @@ export default {
 
     // Computed: is the current strategy an Iron Condor
     const isIronCondor = computed(() => config.value.trade_config.strategy === 'iron_condor')
+
+    // Max Capital mode toggle. FR-2: switching modes must NEVER clear either value,
+    // so the user's fixed dollar amount and percent value both survive a round-trip.
+    const setCapitalMode = (mode) => {
+      config.value.trade_config.max_capital_mode = mode
+    }
+
+    // Hint text under the Max Capital input. In percent mode, show the resolved
+    // dollar estimate when the account Net Liq is known client-side (mirrors the
+    // backend math.Round); otherwise fall back to a plain description.
+    const maxCapitalHint = computed(() => {
+      if (config.value.trade_config.max_capital_mode !== 'percent') {
+        return 'Maximum capital to risk on this trade'
+      }
+      const pct = config.value.trade_config.max_capital_percent || 0
+      if (netLiq.value > 0) {
+        const resolved = Math.round(netLiq.value * pct / 100)
+        return `${pct}% of account Net Liq. ≈ $${resolved.toLocaleString()} of $${netLiq.value.toLocaleString()}`
+      }
+      return `${pct}% of account Net Liquidating Value`
+    })
 
     // Options
     const symbols = ['NDX', 'SPX']
@@ -1268,7 +1328,7 @@ export default {
       if (!config.value.entry_time?.match(/^\d{1,2}:\d{2}$/)) {
         errors.value.entry_time = 'Invalid time format (use HH:MM)'
       }
-      
+
       return Object.keys(errors.value).length === 0
     }
 
@@ -1475,6 +1535,11 @@ export default {
       previewError,
       isIronCondor,
 
+      // Max Capital mode
+      netLiq,
+      setCapitalMode,
+      maxCapitalHint,
+
       // Options
       symbols,
       timezones,
@@ -1666,6 +1731,34 @@ export default {
 .field-hint {
   font-size: var(--font-size-xs);
   color: var(--text-tertiary);
+}
+
+/* Max Capital mode toggle (pill) — matches DataImportDialog.vue idiom */
+.capital-mode-toggle {
+  display: flex;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-md);
+  padding: 2px;
+  width: fit-content;
+  margin-bottom: var(--spacing-xs);
+}
+
+.capital-mode-toggle .mode-btn {
+  background: none;
+  border: none;
+  padding: var(--spacing-xs) var(--spacing-md);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  color: var(--text-secondary);
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-medium);
+  transition: var(--transition-fast);
+}
+
+.capital-mode-toggle .mode-btn.active {
+  background: var(--color-brand);
+  color: var(--text-primary);
 }
 
 .p-error {
