@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestGetEffectiveIndicatorGroups_HasGroups(t *testing.T) {
@@ -390,5 +391,53 @@ func TestCalculateUnits_IronCondorUsesWiderSide(t *testing.T) {
 	tc.CallSideConfig.Width = 50
 	if got := tc.CalculateUnits(6000); got != 1 {
 		t.Errorf("expected 1 unit using wider side (call=50), got %d", got)
+	}
+}
+
+// ---- Step 4: ActiveAutomation effective-capital snapshot fields ----
+
+func TestActiveAutomation_EffectiveCapitalFieldsMarshal(t *testing.T) {
+	now := time.Date(2026, 7, 12, 15, 30, 0, 0, time.UTC)
+	a := ActiveAutomation{
+		Status:                  StatusMonitoring,
+		EffectiveCapital:        6000,
+		EffectiveCapitalNetLiq:  10000,
+		EffectiveCapitalPercent: 60,
+		EffectiveCapitalAt:      &now,
+	}
+	data, err := json.Marshal(a)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	s := string(data)
+	for _, want := range []string{
+		`"effective_capital":6000`,
+		`"effective_capital_net_liq":10000`,
+		`"effective_capital_percent":60`,
+		`"effective_capital_at":`,
+	} {
+		if !strings.Contains(s, want) {
+			t.Errorf("expected JSON to contain %q, got %s", want, s)
+		}
+	}
+}
+
+func TestActiveAutomation_EffectiveCapitalOmitemptyOmitsZeroValues(t *testing.T) {
+	// A fresh ActiveAutomation with no capital captured yet should omit all four fields.
+	a := ActiveAutomation{Status: StatusWaiting}
+	data, err := json.Marshal(a)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	s := string(data)
+	for _, omitted := range []string{
+		"effective_capital",
+		"effective_capital_net_liq",
+		"effective_capital_percent",
+		"effective_capital_at",
+	} {
+		if strings.Contains(s, omitted) {
+			t.Errorf("expected %q to be omitted for zero-value snapshot, got %s", omitted, s)
+		}
 	}
 }

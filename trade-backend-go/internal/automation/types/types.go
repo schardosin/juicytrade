@@ -264,6 +264,11 @@ type ActiveAutomation struct {
 	// Daily recurrence tracking
 	TradedToday   bool   `json:"traded_today"`              // Whether a trade was completed today
 	LastTradeDate string `json:"last_trade_date,omitempty"` // Date of last completed trade (YYYY-MM-DD)
+	// Effective capital snapshot (percent-mode audit; also populated in fixed mode for uniform display).
+	EffectiveCapital        float64    `json:"effective_capital,omitempty"`
+	EffectiveCapitalNetLiq  float64    `json:"effective_capital_net_liq,omitempty"`
+	EffectiveCapitalPercent float64    `json:"effective_capital_percent,omitempty"`
+	EffectiveCapitalAt      *time.Time `json:"effective_capital_at,omitempty"`
 }
 
 // LegDetail contains bid/ask/mid details for an option leg
