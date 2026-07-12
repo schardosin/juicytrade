@@ -1,7 +1,9 @@
 package types
 
 import (
+	"errors"
 	"fmt"
+	"math"
 	"time"
 
 	"trade-backend-go/internal/models"
@@ -574,6 +576,29 @@ func (r *IndicatorResult) Evaluate() bool {
 	default:
 		return false
 	}
+}
+
+// ErrInvalidCapitalPercent is a permanent misconfiguration (percent out of 1..100).
+var ErrInvalidCapitalPercent = errors.New("invalid max_capital_percent (must be 1..100)")
+
+// ErrNetLiqUnavailable is a transient failure (Net Liq unreadable / non-positive).
+var ErrNetLiqUnavailable = errors.New("net liquidating value unavailable or non-positive")
+
+// ResolveEffectiveCapital maps the configured mode to a dollar capital for CalculateUnits.
+//
+//	fixed  : returns MaxCapital (netLiq ignored); never errors.
+//	percent: returns round(netLiq * pct/100); requires 1<=pct<=100 and a usable netLiq.
+func (tc *TradeConfiguration) ResolveEffectiveCapital(netLiq float64, netLiqOK bool) (float64, error) {
+	if tc.MaxCapitalMode != MaxCapitalModePercent { // "" or "fixed"
+		return tc.MaxCapital, nil
+	}
+	if tc.MaxCapitalPercent < 1 || tc.MaxCapitalPercent > 100 {
+		return 0, ErrInvalidCapitalPercent
+	}
+	if !netLiqOK || netLiq <= 0 {
+		return 0, ErrNetLiqUnavailable
+	}
+	return math.Round(netLiq * tc.MaxCapitalPercent / 100.0), nil
 }
 
 // CalculateUnits calculates the number of spread units based on capital and width

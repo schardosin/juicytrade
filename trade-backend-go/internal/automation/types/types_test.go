@@ -1,6 +1,8 @@
 package types
 
 import (
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -123,5 +125,196 @@ func TestGenerateGroupID_Format(t *testing.T) {
 	id2 := GenerateGroupID()
 	if id == id2 {
 		t.Errorf("expected unique IDs, but got same ID twice: %q", id)
+	}
+}
+
+// ---- Step 1: MaxCapitalMode + config fields + constructor default ----
+
+func TestNewTradeConfiguration_DefaultsToFixedMode(t *testing.T) {
+	tc := NewTradeConfiguration()
+	if tc.MaxCapitalMode != MaxCapitalModeFixed {
+		t.Errorf("expected MaxCapitalMode %q, got %q", MaxCapitalModeFixed, tc.MaxCapitalMode)
+	}
+}
+
+func TestTradeConfiguration_LegacyJSONUnmarshalsToEmptyMode(t *testing.T) {
+	// A legacy config carrying only max_capital (no mode/percent fields).
+	raw := `{"strategy":"put_spread","width":20,"target_delta":0.05,"max_capital":5000,"order_type":"limit"}`
+	var tc TradeConfiguration
+	if err := json.Unmarshal([]byte(raw), &tc); err != nil {
+		t.Fatalf("unmarshal failed: %v", err)
+	}
+	if tc.MaxCapitalMode != "" {
+		t.Errorf("expected empty MaxCapitalMode for legacy config, got %q", tc.MaxCapitalMode)
+	}
+	if tc.MaxCapitalPercent != 0 {
+		t.Errorf("expected MaxCapitalPercent 0 for legacy config, got %v", tc.MaxCapitalPercent)
+	}
+	if tc.MaxCapital != 5000 {
+		t.Errorf("expected MaxCapital 5000, got %v", tc.MaxCapital)
+	}
+}
+
+func TestTradeConfiguration_PercentJSONRoundTrip(t *testing.T) {
+	tc := TradeConfiguration{
+		Strategy:          StrategyPutSpread,
+		Width:             20,
+		MaxCapital:        5000,
+		MaxCapitalMode:    MaxCapitalModePercent,
+		MaxCapitalPercent: 60,
+		OrderType:         "limit",
+	}
+	data, err := json.Marshal(tc)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	s := string(data)
+	if !strings.Contains(s, `"max_capital_mode":"percent"`) {
+		t.Errorf("expected max_capital_mode in JSON, got %s", s)
+	}
+	if !strings.Contains(s, `"max_capital_percent":60`) {
+		t.Errorf("expected max_capital_percent in JSON, got %s", s)
+	}
+
+	var back TradeConfiguration
+	if err := json.Unmarshal(data, &back); err != nil {
+		t.Fatalf("round-trip unmarshal failed: %v", err)
+	}
+	if back.MaxCapitalMode != MaxCapitalModePercent || back.MaxCapitalPercent != 60 {
+		t.Errorf("round-trip mismatch: mode=%q percent=%v", back.MaxCapitalMode, back.MaxCapitalPercent)
+	}
+}
+
+func TestTradeConfiguration_OmitemptyOmitsZeroValues(t *testing.T) {
+	// Fixed config with zero percent and empty mode should not serialize the new fields.
+	tc := TradeConfiguration{
+		Strategy:   StrategyPutSpread,
+		MaxCapital: 5000,
+		OrderType:  "limit",
+	}
+	data, err := json.Marshal(tc)
+	if err != nil {
+		t.Fatalf("marshal failed: %v", err)
+	}
+	s := string(data)
+	if strings.Contains(s, "max_capital_mode") {
+		t.Errorf("expected max_capital_mode to be omitted, got %s", s)
+	}
+	if strings.Contains(s, "max_capital_percent") {
+		t.Errorf("expected max_capital_percent to be omitted, got %s", s)
+	}
+}
+
+// ---- Step 2: ResolveEffectiveCapital + sentinel errors ----
+
+func TestResolveEffectiveCapital_FixedMode(t *testing.T) {
+	cases := []struct {
+		name     string
+		netLiq   float64
+		netLiqOK bool
+	}{
+		{"ok true", 12345, true},
+		{"ok false", 0, false},
+		{"zero netliq ok", 0, true},
+		{"negative netliq", -100, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tc := TradeConfiguration{MaxCapital: 5000, MaxCapitalMode: MaxCapitalModeFixed}
+			eff, err := tc.ResolveEffectiveCapital(c.netLiq, c.netLiqOK)
+			if err != nil {
+				t.Fatalf("fixed mode must never error, got %v", err)
+			}
+			if eff != 5000 {
+				t.Errorf("expected 5000, got %v", eff)
+			}
+		})
+	}
+}
+
+func TestResolveEffectiveCapital_EmptyModeBehavesAsFixed(t *testing.T) {
+	tc := TradeConfiguration{MaxCapital: 4200} // MaxCapitalMode == ""
+	eff, err := tc.ResolveEffectiveCapital(0, false)
+	if err != nil {
+		t.Fatalf("empty mode must not error, got %v", err)
+	}
+	if eff != 4200 {
+		t.Errorf("expected 4200, got %v", eff)
+	}
+}
+
+func TestResolveEffectiveCapital_PercentAC3(t *testing.T) {
+	// AC-3: $10,000 * 60% = $6,000
+	tc := TradeConfiguration{MaxCapitalMode: MaxCapitalModePercent, MaxCapitalPercent: 60}
+	eff, err := tc.ResolveEffectiveCapital(10000, true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if eff != 6000 {
+		t.Errorf("expected 6000, got %v", eff)
+	}
+}
+
+func TestResolveEffectiveCapital_Rounding(t *testing.T) {
+	cases := []struct {
+		name   string
+		netLiq float64
+		pct    float64
+		want   float64
+	}{
+		// 10001 * 33.33% = 3333.3333 -> round -> 3333 (rounds down)
+		{"round down", 10001, 33.33, 3333},
+		// 9000 * 50% = 4500.0 exact
+		{"exact", 9000, 50, 4500},
+		// 1 * 50% = 0.5 -> math.Round rounds half away from zero -> 1
+		{"half", 1, 50, 1},
+		// 3 * 50% = 1.5 -> round -> 2 (rounds up)
+		{"round up", 3, 50, 2},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			tc := TradeConfiguration{MaxCapitalMode: MaxCapitalModePercent, MaxCapitalPercent: c.pct}
+			eff, err := tc.ResolveEffectiveCapital(c.netLiq, true)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if eff != c.want {
+				t.Errorf("netLiq=%v pct=%v: expected %v, got %v", c.netLiq, c.pct, c.want, eff)
+			}
+		})
+	}
+}
+
+func TestResolveEffectiveCapital_InvalidPercent(t *testing.T) {
+	for _, pct := range []float64{0, 100.1, -5} {
+		tc := TradeConfiguration{MaxCapitalMode: MaxCapitalModePercent, MaxCapitalPercent: pct}
+		_, err := tc.ResolveEffectiveCapital(10000, true)
+		if !errors.Is(err, ErrInvalidCapitalPercent) {
+			t.Errorf("pct=%v: expected ErrInvalidCapitalPercent, got %v", pct, err)
+		}
+	}
+}
+
+func TestResolveEffectiveCapital_NetLiqUnavailable(t *testing.T) {
+	// Valid pct but netLiq unusable.
+	tc := TradeConfiguration{MaxCapitalMode: MaxCapitalModePercent, MaxCapitalPercent: 60}
+
+	if _, err := tc.ResolveEffectiveCapital(10000, false); !errors.Is(err, ErrNetLiqUnavailable) {
+		t.Errorf("netLiqOK=false: expected ErrNetLiqUnavailable, got %v", err)
+	}
+	if _, err := tc.ResolveEffectiveCapital(0, true); !errors.Is(err, ErrNetLiqUnavailable) {
+		t.Errorf("netLiq=0: expected ErrNetLiqUnavailable, got %v", err)
+	}
+	if _, err := tc.ResolveEffectiveCapital(-100, true); !errors.Is(err, ErrNetLiqUnavailable) {
+		t.Errorf("netLiq<0: expected ErrNetLiqUnavailable, got %v", err)
+	}
+}
+
+func TestResolveEffectiveCapital_InvalidPercentTakesPrecedenceOverNetLiq(t *testing.T) {
+	// When pct is invalid AND netLiq unusable, the permanent error should win.
+	tc := TradeConfiguration{MaxCapitalMode: MaxCapitalModePercent, MaxCapitalPercent: 0}
+	_, err := tc.ResolveEffectiveCapital(0, false)
+	if !errors.Is(err, ErrInvalidCapitalPercent) {
+		t.Errorf("expected ErrInvalidCapitalPercent to take precedence, got %v", err)
 	}
 }
