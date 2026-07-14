@@ -204,6 +204,21 @@
               <span class="status-label">Message:</span>
               <span class="status-value">{{ getAutomationStatus(config.id)?.message }}</span>
             </div>
+            <!-- Multi-order (lot size) progress. Hidden for single-order/legacy runs. -->
+            <div v-if="isMultiLot(config.id)" class="status-row lot-progress-row">
+              <span class="status-label">Lots:</span>
+              <span class="status-value lot-progress">
+                <span class="lot-progress-text">Lot {{ currentLotNumber(config.id) }} of {{ totalLots(config.id) }}</span>
+                <span class="lot-dots">
+                  <i
+                    v-for="(dot, idx) in lotDots(config.id)"
+                    :key="idx"
+                    class="lot-dot"
+                    :class="dot"
+                  ></i>
+                </span>
+              </span>
+            </div>
             <!-- Group-aware indicator results (collapsible) -->
             <template v-if="getAutomationStatus(config.id)?.group_results?.length > 1">
               <div class="indicator-results">
@@ -646,6 +661,46 @@ export default {
       return statuses.value[configId]
     }
 
+    // --- Multi-order (lot size) progress helpers ---
+    // A run is multi-lot only when the order plan has more than one lot. Legacy /
+    // single-order runs (no order_plan or length <= 1) are hidden entirely.
+    const isMultiLot = (configId) => {
+      const status = getAutomationStatus(configId)
+      return Array.isArray(status?.order_plan) && status.order_plan.length > 1
+    }
+
+    const totalLots = (configId) => {
+      const status = getAutomationStatus(configId)
+      return Array.isArray(status?.order_plan) ? status.order_plan.length : 0
+    }
+
+    // 1-based lot number for display ("Lot 2 of 4"). The index is clamped to
+    // the valid range [0, total-1] so a stale/negative index from the backend
+    // can never render nonsense like "Lot 10 of 3" or "Lot 0 of 3".
+    const currentLotNumber = (configId) => {
+      const status = getAutomationStatus(configId)
+      const total = Array.isArray(status?.order_plan) ? status.order_plan.length : 0
+      let idx = Number(status?.current_lot_index) || 0
+      if (total > 0) idx = Math.min(Math.max(idx, 0), total - 1)
+      else idx = Math.max(idx, 0)
+      return idx + 1
+    }
+
+    // Per-lot fill dots: lots before the current index are filled, the current
+    // lot is active, later lots are pending. The index is clamped so a stale or
+    // negative current_lot_index can't misrender the dot states.
+    const lotDots = (configId) => {
+      const status = getAutomationStatus(configId)
+      if (!Array.isArray(status?.order_plan)) return []
+      const rawIdx = Number(status.current_lot_index) || 0
+      const currentIdx = Math.min(Math.max(rawIdx, 0), status.order_plan.length - 1)
+      return status.order_plan.map((_, idx) => {
+        if (idx < currentIdx) return 'filled'
+        if (idx === currentIdx) return 'active'
+        return 'pending'
+      })
+    }
+
     const isConfigRunning = (configId) => {
       const status = getAutomationStatus(configId)
       if (!status) return false
@@ -1068,6 +1123,10 @@ export default {
       // Methods
       refreshData,
       getAutomationStatus,
+      isMultiLot,
+      totalLots,
+      currentLotNumber,
+      lotDots,
       isConfigRunning,
       getStatusClass,
       getRunningStatusClass,
@@ -1121,6 +1180,52 @@ export default {
   width: 100%;
   height: 100%;
   overflow-y: auto;
+}
+
+/* Multi-order (lot size) progress */
+.lot-progress {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-sm, 8px);
+}
+
+.lot-progress-text {
+  font-variant-numeric: tabular-nums;
+}
+
+.lot-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.lot-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+  background: var(--surface-border, #555);
+  border: 1px solid var(--surface-border, #555);
+}
+
+.lot-dot.filled {
+  background: var(--green-500, #22c55e);
+  border-color: var(--green-500, #22c55e);
+}
+
+.lot-dot.active {
+  background: var(--primary-color, #3b82f6);
+  border-color: var(--primary-color, #3b82f6);
+  animation: lot-dot-pulse 1.2s ease-in-out infinite;
+}
+
+.lot-dot.pending {
+  background: transparent;
+}
+
+@keyframes lot-dot-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.4; }
 }
 
 /* Header Section */
