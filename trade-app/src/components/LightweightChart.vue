@@ -94,6 +94,7 @@ export default {
     let volumeSeries = null;
     let wsConnection = null;
     let currentCandle = null; // Track the current candle being updated
+    let historicalDataLoaded = false; // Track if historical data has been loaded (race condition guard)
 
     const timeframes = [
       { label: "1m", value: "1m" },
@@ -340,6 +341,10 @@ export default {
     ) => {
       if (!symbol || !candlestickSeries || !volumeSeries) return;
 
+      // Reset historical data loaded flag to synchronize with real-time updates
+      // This ensures live data doesn't arrive during the load process
+      historicalDataLoaded = false;
+
       loading.value = true;
       error.value = "";
 
@@ -368,56 +373,77 @@ export default {
             return;
           }
 
-          // Transform data for Lightweight Charts
-          const candlestickData = bars.map((bar) => {
-            // Handle different time formats from backend
-            let time = bar.time;
+           // Transform data for Lightweight Charts
+           const candlestickData = bars.map((bar) => {
+             // Handle different time formats from backend
+             let time = bar.time;
 
-            // If time contains space (datetime format like "2025-01-06 09:30"), convert to timestamp
-            if (typeof time === "string" && time.includes(" ")) {
-              // Backend sends Eastern Time datetime strings for intraday data
-              // Parse as Eastern Time by appending EST timezone
-              const etTimeString = time + ":00 EST"; // Assume EST for now
-              const date = new Date(etTimeString);
-              time = Math.floor(date.getTime() / 1000);
-            }
+             // Convert all time formats to Unix epoch seconds for consistent comparison with live data
+             if (typeof time === "string") {
+               if (time.includes(" ")) {
+                 // Datetime format like "2025-01-06 09:30", parse as Eastern Time
+                 const etTimeString = time + ":00 EST";
+                 const date = new Date(etTimeString);
+                 time = Math.floor(date.getTime() / 1000);
+               } else if (time.includes("-")) {
+                 // Date-only format like "2025-07-14", convert to Unix epoch (UTC midnight)
+                 const date = new Date(time + "T00:00:00Z");
+                 time = Math.floor(date.getTime() / 1000);
+               }
+             }
 
-            return {
-              time: time,
-              open: bar.open,
-              high: bar.high,
-              low: bar.low,
-              close: bar.close,
-            };
-          });
+             return {
+               time: time,
+               open: bar.open,
+               high: bar.high,
+               low: bar.low,
+               close: bar.close,
+             };
+           });
 
-          const volumeData = bars.map((bar) => {
-            // Handle different time formats from backend
-            let time = bar.time;
+           const volumeData = bars.map((bar) => {
+             // Handle different time formats from backend
+             let time = bar.time;
 
-            // If time contains space (datetime format like "2025-01-06 09:30"), convert to timestamp
-            if (typeof time === "string" && time.includes(" ")) {
-              // Backend sends Eastern Time datetime strings for intraday data
-              // Parse as Eastern Time by appending EST timezone
-              const etTimeString = time + ":00 EST"; // Assume EST for now
-              const date = new Date(etTimeString);
-              time = Math.floor(date.getTime() / 1000);
-            }
+             // Convert all time formats to Unix epoch seconds for consistent comparison with live data
+             if (typeof time === "string") {
+               if (time.includes(" ")) {
+                 // Datetime format like "2025-01-06 09:30", parse as Eastern Time
+                 const etTimeString = time + ":00 EST";
+                 const date = new Date(etTimeString);
+                 time = Math.floor(date.getTime() / 1000);
+               } else if (time.includes("-")) {
+                 // Date-only format like "2025-07-14", convert to Unix epoch (UTC midnight)
+                 const date = new Date(time + "T00:00:00Z");
+                 time = Math.floor(date.getTime() / 1000);
+               }
+             }
 
-            return {
-              time: time,
-              value: bar.volume,
-              color: bar.close >= bar.open ? "#26a69a80" : "#ef535080",
-            };
-          });
+             return {
+               time: time,
+               value: bar.volume,
+               color: bar.close >= bar.open ? "#26a69a80" : "#ef535080",
+             };
+           });
 
-          // Set the data
-          candlestickSeries.setData(candlestickData);
-          volumeSeries.setData(volumeData);
+           // Set the data
+           candlestickSeries.setData(candlestickData);
+           volumeSeries.setData(volumeData);
+
+
+           // Initialize currentCandle from the last historical bar to prevent duplicate candles
+           // This ensures that when live price data arrives, it updates the existing candle rather than creating a new one
+           if (candlestickData.length > 0) {
+             currentCandle = candlestickData[candlestickData.length - 1];
+           }
 
           // Fit content to show all data
           chart.timeScale().fitContent();
 
+           
+           // CRITICAL: Mark historical data as loaded to enable real-time updates
+           // This prevents the race condition where live data arrives before historical load completes
+           historicalDataLoaded = true;
         } else {
           throw new Error("Failed to load data");
         }
@@ -452,7 +478,9 @@ export default {
     // No direct WebSocket connection needed in the chart component
 
     const updateRealTimeData = (priceData) => {
-      if (!candlestickSeries || !priceData) return;
+      // CRITICAL: Guard against race condition - only update if historical data has loaded
+      // If live data arrives before historical load completes, skip it to prevent data loss
+      if (!candlestickSeries || !priceData || !historicalDataLoaded) return;
 
       try {
         // Get the current price from the streaming data - prioritize last price
@@ -530,27 +558,56 @@ export default {
             );
             break;
           case "D":
-            alignedTime = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate(),
+            // Use UTC-based alignment to match historical data format (UTC midnight)
+            alignedTime = new Date(Date.UTC(
+              now.getUTCFullYear(),
+              now.getUTCMonth(),
+              now.getUTCDate(),
               0,
               0,
               0,
               0
-            );
+            ));
+            break;
+          case "W":
+            // Weekly: start of week (Monday) at UTC midnight
+            // Calculate days since Monday (0=Sunday, so Mon=1)
+            const dayOfWeek = now.getUTCDay();
+            const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+            const weekStart = new Date(now.getTime() - daysToMonday * 24 * 60 * 60 * 1000);
+            alignedTime = new Date(Date.UTC(
+              weekStart.getUTCFullYear(),
+              weekStart.getUTCMonth(),
+              weekStart.getUTCDate(),
+              0,
+              0,
+              0,
+              0
+            ));
+            break;
+          case "M":
+            // Monthly: first day of month at UTC midnight
+            alignedTime = new Date(Date.UTC(
+              now.getUTCFullYear(),
+              now.getUTCMonth(),
+              1,
+              0,
+              0,
+              0,
+              0
+            ));
             break;
           default:
-            // For daily and above, just use current day
-            alignedTime = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate(),
+            // For daily and above, just use current day (UTC-based for daily+)
+            alignedTime = new Date(Date.UTC(
+              now.getUTCFullYear(),
+              now.getUTCMonth(),
+              now.getUTCDate(),
               0,
               0,
               0,
               0
-            );
+            ));
         }
 
         const timeInSeconds = Math.floor(alignedTime.getTime() / 1000);
