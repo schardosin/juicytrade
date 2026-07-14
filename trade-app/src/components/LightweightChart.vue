@@ -94,6 +94,7 @@ export default {
     let volumeSeries = null;
     let wsConnection = null;
     let currentCandle = null; // Track the current candle being updated
+    let historicalDataLoaded = false; // Track if historical data has been loaded (race condition guard)
 
     const timeframes = [
       { label: "1m", value: "1m" },
@@ -340,6 +341,10 @@ export default {
     ) => {
       if (!symbol || !candlestickSeries || !volumeSeries) return;
 
+      // Reset historical data loaded flag to synchronize with real-time updates
+      // This ensures live data doesn't arrive during the load process
+      historicalDataLoaded = false;
+
       loading.value = true;
       error.value = "";
 
@@ -411,17 +416,21 @@ export default {
             };
           });
 
-          // Set the data
-          candlestickSeries.setData(candlestickData);
-          volumeSeries.setData(volumeData);
+           // Set the data
+           candlestickSeries.setData(candlestickData);
+           volumeSeries.setData(volumeData);
 
-          // Initialize currentCandle from the last historical bar to prevent duplicate candles
-          if (candlestickData.length > 0) {
-            currentCandle = candlestickData[candlestickData.length - 1];
-          }
+           // Initialize currentCandle from the last historical bar to prevent duplicate candles
+           if (candlestickData.length > 0) {
+             currentCandle = candlestickData[candlestickData.length - 1];
+           }
 
-          // Fit content to show all data
-          chart.timeScale().fitContent();
+           // Fit content to show all data
+           chart.timeScale().fitContent();
+
+           // CRITICAL: Mark historical data as loaded to enable real-time updates
+           // This prevents the race condition where live data arrives before historical load completes
+           historicalDataLoaded = true;
 
         } else {
           throw new Error("Failed to load data");
@@ -457,7 +466,9 @@ export default {
     // No direct WebSocket connection needed in the chart component
 
     const updateRealTimeData = (priceData) => {
-      if (!candlestickSeries || !priceData) return;
+      // CRITICAL: Guard against race condition - only update if historical data has loaded
+      // If live data arrives before historical load completes, skip it to prevent data loss
+      if (!candlestickSeries || !priceData || !historicalDataLoaded) return;
 
       try {
         // Get the current price from the streaming data - prioritize last price
