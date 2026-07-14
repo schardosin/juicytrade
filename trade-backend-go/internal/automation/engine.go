@@ -642,15 +642,22 @@ func (e *Engine) handleWaitingState(id string, active *types.ActiveAutomation, s
 
 // checkAndResetForNewDay checks if it's a new trading day and resets TradedToday
 func (e *Engine) checkAndResetForNewDay(active *types.ActiveAutomation) {
-	if !active.TradedToday || active.LastTradeDate == "" {
+	if !active.TradedToday {
 		return // Nothing to reset
 	}
 
 	ny, _ := time.LoadLocation("America/New_York")
 	todayStr := time.Now().In(ny).Format("2006-01-02")
 
-	// If today is different from last trade date, reset TradedToday
-	if todayStr != active.LastTradeDate {
+	// Reset when a new trading day has begun. An empty LastTradeDate with
+	// TradedToday=true is an anomalous "stuck" state: it means the run deferred
+	// (TradedToday=true) without ever recording the trading day. The pre-fill
+	// daily failure paths now record LastTradeDate via markDailyDeferred, so
+	// this only occurs for legacy/persisted state left by an older build. We
+	// treat it as a mismatch that must reset so the run is never permanently
+	// stuck "waiting" with a stale plan (QA-4 / FR-7). The normal case resets
+	// whenever today differs from the recorded last trade date.
+	if active.LastTradeDate == "" || todayStr != active.LastTradeDate {
 		e.mu.Lock()
 		active.TradedToday = false
 		// Clear any plan state left over from a prior trading day. The
@@ -673,6 +680,26 @@ func (e *Engine) checkAndResetForNewDay(active *types.ActiveAutomation) {
 			"today", todayStr)
 		e.mu.Unlock()
 	}
+}
+
+// currentTradingDay returns today's date string in the America/New_York
+// exchange timezone (YYYY-MM-DD), matching the format used for LastTradeDate.
+func currentTradingDay() string {
+	ny, _ := time.LoadLocation("America/New_York")
+	return time.Now().In(ny).Format("2006-01-02")
+}
+
+// markDailyDeferred records that a daily automation has consumed today's
+// trigger and should defer to the next trading day. It sets both TradedToday
+// AND LastTradeDate. Pre-fill failure paths (capital-resolution, order-
+// placement, strike-finding) never reach the monitoring/fill path where
+// LastTradeDate is normally assigned; without setting it here the new-day
+// guard in checkAndResetForNewDay bails on LastTradeDate=="" and the run is
+// stuck "waiting" forever with a stale plan (QA-4 / FR-7). Callers MUST already
+// hold e.mu.
+func (e *Engine) markDailyDeferred(active *types.ActiveAutomation) {
+	active.TradedToday = true
+	active.LastTradeDate = currentTradingDay()
 }
 
 // handleEvaluatingState handles the evaluating state
@@ -699,7 +726,7 @@ func (e *Engine) handleTradingState(id string, active *types.ActiveAutomation, s
 		active.AddLog("error", fmt.Sprintf("Trade blocked: cannot resolve capital: %v", rerr))
 		slog.Error("🚫 Trade blocked - Net Liq resolution failed", "id", id, "error", rerr)
 		if active.Config.Recurrence == types.RecurrenceDaily {
-			active.TradedToday = true
+			e.markDailyDeferred(active)
 			active.Status = types.StatusWaiting
 			active.Message = "Net Liq unavailable at execution - waiting for next trading day"
 			active.AddLog("warn", "Capital resolution failed - will retry next trading day")
@@ -857,7 +884,7 @@ func (e *Engine) placeLot(ctx context.Context, id string, active *types.ActiveAu
 		if active.ErrorCount >= 3 {
 			// For daily automations, mark as traded today and wait for next day
 			if active.Config.Recurrence == types.RecurrenceDaily {
-				active.TradedToday = true
+				e.markDailyDeferred(active)
 				active.Status = types.StatusWaiting
 				active.Message = "Failed to place order - waiting for next trading day"
 				active.AddLog("warn", "Max order placement attempts reached - will retry next trading day")
@@ -901,7 +928,7 @@ func (e *Engine) handleStrikeFindError(id string, active *types.ActiveAutomation
 	}
 	if active.ErrorCount >= 3 {
 		if active.Config.Recurrence == types.RecurrenceDaily {
-			active.TradedToday = true
+			e.markDailyDeferred(active)
 			active.Status = types.StatusWaiting
 			active.Message = "Failed to find strikes - waiting for next trading day"
 			active.AddLog("warn", "Max strike-finding attempts reached - will retry next trading day")
