@@ -143,6 +143,11 @@
                       class="option-data"
                       :class="[getCallSelectionClass(expiration, strike), { 'mobile-layout': isMobile }]"
                     >
+                      <span
+                        v-if="getPositionQty(getCallOption(expiration, strike)?.symbol)"
+                        class="position-badge"
+                        :class="getPositionQty(getCallOption(expiration, strike)?.symbol) > 0 ? 'position-long' : 'position-short'"
+                      >{{ getPositionQty(getCallOption(expiration, strike)?.symbol) > 0 ? '+' : '' }}{{ getPositionQty(getCallOption(expiration, strike)?.symbol) }}</span>
                       <div v-if="!isMobile" class="greek-cell volume-cell">
                         {{ getCallVolume(expiration, strike) }}
                       </div>
@@ -229,6 +234,11 @@
                       <div v-if="!isMobile" class="greek-cell volume-cell">
                         {{ getPutVolume(expiration, strike) }}
                       </div>
+                      <span
+                        v-if="getPositionQty(getPutOption(expiration, strike)?.symbol)"
+                        class="position-badge"
+                        :class="getPositionQty(getPutOption(expiration, strike)?.symbol) > 0 ? 'position-long' : 'position-short'"
+                      >{{ getPositionQty(getPutOption(expiration, strike)?.symbol) > 0 ? '+' : '' }}{{ getPositionQty(getPutOption(expiration, strike)?.symbol) }}</span>
                     </div>
                     <div v-else class="option-data empty" :class="{ 'mobile-layout': isMobile }">
                       <div class="price-cell">-</div>
@@ -319,7 +329,7 @@ export default {
     "visible-symbols-changed",
   ],
   setup(props, { emit }) {
-    const { getOptionPrice, getOptionGreeks } = useMarketData();
+    const { getOptionPrice, getOptionGreeks, getPositionsForSymbol } = useMarketData();
     const { 
       isSelected, 
       addFromOptionsChain, 
@@ -348,6 +358,29 @@ export default {
       },
       { immediate: true }
     );
+
+    // Position data for badge display
+    const positionsComputed = computed(() => {
+      return getPositionsForSymbol(props.symbol).value;
+    });
+
+    const positionsMap = computed(() => {
+      const map = new Map();
+      const data = positionsComputed.value;
+      if (!data?.positions) return map;
+      if (!Array.isArray(data.positions)) return map;
+      for (const leg of data.positions) {
+        if (!leg || !leg.symbol) continue;
+        const current = map.get(leg.symbol) || 0;
+        map.set(leg.symbol, current + leg.qty);
+      }
+      return map;
+    });
+
+    const getPositionQty = (symbol) => {
+      if (!symbol) return 0;
+      return positionsMap.value.get(symbol) || 0;
+    };
 
     // Component registration system
     const componentId = `CollapsibleOptionsChain-${Math.random().toString(36).substr(2, 9)}`;
@@ -1061,6 +1094,7 @@ export default {
       formatIvxPercent,
       formatIvxMove,
       observeRow,
+      getPositionQty,
     };
   },
 };
@@ -1827,6 +1861,51 @@ export default {
 
   .option-data.mobile-layout {
     min-height: 32px;
+  }
+}
+
+/* Position Badge Styles */
+.call-side .option-data,
+.put-side .option-data {
+  position: relative;
+}
+
+.position-badge {
+  position: absolute;
+  left: 2px;
+  top: 50%;
+  transform: translateY(-50%);
+  font-size: var(--font-size-xs);
+  font-weight: var(--font-weight-bold);
+  padding: 1px 4px;
+  border-radius: var(--radius-sm);
+  line-height: 1;
+  z-index: 1;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.position-badge.position-long {
+  background-color: rgba(0, 200, 81, 0.2);
+  color: var(--color-success);
+  border: 1px solid rgba(0, 200, 81, 0.4);
+}
+
+.position-badge.position-short {
+  background-color: rgba(255, 68, 68, 0.2);
+  color: var(--color-danger);
+  border: 1px solid rgba(255, 68, 68, 0.4);
+}
+
+.put-side .position-badge {
+  left: auto;
+  right: 2px;
+}
+
+@media (max-width: 768px) {
+  .position-badge {
+    font-size: 9px;
+    padding: 1px 3px;
   }
 }
 </style>

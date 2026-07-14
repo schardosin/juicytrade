@@ -30,7 +30,8 @@ const simulateElementsVisible = (elements) => {
 vi.mock('../src/composables/useMarketData.js', () => ({
   useMarketData: () => ({
     getOptionPrice: vi.fn(),
-    getOptionGreeks: vi.fn()
+    getOptionGreeks: vi.fn(),
+    getPositionsForSymbol: vi.fn(() => ({ value: { positions: [] } }))
   })
 }));
 
