@@ -535,27 +535,56 @@ export default {
             );
             break;
           case "D":
-            alignedTime = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate(),
+            // Use UTC-based alignment to match historical data format (UTC midnight)
+            alignedTime = new Date(Date.UTC(
+              now.getUTCFullYear(),
+              now.getUTCMonth(),
+              now.getUTCDate(),
               0,
               0,
               0,
               0
-            );
+            ));
+            break;
+          case "W":
+            // Weekly: start of week (Monday) at UTC midnight
+            // Calculate days since Monday (0=Sunday, so Mon=1)
+            const dayOfWeek = now.getUTCDay();
+            const daysToMonday = dayOfWeek === 0 ? 6 : dayOfWeek - 1;
+            const weekStart = new Date(now.getTime() - daysToMonday * 24 * 60 * 60 * 1000);
+            alignedTime = new Date(Date.UTC(
+              weekStart.getUTCFullYear(),
+              weekStart.getUTCMonth(),
+              weekStart.getUTCDate(),
+              0,
+              0,
+              0,
+              0
+            ));
+            break;
+          case "M":
+            // Monthly: first day of month at UTC midnight
+            alignedTime = new Date(Date.UTC(
+              now.getUTCFullYear(),
+              now.getUTCMonth(),
+              1,
+              0,
+              0,
+              0,
+              0
+            ));
             break;
           default:
-            // For daily and above, just use current day
-            alignedTime = new Date(
-              now.getFullYear(),
-              now.getMonth(),
-              now.getDate(),
+            // For daily and above, just use current day (UTC-based for daily+)
+            alignedTime = new Date(Date.UTC(
+              now.getUTCFullYear(),
+              now.getUTCMonth(),
+              now.getUTCDate(),
               0,
               0,
               0,
               0
-            );
+            ));
         }
 
         const timeInSeconds = Math.floor(alignedTime.getTime() / 1000);
