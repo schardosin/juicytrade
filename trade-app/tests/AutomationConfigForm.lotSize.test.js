@@ -38,8 +38,8 @@ describe('AutomationConfigForm — Lot Size (multi-order)', () => {
     if (wrapper) wrapper.unmount();
   });
 
-  it('defaults lot_size to 1 (single order / legacy behavior)', () => {
-    expect(wrapper.vm.config.trade_config.lot_size).toBe(1);
+  it('defaults lot_size to 0 (single order for the full quantity)', () => {
+    expect(wrapper.vm.config.trade_config.lot_size).toBe(0);
   });
 
   it('defaults legs_drift to false', () => {
@@ -77,7 +77,18 @@ describe('AutomationConfigForm — Lot Size (multi-order)', () => {
     await wrapper.vm.saveConfig();
 
     const payload = api.createAutomationConfig.mock.calls[0][0];
-    expect(payload.trade_config.lot_size).toBe(1);
+    expect(payload.trade_config.lot_size).toBe(0);
     expect(payload.trade_config.legs_drift).toBe(false);
+  });
+
+  it('lot_size=1 is a valid saved value (one unit per order, not single order)', async () => {
+    wrapper.vm.config.name = 'One Unit Config';
+    wrapper.vm.config.symbol = 'NDX';
+    wrapper.vm.config.trade_config.lot_size = 1;
+
+    await wrapper.vm.saveConfig();
+
+    const payload = api.createAutomationConfig.mock.calls[0][0];
+    expect(payload.trade_config.lot_size).toBe(1);
   });
 });

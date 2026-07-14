@@ -177,7 +177,7 @@ type TradeConfiguration struct {
 	PutSideConfig  *IronCondorSideConfig `json:"put_side_config,omitempty"`  // Put side config (iron_condor only)
 	CallSideConfig *IronCondorSideConfig `json:"call_side_config,omitempty"` // Call side config (iron_condor only)
 	// Lot size (multi-order) execution
-	LotSize   int  `json:"lot_size,omitempty"`   // Units per order. 0/1 = single order (today's behavior). >=2 splits the capital-derived total into sequential lots.
+	LotSize   int  `json:"lot_size,omitempty"`   // Units per order. 0 (unset/negative) = single order for the full capital-derived total (today's behavior). Any positive value splits the total into sequential lots of that size (1 = one unit per order).
 	LegsDrift bool `json:"legs_drift,omitempty"` // false = all lots reuse the first lot's strikes, no delta drift at all; true = re-select strikes before each lot and apply mid-order drift.
 }
 
@@ -514,7 +514,7 @@ func NewTradeConfiguration() TradeConfiguration {
 		MaxAttempts:     10,
 		AttemptInterval: 30, // 30 seconds between attempts
 		DeltaDriftLimit: 0.01,
-		LotSize:         1,     // single order by default (equivalent to unset)
+		LotSize:         0,     // single order by default (unset). Any positive value = units per order.
 		LegsDrift:       false, // freeze legs across lots by default
 	}
 }
@@ -666,9 +666,19 @@ func (tc *TradeConfiguration) CalculateUnitsWithCapital(resolvedMaxCapital float
 	return units
 }
 
-// EffectiveLotSize returns the configured lot size, treating any value < 1
-// (unset/0 or negative) as 1. A lot size of 1 means a single order — today's
-// legacy behavior.
+// IsSingleOrder reports whether this configuration requests a single order for
+// the full capital-derived total (today's legacy behavior). This is the case
+// only when LotSize is unset (0) or negative. Any positive LotSize (including 1)
+// requests units-per-order lot splitting.
+func (tc *TradeConfiguration) IsSingleOrder() bool {
+	return tc.LotSize <= 0
+}
+
+// EffectiveLotSize returns the units-per-order used for lot splitting. A value
+// of 0 (unset) or negative is normalized to 1 so callers never divide by a
+// non-positive lot size. Note: an unset/negative LotSize means single order
+// (see IsSingleOrder); EffectiveLotSize is only meaningful once the caller has
+// decided the run is multi-order.
 func (tc *TradeConfiguration) EffectiveLotSize() int {
 	if tc.LotSize < 1 {
 		return 1

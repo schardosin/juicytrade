@@ -632,11 +632,11 @@
             <InputNumber
               id="lotSize"
               v-model="config.trade_config.lot_size"
-              :min="1"
+              :min="0"
               :useGrouping="false"
-              placeholder="e.g., 1"
+              placeholder="e.g., 0"
             />
-            <small class="field-hint">Units per order. Leave 1 for a single order; ≥2 splits the total into sequential lots.</small>
+            <small class="field-hint">Units per order. 0 = single order for the full quantity. Any positive value splits the total into sequential orders of that size (1 = one unit per order).</small>
           </div>
           <div class="form-field">
             <label for="legsDrift">Legs Drift</label>
@@ -978,8 +978,9 @@ export default {
         min_credit: 0.30,
         expiration_mode: '0dte',
         custom_expiration: '',
-        // Lot size (multi-order) execution: 1 = single order (legacy behavior)
-        lot_size: 1,
+        // Lot size (multi-order) execution: 0 = single order for the full total.
+        // Any positive value = units per order (1 = one unit per order).
+        lot_size: 0,
         legs_drift: false,
         // Iron Condor per-side configs
         put_side_config: { target_delta: 0.05, width: 20 },

@@ -31,12 +31,13 @@ func validateCapitalConfig(tc *types.TradeConfiguration) error {
 	return nil
 }
 
-// validateLotConfig validates the lot-size configuration. An unset value (0)
-// means single-order (today's behavior). Negative values are rejected. legs_drift
-// is a bool and needs no range validation.
+// validateLotConfig validates the lot-size configuration. A value of 0 (unset)
+// or negative means single-order (today's behavior); any positive value is the
+// units-per-order lot size. Negative values are rejected. legs_drift is a bool
+// and needs no range validation.
 func validateLotConfig(tc *types.TradeConfiguration) error {
 	if tc.LotSize < 0 {
-		return fmt.Errorf("lot_size must be an integer >= 1 (or unset for single order); got %d", tc.LotSize)
+		return fmt.Errorf("lot_size must be an integer >= 0 (0 = single order, positive = units per order); got %d", tc.LotSize)
 	}
 	return nil
 }

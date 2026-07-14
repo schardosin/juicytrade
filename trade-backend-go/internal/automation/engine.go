@@ -780,13 +780,15 @@ func (e *Engine) handleTradingState(id string, active *types.ActiveAutomation, s
 			return
 		}
 
-		lotSize := active.Config.TradeConfig.EffectiveLotSize()
 		var plan []int
-		if lotSize <= 1 {
-			// Single-order legacy path (OD-1): one lot for the full total.
+		if active.Config.TradeConfig.IsSingleOrder() {
+			// Single-order legacy path (OD-1): LotSize unset (0) or negative
+			// means one lot for the full total.
 			plan = []int{units}
 		} else {
-			plan = types.SplitIntoLots(units, lotSize)
+			// Any positive LotSize splits the total into sequential lots of
+			// that size (LotSize == 1 => one unit per order).
+			plan = types.SplitIntoLots(units, active.Config.TradeConfig.LotSize)
 		}
 
 		e.mu.Lock()
