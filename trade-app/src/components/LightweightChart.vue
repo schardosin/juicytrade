@@ -415,6 +415,11 @@ export default {
           candlestickSeries.setData(candlestickData);
           volumeSeries.setData(volumeData);
 
+          // Initialize currentCandle from the last historical bar to prevent duplicate candles
+          if (candlestickData.length > 0) {
+            currentCandle = candlestickData[candlestickData.length - 1];
+          }
+
           // Fit content to show all data
           chart.timeScale().fitContent();
 
