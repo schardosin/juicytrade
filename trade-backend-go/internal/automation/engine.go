@@ -653,6 +653,20 @@ func (e *Engine) checkAndResetForNewDay(active *types.ActiveAutomation) {
 	if todayStr != active.LastTradeDate {
 		e.mu.Lock()
 		active.TradedToday = false
+		// Clear any plan state left over from a prior trading day. The
+		// successful last-lot path clears these on fill, but daily FAILURE
+		// paths (max-attempts, order-placement failure, strike-find failure,
+		// capital-resolution failure) leave the plan intact. Without this, a
+		// multi-lot run that failed mid-plan would resume the STALE plan on the
+		// new day (placing only the remaining units, reusing yesterday's locked
+		// strikes, and never re-sizing capital). Clearing here — the single
+		// point where a new trading day is detected — guarantees every daily
+		// path rebuilds a fresh, correctly-sized plan (FR-7: lot size applies
+		// per trigger).
+		active.OrderPlan = nil
+		active.CurrentLotIndex = 0
+		active.LockedStrikes = nil
+		active.LockedICStrikes = nil
 		active.AddLog("info", fmt.Sprintf("New trading day detected (%s). Resetting for new trades.", todayStr))
 		slog.Info("🌅 New trading day - resetting TradedToday",
 			"lastTradeDate", active.LastTradeDate,
@@ -968,12 +982,16 @@ func (e *Engine) handleMonitoringState(id string, active *types.ActiveAutomation
 			active.AddLog("info", fmt.Sprintf(
 				"Lot %d of %d filled (%d units). Starting lot %d.",
 				active.CurrentLotIndex, len(active.OrderPlan), filledQty, active.CurrentLotIndex+1))
+			// Capture shared state into locals before unlocking so the log
+			// below does not read active.* without holding the lock (NFR-3).
+			lotFilled := active.CurrentLotIndex
+			totalLots := len(active.OrderPlan)
 			e.mu.Unlock()
 
 			slog.Info("Automation lot filled - advancing to next lot",
 				"id", id,
-				"lotFilled", active.CurrentLotIndex,
-				"totalLots", len(active.OrderPlan))
+				"lotFilled", lotFilled,
+				"totalLots", totalLots)
 			e.notifyUpdate(id, active)
 			return
 		}

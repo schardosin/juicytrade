@@ -674,19 +674,26 @@ export default {
       return Array.isArray(status?.order_plan) ? status.order_plan.length : 0
     }
 
-    // 1-based lot number for display ("Lot 2 of 4").
+    // 1-based lot number for display ("Lot 2 of 4"). The index is clamped to
+    // the valid range [0, total-1] so a stale/negative index from the backend
+    // can never render nonsense like "Lot 10 of 3" or "Lot 0 of 3".
     const currentLotNumber = (configId) => {
       const status = getAutomationStatus(configId)
-      const idx = status?.current_lot_index || 0
+      const total = Array.isArray(status?.order_plan) ? status.order_plan.length : 0
+      let idx = Number(status?.current_lot_index) || 0
+      if (total > 0) idx = Math.min(Math.max(idx, 0), total - 1)
+      else idx = Math.max(idx, 0)
       return idx + 1
     }
 
     // Per-lot fill dots: lots before the current index are filled, the current
-    // lot is active, later lots are pending.
+    // lot is active, later lots are pending. The index is clamped so a stale or
+    // negative current_lot_index can't misrender the dot states.
     const lotDots = (configId) => {
       const status = getAutomationStatus(configId)
       if (!Array.isArray(status?.order_plan)) return []
-      const currentIdx = status.current_lot_index || 0
+      const rawIdx = Number(status.current_lot_index) || 0
+      const currentIdx = Math.min(Math.max(rawIdx, 0), status.order_plan.length - 1)
       return status.order_plan.map((_, idx) => {
         if (idx < currentIdx) return 'filled'
         if (idx === currentIdx) return 'active'

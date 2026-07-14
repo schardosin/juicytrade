@@ -108,6 +108,23 @@ describe('AutomationDashboard — Lot Size progress', () => {
     });
   });
 
+  describe('index clamping (QA-2 hardening)', () => {
+    it('clamps a stale over-range index so it never renders "Lot 10 of 3"', async () => {
+      wrapper.vm.statuses = { 'cfg-1': { state: 'monitoring', order_plan: [2, 2, 2], current_lot_index: 9 } };
+      await nextTick();
+      // Clamped to last lot: "Lot 3 of 3", dots all-but-last filled.
+      expect(wrapper.vm.currentLotNumber('cfg-1')).toBe(3);
+      expect(wrapper.vm.lotDots('cfg-1')).toEqual(['filled', 'filled', 'active']);
+    });
+
+    it('clamps a negative index (truthy -1) to the first lot', async () => {
+      wrapper.vm.statuses = { 'cfg-1': { state: 'trading', order_plan: [2, 2, 2], current_lot_index: -1 } };
+      await nextTick();
+      expect(wrapper.vm.currentLotNumber('cfg-1')).toBe(1);
+      expect(wrapper.vm.lotDots('cfg-1')).toEqual(['active', 'pending', 'pending']);
+    });
+  });
+
   describe('rendered progress row', () => {
     it('renders "Lot X of N" only for multi-lot runs', async () => {
       wrapper.vm.configs = [{ id: 'cfg-1', name: 'Multi', enabled: true, recurrence: 'once' }];

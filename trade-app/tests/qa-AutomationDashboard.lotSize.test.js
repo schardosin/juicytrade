@@ -66,27 +66,27 @@ describe('QA — AutomationDashboard lot-size guard (adversarial)', () => {
     expect(wrapper.vm.lotDots('cfg-1')).toEqual([]);
   });
 
-  it('current_lot_index beyond plan length marks all real lots filled (no crash)', async () => {
+  it('current_lot_index beyond plan length is clamped to the last lot (no crash)', async () => {
     // Corrupted / stale index after a restart: index 9 on a 3-lot plan.
     wrapper.vm.statuses = { 'cfg-1': { state: 'monitoring', order_plan: [2, 2, 2], current_lot_index: 9 } };
     await nextTick();
-    // Every lot index < 9 => all 'filled', none 'active'/'pending'. Must not throw.
-    expect(wrapper.vm.lotDots('cfg-1')).toEqual(['filled', 'filled', 'filled']);
-    // currentLotNumber is still computed (1-based) — documents that the UI would
-    // display "Lot 10 of 3" for a corrupted index. This is a display oddity, not
-    // a crash, worth noting to @dev.
-    expect(wrapper.vm.currentLotNumber('cfg-1')).toBe(10);
+    // QA-2 fix: the index is clamped to [0, len-1], so the last lot is 'active'
+    // and earlier lots are 'filled'. Must not throw.
+    expect(wrapper.vm.lotDots('cfg-1')).toEqual(['filled', 'filled', 'active']);
+    // currentLotNumber is clamped so the UI shows "Lot 3 of 3" instead of the
+    // pre-fix nonsense "Lot 10 of 3".
+    expect(wrapper.vm.currentLotNumber('cfg-1')).toBe(3);
   });
 
-  it('negative current_lot_index falls back to lot 0 (|| 0 short-circuit only guards falsy)', async () => {
-    // NOTE: `status.current_lot_index || 0` does NOT sanitize a negative index
-    // (-1 is truthy). This test documents the actual behavior of the real code.
+  it('negative current_lot_index is clamped to the first lot (QA-2 fix)', async () => {
+    // NOTE: pre-fix, `status.current_lot_index || 0` did NOT sanitize a negative
+    // index (-1 is truthy). The QA-2 clamp now maps negatives to lot 0.
     wrapper.vm.statuses = { 'cfg-1': { state: 'monitoring', order_plan: [2, 2], current_lot_index: -1 } };
     await nextTick();
-    // With idx = -1: no lot index < -1, none === -1 => every lot is 'pending'.
-    expect(wrapper.vm.lotDots('cfg-1')).toEqual(['pending', 'pending']);
-    // currentLotNumber = -1 + 1 = 0 -> UI would show "Lot 0 of 2".
-    expect(wrapper.vm.currentLotNumber('cfg-1')).toBe(0);
+    // Clamped idx = 0: first lot 'active', rest 'pending'.
+    expect(wrapper.vm.lotDots('cfg-1')).toEqual(['active', 'pending']);
+    // currentLotNumber = 0 + 1 = 1 -> UI shows "Lot 1 of 2" (never "Lot 0 of 2").
+    expect(wrapper.vm.currentLotNumber('cfg-1')).toBe(1);
   });
 
   it('single-lot plan with a valid index stays hidden (legacy parity)', async () => {
