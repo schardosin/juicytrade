@@ -77,8 +77,8 @@ func TestQA_NewDayAfterDeferral_RebuildsFreshPlan(t *testing.T) {
 
 	active := &types.ActiveAutomation{
 		Config: &types.AutomationConfig{
-			ID:         "cfg-daily-newday",
-			Recurrence: types.RecurrenceDaily,
+			ID:          "cfg-daily-newday",
+			Recurrence:  types.RecurrenceDaily,
 			TradeConfig: types.TradeConfiguration{LotSize: 2},
 		},
 		Status:          types.StatusWaiting,
