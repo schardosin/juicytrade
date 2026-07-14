@@ -373,65 +373,77 @@ export default {
             return;
           }
 
-          // Transform data for Lightweight Charts
-          const candlestickData = bars.map((bar) => {
-            // Handle different time formats from backend
-            let time = bar.time;
+           // Transform data for Lightweight Charts
+           const candlestickData = bars.map((bar) => {
+             // Handle different time formats from backend
+             let time = bar.time;
 
-            // If time contains space (datetime format like "2025-01-06 09:30"), convert to timestamp
-            if (typeof time === "string" && time.includes(" ")) {
-              // Backend sends Eastern Time datetime strings for intraday data
-              // Parse as Eastern Time by appending EST timezone
-              const etTimeString = time + ":00 EST"; // Assume EST for now
-              const date = new Date(etTimeString);
-              time = Math.floor(date.getTime() / 1000);
-            }
+             // Convert all time formats to Unix epoch seconds for consistent comparison with live data
+             if (typeof time === "string") {
+               if (time.includes(" ")) {
+                 // Datetime format like "2025-01-06 09:30", parse as Eastern Time
+                 const etTimeString = time + ":00 EST";
+                 const date = new Date(etTimeString);
+                 time = Math.floor(date.getTime() / 1000);
+               } else if (time.includes("-")) {
+                 // Date-only format like "2025-07-14", convert to Unix epoch (UTC midnight)
+                 const date = new Date(time + "T00:00:00Z");
+                 time = Math.floor(date.getTime() / 1000);
+               }
+             }
 
-            return {
-              time: time,
-              open: bar.open,
-              high: bar.high,
-              low: bar.low,
-              close: bar.close,
-            };
-          });
+             return {
+               time: time,
+               open: bar.open,
+               high: bar.high,
+               low: bar.low,
+               close: bar.close,
+             };
+           });
 
-          const volumeData = bars.map((bar) => {
-            // Handle different time formats from backend
-            let time = bar.time;
+           const volumeData = bars.map((bar) => {
+             // Handle different time formats from backend
+             let time = bar.time;
 
-            // If time contains space (datetime format like "2025-01-06 09:30"), convert to timestamp
-            if (typeof time === "string" && time.includes(" ")) {
-              // Backend sends Eastern Time datetime strings for intraday data
-              // Parse as Eastern Time by appending EST timezone
-              const etTimeString = time + ":00 EST"; // Assume EST for now
-              const date = new Date(etTimeString);
-              time = Math.floor(date.getTime() / 1000);
-            }
+             // Convert all time formats to Unix epoch seconds for consistent comparison with live data
+             if (typeof time === "string") {
+               if (time.includes(" ")) {
+                 // Datetime format like "2025-01-06 09:30", parse as Eastern Time
+                 const etTimeString = time + ":00 EST";
+                 const date = new Date(etTimeString);
+                 time = Math.floor(date.getTime() / 1000);
+               } else if (time.includes("-")) {
+                 // Date-only format like "2025-07-14", convert to Unix epoch (UTC midnight)
+                 const date = new Date(time + "T00:00:00Z");
+                 time = Math.floor(date.getTime() / 1000);
+               }
+             }
 
-            return {
-              time: time,
-              value: bar.volume,
-              color: bar.close >= bar.open ? "#26a69a80" : "#ef535080",
-            };
-          });
+             return {
+               time: time,
+               value: bar.volume,
+               color: bar.close >= bar.open ? "#26a69a80" : "#ef535080",
+             };
+           });
 
            // Set the data
            candlestickSeries.setData(candlestickData);
            volumeSeries.setData(volumeData);
 
+
            // Initialize currentCandle from the last historical bar to prevent duplicate candles
+           // This ensures that when live price data arrives, it updates the existing candle rather than creating a new one
            if (candlestickData.length > 0) {
              currentCandle = candlestickData[candlestickData.length - 1];
            }
 
-           // Fit content to show all data
-           chart.timeScale().fitContent();
+          // Fit content to show all data
+          chart.timeScale().fitContent();
 
+           
            // CRITICAL: Mark historical data as loaded to enable real-time updates
            // This prevents the race condition where live data arrives before historical load completes
            historicalDataLoaded = true;
-
         } else {
           throw new Error("Failed to load data");
         }

@@ -1,0 +1,81 @@
+description: "Baseline smoke tests for JuicyTrade backend + frontend"
+type: suite
+name: juicytrade
+template: juicytrade
+
+credentials:
+  provider_config: juicytrade-provider-config
+  provider_credentials: juicytrade-provider-credentials
+
+credential_injection:
+  files:
+    - credential: provider_config
+      path: /root/juicytrade/provider_config.json
+      field: value
+      format: json
+      mode: "0644"
+    - credential: provider_credentials
+      path: /root/juicytrade/provider_credentials.json
+      field: value
+      format: json
+      mode: "0600"
+
+configure: []
+
+setup:
+  - type: tool
+    args:
+      tool: shell_command
+      command: "bash /root/juicytrade/.astonish/start-services.sh"
+
+ready_check:
+  type: http
+  url: "http://localhost:8008/health"
+  timeout: 60
+  stable_count: 3
+
+teardown:
+  - type: tool
+    args:
+      tool: shell_command
+      command: "bash /root/juicytrade/.astonish/stop-services.sh || true"
+
+drills:
+  - description: "Verify backend health endpoint responds with service name"
+    type: drill
+    suite: juicytrade
+    nodes:
+      - name: backend-health
+        type: tool
+        args:
+          tool: shell_command
+          command: "curl -s http://localhost:8008/health"
+        assert:
+          type: contains
+          expected: "trade-backend-go"
+
+  - description: "Verify frontend loads with correct title"
+    type: drill
+    suite: juicytrade
+    nodes:
+      - name: frontend-title
+        type: tool
+        args:
+          tool: shell_command
+          command: "curl -s http://localhost:3001/"
+        assert:
+          type: contains
+          expected: "Juicy Trade"
+
+  - description: "Verify backend health endpoint reports healthy status"
+    type: drill
+    suite: juicytrade
+    nodes:
+      - name: backend-status
+        type: tool
+        args:
+          tool: shell_command
+          command: "curl -s http://localhost:8008/health | grep -o '\"status\":\"[^\"]*\"'"
+        assert:
+          type: contains
+          expected: "healthy"
