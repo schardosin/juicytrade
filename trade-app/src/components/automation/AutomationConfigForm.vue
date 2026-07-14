@@ -627,7 +627,24 @@
             />
             <small class="field-hint">Max delta change before re-selecting strikes</small>
           </div>
+          <div class="form-field">
+            <label for="lotSize">Lot Size</label>
+            <InputNumber
+              id="lotSize"
+              v-model="config.trade_config.lot_size"
+              :min="1"
+              :useGrouping="false"
+              placeholder="e.g., 1"
+            />
+            <small class="field-hint">Units per order. Leave 1 for a single order; ≥2 splits the total into sequential lots.</small>
+          </div>
+          <div class="form-field">
+            <label for="legsDrift">Legs Drift</label>
+            <InputSwitch id="legsDrift" v-model="config.trade_config.legs_drift" />
+            <small class="field-hint">When off, all lots reuse the first lot's strikes with no drift. When on, strikes are re-selected before each lot and mid-order delta drift applies.</small>
+          </div>
         </div>
+
 
         <h3 class="subsection-title">Expiration Settings</h3>
         <div class="form-grid">
@@ -961,6 +978,9 @@ export default {
         min_credit: 0.30,
         expiration_mode: '0dte',
         custom_expiration: '',
+        // Lot size (multi-order) execution: 1 = single order (legacy behavior)
+        lot_size: 1,
+        legs_drift: false,
         // Iron Condor per-side configs
         put_side_config: { target_delta: 0.05, width: 20 },
         call_side_config: { target_delta: 0.05, width: 20 },

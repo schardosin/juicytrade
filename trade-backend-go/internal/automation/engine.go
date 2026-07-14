@@ -717,74 +717,120 @@ func (e *Engine) handleTradingState(id string, active *types.ActiveAutomation, s
 			"resolved", resolvedCap)
 	}
 
-	// Calculate position size (works for both spreads and iron condor)
-	units := active.Config.TradeConfig.CalculateUnitsWithCapital(resolvedCap)
-	if units == 0 {
-		e.mu.Lock()
-		active.Status = types.StatusFailed
-		active.Message = "Insufficient capital for minimum position size"
-		active.AddLog("error", "Insufficient capital")
-		e.mu.Unlock()
-		e.notifyUpdate(id, active)
-		return
-	}
+	// Calculate position size (works for both spreads and iron condor).
+	// The total is computed ONCE, when entering trading for lot 0. On subsequent
+	// lots we reuse the already-built OrderPlan (never recomputed) so capital is
+	// never exceeded and percent-mode drift across lots is avoided.
+	e.mu.Lock()
+	lotIndex := active.CurrentLotIndex
+	planExists := len(active.OrderPlan) > 0
+	e.mu.Unlock()
 
-	var order *types.PlacedOrder
-	var err error
-
-	if active.Config.TradeConfig.Strategy == types.StrategyIronCondor {
-		// Iron Condor: find strikes for both sides and place 4-leg order
-		icStrikes, findErr := e.findStrikesForIronCondor(ctx, active.Config)
-		if findErr != nil {
+	if !planExists {
+		// Lot 0 (plan initialization).
+		units := active.Config.TradeConfig.CalculateUnitsWithCapital(resolvedCap)
+		if units == 0 {
 			e.mu.Lock()
-			active.ErrorCount++
-			active.AddLog("error", fmt.Sprintf("Failed to find Iron Condor strikes: %v", findErr))
-			if active.ErrorCount >= 3 {
-				if active.Config.Recurrence == types.RecurrenceDaily {
-					active.TradedToday = true
-					active.Status = types.StatusWaiting
-					active.Message = "Failed to find strikes - waiting for next trading day"
-					active.AddLog("warn", "Max strike-finding attempts reached - will retry next trading day")
-					slog.Info("🔄 Strike finding failed, waiting for next trading day",
-						"id", id,
-						"errorCount", active.ErrorCount,
-					)
-				} else {
-					active.Status = types.StatusFailed
-					active.Message = "Failed to find strikes after multiple attempts"
-				}
-			}
+			active.Status = types.StatusFailed
+			active.Message = "Insufficient capital for minimum position size"
+			active.AddLog("error", "Insufficient capital")
 			e.mu.Unlock()
 			e.notifyUpdate(id, active)
 			return
 		}
 
+		lotSize := active.Config.TradeConfig.EffectiveLotSize()
+		var plan []int
+		if lotSize <= 1 {
+			// Single-order legacy path (OD-1): one lot for the full total.
+			plan = []int{units}
+		} else {
+			plan = types.SplitIntoLots(units, lotSize)
+		}
+
+		e.mu.Lock()
+		active.OrderPlan = plan
+		active.CurrentLotIndex = 0
+		active.LockedStrikes = nil
+		active.LockedICStrikes = nil
+		lotIndex = 0
+		if len(plan) > 1 {
+			active.AddLog("info", fmt.Sprintf("Order plan: %d lots totaling %d units %v", len(plan), units, plan))
+		}
+		e.mu.Unlock()
+	}
+
+	// Place the current lot.
+	e.placeLot(ctx, id, active, lotIndex)
+}
+
+// placeLot finds strikes (or reuses locked strikes) and places the order for the
+// given lot index. Strike behavior is governed by legs_drift:
+//   - lotIndex == 0: find strikes and lock them for reuse.
+//   - lotIndex >= 1 && legs_drift == false: reuse the locked strikes (no re-find).
+//   - lotIndex >= 1 && legs_drift == true: re-find strikes against the current market.
+func (e *Engine) placeLot(ctx context.Context, id string, active *types.ActiveAutomation, lotIndex int) {
+	e.mu.RLock()
+	if lotIndex < 0 || lotIndex >= len(active.OrderPlan) {
+		e.mu.RUnlock()
+		e.mu.Lock()
+		active.Status = types.StatusFailed
+		active.Message = "Invalid lot index in order plan"
+		active.AddLog("error", fmt.Sprintf("Invalid lot index %d for plan of length %d", lotIndex, len(active.OrderPlan)))
+		e.mu.Unlock()
+		e.notifyUpdate(id, active)
+		return
+	}
+	units := active.OrderPlan[lotIndex]
+	reuseLocked := active.ShouldReuseLockedStrikes(lotIndex)
+	lockedStrikes := active.LockedStrikes
+	lockedICStrikes := active.LockedICStrikes
+	e.mu.RUnlock()
+
+	var order *types.PlacedOrder
+	var err error
+
+	if active.Config.TradeConfig.Strategy == types.StrategyIronCondor {
+		// Determine strikes for this lot.
+		var icStrikes *types.IronCondorStrikeSelection
+		if reuseLocked && lockedICStrikes != nil {
+			// Frozen legs: reuse lot 0's strikes, no strike-finding.
+			icStrikes = lockedICStrikes
+		} else {
+			found, findErr := e.findStrikesForIronCondor(ctx, active.Config)
+			if findErr != nil {
+				e.handleStrikeFindError(id, active, findErr, true)
+				return
+			}
+			icStrikes = found
+		}
+
+		// Lock lot 0's strikes for later reuse.
+		if lotIndex == 0 {
+			e.mu.Lock()
+			active.LockedICStrikes = icStrikes
+			e.mu.Unlock()
+		}
+
 		order, err = e.placeIronCondorOrder(ctx, id, active.Config, icStrikes, units)
 	} else {
-		// Credit spread: find strikes for single side and place 2-leg order
-		strikes, findErr := e.findStrikesForDelta(ctx, active.Config)
-		if findErr != nil {
-			e.mu.Lock()
-			active.ErrorCount++
-			active.AddLog("error", fmt.Sprintf("Failed to find strikes: %v", findErr))
-			if active.ErrorCount >= 3 {
-				if active.Config.Recurrence == types.RecurrenceDaily {
-					active.TradedToday = true
-					active.Status = types.StatusWaiting
-					active.Message = "Failed to find strikes - waiting for next trading day"
-					active.AddLog("warn", "Max strike-finding attempts reached - will retry next trading day")
-					slog.Info("🔄 Strike finding failed, waiting for next trading day",
-						"id", id,
-						"errorCount", active.ErrorCount,
-					)
-				} else {
-					active.Status = types.StatusFailed
-					active.Message = "Failed to find strikes after multiple attempts"
-				}
+		var strikes *types.StrikeSelection
+		if reuseLocked && lockedStrikes != nil {
+			// Frozen legs: reuse lot 0's strikes, no strike-finding.
+			strikes = lockedStrikes
+		} else {
+			found, findErr := e.findStrikesForDelta(ctx, active.Config)
+			if findErr != nil {
+				e.handleStrikeFindError(id, active, findErr, false)
+				return
 			}
+			strikes = found
+		}
+
+		if lotIndex == 0 {
+			e.mu.Lock()
+			active.LockedStrikes = strikes
 			e.mu.Unlock()
-			e.notifyUpdate(id, active)
-			return
 		}
 
 		order, err = e.placeSpreadOrder(ctx, id, active.Config, strikes, units)
@@ -824,6 +870,37 @@ func (e *Engine) handleTradingState(id string, active *types.ActiveAutomation, s
 	e.mu.Unlock()
 
 	slog.Info("Order placed", "id", id, "orderID", order.OrderID, "price", order.LimitPrice)
+	e.notifyUpdate(id, active)
+}
+
+// handleStrikeFindError applies the existing strike-finding error/retry policy:
+// increment ErrorCount and, at >= 3, fail (once) or defer to next trading day
+// (daily). Reused by every lot's placement path so later-lot strike-finding
+// failures behave identically to lot 0 (E-4 / OD-2).
+func (e *Engine) handleStrikeFindError(id string, active *types.ActiveAutomation, findErr error, ironCondor bool) {
+	e.mu.Lock()
+	active.ErrorCount++
+	if ironCondor {
+		active.AddLog("error", fmt.Sprintf("Failed to find Iron Condor strikes: %v", findErr))
+	} else {
+		active.AddLog("error", fmt.Sprintf("Failed to find strikes: %v", findErr))
+	}
+	if active.ErrorCount >= 3 {
+		if active.Config.Recurrence == types.RecurrenceDaily {
+			active.TradedToday = true
+			active.Status = types.StatusWaiting
+			active.Message = "Failed to find strikes - waiting for next trading day"
+			active.AddLog("warn", "Max strike-finding attempts reached - will retry next trading day")
+			slog.Info("🔄 Strike finding failed, waiting for next trading day",
+				"id", id,
+				"errorCount", active.ErrorCount,
+			)
+		} else {
+			active.Status = types.StatusFailed
+			active.Message = "Failed to find strikes after multiple attempts"
+		}
+	}
+	e.mu.Unlock()
 	e.notifyUpdate(id, active)
 }
 
@@ -877,6 +954,30 @@ func (e *Engine) handleMonitoringState(id string, active *types.ActiveAutomation
 		}
 		e.trackingStore.TrackPosition(position)
 
+		// Multi-order (lot size) plan advance: if there are more lots pending in
+		// the plan, advance to the next lot instead of going terminal. The run is
+		// only "done" for this trigger once the LAST lot fills (FR-7).
+		if active.HasMorePendingLots() {
+			filledQty := active.OrderPlan[active.CurrentLotIndex]
+			active.CurrentLotIndex++
+			active.CurrentOrder = nil           // Cleared; next lot places a fresh order.
+			active.ErrorCount = 0               // Reset per-lot error budget.
+			active.Status = types.StatusTrading // Re-enter trading for the next lot (fresh price ladder).
+			active.Message = fmt.Sprintf("Lot %d of %d filled (%d units). Starting next lot.",
+				active.CurrentLotIndex, len(active.OrderPlan), filledQty)
+			active.AddLog("info", fmt.Sprintf(
+				"Lot %d of %d filled (%d units). Starting lot %d.",
+				active.CurrentLotIndex, len(active.OrderPlan), filledQty, active.CurrentLotIndex+1))
+			e.mu.Unlock()
+
+			slog.Info("Automation lot filled - advancing to next lot",
+				"id", id,
+				"lotFilled", active.CurrentLotIndex,
+				"totalLots", len(active.OrderPlan))
+			e.notifyUpdate(id, active)
+			return
+		}
+
 		// Check recurrence mode to determine next state
 		recurrence := active.Config.Recurrence
 		if recurrence == "" {
@@ -890,11 +991,15 @@ func (e *Engine) handleMonitoringState(id string, active *types.ActiveAutomation
 			active.LastTradeDate = todayStr
 			active.CurrentOrder = nil // Clear current order for next day
 			active.ErrorCount = 0     // Reset error count
+			// Clear plan state so the next trading day rebuilds a fresh plan.
+			active.OrderPlan = nil
+			active.CurrentLotIndex = 0
+			active.LockedStrikes = nil
+			active.LockedICStrikes = nil
 			active.Message = fmt.Sprintf("Order filled! Waiting for next trading day (traded today: %s)", todayStr)
 			active.AddLog("info", fmt.Sprintf("Order filled! Daily recurrence - will reset for next trading day. Trade date: %s", todayStr))
 			slog.Info("Automation order filled - daily recurrence, waiting for next day",
 				"id", id,
-				"orderID", active.CurrentOrder,
 				"lastTradeDate", todayStr)
 		} else {
 			// Once mode: mark as completed (terminal state)
@@ -1016,8 +1121,12 @@ func (e *Engine) handleOrderAdjustment(ctx context.Context, id string, active *t
 			return
 		}
 
-		// Check for delta drift if DeltaDriftLimit is configured
-		if config.DeltaDriftLimit > 0 {
+		// Check for delta drift if DeltaDriftLimit is configured.
+		// In a multi-lot run with frozen legs (legs_drift == false), mid-order
+		// delta-drift replacement is disabled for the entire run so all lots use
+		// lot 0's strikes (FR-6 / AC-7). Single-order runs are unaffected,
+		// preserving today's behavior exactly (OD-1). See ActiveAutomation.DriftAllowed.
+		if active.DriftAllowed(config.DeltaDriftLimit) {
 			// Iron Condor: check both short legs for drift
 			if active.Config.TradeConfig.Strategy == types.StrategyIronCondor {
 				driftDetected, newICStrikes := e.checkDeltaDriftIronCondor(ctx, id, active)

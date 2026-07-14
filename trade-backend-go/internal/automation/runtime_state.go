@@ -31,6 +31,11 @@ type PersistedAutomation struct {
 	Message       string                 `json:"message,omitempty"`
 	CurrentOrder  *types.PlacedOrder     `json:"current_order,omitempty"`
 	PlacedOrders  []types.PlacedOrder    `json:"placed_orders,omitempty"`
+	// Multi-order (lot size) plan state so a mid-plan automation resumes correctly.
+	OrderPlan       []int                            `json:"order_plan,omitempty"`
+	CurrentLotIndex int                              `json:"current_lot_index,omitempty"`
+	LockedStrikes   *types.StrikeSelection           `json:"locked_strikes,omitempty"`
+	LockedICStrikes *types.IronCondorStrikeSelection `json:"locked_ic_strikes,omitempty"`
 	// We don't persist logs - they can get large and aren't critical for recovery
 }
 
@@ -71,15 +76,19 @@ func (r *RuntimeStateStorage) Save(automations map[string]*types.ActiveAutomatio
 		// Don't persist completed/failed/cancelled - they're terminal
 		if isRecoverableStatus(active.Status) {
 			state.Automations[id] = &PersistedAutomation{
-				ConfigID:      active.Config.ID,
-				Status:        active.Status,
-				StartedAt:     active.StartedAt,
-				TradedToday:   active.TradedToday,
-				LastTradeDate: active.LastTradeDate,
-				ErrorCount:    active.ErrorCount,
-				Message:       active.Message,
-				CurrentOrder:  active.CurrentOrder,
-				PlacedOrders:  active.PlacedOrders,
+				ConfigID:        active.Config.ID,
+				Status:          active.Status,
+				StartedAt:       active.StartedAt,
+				TradedToday:     active.TradedToday,
+				LastTradeDate:   active.LastTradeDate,
+				ErrorCount:      active.ErrorCount,
+				Message:         active.Message,
+				CurrentOrder:    active.CurrentOrder,
+				PlacedOrders:    active.PlacedOrders,
+				OrderPlan:       active.OrderPlan,
+				CurrentLotIndex: active.CurrentLotIndex,
+				LockedStrikes:   active.LockedStrikes,
+				LockedICStrikes: active.LockedICStrikes,
 			}
 		}
 	}
@@ -178,16 +187,20 @@ func isRecoverableStatus(status types.AutomationStatus) bool {
 // RestoreAutomation creates an ActiveAutomation from persisted state
 func RestoreAutomation(persisted *PersistedAutomation, config *types.AutomationConfig) *types.ActiveAutomation {
 	active := &types.ActiveAutomation{
-		Config:        config,
-		Status:        persisted.Status,
-		StartedAt:     persisted.StartedAt,
-		TradedToday:   persisted.TradedToday,
-		LastTradeDate: persisted.LastTradeDate,
-		ErrorCount:    persisted.ErrorCount,
-		Message:       persisted.Message,
-		CurrentOrder:  persisted.CurrentOrder,
-		PlacedOrders:  persisted.PlacedOrders,
-		Logs:          make([]types.AutomationLog, 0),
+		Config:          config,
+		Status:          persisted.Status,
+		StartedAt:       persisted.StartedAt,
+		TradedToday:     persisted.TradedToday,
+		LastTradeDate:   persisted.LastTradeDate,
+		ErrorCount:      persisted.ErrorCount,
+		Message:         persisted.Message,
+		CurrentOrder:    persisted.CurrentOrder,
+		PlacedOrders:    persisted.PlacedOrders,
+		OrderPlan:       persisted.OrderPlan,
+		CurrentLotIndex: persisted.CurrentLotIndex,
+		LockedStrikes:   persisted.LockedStrikes,
+		LockedICStrikes: persisted.LockedICStrikes,
+		Logs:            make([]types.AutomationLog, 0),
 	}
 
 	// Add a log entry about the restoration

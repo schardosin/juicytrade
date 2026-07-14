@@ -31,6 +31,16 @@ func validateCapitalConfig(tc *types.TradeConfiguration) error {
 	return nil
 }
 
+// validateLotConfig validates the lot-size configuration. An unset value (0)
+// means single-order (today's behavior). Negative values are rejected. legs_drift
+// is a bool and needs no range validation.
+func validateLotConfig(tc *types.TradeConfiguration) error {
+	if tc.LotSize < 0 {
+		return fmt.Errorf("lot_size must be an integer >= 1 (or unset for single order); got %d", tc.LotSize)
+	}
+	return nil
+}
+
 // AutomationHandler handles automation-related HTTP endpoints
 type AutomationHandler struct {
 	engine *automation.Engine
@@ -168,6 +178,15 @@ func (h *AutomationHandler) CreateConfig(c *gin.Context) {
 		return
 	}
 
+	// Validate lot-size configuration (multi-order)
+	if err := validateLotConfig(&config.TradeConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
 	if err := h.engine.GetStorage().Create(&config); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{
 			"success": false,
@@ -209,6 +228,15 @@ func (h *AutomationHandler) UpdateConfig(c *gin.Context) {
 
 	// Validate capital configuration (percent mode range check)
 	if err := validateCapitalConfig(&config.TradeConfig); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{
+			"success": false,
+			"message": err.Error(),
+		})
+		return
+	}
+
+	// Validate lot-size configuration (multi-order)
+	if err := validateLotConfig(&config.TradeConfig); err != nil {
 		c.JSON(http.StatusBadRequest, gin.H{
 			"success": false,
 			"message": err.Error(),

@@ -176,6 +176,9 @@ type TradeConfiguration struct {
 	// Iron Condor specific - per-side delta and width configuration
 	PutSideConfig  *IronCondorSideConfig `json:"put_side_config,omitempty"`  // Put side config (iron_condor only)
 	CallSideConfig *IronCondorSideConfig `json:"call_side_config,omitempty"` // Call side config (iron_condor only)
+	// Lot size (multi-order) execution
+	LotSize   int  `json:"lot_size,omitempty"`   // Units per order. 0/1 = single order (today's behavior). >=2 splits the capital-derived total into sequential lots.
+	LegsDrift bool `json:"legs_drift,omitempty"` // false = all lots reuse the first lot's strikes, no delta drift at all; true = re-select strikes before each lot and apply mid-order drift.
 }
 
 // RecurrenceMode defines how the automation repeats
@@ -266,6 +269,11 @@ type ActiveAutomation struct {
 	ResolvedMaxCapital float64    `json:"resolved_max_capital,omitempty"` // Dollars resolved from % of Net Liq
 	ResolvedNetLiq     float64    `json:"resolved_net_liq,omitempty"`     // Net Liq (account.equity) read at resolution
 	ResolvedAt         *time.Time `json:"resolved_at,omitempty"`          // Timestamp of the latest capital resolution
+	// Multi-order (lot size) execution state.
+	OrderPlan       []int                      `json:"order_plan,omitempty"`        // Per-lot quantities, e.g. [2,2,2,1]. Derived once when entering trading for lot 0.
+	CurrentLotIndex int                        `json:"current_lot_index,omitempty"` // 0-based index of the lot currently being placed/monitored.
+	LockedStrikes   *StrikeSelection           `json:"locked_strikes,omitempty"`    // Strikes from lot 0 (spread), reused when legs_drift=false.
+	LockedICStrikes *IronCondorStrikeSelection `json:"locked_ic_strikes,omitempty"` // Iron Condor equivalent of LockedStrikes.
 }
 
 // LegDetail contains bid/ask/mid details for an option leg
@@ -506,6 +514,8 @@ func NewTradeConfiguration() TradeConfiguration {
 		MaxAttempts:     10,
 		AttemptInterval: 30, // 30 seconds between attempts
 		DeltaDriftLimit: 0.01,
+		LotSize:         1,     // single order by default (equivalent to unset)
+		LegsDrift:       false, // freeze legs across lots by default
 	}
 }
 
@@ -654,6 +664,87 @@ func (tc *TradeConfiguration) CalculateUnitsWithCapital(resolvedMaxCapital float
 		return 0
 	}
 	return units
+}
+
+// EffectiveLotSize returns the configured lot size, treating any value < 1
+// (unset/0 or negative) as 1. A lot size of 1 means a single order — today's
+// legacy behavior.
+func (tc *TradeConfiguration) EffectiveLotSize() int {
+	if tc.LotSize < 1 {
+		return 1
+	}
+	return tc.LotSize
+}
+
+// SplitIntoLots splits a capital-derived total into sequential per-lot quantities.
+//
+//	totalUnits: the hard cap from CalculateUnitsWithCapital (never exceeded).
+//	lotSize:    units per order (values < 1 are treated as 1).
+//
+// Returns an ordered slice whose elements sum EXACTLY to totalUnits:
+//   - fullLots  = totalUnits / lotSize   (orders of lotSize units)
+//   - remainder = totalUnits % lotSize   -> appended as a final smaller lot
+//
+// Examples:
+//
+//	(7, 2) -> [2, 2, 2, 1]
+//	(6, 2) -> [2, 2, 2]
+//	(5, 5) -> [5]
+//	(3, 5) -> [3]      (lot larger than total => single lot for the total)
+//	(0, _) -> []       (insufficient capital => no lots)
+func SplitIntoLots(totalUnits, lotSize int) []int {
+	if totalUnits <= 0 {
+		return []int{}
+	}
+	if lotSize < 1 {
+		lotSize = 1
+	}
+	plan := make([]int, 0)
+	full := totalUnits / lotSize
+	rem := totalUnits % lotSize
+	for i := 0; i < full; i++ {
+		plan = append(plan, lotSize)
+	}
+	if rem > 0 {
+		plan = append(plan, rem)
+	}
+	return plan
+}
+
+// IsMultiLot reports whether this run is executing a multi-order plan (more than
+// one lot). Single-order/legacy runs return false so they never engage the
+// multi-order code paths (OD-1).
+func (a *ActiveAutomation) IsMultiLot() bool {
+	return len(a.OrderPlan) > 1
+}
+
+// HasMorePendingLots reports whether there are lots remaining after the current
+// one — i.e. filling the current lot should advance the plan rather than
+// terminate the run.
+func (a *ActiveAutomation) HasMorePendingLots() bool {
+	return a.CurrentLotIndex < len(a.OrderPlan)-1
+}
+
+// DriftAllowed reports whether mid-order delta-drift strike replacement is
+// permitted for the current run. It is disabled for multi-lot runs with frozen
+// legs (legs_drift == false). Single-order runs are unaffected, preserving
+// today's behavior exactly regardless of legs_drift (OD-1).
+func (a *ActiveAutomation) DriftAllowed(deltaDriftLimit float64) bool {
+	if deltaDriftLimit <= 0 {
+		return false
+	}
+	if a.IsMultiLot() && !a.Config.TradeConfig.LegsDrift {
+		return false
+	}
+	return true
+}
+
+// ShouldReuseLockedStrikes reports whether the given lot should reuse lot 0's
+// locked strikes instead of re-selecting them. This is true for lots after the
+// first when legs_drift is false. Lot 0 always finds fresh strikes; when
+// legs_drift is true every lot re-selects.
+func (a *ActiveAutomation) ShouldReuseLockedStrikes(lotIndex int) bool {
+	return lotIndex >= 1 && !a.Config.TradeConfig.LegsDrift
 }
 
 // Helper function to generate unique IDs
