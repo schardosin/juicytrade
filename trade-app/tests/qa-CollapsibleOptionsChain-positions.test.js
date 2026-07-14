@@ -359,19 +359,15 @@ describe('QA: CollapsibleOptionsChain - Position Badges Edge Cases', () => {
       expect(badges).toHaveLength(0);
     });
 
-    it('handles positions data with positions as non-array (object) — CRASHES with TypeError', async () => {
+    it('handles positions data with positions as non-array (object) — does not crash', async () => {
       mockPositionsData = { positions: { 'SPX250718C05500000': 2 } };
 
-      // BUG: The positionsMap computed uses `for (const leg of data.positions)` 
-      // which throws TypeError when positions is a non-iterable object.
-      // The guard `if (!data?.positions) return map` only catches falsy values,
-      // not non-iterable truthy values like plain objects.
-      // Fix: add `if (!Array.isArray(data.positions)) return map;`
-      expect(() => {
-        // Force the computed to evaluate by mounting and expanding
-        const w = mount(CollapsibleOptionsChain, { props: defaultProps });
-        w.find('.expiration-header').trigger('click');
-      }).toThrow('data.positions is not iterable');
+      // FIXED: The positionsMap computed now checks Array.isArray(data.positions)
+      // before iterating, so a non-array truthy object safely returns empty map.
+      await mountAndExpand();
+
+      const badges = wrapper.findAll('.position-badge');
+      expect(badges).toHaveLength(0);
     });
 
     it('handles positions data with positions as string', async () => {
@@ -744,7 +740,7 @@ describe('QA: CollapsibleOptionsChain - Position Badges Edge Cases', () => {
   });
 
   describe('Positions array with non-object items', () => {
-    it('CRASHES when positions array contains null items — BUG in positionsMap', async () => {
+    it('does not crash when positions array contains null items — fixed null guard', async () => {
       mockPositionsData = {
         positions: [
           null,
@@ -753,14 +749,16 @@ describe('QA: CollapsibleOptionsChain - Position Badges Edge Cases', () => {
         ]
       };
 
-      // BUG CONFIRMED: The positionsMap computed iterates with 
-      // `for (const leg of data.positions)` and then does `if (!leg.symbol) continue;`
-      // When leg is null, accessing null.symbol throws TypeError.
-      // Fix: change `if (!leg.symbol) continue;` to `if (!leg || !leg.symbol) continue;`
-      expect(() => {
-        mount(CollapsibleOptionsChain, { props: defaultProps })
-          .find('.expiration-header').trigger('click');
-      }).toThrow('Cannot read properties of null');
+      // FIXED: The positionsMap computed now checks `if (!leg || !leg.symbol) continue;`
+      // so null items are safely skipped without throwing TypeError.
+      await mountAndExpand();
+
+      // The valid entry should produce a badge
+      const badges = wrapper.findAll('.position-badge');
+      expect(badges.length).toBeGreaterThanOrEqual(1);
+      const badge = wrapper.find('.call-side .position-badge');
+      expect(badge.exists()).toBe(true);
+      expect(badge.text()).toBe('+2');
     });
 
     it('does not crash when positions array contains number items', async () => {

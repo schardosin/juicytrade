@@ -368,8 +368,9 @@ export default {
       const map = new Map();
       const data = positionsComputed.value;
       if (!data?.positions) return map;
+      if (!Array.isArray(data.positions)) return map;
       for (const leg of data.positions) {
-        if (!leg.symbol) continue;
+        if (!leg || !leg.symbol) continue;
         const current = map.get(leg.symbol) || 0;
         map.set(leg.symbol, current + leg.qty);
       }
