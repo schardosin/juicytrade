@@ -32,11 +32,12 @@ type (
 
 // Re-export constants
 const (
-	IndicatorVIX      = types.IndicatorVIX
-	IndicatorGap      = types.IndicatorGap
-	IndicatorRange    = types.IndicatorRange
-	IndicatorTrend    = types.IndicatorTrend
-	IndicatorCalendar = types.IndicatorCalendar
+	IndicatorVIX       = types.IndicatorVIX
+	IndicatorVIXChange = types.IndicatorVIXChange
+	IndicatorGap       = types.IndicatorGap
+	IndicatorRange     = types.IndicatorRange
+	IndicatorTrend     = types.IndicatorTrend
+	IndicatorCalendar  = types.IndicatorCalendar
 
 	OperatorGreaterThan = types.OperatorGreaterThan
 	OperatorLessThan    = types.OperatorLessThan

@@ -28,6 +28,14 @@ func TestOriginalIndicatorTypeConstants(t *testing.T) {
 	}
 }
 
+// TestVIXChangeIndicatorType verifies the new wire value without altering the
+// five original indicator constants.
+func TestVIXChangeIndicatorType(t *testing.T) {
+	if got := string(types.IndicatorVIXChange); got != "vix_change" {
+		t.Fatalf("IndicatorVIXChange = %q, want %q", got, "vix_change")
+	}
+}
+
 // TestIndicatorConfigParamsJSONTag verifies the Params field on
 // IndicatorConfig carries the json:"params,omitempty" tag so that
 // existing configs without params deserialize with Params == nil.
@@ -173,11 +181,11 @@ func TestCreateConfigDefaultIndicators(t *testing.T) {
 // ===========================================================================
 
 // TestMetadataRegistryCount verifies GetIndicatorMetadata returns exactly
-// 17 entries.
+// 18 entries.
 func TestMetadataRegistryCount(t *testing.T) {
 	meta := types.GetIndicatorMetadata()
-	if len(meta) != 17 {
-		t.Fatalf("GetIndicatorMetadata() returned %d entries, want 17", len(meta))
+	if len(meta) != 18 {
+		t.Fatalf("GetIndicatorMetadata() returned %d entries, want 18", len(meta))
 	}
 }
 
@@ -212,11 +220,12 @@ func TestMetadataRequiredFields(t *testing.T) {
 // category.
 func TestMetadataCategories(t *testing.T) {
 	expected := map[types.IndicatorType]string{
-		types.IndicatorVIX:      "market",
-		types.IndicatorGap:      "market",
-		types.IndicatorRange:    "market",
-		types.IndicatorTrend:    "market",
-		types.IndicatorCalendar: "calendar",
+		types.IndicatorVIX:       "market",
+		types.IndicatorVIXChange: "market",
+		types.IndicatorGap:       "market",
+		types.IndicatorRange:     "market",
+		types.IndicatorTrend:     "market",
+		types.IndicatorCalendar:  "calendar",
 
 		types.IndicatorRSI:      "momentum",
 		types.IndicatorMACD:     "momentum",
@@ -248,12 +257,13 @@ func TestMetadataCategories(t *testing.T) {
 	}
 }
 
-// TestMetadataNeedsSymbol verifies NeedsSymbol is false for vix and
-// calendar and true for all other 15 indicators.
+// TestMetadataNeedsSymbol verifies NeedsSymbol is false for fixed-symbol and
+// calendar indicators and true for all configurable-symbol indicators.
 func TestMetadataNeedsSymbol(t *testing.T) {
 	noSymbol := map[types.IndicatorType]bool{
-		types.IndicatorVIX:      true,
-		types.IndicatorCalendar: true,
+		types.IndicatorVIX:       true,
+		types.IndicatorVIXChange: true,
+		types.IndicatorCalendar:  true,
 	}
 
 	for _, m := range types.GetIndicatorMetadata() {
@@ -412,7 +422,7 @@ func TestAllPeriodParamsMinMax(t *testing.T) {
 func TestMetadataOrder(t *testing.T) {
 	meta := types.GetIndicatorMetadata()
 	expectedOrder := []types.IndicatorType{
-		"vix", "gap", "range", "trend", "calendar",
+		"vix", "vix_change", "gap", "range", "trend", "calendar",
 		"rsi", "macd", "momentum", "cmo", "stoch", "stoch_rsi",
 		"adx", "cci", "sma", "ema",
 		"atr", "bb_percent",

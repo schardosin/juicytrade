@@ -12,11 +12,12 @@ import (
 type IndicatorType string
 
 const (
-	IndicatorVIX      IndicatorType = "vix"
-	IndicatorGap      IndicatorType = "gap"
-	IndicatorRange    IndicatorType = "range"
-	IndicatorTrend    IndicatorType = "trend"
-	IndicatorCalendar IndicatorType = "calendar"
+	IndicatorVIX       IndicatorType = "vix"
+	IndicatorVIXChange IndicatorType = "vix_change"
+	IndicatorGap       IndicatorType = "gap"
+	IndicatorRange     IndicatorType = "range"
+	IndicatorTrend     IndicatorType = "trend"
+	IndicatorCalendar  IndicatorType = "calendar"
 
 	// New — Momentum
 	IndicatorRSI      IndicatorType = "rsi"
@@ -344,6 +345,11 @@ func GetIndicatorMetadata() []IndicatorMeta {
 			Type: IndicatorVIX, Label: "VIX", Category: "market",
 			Description: "CBOE Volatility Index — measures market fear/uncertainty",
 			Params:      []IndicatorParamDef{}, ValueRange: "0-100+", NeedsSymbol: false,
+		},
+		{
+			Type: IndicatorVIXChange, Label: "VIX Change", Category: "market",
+			Description: "Current VIX - previous trading day close",
+			Params:      []IndicatorParamDef{}, ValueRange: "unbounded", NeedsSymbol: false,
 		},
 		{
 			Type: IndicatorGap, Label: "Gap %", Category: "market",

@@ -1,10 +1,86 @@
 package indicators
 
 import (
+	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"trade-backend-go/internal/automation/types"
+	"trade-backend-go/internal/models"
 )
+
+type staticStreamingSource struct {
+	prices map[string]float64
+}
+
+func (s staticStreamingSource) GetLatest(symbol string) *models.MarketData {
+	price, ok := s.prices[symbol]
+	if !ok {
+		return nil
+	}
+	return models.NewMarketData(symbol, "trade", time.Now().Format(time.RFC3339Nano), map[string]interface{}{"last": price})
+}
+
+func TestGetVIXChangeSignedPoints(t *testing.T) {
+	tests := []struct {
+		name          string
+		current       float64
+		previousClose float64
+		want          float64
+	}{
+		{name: "positive", current: 21.25, previousClose: 20.00, want: 1.25},
+		{name: "negative", current: 18.75, previousClose: 20.00, want: -1.25},
+		{name: "zero", current: 20.00, previousClose: 20.00, want: 0},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			svc := NewService(nil)
+			today := time.Now().In(svc.getNewYorkLocation()).Format("2006-01-02")
+			svc.dailyCache["VIX"] = &dailyCacheEntry{
+				data: &types.DailyData{Symbol: "VIX", PreviousClose: tc.previousClose},
+				date: today,
+			}
+			svc.SetStreamingSource(staticStreamingSource{prices: map[string]float64{"VIX": tc.current}})
+
+			got, err := svc.GetVIXChange(context.Background())
+			if err != nil {
+				t.Fatalf("GetVIXChange() error = %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("GetVIXChange() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestEvaluateVIXChangeUsesFixedVIXSymbol(t *testing.T) {
+	svc := NewService(nil)
+	today := time.Now().In(svc.getNewYorkLocation()).Format("2006-01-02")
+	svc.dailyCache["VIX"] = &dailyCacheEntry{
+		data: &types.DailyData{Symbol: "VIX", PreviousClose: 20},
+		date: today,
+	}
+	svc.SetStreamingSource(staticStreamingSource{prices: map[string]float64{"VIX": 21.5}})
+
+	result := svc.EvaluateIndicator(context.Background(), "", types.IndicatorConfig{
+		Type: types.IndicatorVIXChange, Symbol: "STALE", Enabled: true,
+		Operator: types.OperatorGreaterThan, Threshold: 1,
+	})
+	if result.Error != "" {
+		t.Fatalf("EvaluateIndicator() error = %q", result.Error)
+	}
+	if result.Symbol != "VIX" {
+		t.Fatalf("result.Symbol = %q, want VIX", result.Symbol)
+	}
+	if result.Value != 1.5 || !result.Pass {
+		t.Fatalf("result = value %v pass %v, want 1.5 true", result.Value, result.Pass)
+	}
+	if strings.Contains(result.Details, "%") {
+		t.Fatalf("VIX Change details must not contain percent sign: %q", result.Details)
+	}
+}
 
 // --- AllIndicatorsPass tests (pure logic on IndicatorResult slices) ---
 

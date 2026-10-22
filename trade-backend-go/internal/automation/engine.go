@@ -382,6 +382,32 @@ func (e *Engine) PreviewStrikes(ctx context.Context, config *types.AutomationCon
 	return e.findStrikesForDelta(ctx, config)
 }
 
+// indicatorSubscriptionSymbol resolves the streaming symbol needed by an indicator.
+func indicatorSubscriptionSymbol(ind types.IndicatorConfig) string {
+	switch ind.Type {
+	case types.IndicatorVIXChange:
+		return "VIX"
+	case types.IndicatorVIX:
+		if ind.Symbol == "" {
+			return "VIX"
+		}
+		return ind.Symbol
+	case types.IndicatorCalendar:
+		return ""
+	case types.IndicatorGap, types.IndicatorRange, types.IndicatorTrend,
+		types.IndicatorRSI, types.IndicatorMACD, types.IndicatorMomentum,
+		types.IndicatorCMO, types.IndicatorStoch, types.IndicatorStochRSI,
+		types.IndicatorADX, types.IndicatorCCI, types.IndicatorSMA,
+		types.IndicatorEMA, types.IndicatorATR, types.IndicatorBBPercent:
+		if ind.Symbol == "" {
+			return "QQQ"
+		}
+		return ind.Symbol
+	default:
+		return ind.Symbol
+	}
+}
+
 // subscribeIndicatorSymbols extracts all unique symbols used by an automation's indicators
 // and subscribes them to the streaming manager so they get live price data.
 func (e *Engine) subscribeIndicatorSymbols(config *types.AutomationConfig) {
@@ -393,23 +419,7 @@ func (e *Engine) subscribeIndicatorSymbols(config *types.AutomationConfig) {
 			if !ind.Enabled {
 				continue
 			}
-			sym := ind.Symbol
-			switch ind.Type {
-			case types.IndicatorVIX:
-				if sym == "" {
-					sym = "VIX"
-				}
-			case types.IndicatorGap, types.IndicatorRange, types.IndicatorTrend,
-				types.IndicatorRSI, types.IndicatorMACD, types.IndicatorMomentum,
-				types.IndicatorCMO, types.IndicatorStoch, types.IndicatorStochRSI,
-				types.IndicatorADX, types.IndicatorCCI, types.IndicatorSMA,
-				types.IndicatorEMA, types.IndicatorATR, types.IndicatorBBPercent:
-				if sym == "" {
-					sym = "QQQ"
-				}
-			case types.IndicatorCalendar:
-				continue // No symbol needed
-			}
+			sym := indicatorSubscriptionSymbol(ind)
 			if sym != "" {
 				symbols[sym] = true
 			}
@@ -421,23 +431,7 @@ func (e *Engine) subscribeIndicatorSymbols(config *types.AutomationConfig) {
 		if !ind.Enabled {
 			continue
 		}
-		sym := ind.Symbol
-		switch ind.Type {
-		case types.IndicatorVIX:
-			if sym == "" {
-				sym = "VIX"
-			}
-		case types.IndicatorGap, types.IndicatorRange, types.IndicatorTrend,
-			types.IndicatorRSI, types.IndicatorMACD, types.IndicatorMomentum,
-			types.IndicatorCMO, types.IndicatorStoch, types.IndicatorStochRSI,
-			types.IndicatorADX, types.IndicatorCCI, types.IndicatorSMA,
-			types.IndicatorEMA, types.IndicatorATR, types.IndicatorBBPercent:
-			if sym == "" {
-				sym = "QQQ"
-			}
-		case types.IndicatorCalendar:
-			continue
-		}
+		sym := indicatorSubscriptionSymbol(ind)
 		if sym != "" {
 			symbols[sym] = true
 		}

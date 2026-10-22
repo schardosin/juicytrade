@@ -487,6 +487,14 @@ func TestFormatDetails_OriginalIndicators(t *testing.T) {
 			mustContain: []string{"VIX", "18.50", "<", "20.00", "PASS"},
 		},
 		{
+			name: "VIX Change",
+			result: types.IndicatorResult{
+				Type: types.IndicatorVIXChange, Value: -1.25, Threshold: -1.0,
+				Operator: types.OperatorLessThan, Pass: true,
+			},
+			mustContain: []string{"VIX Change", "-1.25", "<", "-1.00", "PASS"},
+		},
+		{
 			name: "Gap",
 			result: types.IndicatorResult{
 				Type: types.IndicatorGap, Value: 1.25, Threshold: 2.0,

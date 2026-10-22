@@ -270,6 +270,7 @@ describe('AutomationDashboard', () => {
   describe('formatIndicatorType', () => {
     it('formats original indicator types', () => {
       expect(wrapper.vm.formatIndicatorType('vix')).toBe('VIX');
+      expect(wrapper.vm.formatIndicatorType('vix_change')).toBe('VIX Change');
       expect(wrapper.vm.formatIndicatorType('gap')).toBe('Gap');
       expect(wrapper.vm.formatIndicatorType('range')).toBe('Range');
       expect(wrapper.vm.formatIndicatorType('trend')).toBe('Trend');
@@ -289,6 +290,12 @@ describe('AutomationDashboard', () => {
       expect(wrapper.vm.formatIndicatorType('ema')).toBe('EMA');
       expect(wrapper.vm.formatIndicatorType('atr')).toBe('ATR');
       expect(wrapper.vm.formatIndicatorType('bb_percent')).toBe('BB%B');
+    });
+
+    it('formats signed VIX Change point values without a percent suffix', () => {
+      expect(wrapper.vm.formatIndicatorValue({ type: 'vix_change', value: 1.25 })).toBe('1.25');
+      expect(wrapper.vm.formatIndicatorValue({ type: 'vix_change', value: -0.8 })).toBe('-0.80');
+      expect(wrapper.vm.formatIndicatorValue({ type: 'vix_change', value: -0.8 })).not.toContain('%');
     });
 
     it('returns raw type for unknown types', () => {

@@ -157,6 +157,24 @@ describe('AutomationConfigForm — Indicator Groups', () => {
       expect(payload.indicator_groups[0].indicators.length).toBe(1);
       expect(payload.indicator_groups[0].indicators[0].type).toBe('vix');
     });
+    it('adds fixed-symbol VIX Change from fallback metadata and saves it without a symbol', async () => {
+      expect(wrapper.vm.indicatorTypes.some(type => type.value === 'vix_change' && type.label === 'VIX Change')).toBe(true);
+      expect(wrapper.vm.getIndicatorNeedsSymbol('vix_change')).toBe(false);
+      expect(wrapper.vm.getIndicatorDefaultSymbol('vix_change')).toBe('VIX');
+
+      wrapper.vm.config.name = 'VIX Change Config';
+      wrapper.vm.config.symbol = 'NDX';
+      wrapper.vm.addIndicatorToGroup('vix_change', 0);
+
+      const indicator = wrapper.vm.config.indicator_groups[0].indicators[0];
+      expect(indicator).toMatchObject({ type: 'vix_change', enabled: true, operator: 'eq', threshold: 0 });
+      expect(indicator.symbol).toBe('');
+
+      await wrapper.vm.saveConfig();
+      const payload = api.createAutomationConfig.mock.calls[0][0];
+      expect(payload.indicator_groups[0].indicators[0].type).toBe('vix_change');
+      expect(payload.indicator_groups[0].indicators[0].symbol).toBeUndefined();
+    });
   });
 
   // ─── Legacy Config Loading ─────────────────────────────────────────

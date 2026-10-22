@@ -357,6 +357,9 @@ func (s *Service) EvaluateIndicator(ctx context.Context, configID string, config
 		}
 		result.Value, err = s.GetVIXValue(ctx, vixSymbol)
 		result.Symbol = vixSymbol
+	case types.IndicatorVIXChange:
+		result.Value, err = s.GetVIXChange(ctx)
+		result.Symbol = "VIX"
 	case types.IndicatorGap:
 		// Use indicator's symbol if configured, otherwise default to QQQ for market reference
 		gapSymbol := config.Symbol
@@ -744,6 +747,23 @@ func (s *Service) GetVIXValue(ctx context.Context, customSymbol string) (float64
 	return s.getQuoteWithCache(ctx, symbol)
 }
 
+// GetVIXChange calculates the signed VIX point change from the previous trading day's close.
+func (s *Service) GetVIXChange(ctx context.Context) (float64, error) {
+	dailyData, err := s.getDailyDataCached(ctx, "VIX")
+	if err != nil {
+		return 0, err
+	}
+	if dailyData.PreviousClose <= 0 {
+		return 0, fmt.Errorf("previous close is not available for VIX")
+	}
+
+	currentPrice, err := s.GetVIXValue(ctx, "VIX")
+	if err != nil {
+		return 0, err
+	}
+	return currentPrice - dailyData.PreviousClose, nil
+}
+
 // GetGapPercent calculates the gap percentage: (Open - PrevClose) / PrevClose * 100
 // Uses daily cache - gap is constant all day (computed once after 9:30 ET).
 func (s *Service) GetGapPercent(ctx context.Context, symbol string) (float64, error) {
@@ -902,6 +922,8 @@ func (s *Service) formatDetails(result *types.IndicatorResult) string {
 	switch result.Type {
 	case types.IndicatorVIX:
 		return fmt.Sprintf("VIX %.2f %s %.2f (%s)", result.Value, operatorStr, result.Threshold, passStr)
+	case types.IndicatorVIXChange:
+		return fmt.Sprintf("VIX Change %.2f %s %.2f (%s)", result.Value, operatorStr, result.Threshold, passStr)
 	case types.IndicatorGap:
 		return fmt.Sprintf("Gap %.2f%% %s %.2f%% (%s)", result.Value, operatorStr, result.Threshold, passStr)
 	case types.IndicatorRange:

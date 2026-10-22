@@ -1056,6 +1056,7 @@ export default {
         // Fallback while metadata loads or if API fails
         return [
           { value: 'vix', label: 'VIX Level', description: 'CBOE Volatility Index level', category: 'market' },
+          { value: 'vix_change', label: 'VIX Change', description: 'Current VIX - previous trading day close', category: 'market' },
           { value: 'gap', label: 'Gap %', description: '(Open - Prev Close) / Prev Close * 100', category: 'market' },
           { value: 'range', label: 'Range %', description: '(High - Low) / Open * 100', category: 'market' },
           { value: 'trend', label: 'Trend %', description: '(Current - Open) / Open * 100', category: 'market' },
@@ -1114,7 +1115,7 @@ export default {
     }
 
     const getIndicatorDefaultSymbol = (type) => {
-      if (type === 'vix') return 'VIX'
+      if (type === 'vix' || type === 'vix_change') return 'VIX'
       if (type === 'calendar') return ''
       return 'QQQ'
     }
@@ -1125,7 +1126,7 @@ export default {
 
     const getIndicatorNeedsSymbol = (type) => {
       const meta = indicatorMetadataMap.value[type]
-      if (!meta) return type !== 'calendar'
+      if (!meta) return type !== 'calendar' && type !== 'vix' && type !== 'vix_change'
       return meta.needs_symbol
     }
 

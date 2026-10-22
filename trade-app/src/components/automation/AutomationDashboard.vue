@@ -789,7 +789,7 @@ export default {
 
     const formatIndicatorType = (type) => {
       const types = {
-        vix: 'VIX', gap: 'Gap', range: 'Range', trend: 'Trend', calendar: 'FOMC',
+        vix: 'VIX', vix_change: 'VIX Change', gap: 'Gap', range: 'Range', trend: 'Trend', calendar: 'FOMC',
         rsi: 'RSI', macd: 'MACD', momentum: 'Momentum', cmo: 'CMO',
         stoch: 'Stoch', stoch_rsi: 'StochRSI', adx: 'ADX', cci: 'CCI',
         sma: 'SMA', ema: 'EMA', atr: 'ATR', bb_percent: 'BB%B'
